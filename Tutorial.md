@@ -1341,92 +1341,1009 @@ MoveIt
 
 ## 19. 第十七步：新增一台机械臂
 
-新增机械臂时不要复制整个仓库并修改 Core
+新增机械臂的核心原则是：**优先复用 Core、Protocol 和 Hardware Backend，只新增机器人自身的模型、配置和 Profile**
 
-新增内容应主要进入 `robot_supports`
+不要复制整个仓库，也不要因为机械结构变化就修改 `serial_arm/core`
 
-推荐结构
+### 19.1. 先判断到底需要新增什么
+
+在开始建目录前先判断变化发生在哪一层
+
+| 场景 | 需要新增或修改 | 不需要修改 |
+| --- | --- | --- |
+| 同一机械臂新增一个结构版本 | Robot Support + Core YAML + Profile | Core / Backend |
+| 新机械臂继续使用现有 Damiao 电机 | Robot Support + Hardware YAML + Profile | Core / Damiao Backend |
+| 新机械臂使用已有其他 Backend | Robot Support + 对应 Hardware YAML + Profile | Core |
+| 执行器厂商协议发生变化 | 新 Hardware Backend + Robot Support + Profile | Core |
+| 通信设备私有协议发生变化 | 新 Protocol Adapter，通常还需要对应 Backend | Core |
+| 只增加 ROS 2 接入 | `ros2_control_xacro` + controllers + Profile ROS 字段 | Core / Backend |
+| 只增加 MoveIt | MoveIt config + Profile `moveit` 字段 | Core / Backend |
+
+例如新增一台仍然使用达妙电机和达妙官方 USB2CAN 的机械臂时，正常情况下只需要：
 
 ```text
-src/
-├── serial_arm/
-│   ├── core/
-│   └── bringup/
-│
-└── robot_supports/
-    ├── hardware/
-    │   └── <backend>/
-    │
-    ├── profiles/
-    │   └── config/
-    │       └── robot_profiles.yaml
-    │
-    └── robots/
-        └── <robot_name>/
-            ├── description/
-            │   ├── config/
-            │   │   ├── core/
-            │   │   │   └── default.yaml
-            │   │   ├── hardware.yaml
-            │   │   └── ros2_controllers.yaml
-            │   └── model/
-            │       └── ...
-            │
-            └── moveit_config/
+新 URDF / mesh
+    ↓
+新 Core YAML
+    ↓
+新 hardware.yaml
+    ↓
+在 robot_profiles.yaml 注册
 ```
 
-### 19.1. 先放 URDF
+不应该新建第二份 `DamiaoMotorBus`
 
-至少保证
+### 19.2. 先确定命名和 Joint 顺序
 
-- 受控 Joint 名称稳定
-- joint axis 正确
-- joint limit 合法
-- link inertial 合法
-- base frame 确定
-- tool frame 确定
+建议先固定以下名称，再开始写文件
 
-### 19.2. 创建 Core YAML
+```text
+robot_name          my_arm
+resource package    my_arm_description
+profile name        my_arm_default
+variant             default
+base frame          base_link
+tool frame          tool0
+joint order         [joint1, joint2, ...]
+hardware backend    serial_arm_hardware_damiao
+```
 
-复制结构，不复制数值
+其中最重要的是 `joint order`
 
-必须重新确认
+SerialArm-Core 中以下内容都必须围绕同一组受控 Joint：
 
-- joint names
-- calibration
-- gains
-- Safety policy
-- shutdown pose
-- dynamics frames
-- gravity scale
+```text
+URDF Joint
+Core model.joint_names
+calibration.joints
+controller gains
+Safety per-joint parameters
+shutdown.park_pos
+Hardware actuator mapping
+ros2_control joints                 # 仅 ROS 2 使用时
+controller joints                   # 仅 ROS 2 使用时
+```
 
-### 19.3. 创建 Profile
+`model.joint_names` 的顺序就是 Core 的 Joint Vector 顺序
+
+后续不要为了适配 Backend 随意改变这组顺序
+
+### 19.3. 创建 Robot Support 目录
+
+推荐直接参考当前 `dm_arm` 的资源组织方式
+
+```text
+src/robot_supports/robots/my_arm/
+└── description/
+    ├── CMakeLists.txt
+    ├── package.xml
+    ├── config/
+    │   ├── core/
+    │   │   └── default.yaml
+    │   ├── hardware.yaml
+    │   └── ros2_controllers.yaml        # 仅 ROS 2 需要
+    └── model/
+        └── default/
+            ├── meshes/
+            │   └── ...
+            └── urdf/
+                ├── my_arm.urdf
+                └── my_arm.ros2_control.xacro  # 仅 ROS 2 需要
+```
+
+如果同一台机械臂有多个版本，可以继续：
+
+```text
+model/
+├── default/
+├── long_reach/
+└── with_gripper/
+
+config/core/
+├── default.yaml
+├── long_reach.yaml
+└── with_gripper.yaml
+```
+
+不要为每个 variant 再创建一份 Backend
+
+### 19.4. 创建 description resource package
+
+当前 Robot Profile 的 resource resolver 会从安装目录或源码目录寻找包含 `package.xml` 的 resource package
+
+因此 `description/` 不只是 ROS package，也承担 framework-neutral resource package 的作用
+
+最小 `CMakeLists.txt` 可以直接使用：
+
+```cmake
+cmake_minimum_required(VERSION 3.8)
+project(my_arm_description)
+
+find_package(ament_cmake QUIET)
+
+install(DIRECTORY config model
+  DESTINATION share/${PROJECT_NAME}
+)
+
+install(FILES package.xml
+  DESTINATION share/${PROJECT_NAME}
+)
+
+if(ament_cmake_FOUND)
+  ament_package()
+endif()
+```
+
+这种写法同时支持：
+
+```text
+standalone CMake install
+colcon / ament workspace
+```
+
+最小 `package.xml`：
+
+```xml
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+    <name>my_arm_description</name>
+    <version>0.1.0</version>
+    <description>Robot model and configuration resources for my_arm</description>
+    <maintainer email="you@example.com">your_name</maintainer>
+    <license>MIT</license>
+
+    <buildtool_depend>ament_cmake</buildtool_depend>
+    <exec_depend>xacro</exec_depend>
+
+    <export>
+        <build_type>ament_cmake</build_type>
+    </export>
+</package>
+```
+
+如果完全不使用 ROS 2 Xacro，可以根据实际情况去掉不需要的 `xacro` runtime dependency
+
+### 19.5. 准备 URDF
+
+首先只关注机械模型本身，不要一开始就做 MoveIt
+
+例如：
+
+```text
+model/default/urdf/my_arm.urdf
+```
+
+至少确认以下内容
+
+#### 19.5.1. 受控 Joint
+
+每个受控 Joint 必须：
+
+```text
+名称唯一
+parent / child 正确
+origin 正确
+axis 正确
+joint type 正确
+limit 正确
+```
+
+Core YAML 中：
+
+```yaml
+model:
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+```
+
+这些名称必须在 URDF 中真实存在
+
+固定连接 `fixed joint` 不需要放入 `model.joint_names`
+
+#### 19.5.2. Joint limit
+
+对于普通 revolute joint，至少确认：
+
+```xml
+<limit lower="..."
+       upper="..."
+       velocity="..."
+       effort="..."/>
+```
+
+这些 limit 会参与 SerialArm Safety limit 解析
+
+不要为了“先跑起来”随意给一个特别大的 limit
+
+对于真正的 continuous joint，应使用符合实际模型的 continuous joint 语义，不要伪造位置上下限
+
+#### 19.5.3. Dynamics 参数
+
+所有进入动力学链路的 Link 应具有合法 inertial：
+
+```xml
+<inertial>
+    <origin .../>
+    <mass value="..."/>
+    <inertia .../>
+</inertial>
+```
+
+如果质量和惯量仍在建模阶段，可以先使用合法 placeholder 完成软件链路验证
+
+但是此时：
+
+```text
+FK / Jacobian
+```
+
+可以用于结构检查，而：
+
+```text
+gravity
+mass matrix
+inverse dynamics
+```
+
+不能被视为真实机械臂动力学结果
+
+#### 19.5.4. Frame
+
+提前确定：
+
+```text
+base_frame
+tool_frame
+```
+
+例如：
+
+```yaml
+model:
+  base_frame: base_link
+  tool_frame: tool0
+```
+
+两个 Frame 必须在 URDF 中存在
+
+#### 19.5.5. Mesh 和路径
+
+模型安装后仍然需要能解析 mesh 和 URDF 依赖
+
+不要在 URDF 中写只在当前电脑成立的绝对路径，例如：
+
+```text
+/home/user/project/...
+```
+
+### 19.6. 创建 Core YAML
+
+建议复制现有 Core YAML 的**结构**，不要复制原机械臂的具体数值
+
+文件：
+
+```text
+config/core/default.yaml
+```
+
+完整配置分为：
+
+```text
+model
+calibration
+control
+safety_policy
+shutdown
+```
+
+#### 19.6.1. model
+
+```yaml
+model:
+  urdf_path: ../../model/default/urdf/my_arm.urdf
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
+  base_frame: base_link
+  tool_frame: tool0
+  gravity: [0.0, 0.0, -9.81]
+  gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+```
+
+检查：
+
+```text
+urdf_path 相对当前 YAML 可解析
+joint_names 与 URDF 一致
+base_frame / tool_frame 存在
+gravity_scale 长度等于 Joint 数量
+```
+
+#### 19.6.2. calibration
+
+每一个 `model.joint_names` 中的 Joint 都必须有 calibration
+
+```yaml
+calibration:
+  joints:
+    joint1:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+
+    joint2:
+      direction: -1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+```
+
+其中：
+
+```text
+direction
+    Joint 正方向与执行器正方向关系
+
+pos_ratio
+    actuator position delta / joint position delta
+
+tor_ratio
+    joint torque / actuator reported torque
+
+joint_zero_offset
+    Joint 侧零位
+
+actuator_zero_offset
+    Actuator 侧零位
+```
+
+不要用修改 URDF joint axis 的方式补偿纯执行器方向错误
+
+也不要在 Backend 内偷偷加入只针对某台机械臂的零位修正
+
+机械模型、Mapper calibration 和厂商协议层要分开
+
+#### 19.6.3. control
+
+第一次接入新机械臂时必须：
+
+```yaml
+control:
+  runtime:
+    ctrl_frequency_hz: 200.0
+    joint_acc_filter_alpha: 0.2
+    write_enabled: false
+    model_feedforward_mode: NONE
+    tracking_impedance_mode: RIGID_TRACKING
+```
+
+重点：
+
+```text
+write_enabled: false
+```
+
+在模型、方向、零位、HardwareCapabilities 和 Safety 没有确认前不要打开写入
+
+初始阶段也建议先使用：
+
+```text
+model_feedforward_mode: NONE
+```
+
+等 Dynamics 参数验证后再切换：
+
+```text
+GRAVITY
+FULL_INVERSE_DYNAMICS
+```
+
+五套阻抗增益必须针对新机械臂重新设定
+
+不要直接复制 DM-Arm 的 kp / kd
+
+至少需要：
+
+```yaml
+control:
+  controller:
+    allow_full_cmd: false
+
+    rigid_hold:
+      kp: {joint1: 10.0, joint2: 10.0}
+      kd: {joint1: 0.1, joint2: 0.1}
+
+    rigid_tracking:
+      kp: {joint1: 10.0, joint2: 10.0}
+      kd: {joint1: 0.1, joint2: 0.1}
+
+    compliant_hold:
+      kp: {joint1: 2.0, joint2: 2.0}
+      kd: {joint1: 0.05, joint2: 0.05}
+
+    compliant_drag:
+      kp: {joint1: 0.0, joint2: 0.0}
+      kd: {joint1: 0.05, joint2: 0.05}
+
+    compliant_tracking:
+      kp: {joint1: 2.0, joint2: 2.0}
+      kd: {joint1: 0.05, joint2: 0.05}
+```
+
+上面的数值只表示配置格式，不是新机械臂推荐参数
+
+实际文件必须为所有受控 Joint 提供对应项
+
+#### 19.6.4. safety_policy
+
+新机械臂必须重新检查：
+
+```text
+position margin
+velocity scale
+max acceleration
+kp / kd override
+state timeout
+command timeout
+fault recovery
+```
+
+最重要的原则是：
+
+> Core Safety 可以在 URDF 和 HardwareCapabilities 基础上进一步收窄限制，但不应该依靠配置把真实硬件能力扩大
+
+例如：
+
+```yaml
+safety_policy:
+  position_margin: 0.0
+  cmd_vel_scale: 0.2
+  state_vel_scale: 1.0
+
+  max_acc:
+    joint1: 1.0
+    joint2: 1.0
+
+  max_dt_s: 0.02
+  state_timeout_s: 0.05
+  cmd_timeout_s: 0.10
+  require_all_actuators_online: true
+  require_all_actuators_enabled: true
+  reject_motor_error: true
+  require_continuous_cmd: false
+```
+
+第一次运动测试可以主动把速度和加速度限制收窄
+
+#### 19.6.5. shutdown
+
+为新机械臂单独确定安全停放姿态
+
+```yaml
+shutdown:
+  park_before_disable: true
+  park_pos:
+    joint1: 0.0
+    joint2: 0.0
+  speed_scale: 0.10
+  position_tolerance: 0.05
+  velocity_tolerance: 0.05
+  settle_time_s: 0.25
+  relaxed_tolerance_ratio: 2.0
+  timeout_s: 15.0
+```
+
+`park_pos` 必须包含全部受控 Joint
+
+不要默认认为全零位就是机械结构上的安全停放姿态
+
+### 19.7. 创建 Hardware YAML
+
+如果新机械臂继续使用现有 Backend，只需要为这台机器人提供新的 Hardware instance config
+
+以当前 Damiao Backend 为例：
+
+```yaml
+damiao:
+  bus: main_can
+  serial_port: /dev/ttyACM0
+  baudrate: 921600
+  refresh_state_in_read: false
+  feedback_timeout_s: 0.05
+  activation_retries: 3
+  startup_read_cycles: 5
+  stop_kp: 3.0
+  stop_kd: 0.1
+  stop_cycles: 5
+
+  actuators:
+    joint1:
+      name: actuator1
+      motor_id: 1
+      master_id: 0
+      motor_type: DM4340
+
+    joint2:
+      name: actuator2
+      motor_id: 2
+      master_id: 0
+      motor_type: DM4310
+```
+
+当前 Damiao Hardware YAML 中：
+
+```text
+actuators 的 YAML key
+    → joint_name
+
+name
+    → 执行器名称
+
+motor_id
+    → 达妙电机 ID，必须非 0 且不能重复
+
+master_id
+    → 主站 ID
+
+motor_type
+    → Backend 能识别的达妙电机型号名称
+```
+
+当前实现下应保证：
+
+```text
+actuator 数量 == model.joint_names 数量
+actuator key 与 Joint 名称一一对应
+actuator 配置顺序与 model.joint_names 顺序保持一致
+motor_id 不重复
+motor_type 与真实电机一致
+```
+
+不要把机械臂专属的 Joint direction、减速比和零位写入 Damiao 通用 Backend 源码
+
+这些机器人相关关系应优先放在 Core calibration 中
+
+如果新机械臂根本不使用 Damiao 电机，不要强行修改这个 YAML 适配
+
+此时转到第 20 节实现新的 Hardware Backend
+
+### 19.8. 注册 framework-neutral Robot Profile
+
+打开：
+
+```text
+src/robot_supports/profiles/config/robot_profiles.yaml
+```
+
+对于 Native C++、Python、Terminal，Core resolver 真正必须的字段只有：
+
+```text
+core
+hardware
+```
+
+最小 Profile：
 
 ```yaml
 profiles:
-  my_arm:
+  my_arm_default:
     core:
       package: my_arm_description
       config: config/core/default.yaml
 
     hardware:
-      plugin: my_hardware_backend
+      plugin: serial_arm_hardware_damiao
+      config_package: my_arm_description
+      config: config/hardware.yaml
+```
+
+这时已经可以通过：
+
+```text
+C++
+Python
+serial_arm_terminal
+```
+
+使用该机械臂
+
+Robot Profile 本身不是 ROS 2 专属配置
+
+### 19.9. 使用 colcon 构建并验证新 Robot Support
+
+如果当前仓库本身使用 colcon 管理，直接：
+
+```bash
+source /opt/ros/humble/setup.bash
+
+colcon build
+source install/setup.bash
+```
+
+新增 resource package 后，先确认资源已经安装：
+
+```bash
+find install/my_arm_description/share/my_arm_description \
+  -maxdepth 4 \
+  -type f
+```
+
+应至少能看到：
+
+```text
+package.xml
+config/core/default.yaml
+config/hardware.yaml
+model/...
+```
+
+再确认 Profile 已安装：
+
+```bash
+grep -n "my_arm_default" \
+  install/serial_arm_robot_profiles/share/serial_arm_robot_profiles/config/robot_profiles.yaml
+```
+
+### 19.10. 先做不连接真机的 Profile / Config 检查
+
+不要新增 Profile 后直接 `write_enabled=true`
+
+先保持：
+
+```yaml
+write_enabled: false
+```
+
+然后使用 Python Terminal：
+
+```bash
+python3 src/serial_arm/core/app/serial_arm_terminal.py \
+  --robot-profile my_arm_default \
+  --check-only
+```
+
+`--check-only` 应至少验证：
+
+```text
+Profile 可以找到
+Core YAML 可以解析
+Hardware Backend 可以加载
+Hardware YAML 可以解析
+HardwareCapabilities 可以读取
+URDF / Joint 可以解析
+Safety limit 可以解析
+Dynamics 配置可以建立
+```
+
+这一步不会连接或写入真实硬件
+
+如果失败，先修资源和配置，不要绕过错误进入真机
+
+### 19.11. 检查 Dynamics 和 Joint Mapping
+
+Profile 可以解析后，再进行：
+
+```text
+FK
+Jacobian
+gravity
+Joint / Actuator mapping
+```
+
+至少确认：
+
+```text
+FK 姿态方向合理
+Jacobian 维度 = 6 x N
+gravity 长度 = N
+所有结果 finite
+Joint 正方向与真实机械臂一致
+零位与机械结构一致
+```
+
+如果动力学 inertial 仍是 placeholder，只验证软件结构，不评价力矩数值精度
+
+### 19.12. 第一次打开 C++ Terminal
+
+配置检查通过后可以：
+
+```bash
+serial_arm_terminal \
+  --robot-profile my_arm_default
+```
+
+此时仍建议保持：
+
+```yaml
+write_enabled: false
+```
+
+先确认 Terminal 能正确解析：
+
+```text
+Profile
+Core config
+Backend plugin
+Hardware config
+Joint 数量
+```
+
+然后再进入真机联调阶段
+
+### 19.13. 第一次真机测试
+
+只有在以下内容全部确认后才把：
+
+```yaml
+write_enabled: true
+```
+
+打开
+
+检查表：
+
+```text
+[ ] 急停可用
+[ ] 电源和通信稳定
+[ ] motor_id 正确且唯一
+[ ] Joint 顺序正确
+[ ] Joint direction 正确
+[ ] 零位正确
+[ ] URDF limit 正确
+[ ] HardwareCapabilities 正确
+[ ] Safety 已主动收窄速度和加速度
+[ ] park pose 不会碰撞
+```
+
+第一次运动不要直接测试完整轨迹
+
+建议顺序：
+
+```text
+1. 读取全部 Joint state
+2. 单关节极小幅运动
+3. 检查正负方向
+4. 检查停止行为
+5. RIGID_HOLD
+6. 低速 RIGID_TRACKING
+7. 再逐步恢复正常 Safety limit
+8. 最后才测试 compliant mode 和动力学前馈
+```
+
+发现方向错误时先回到 `calibration.direction` 检查
+
+发现位置比例错误时检查 `pos_ratio`
+
+发现力矩比例错误时检查 `tor_ratio`
+
+不要通过随意修改 URDF axis 来掩盖执行器映射问题
+
+### 19.14. 如果需要 ROS 2，再增加 ros2_control 资源
+
+ROS 2 不是新增机械臂进入 Core 的前置条件
+
+只有需要 `serial_arm_ros2_control` 时才继续增加以下内容
+
+#### 19.14.1. ros2_control Xacro
+
+例如：
+
+```text
+model/default/urdf/my_arm.ros2_control.xacro
+```
+
+最小结构参考当前 DM-Arm：
+
+```xml
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="my_arm">
+    <xacro:arg name="config_file" default=""/>
+    <xacro:arg name="hardware_plugin" default=""/>
+    <xacro:arg name="hardware_config" default=""/>
+
+    <xacro:include filename="$(find my_arm_description)/model/default/urdf/my_arm.urdf"/>
+    <xacro:include filename="$(find serial_arm_ros2_control)/urdf/serial_arm_system.ros2_control.xacro"/>
+
+    <ros2_control name="my_arm" type="system">
+        <xacro:serial_arm_ros2_control_hardware
+            config_file="$(arg config_file)"
+            hardware_plugin="$(arg hardware_plugin)"
+            hardware_config="$(arg hardware_config)"/>
+
+        <joint name="joint1">
+            <command_interface name="position"/>
+            <command_interface name="velocity"/>
+            <state_interface name="position"/>
+            <state_interface name="velocity"/>
+            <state_interface name="effort"/>
+        </joint>
+
+        <!-- 其余受控 Joint 按相同方式声明 -->
+    </ros2_control>
+</robot>
+```
+
+所有 ROS 2 Joint 名称仍然必须和 `model.joint_names` 一致
+
+#### 19.14.2. ros2_controllers.yaml
+
+```yaml
+controller_manager:
+  ros__parameters:
+    update_rate: 200
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+      - joint1
+      - joint2
+    command_interfaces:
+      - position
+      - velocity
+    state_interfaces:
+      - position
+      - velocity
+    allow_partial_joints_goal: false
+    open_loop_control: false
+```
+
+`update_rate` 建议与 Core 的：
+
+```yaml
+control.runtime.ctrl_frequency_hz
+```
+
+保持一致
+
+#### 19.14.3. 为 Profile 增加 ROS 字段
+
+在已经能被 Core 使用的最小 Profile 基础上增加：
+
+```yaml
+profiles:
+  my_arm_default:
+    core:
+      package: my_arm_description
+      config: config/core/default.yaml
+
+    hardware:
+      plugin: serial_arm_hardware_damiao
       config_package: my_arm_description
       config: config/hardware.yaml
 
     description:
       package: my_arm_description
-      urdf: model/my_arm.urdf
-      ros2_control_xacro: model/my_arm.ros2_control.xacro
+      urdf: model/default/urdf/my_arm.urdf
+      ros2_control_xacro: model/default/urdf/my_arm.ros2_control.xacro
 
     controllers:
       package: my_arm_description
       config: config/ros2_controllers.yaml
 ```
 
-MoveIt 可以后加
+然后重新：
 
-不要把 MoveIt 当作新机械臂接入 Core 的前置条件
+```bash
+colcon build
+source install/setup.bash
+```
+
+先只看模型：
+
+```bash
+ros2 launch serial_arm_ros2_control display.launch.py \
+  robot_profile:=my_arm_default
+```
+
+确认：
+
+```text
+URDF
+TF
+Joint axis
+Joint limits
+Mesh
+```
+
+全部正常后才启动：
+
+```bash
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=my_arm_default
+```
+
+并检查：
+
+```bash
+ros2 control list_hardware_interfaces
+ros2 control list_controllers
+ros2 topic echo /joint_states
+```
+
+### 19.15. MoveIt 最后再接
+
+MoveIt 不属于 Core 接入前置条件
+
+先完成：
+
+```text
+Core Config
+Hardware Backend
+Terminal
+真机基础控制
+ros2_control                    # 如果需要 ROS 2
+```
+
+再创建或整理 MoveIt config package
+
+最后给 Profile 增加：
+
+```yaml
+moveit:
+  package: my_arm_moveit_config
+```
+
+然后：
+
+```bash
+ros2 launch serial_arm_ros2_control moveit.launch.py \
+  robot_profile:=my_arm_default
+```
+
+不要使用 MoveIt 来替代：
+
+```text
+Joint direction 验证
+零位验证
+Safety limit 验证
+Hardware Backend 验证
+```
+
+### 19.16. 新机械臂接入完成判据
+
+新增一台机械臂至少应完成以下闭环
+
+```text
+[ ] description resource package 可以安装
+[ ] Robot Profile 可以解析
+[ ] URDF Joint 和 Core joint_names 完全一致
+[ ] Core YAML 可以通过配置检查
+[ ] Hardware YAML 可以被现有 Backend 加载
+[ ] HardwareCapabilities 与实际执行器一致
+[ ] Python Terminal --check-only 通过
+[ ] Dynamics FK / Jacobian 软件检查通过
+[ ] Joint / Actuator direction 与 zero 校准完成
+[ ] write_enabled=false 下可以完成离线检查
+[ ] 单关节低速真机测试通过
+[ ] RIGID_HOLD / RIGID_TRACKING 工作正常
+[ ] shutdown / park 行为验证完成
+```
+
+如果使用 ROS 2，再增加：
+
+```text
+[ ] display.launch.py 模型正确
+[ ] ros2_control interfaces 正确
+[ ] joint_state_broadcaster 正常
+[ ] joint_trajectory_controller 正常
+```
+
+如果使用 MoveIt，再增加：
+
+```text
+[ ] MoveIt planning group 正确
+[ ] planning scene 模型正确
+[ ] 规划轨迹与真实 Joint 方向一致
+```
+
+到这里才算完成一个新的 Robot Support
 
 ---
 
