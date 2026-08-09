@@ -15,45 +15,73 @@ Portable C++17 control, dynamics, safety and hardware abstraction core for custo
 
 ## 项目简介
 
-面向自研串联机械臂的通用控制核心与硬件适配框架，集成关节阻抗控制、Pinocchio 动力学前馈、Hardware Backend、ros2_control 与 Robot Profile；Core 使用 C++17，面向 N-DOF serial arm；DM-Arm 是当前 reference robot support，Damiao 是当前 reference hardware backend
+SerialArm-Core 是面向自研串联机械臂的通用能力库
 
-项目边界是：
+Core 提供：
 
-- Robot Model
-- Dynamics
-- Control
-- Safety
+- Robot Model / Dynamics
+- Control / Safety
 - Joint / Actuator Mapping
-- Hardware Backend
-- Framework Adapter
+- Hardware Backend contract
+- Serial / CAN Transport
+- Robot Profile
+- C++ / Python API
+- Terminal
 
-ROS 2 / ros2_control 是 Adapter；MoveIt 2 是 ROS 2 上层可选能力；Dynamics 是 Core 强制组成部分，始终依赖 Pinocchio；Hardware Backend 必须实现完整 MIT / impedance actuator semantics：`position`、`velocity`、`torque`、`kp`、`kd`
+主要使用入口：
 
-## 核心设计
+| 场景 | 入口 |
+| --- | --- |
+| C++ 控制 | `Robot` |
+| Python 控制 | `RobotSession` |
+| 命令行调试 | `serial_arm_terminal` |
+| 独立动力学 | `Dynamics` |
+| 新执行器适配 | `MotorBus` + `HardwareLoader` |
+| ROS 2 | `serial_arm_ros2_control` Adapter |
+
+ROS 2 / ros2_control 是可选 Adapter，不是 Core 的运行前提
+
+当前 reference robot 为 DM-Arm，reference hardware backend 为 Damiao
+
+## 架构
 
 ```mermaid
 flowchart TB
-    MoveIt["MoveIt 2 (optional)"] --> ROS2["ROS 2 / ros2_control Adapter"]
-    ROS2 --> Core["SerialArm-Core"]
-    Python["Python Binding"] --> Core
-    Native["Native C++"] --> Core
-    Core --> Robot["Robot / Control"]
-    Core --> Safety["Safety"]
-    Core --> Dynamics["Dynamics (Pinocchio, mandatory)"]
+    App["Native C++ / Python / Terminal"] --> Robot["Robot"]
+    ROS2["ROS 2 / ros2_control Adapter"] --> Robot
+    MoveIt["MoveIt 2"] --> ROS2
+
+    Robot --> Core["Control / Safety / Dynamics"]
     Core --> Mapper["Joint / Actuator Mapper"]
-    Mapper --> MotorBus["MotorBus MIT Contract"]
+    Mapper --> MotorBus["MotorBus"]
     MotorBus --> Backend["Hardware Backend"]
-    Backend --> Actuator["Actuator"]
+    Backend --> Channel["CanChannel"]
+    Channel --> Bus["CanBus"]
+    Bus --> Protocol["Protocol Adapter"]
+    Protocol --> Transport["Physical Transport"]
 ```
 
->   注意：如果硬件协议不原生支持 MIT / impedance actuator semantics，必须由 Backend 自己完成映射、模拟或适配
+```text
+Core
+    通用机器人能力、Transport 契约与共享资源管理
 
-v0.2.0 后 Damiao backend 的 CAN 通信链路为：
+Protocol
+    通信设备私有协议
+
+Hardware
+    执行器语义与 MotorBus
+
+Robot Support
+    URDF、配置、Profile、MoveIt 等机器人资源
+
+Framework Adapter
+    ROS 2 / ros2_control 等外部框架
+```
+
+当前 Damiao 链路：
 
 ```text
 Robot
-  ↓
-MotorBus
   ↓
 DamiaoMotorBus
   ↓
@@ -64,26 +92,27 @@ CanBus
 DamiaoUsbCanBus
   ↓
 SerialPort
+  ↓
+达妙官方 USB2CAN
 ```
 
-SerialArm-Core 提供通用 CAN Transport API；robot_supports 当前提供的具体实现是 `DamiaoUsbCanBus`，仅支持达妙官方 USB2CAN 模块的私有串口通信协议；末端执行器 EEF、夹爪或吸盘等业务层不属于当前 Core API
-
-分层边界保持为：Core 提供通用 Transport；Protocol 适配通信设备私有协议；Hardware 负责执行器设备协议与 `MotorBus`
+`DamiaoUsbCanBus` 只适配达妙官方 USB2CAN 模块的私有串口协议
 
 ## 当前能力
 
 | 能力 | 状态 |
 | --- | --- |
 | C++17 Core | 已实现 |
-| N-DOF serial arm | 已实现并有 4DOF fixture 测试 |
-| Pinocchio Dynamics | 必选，已实现 |
-| Safety | 已实现，含 continuous joint 位置限位跳过 |
-| Joint / Actuator Mapping | 已实现 |
-| Five impedance modes | `RIGID_HOLD`、`RIGID_TRACKING`、`COMPLIANT_HOLD`、`COMPLIANT_DRAG`、`COMPLIANT_TRACKING` |
-| Backend | Damiao 作为 Reference backend |
+| N-DOF serial arm | 已实现 |
+| Pinocchio Dynamics | 已实现 |
+| Safety / Mapping | 已实现 |
+| 五种阻抗模式 | 已实现 |
+| CAN Transport | `CanBus` / `CanChannel` / `BusPool` |
 | Python Binding | 已实现 |
-| ros2_control | Adapter 已实现 |
-| MoveIt 2 | Optional launch support |
+| C++ Terminal | 已实现 |
+| Damiao Backend | Reference backend |
+| ros2_control | 可选 Adapter |
+| MoveIt 2 | 可选 |
 | LeRobot | Planned |
 | Isaac / Isaac Lab | Planned |
 
@@ -92,40 +121,122 @@ SerialArm-Core 提供通用 CAN Transport API；robot_supports 当前提供的�
 ```text
 src/
 ├── serial_arm/
-│   ├── core/                 # C++ Core、Dynamics、Safety、ModelLoader、Python Binding
-│   └── bringup/ros2_control/ # ROS 2 / ros2_control Adapter 和 launch
+│   ├── core/                 # Core、Transport、Python、Terminal
+│   └── bringup/ros2_control/ # ROS 2 Adapter
 └── robot_supports/
-    ├── protocol/             # 通信协议适配，例如达妙官方 USB2CAN
-    ├── hardware/             # Hardware Backend，例如 Damiao
-    ├── robots/               # Robot Support，例如 DM-Arm
-    └── profiles/             # Robot Profile 聚合配置
+    ├── protocol/             # 通信协议
+    ├── hardware/             # Hardware Backend
+    ├── robots/               # Robot Support
+    └── profiles/             # Robot Profile
 ```
-
-项目文档只维护三份：
-
-- [README.md](README.md)：项目首页和接入概览
-- [Tutorial.md](Tutorial.md)：完整教程、配置、bringup、调参、troubleshooting
-- [API.md](API.md)：C++ / Python / MotorBus API Reference
 
 ## Quick Start
 
-### 纯 C++ Core
+SerialArm-Core 支持 standalone CMake，也可以使用 colcon 一次性构建整个仓库
+
+使用 `colcon build` 只是整仓构建方式，构建后仍可直接使用 Native C++、Python 和 Terminal，不要求通过 ROS 2 运行
+
+### colcon 构建
 
 ```bash
-cmake -S src/serial_arm/core -B build/serial_arm_core \
-  -DSERIAL_ARM_BUILD_PYTHON=OFF \
-  -DSERIAL_ARM_BUILD_TERMINAL=OFF
-cmake --build build/serial_arm_core
-cmake --install build/serial_arm_core --prefix install/serial_arm_core
+cd SerialArm-Core
+
+source /opt/ros/humble/setup.bash
+
+rosdep install \
+  --from-paths src \
+  --ignore-src \
+  -r -y \
+  --rosdistro humble
+
+colcon build
+source install/setup.bash
 ```
 
-下游 CMake 项目可以直接导入：
+开发时也可以：
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+### C++ Terminal
+
+`SERIAL_ARM_BUILD_TERMINAL` 默认开启，colcon 构建后可直接运行：
+
+```bash
+serial_arm_terminal --robot-profile dm_arm_gray
+```
+
+查看参数：
+
+```bash
+serial_arm_terminal --help
+```
+
+直接指定安装路径也可以：
+
+```bash
+./install/serial_arm_core/bin/serial_arm_terminal \
+  --robot-profile dm_arm_gray
+```
+
+不使用 Robot Profile 时：
+
+```bash
+serial_arm_terminal \
+  --config <core.yaml> \
+  --hardware-plugin <backend.so> \
+  --hardware-config <hardware.yaml>
+```
+
+Terminal 直接使用 SerialArm-Core，不启动 ROS 2 node
+
+真机写入由 Core 配置中的 `control.runtime.write_enabled` 决定
+
+### Python
+
+colcon 会同时安装 `serial_arm` Python binding：
+
+```bash
+python3 -c "import serial_arm; print(serial_arm.__file__)"
+```
+
+从仓库根目录做配置检查：
+
+```bash
+python3 src/serial_arm/core/app/serial_arm_terminal.py \
+  --robot-profile dm_arm_gray \
+  --check-only
+```
+
+启动 Python Terminal：
+
+```bash
+python3 src/serial_arm/core/app/serial_arm_terminal.py \
+  --robot-profile dm_arm_gray
+```
+
+主要控制入口：
+
+```python
+import serial_arm
+
+session = serial_arm.RobotSession(
+    core_yaml,
+    hardware_plugin,
+    hardware_yaml,
+)
+```
+
+### C++ 项目接入
 
 ```cmake
 find_package(serial_arm_core CONFIG REQUIRED)
 
-add_executable(my_arm_driver main.cpp)
-target_link_libraries(my_arm_driver
+add_executable(my_robot_app main.cpp)
+
+target_link_libraries(my_robot_app
   PRIVATE
     serial_arm::core
     serial_arm::config
@@ -134,159 +245,90 @@ target_link_libraries(my_arm_driver
 )
 ```
 
-### 纯 C++ 终端工具
+如果已经 `source install/setup.bash`，当前 colcon install prefix 会进入 CMake 搜索环境
 
-完整 standalone 安装步骤见 [Tutorial.md](Tutorial.md)；将 Core、Protocol、Hardware Backend、Robot Profiles 和 Robot Resources 安装到统一 prefix 后，可直接使用 Robot Profile：
+### Standalone CMake
 
-```bash
-export SERIAL_ARM_RESOURCE_PATH="$PWD/install/standalone"
-export LD_LIBRARY_PATH="$PWD/install/standalone/lib:/opt/openrobots/lib:${LD_LIBRARY_PATH:-}"
-
-./install/standalone/bin/serial_arm_terminal --robot-profile dm_arm_gray
-```
-
-`--robot-profile` 由 SerialArm-Core 解析，具体 profile 对应的资源和 Hardware Backend library 必须存在；例如 `dm_arm_gray` 仍需要 DM-Arm Robot Resources、`serial_arm_hardware_damiao` 和对应 config，即使 `runtime.write_enabled: false`，Core 仍会加载 Backend 获取 `HardwareCapabilities`
-
-不使用 profile 时也可显式指定：
+只构建 Core：
 
 ```bash
-./install/standalone/bin/serial_arm_terminal \
-  --config install/standalone/share/dm_arm_description/config/core/gray.yaml \
-  --hardware-plugin install/standalone/lib/libserial_arm_hardware_damiao.so \
-  --hardware-config install/standalone/share/dm_arm_description/config/hardware.yaml
+cmake -S src/serial_arm/core -B build/serial_arm_core \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DSERIAL_ARM_BUILD_PYTHON=OFF \
+  -DSERIAL_ARM_BUILD_TERMINAL=OFF
+
+cmake --build build/serial_arm_core -j
+cmake --install build/serial_arm_core \
+  --prefix install/serial_arm_core
 ```
 
-### Python
-
-Python Binding 可以作为脚本或上层应用的控制入口，也提供 Python terminal；它与 C++ Terminal 共用同一套 Robot Profile 解析；Standalone 使用时先提供资源和动态库搜索路径：
-
-```bash
-export SERIAL_ARM_RESOURCE_PATH="$PWD/install/standalone"
-export LD_LIBRARY_PATH="$PWD/install/standalone/lib:/opt/openrobots/lib:${LD_LIBRARY_PATH:-}"
-
-cd src/serial_arm/core/python
-python -m build --wheel
-python -m pip install --force-reinstall dist/serial_arm-*.whl
-```
-
-以 `dm_arm_gray` 做无真机检查或启动 terminal：
-
-```bash
-python ../app/serial_arm_terminal.py --robot-profile dm_arm_gray --check-only
-python ../app/serial_arm_terminal.py --robot-profile dm_arm_gray
-```
-
-如果 Python 运行在 colcon workspace 中，也可以 `source install/setup.bash` 使用 workspace overlay，但这不是 Robot Profile 的必需条件
+Standalone 真机与 Terminal 的完整安装顺序见 [Tutorial.md](Tutorial.md)
 
 ### ROS 2 / ros2_control
 
-以当前 DM-Arm profile 为入口：
+仅在需要 ROS 2 时使用
+
+模型预览：
 
 ```bash
-colcon build --symlink-install
-source install/setup.bash
+ros2 launch serial_arm_ros2_control display.launch.py \
+  robot_profile:=dm_arm_gray
 ```
 
-`serial_arm_ros2_control` 的 `robot_profile` launch 当前通过 `serial_arm` Python binding 调用 Core Profile resolver；因此 `serial_arm_core` 必须以 `SERIAL_ARM_BUILD_PYTHON=ON` 构建；默认值已经是 `ON`，普通 `colcon build` 不需要额外参数；如果显式设置 `-DSERIAL_ARM_BUILD_PYTHON=OFF`，C++ Core 仍可用，但当前 `robot_profile` ROS 2 launch 不可用
-
-只查看模型：
+ros2_control 真机：
 
 ```bash
-ros2 launch serial_arm_ros2_control display.launch.py robot_profile:=dm_arm_gray
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=dm_arm_gray
 ```
 
-启动 ros2_control：
+MoveIt 2 真机：
 
 ```bash
-ros2 launch serial_arm_ros2_control hardware.launch.py robot_profile:=dm_arm_gray
+ros2 launch serial_arm_ros2_control moveit.launch.py \
+  robot_profile:=dm_arm_gray
 ```
 
-启动 MoveIt 2：
+`display.launch.py` 不连接 Hardware Backend
 
-```bash
-ros2 launch serial_arm_ros2_control moveit.launch.py robot_profile:=dm_arm_gray
-```
+`hardware.launch.py` 和 `moveit.launch.py` 会连接真实 Hardware Backend
 
-如果某个 Robot Profile 没有 `moveit` 字段，`display.launch.py` 和 `hardware.launch.py` 仍应工作；只有 `moveit.launch.py` 会报出明确错误
+## Robot Profile
 
-## 添加新机械臂
-
-### Case A：新机械臂 + 已有 Hardware Backend
-
-例如 “New Pieper Arm + Damiao”：不改 Core，不写新 Backend，只新增 robot support、配置和 profile
-
-推荐目录：
-
-```text
-src/robot_supports/robots/<robot_name>/
-├── description/
-│   ├── CMakeLists.txt
-│   ├── package.xml
-│   ├── model/
-│   └── config/
-│       ├── core/<variant>.yaml
-│       ├── hardware.yaml
-│       └── ros2_controllers.yaml
-└── moveit_config/            # 可选
-```
-
-扩展规则：
-
-| 场景 | 修改位置 | Core |
-| --- | --- | --- |
-| 新 Robot Variant | Robot Support + Profile | 不改 |
-| 新机械臂 + 已有 Backend | Robot Support + Profile | 不改 |
-| 已有机械臂 + 新 Backend | Backend + Config | 不改 |
-| 新机械臂 + 新 Backend | Robot Support + Backend + Profile | 不改 |
-| 添加 MoveIt | MoveIt config | 不改 |
-| ROS 2 接入 | 复用 ros2_control Adapter | 不改 |
-| 修改 Control / Safety / Dynamics 语义 | `src/serial_arm/core` | 修改 |
-
-最小 profile 可以没有 MoveIt：
+Robot Profile 将 Core、Hardware、URDF、Controllers 和可选 MoveIt 配置聚合为一个机器人实例
 
 ```yaml
 profiles:
-  my_arm:
+  dm_arm_gray:
     core:
-      package: my_arm_description
-      config: config/core/default.yaml
+      package: dm_arm_description
+      config: config/core/gray.yaml
     hardware:
       plugin: serial_arm_hardware_damiao
-      config_package: my_arm_description
+      config_package: dm_arm_description
       config: config/hardware.yaml
-    description:
-      package: my_arm_description
-      urdf: model/my_arm.urdf
-      ros2_control_xacro: model/my_arm.ros2_control.xacro
-    controllers:
-      package: my_arm_description
-      config: config/ros2_controllers.yaml
 ```
 
-核心接入顺序：
+C++、Python、Terminal 和 ROS 2 Adapter 共用同一套 Robot Profile
 
-1. 准备 URDF/Xacro、mesh、joint order、transmission 或 ros2_control xacro
-2. 写 `core` config：runtime、controller gains、mapping、safety、dynamics
-3. 写 hardware instance config：actuator id、型号、串口或 CAN 配置
-4. 在 `robot_profiles.yaml` 注册 profile
-5. 先跑 display，再跑 fake/mock，再跑真机
+## 扩展
 
-完整流程见 [Tutorial.md](Tutorial.md)
+| 场景 | 修改位置 |
+| --- | --- |
+| 新 Robot Variant | Robot Support + Profile |
+| 新机械臂 + 已有 Backend | Robot Support + Profile |
+| 新 Hardware Backend | `robot_supports/hardware/<backend>` |
+| 新通信设备协议 | `robot_supports/protocol/<protocol>` |
+| ROS 2 接入 | 复用 `serial_arm_ros2_control` |
+| 修改通用 Control / Safety / Dynamics | `serial_arm/core` |
 
-## 添加新 Hardware Backend
+Hardware Backend 通过 `MotorBus` 接收统一的 `position / velocity / torque / kp / kd` 语义
 
-当新机器人使用新的执行器协议时，在 `src/robot_supports/hardware/<backend_name>/` 新增 Backend，并实现 `serial_arm::MotorBus`
+## 文档
 
-Backend 协议不是 capability negotiation；每个完整支持的 Backend 都必须接收并执行 Core 下发的完整 MIT semantics：
+- [Tutorial.md](Tutorial.md)：完整构建、配置、真机、调参与扩展教程
+- [API.md](API.md)：C++ / Python / Transport / Hardware API Reference
 
-- `position`
-- `velocity`
-- `torque / effort`
-- `kp`
-- `kd`
+## License
 
-如果底层硬件不原生支持 MIT，则协议映射、闭环模拟、单位换算和限制处理都属于 Backend 内部职责；Core、Robot 和 Controller 不为“不支持 MIT”的硬件增加降级分支
-
-## 许可证
-
-以仓库当前 LICENSE 为准
+以仓库当前 [LICENSE](LICENSE) 为准

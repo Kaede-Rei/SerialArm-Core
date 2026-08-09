@@ -70,7 +70,7 @@ DamiaoUsbCanBus
 SerialPort
 ```
 
-如果新硬件 backend 需要共享同一条 CAN 总线，应复用同一个 `CanBus` 并创建带 filter 的 `CanChannel`；当前版本只提供同进程共享基础设施，不包含 EEF backend；`DamiaoUsbCanBus` 仅表示达妙官方 USB2CAN 模块的私有串口协议实现，不代表通用 USB2CAN
+如果新硬件 backend 或未来 EEF 需要共享同一条 CAN 总线，应通过具体 Protocol 提供的 acquisition API 获取带 filter 的独立 `CanChannel`；以达妙官方 USB2CAN 为例使用 `damiao_usb2can::acquire_channel()`，普通设备层代码不直接获取、关闭或 flush 共享物理 `CanBus`；当前版本只提供同进程共享基础设施，不包含具体 EEF backend；`DamiaoUsbCanBus` 仅表示达妙官方 USB2CAN 模块的私有串口协议实现，不代表通用 USB2CAN
 
 未来外设或 EEF 可以通过同一个 bus name 获取独立 channel：
 
@@ -79,13 +79,20 @@ serial_arm::protocol::damiao_usb2can::Config config;
 config.serial_port = "/dev/ttyACM0";
 config.baudrate = 921600;
 
-auto eef_channel =
+auto result =
     serial_arm::protocol::damiao_usb2can::acquire_channel(
         "main_can",
         config,
         {
             serial_arm::transport::CanFilter{0x20, 0x7FF},
         });
+
+if(!result) {
+    // 根据 damiao_usb2can::Err 处理错误
+    return;
+}
+
+auto eef_channel = result.value();
 ```
 
 之后只使用 `eef_channel->send()`、`eef_channel->receive()` 和 `eef_channel->flush()`
@@ -112,7 +119,7 @@ Python Binding 额外需要
 - NumPy
 - scikit-build-core
 
-ROS 2 Adapter 当前面向 ROS 2 Humble，并额外依赖 ros2_control、controller_manager、xacro、robot_state_publisher 等组件
+ROS 2 Adapter 当前面向 ROS 2 Humble，并额外依赖 ros2_control、controller_manager、xacro、robot_state_publisher、ament_cmake_python、ament_index_python 和 PyYAML 等组件；`serial_arm` Python binding 的 ROS 2 安装由 `ament_cmake_python` 管理
 
 MoveIt 2 只在运行 MoveIt 路径时需要
 
@@ -440,6 +447,21 @@ python src/serial_arm/core/app/serial_arm_terminal.py \
 - Dynamics 配置是否有效
 
 如果 check-only 失败，优先修复配置，不要绕过错误进入真机
+
+### 7.3. Standalone wheel 与 ROS 2 Python binding 的区别
+
+Standalone Python 使用上面的 wheel / pip 安装方式；ROS 2 workspace 不需要手动 pip 安装当前源码，`serial_arm_core` 会在 ament 构建中通过 `ament_cmake_python` 安装 `serial_arm/__init__.py`，并将 pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
+
+因此 ROS 2 下应使用：
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+
+python3 -c "import serial_arm; print(serial_arm.__file__)"
+```
+
+输出路径应来自当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，不要依赖源码目录或之前手动安装的旧 wheel 来掩盖 workspace 安装问题
 
 ---
 
@@ -1172,13 +1194,49 @@ actuators:
 
 当 standalone 配置和 URDF 已经通过检查后，再进入 ROS 2
 
-```bash
-colcon build --symlink-install
+第一次在新系统构建时先安装 workspace 依赖：
 
+```bash
+source /opt/ros/humble/setup.bash
+
+rosdep install \
+  --from-paths src \
+  --ignore-src \
+  -r -y \
+  --rosdistro humble
+
+colcon build --symlink-install
 source install/setup.bash
 ```
 
-`serial_arm_ros2_control` 的 `robot_profile` launch 当前通过 `serial_arm` Python binding 调用 Core Profile resolver；因此 `serial_arm_core` 必须以 `SERIAL_ARM_BUILD_PYTHON=ON` 构建；默认值已经是 `ON`，普通 `colcon build` 不需要额外参数；如果显式设置 `-DSERIAL_ARM_BUILD_PYTHON=OFF`，C++ Core 仍可用，但当前 `robot_profile` ROS 2 launch 不可用
+`serial_arm_ros2_control` 的 `robot_profile` launch 通过 `serial_arm` Python binding 调用 Core Profile resolver；因此 `serial_arm_core` 必须以 `SERIAL_ARM_BUILD_PYTHON=ON` 构建；默认值已经是 `ON`，普通 `colcon build` 不需要额外参数；ROS 2 下 `serial_arm` 由 `ament_cmake_python` 安装，显式设置 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 时 C++ Core 仍可用，但当前 `robot_profile` ROS 2 launch 不可用
+
+启动 launch 前先验证 Python overlay：
+
+```bash
+python3 - <<'PY'
+from pathlib import Path
+
+import serial_arm
+from ament_index_python.packages import get_package_share_directory
+from serial_arm import load_robot_profile_core
+
+profiles_file = (
+    Path(get_package_share_directory("serial_arm_robot_profiles"))
+    / "config"
+    / "robot_profiles.yaml"
+)
+
+print("serial_arm:", serial_arm.__file__)
+profile = load_robot_profile_core("dm_arm_gray", str(profiles_file))
+print("profile_file:", profile.profile_file)
+print("core_config_path:", profile.core_config_path)
+print("hardware_plugin:", profile.hardware_plugin)
+print("serial_arm Python binding: OK")
+PY
+```
+
+`serial_arm.__file__` 应指向当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/__init__.py`；如果这里失败，先修 Python binding 安装，不要直接继续 launch
 
 只显示模型
 
@@ -1618,6 +1676,35 @@ ls install/standalone/lib/libserial_arm_hardware_damiao.so
 ```bash
 echo "$LD_LIBRARY_PATH"
 ```
+
+### ROS 2 launch 报 `failed to import serial_arm Python binding`
+
+先确认已经重新构建并 source 当前 workspace：
+
+```bash
+rm -rf build install log
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+```
+
+检查 Python binding：
+
+```bash
+python3 -c "import serial_arm; print(serial_arm.__file__); from serial_arm import load_robot_profile_core; print('OK')"
+```
+
+再检查实际安装文件：
+
+```bash
+find install/serial_arm_core \
+  \( -name '__init__.py' -o -name '_serial_arm*.so' \) \
+  -print
+```
+
+`__init__.py` 与 `_serial_arm*.so` 应位于同一个 `serial_arm` Python package 中，并由 `source install/setup.bash` 加入 Python 搜索路径
+
+如果错误内容是 `No module named numpy`，通过 rosdep 或系统包补齐 `python3-numpy`；如果显式以 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 构建，则当前基于 `robot_profile` 的 ROS 2 launch 本身不可用
 
 ### `Robot::activate()` 返回 `WRITE_DISABLED`
 

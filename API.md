@@ -55,6 +55,7 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/transport/can.hpp` | `CanFrame`、`CanFilter`、`CanErr` |
 | `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
+| `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
 | `serial_arm/robot.hpp` | 顶层 C++ 控制闭环 |
 
 ---
@@ -154,16 +155,110 @@ serial_arm::protocol::damiao_usb2can::Config config;
 config.serial_port = "/dev/ttyACM0";
 config.baudrate = 921600;
 
-auto channel =
+auto result =
     serial_arm::protocol::damiao_usb2can::acquire_channel(
         "main_can",
         config,
         {
             serial_arm::transport::CanFilter{0x20, 0x7FF},
         });
+
+if(!result) {
+    // 根据 damiao_usb2can::Err 处理错误
+}
+
+auto channel = result.value();
 ```
 
-`BusPool` 是 Core 内部共享池，用于保证同进程中同名 CAN bus 复用同一份 `CanBus` runtime；普通设备层代码不应直接操作物理 bus 的 `close()` 或 raw `receive()`
+`BusPool` 是 Core 内部共享池，用于保证同进程中同名 CAN bus 复用同一份 `CanBus` runtime；普通设备层代码不应直接操作物理 bus 的 `close()`、物理 `flush()` 或 raw `receive()`
+
+Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusPool 状态
+
+## 2.2. Damiao USB2CAN Protocol API
+
+头文件：
+
+```cpp
+#include "serial_arm_protocol_damiao_usb2can/bus.hpp"
+```
+
+CMake：
+
+```cmake
+find_package(serial_arm_protocol_damiao_usb2can CONFIG REQUIRED)
+
+target_link_libraries(my_peripheral
+  PRIVATE
+    serial_arm_protocol_damiao_usb2can
+)
+```
+
+命名空间：
+
+```cpp
+serial_arm::protocol::damiao_usb2can
+```
+
+`Config` 只描述达妙官方 USB2CAN 模块的物理串口配置：
+
+```cpp
+serial_arm::protocol::damiao_usb2can::Config config;
+config.serial_port = "/dev/ttyACM0";
+config.baudrate = 921600;
+```
+
+主要错误类型：
+
+```text
+OPEN_FAILED       打开物理 USB2CAN 串口失败
+CONFIG_CONFLICT   相同 bus name 已存在但物理配置不同
+TYPE_MISMATCH     相同 bus name 已由其他 CanBus 实现占用
+```
+
+设备层推荐入口是 `acquire_channel()`：
+
+```cpp
+auto result =
+    serial_arm::protocol::damiao_usb2can::acquire_channel(
+        "main_can",
+        config,
+        {
+            serial_arm::transport::CanFilter{0x20, 0x7FF},
+        });
+
+if(!result) {
+    // 根据 Err 处理错误
+}
+
+auto channel = result.value();
+```
+
+`acquire_channel()` 会通过 Core `BusPool` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
+
+当前 `DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节，扩展 CAN ID、CAN FD、RTR 和跨进程共享不属于 v0.2.0 能力
+
+## 2.3. ROS 2 Python Binding 安装约束
+
+`serial_arm_core` 是 C++ / Python 混合 ament package；ROS 2 workspace 中 `serial_arm/__init__.py` 由 `ament_cmake_python` 安装，pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
+
+因此基于 `robot_profile` 的 `serial_arm_ros2_control` launch 需要：
+
+```text
+SERIAL_ARM_BUILD_PYTHON=ON
+```
+
+该选项默认开启，普通 `colcon build` 不需要额外设置
+
+验证当前 overlay：
+
+```bash
+source install/setup.bash
+python3 -c "import serial_arm; print(serial_arm.__file__); from serial_arm import load_robot_profile_core; print('OK')"
+```
+
+如果 `serial_arm.__file__` 不来自当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，应先排查 overlay 或旧 wheel 污染，不要直接继续 ROS 2 launch
+
+Standalone Python 则继续通过 `python -m build --wheel` 与 pip 安装，两种安装路径不要混为一套流程
 
 ---
 
@@ -6111,6 +6206,26 @@ serial_arm::ModelFeedforwardFn model_feedforward =
 ---
 
 # Part XII Python API
+
+### Python Binding 安装方式
+
+Standalone 使用 wheel：
+
+```bash
+cd src/serial_arm/core/python
+python -m build --wheel
+python -m pip install --force-reinstall dist/serial_arm-*.whl
+```
+
+ROS 2 / colcon 使用 ament 安装，不需要额外 pip 安装当前 workspace：
+
+```bash
+colcon build --symlink-install
+source install/setup.bash
+python3 -c "import serial_arm; print(serial_arm.__file__)"
+```
+
+ROS 2 `robot_profile` launch 通过 Python binding 调用 C++ `load_robot_profile_core()`，因此显式关闭 `SERIAL_ARM_BUILD_PYTHON` 后这类 launch 不可用
 
 ## 115. Python 错误模型
 
