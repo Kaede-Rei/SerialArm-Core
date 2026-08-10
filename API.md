@@ -56,6 +56,7 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
 | `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
+| `dm_hw/damiao.hpp` | Damiao `Motor`、`MotorControl` 与 targeted receive |
 | `serial_arm/robot.hpp` | 顶层 C++ 控制闭环 |
 
 ---
@@ -126,7 +127,24 @@ frame.data = {0};
 serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 ```
 
-`CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后分发到匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
+`CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
+
+`CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；创建通道时可以显式指定上限：
+
+```cpp
+auto channel = bus->create_channel(filters, 128);
+```
+
+运行统计通过 `diagnostics()` 获取：
+
+```cpp
+auto stats = channel->diagnostics();
+std::cout << stats.pending_frames << "\n";
+std::cout << stats.received_frames << "\n";
+std::cout << stats.dropped_frames << "\n";
+```
+
+有界队列只负责资源保护；设备事务的正确性仍由 hardware/protocol 层持续 drain 和 payload matching 保证
 
 正式链路：
 
@@ -148,7 +166,7 @@ SerialPort
 
 当前 robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
 
-硬件 backend 或未来外设应优先获取 `CanChannel`：
+硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`：
 
 ```cpp
 serial_arm::protocol::damiao_usb2can::Config config;
@@ -235,9 +253,125 @@ auto channel = result.value();
 
 `acquire_channel()` 会通过 Core `BusPool` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
 
-当前 `DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节，扩展 CAN ID、CAN FD、RTR 和跨进程共享不属于 v0.2.0 能力
+当前 `DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节；不提供扩展 CAN ID、CAN FD、RTR 或跨进程 CAN broker
 
-## 2.3. ROS 2 Python Binding 安装约束
+## 2.3. Damiao `MotorControl` API
+
+头文件：
+
+```cpp
+#include "dm_hw/damiao.hpp"
+```
+
+`MotorControl` 属于 Damiao hardware support，负责 Damiao payload 级设备识别和参数事务；它不属于通用 `CanChannel` transport 语义
+
+### `add_motor()`
+
+```cpp
+damiao::Motor motor(damiao::DM4310, 7, 0);
+damiao::MotorControl control(channel);
+control.add_motor(&motor);
+```
+
+slave ID 必须唯一；多个电机允许共享 `master_id = 0`；非零 master ID 必须保持唯一
+
+### `receive_feedback_for()`
+
+```cpp
+bool ok = control.receive_feedback_for(
+    motor,
+    std::chrono::milliseconds(20));
+```
+
+**用途**
+
+在 timeout 内持续消费当前 `CanChannel`，跳过其他电机、参数响应和管理帧，直到命中目标 motor feedback
+
+**共享 Master ID**
+
+当反馈 CAN ID 为 `0x00` 时，`MotorControl` 使用 payload 中 `data[0] & 0x0f` 恢复实际 slave ID，不把 CAN ID 0 唯一映射到某一个 Motor
+
+**阻塞语义**
+
+同步等待，最多阻塞到 timeout；同一个 `MotorControl` 的事务由调用线程串行拥有；应用需要非阻塞行为时应在应用自己的 worker 中调用
+
+### `receive_param_for()`
+
+```cpp
+bool ok = control.receive_param_for(
+    motor,
+    damiao::KP_APR,
+    std::chrono::milliseconds(250));
+```
+
+**用途**
+
+持续 drain 当前 Channel，解析参数响应 payload 中的完整 slave ID 和 RID，仅在目标 `slave + RID` 命中时更新参数缓存并返回成功
+
+参数响应的 payload 识别规则为：
+
+```text
+data[2] = 0x33  parameter read response
+data[2] = 0x55  parameter write response
+slave_id = data[0] | (data[1] << 8)
+RID = data[3]
+```
+
+`read_motor_param()`、`change_motor_param()` 和 `switch_control_mode()` 还会进一步校验响应类型，读事务只接受 `0x33`，写事务只接受 `0x55`
+
+### `refresh_motor_status()`
+
+```cpp
+bool ok = control.refresh_motor_status(
+    motor,
+    std::chrono::milliseconds(20));
+```
+
+发送一次目标 motor refresh request，然后通过 `receive_feedback_for()` 等待目标反馈；queue 头部存在其他 motor feedback 时不会提前失败
+
+### `read_motor_param()`
+
+```cpp
+float mst_id = control.read_motor_param(
+    motor,
+    damiao::MST_ID,
+    std::chrono::milliseconds(250));
+```
+
+发送一次参数读请求并等待目标 `slave + RID + read response`；函数可能阻塞至 timeout；返回值为 `0` 时可以结合 `motor.has_param(rid)` 区分合法零值和 timeout
+
+### `change_motor_param()`
+
+```cpp
+bool ok = control.change_motor_param(
+    motor,
+    damiao::KP_APR,
+    100.0f,
+    std::chrono::milliseconds(250));
+```
+
+发送一次参数写请求并等待目标 `slave + RID + write response`，随后校验返回值；事务开始前只清理当前 `MotorControl` 所属 `CanChannel` 的 pending queue，不清空 physical bus，也不影响其他 Channel
+
+### `switch_control_mode()`
+
+```cpp
+bool ok = control.switch_control_mode(
+    motor,
+    damiao::VEL_MODE,
+    std::chrono::milliseconds(250));
+```
+
+`CTRL_MODE` 使用 RID `10`，复用与 `change_motor_param()` 相同的 targeted parameter transaction，不维护独立 retry 轮询逻辑
+
+### 参数回复 CAN ID 诊断
+
+```cpp
+auto can_id = control.last_parameter_reply_can_id();
+```
+
+用于诊断最近一次成功匹配参数事务的回复 CAN ID；设备身份判断仍以 payload slave ID 和 RID 为准
+
+## 2.4. ROS 2 Python Binding 安装约束
 
 `serial_arm_core` 是 C++ / Python 混合 ament package；ROS 2 workspace 中 `serial_arm/__init__.py` 由 `ament_cmake_python` 安装，pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
 

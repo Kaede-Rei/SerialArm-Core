@@ -70,32 +70,70 @@ DamiaoUsbCanBus
 SerialPort
 ```
 
-如果新硬件 backend 或未来 EEF 需要共享同一条 CAN 总线，应通过具体 Protocol 提供的 acquisition API 获取带 filter 的独立 `CanChannel`；以达妙官方 USB2CAN 为例使用 `damiao_usb2can::acquire_channel()`，普通设备层代码不直接获取、关闭或 flush 共享物理 `CanBus`；当前版本只提供同进程共享基础设施，不包含具体 EEF backend；`DamiaoUsbCanBus` 仅表示达妙官方 USB2CAN 模块的私有串口协议实现，不代表通用 USB2CAN
+同一进程中的机械臂和独立 CAN 外设可以通过相同 bus name 复用同一个 physical bus，但每个驱动必须持有自己的 `CanChannel`
 
-未来外设或 EEF 可以通过同一个 bus name 获取独立 channel：
+```text
+Robot
+  ↓
+DamiaoMotorBus
+  ↓
+ARM MotorControl
+  ↓
+ARM CanChannel ──────────┐
+                         │
+External actuator        ├── BusPool ── DamiaoUsbCanBus ── physical CAN
+  ↓                      │
+MotorControl             │
+  ↓                      │
+Tool CanChannel ─────────┘
+```
+
+`BusPool` 只负责同进程 physical bus 复用，`CanChannel` 只负责通用 CAN frame 过滤、fan-out 和有界 pending queue；Damiao 的 slave、RID 和参数响应语义由 `MotorControl` 处理，不放入 transport 层
+
+下面用两个独立 `MotorControl` 演示共享 `master_id = 0` 的设备：
 
 ```cpp
-serial_arm::protocol::damiao_usb2can::Config config;
+#include "dm_hw/damiao.hpp"
+#include "serial_arm_protocol_damiao_usb2can/bus.hpp"
+
+using serial_arm::protocol::damiao_usb2can::Config;
+using serial_arm::protocol::damiao_usb2can::acquire_channel;
+using serial_arm::transport::CanFilter;
+
+Config config;
 config.serial_port = "/dev/ttyACM0";
 config.baudrate = 921600;
 
-auto result =
-    serial_arm::protocol::damiao_usb2can::acquire_channel(
-        "main_can",
-        config,
-        {
-            serial_arm::transport::CanFilter{0x20, 0x7FF},
-        });
+auto arm_channel = acquire_channel(
+    "main_can",
+    config,
+    {CanFilter{0x00, 0x7FF}});
 
-if(!result) {
-    // 根据 damiao_usb2can::Err 处理错误
+auto tool_channel = acquire_channel(
+    "main_can",
+    config,
+    {CanFilter{0x00, 0x7FF}});
+
+if(!arm_channel || !tool_channel) {
     return;
 }
 
-auto eef_channel = result.value();
+damiao::Motor arm_joint(damiao::DM4310, 1, 0);
+damiao::Motor tool_motor(damiao::DM4310, 7, 0);
+
+damiao::MotorControl arm_control(*arm_channel);
+damiao::MotorControl tool_control(*tool_channel);
+
+arm_control.add_motor(&arm_joint);
+tool_control.add_motor(&tool_motor);
+
+bool arm_ok = arm_control.refresh_motor_status(arm_joint);
+bool tool_ok = tool_control.refresh_motor_status(tool_motor);
 ```
 
-之后只使用 `eef_channel->send()`、`eef_channel->receive()` 和 `eef_channel->flush()`
+两个 Channel 会各自收到匹配的 CAN ID 0 frame 副本；`MotorControl` 会继续根据 payload slave ID 找到自己的目标 motor，因此 tool motor 不需要加入 Robot joint 列表，也不需要新增 `Robot::send_can_frame()` 之类接口
+
+`CanChannel` 默认采用有界 pending queue，达到上限时丢弃最旧帧并累计 `dropped_frames`；这只解决长期运行的内存上限问题，transaction correctness 仍来自 `MotorControl` 的 targeted receive
 
 ---
 

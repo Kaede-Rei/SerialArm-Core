@@ -30,8 +30,13 @@ std::chrono::milliseconds min_timeout(std::chrono::milliseconds lhs, std::chrono
 /**
  * @brief 创建 CAN 通道
  */
-std::shared_ptr<CanChannel> CanBus::create_channel(std::vector<CanFilter> filters) {
-    std::shared_ptr<CanChannel> channel(new CanChannel(shared_from_this(), std::move(filters)));
+std::shared_ptr<CanChannel> CanBus::create_channel(
+    std::vector<CanFilter> filters,
+    std::size_t max_pending_frames) {
+    std::shared_ptr<CanChannel> channel(new CanChannel(
+        shared_from_this(),
+        std::move(filters),
+        std::max<std::size_t>(1, max_pending_frames)));
     register_channel(channel);
     return channel;
 }
@@ -70,8 +75,14 @@ void CanBus::register_channel(const std::shared_ptr<CanChannel>& channel) {
 /**
  * @brief 创建逻辑 CAN 通道
  */
-CanChannel::CanChannel(std::shared_ptr<CanBus> bus, std::vector<CanFilter> filters)
-    : bus_(std::move(bus)), filters_(std::move(filters)) {}
+CanChannel::CanChannel(
+    std::shared_ptr<CanBus> bus,
+    std::vector<CanFilter> filters,
+    std::size_t max_pending_frames)
+    : bus_(std::move(bus)),
+      filters_(std::move(filters)),
+      max_pending_frames_(max_pending_frames) {
+}
 
 /**
  * @brief 发送 CAN 帧
@@ -129,6 +140,19 @@ void CanChannel::flush() noexcept {
 }
 
 /**
+ * @brief 获取本通道轻量运行统计
+ */
+CanChannelDiagnostics CanChannel::diagnostics() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    CanChannelDiagnostics value;
+    value.pending_frames = pending_.size();
+    value.max_pending_frames = max_pending_frames_;
+    value.received_frames = received_frames_;
+    value.dropped_frames = dropped_frames_;
+    return value;
+}
+
+/**
  * @brief 判断 CAN 帧是否匹配本通道过滤规则
  */
 bool CanChannel::accepts(const CanFrame& frame) const noexcept {
@@ -158,6 +182,11 @@ tl::expected<CanFrame, CanErr> CanChannel::pop_pending() {
 void CanChannel::enqueue(const CanFrame& frame) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        ++received_frames_;
+        if(pending_.size() >= max_pending_frames_) {
+            pending_.pop_front();
+            ++dropped_frames_;
+        }
         pending_.push_back(frame);
     }
     pending_cv_.notify_one();

@@ -467,7 +467,12 @@ public:
     ~TerminalApp() {
         stop_worker();
         std::lock_guard<std::mutex> lock(mutex_);
-        if(robot_.get_state() == RobotState::ACTIVE) (void)robot_.deactivate();
+        if(robot_.get_state() == RobotState::ACTIVE) {
+            (void)robot_.deactivate();
+        }
+        else if(robot_.get_state() == RobotState::FAULT) {
+            (void)robot_.force_deactivate();
+        }
     }
 
     tl::expected<void, std::string> initialize() {
@@ -1396,6 +1401,14 @@ private:
         park_and_deactivate();
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state() == RobotState::FAULT) {
+                const auto forced = robot_.force_deactivate();
+                if(!forced) {
+                    std::cout << "FAULT 安全退出失能失败：\n";
+                    print_fault(forced.error());
+                    return false;
+                }
+            }
             if(robot_.get_state() == RobotState::ACTIVE) {
                 std::cout << "安全退出取消，机械臂仍处于 ACTIVE\n";
                 return false;

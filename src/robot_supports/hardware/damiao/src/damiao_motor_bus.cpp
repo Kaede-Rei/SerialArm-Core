@@ -571,7 +571,10 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cfg(const DamiaoBusCfg&
     }
 
     std::vector<std::uint32_t> motor_ids;
+    std::vector<std::uint32_t> nonzero_master_ids;
     motor_ids.reserve(cfg.actuators.size());
+    nonzero_master_ids.reserve(cfg.actuators.size());
+
     for(const auto& actuator : cfg.actuators) {
         if(actuator.name.empty() || actuator.joint_name.empty() || actuator.motor_id == 0 || !parse_motor_type(actuator.motor_type)) {
             return tl::make_unexpected(MotorBusErr::INVALID_CFG);
@@ -580,6 +583,20 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cfg(const DamiaoBusCfg&
             return tl::make_unexpected(MotorBusErr::INVALID_CFG);
         }
         motor_ids.push_back(actuator.motor_id);
+
+        if(actuator.master_id != 0) {
+            if(std::find(nonzero_master_ids.begin(), nonzero_master_ids.end(), actuator.master_id) != nonzero_master_ids.end()) {
+                return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+            }
+            nonzero_master_ids.push_back(actuator.master_id);
+        }
+    }
+
+    for(const auto& actuator : cfg.actuators) {
+        if(actuator.master_id == 0 || actuator.master_id == actuator.motor_id) continue;
+        if(std::find(motor_ids.begin(), motor_ids.end(), actuator.master_id) != motor_ids.end()) {
+            return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+        }
     }
     return {};
 }

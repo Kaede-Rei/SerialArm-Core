@@ -98,6 +98,20 @@ SerialPort
 
 `DamiaoUsbCanBus` 只适配达妙官方 USB2CAN 模块的私有串口协议
 
+### Shared CAN
+
+同一进程中的多个驱动可以通过相同 bus name 从 `BusPool` 复用同一个 physical CAN bus，并分别持有自己的 `CanChannel`
+
+```text
+Robot / DamiaoMotorBus ── ARM CanChannel ──┐
+                                           ├── BusPool ── DamiaoUsbCanBus ── physical CAN
+External actuator ─────── Tool CanChannel ─┘
+```
+
+`CanChannel` 只负责通用 CAN transport 和有界 pending queue；具体协议层或 hardware 层负责根据 payload 识别设备；独立工具电机、附加轴或其他 CAN 外设不需要伪装成 Robot joint，也不需要向 `Robot` 或 `MotorBus` 增加 raw CAN API
+
+Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 slave ID 识别电机；参数事务按照 `slave ID + RID + response type` 精确匹配，并在 timeout 内持续跳过无关 CAN 流量
+
 ## 当前能力
 
 | 能力 | 状态 |

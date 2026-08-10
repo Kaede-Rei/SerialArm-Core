@@ -299,3 +299,30 @@ TEST(TransportTests, LongEefReceiveDoesNotMonopolizeArmReceive) {
     EXPECT_EQ(received->id, 0x01u);
     EXPECT_LT(elapsed.count(), 20);
 }
+
+TEST(TransportTests, BoundedChannelDropsOldestAndReportsDiagnostics) {
+    auto bus = std::make_shared<MockCanBus>();
+    ASSERT_TRUE(bus->open());
+    auto pump = bus->create_channel({ CanFilter{ 0x00, 0x7FF } });
+    auto bounded = bus->create_channel({ CanFilter{ 0x00, 0x7FF } }, 3);
+
+    for(std::uint8_t i = 1; i <= 5; ++i) {
+        CanFrame value = frame(0x00);
+        value.data[0] = i;
+        bus->push_rx(value);
+        auto pumped = pump->receive(std::chrono::milliseconds(5));
+        ASSERT_TRUE(pumped);
+    }
+
+    const auto stats = bounded->diagnostics();
+    EXPECT_EQ(stats.pending_frames, 3u);
+    EXPECT_EQ(stats.max_pending_frames, 3u);
+    EXPECT_EQ(stats.received_frames, 5u);
+    EXPECT_EQ(stats.dropped_frames, 2u);
+
+    for(std::uint8_t expected = 3; expected <= 5; ++expected) {
+        auto received = bounded->receive(std::chrono::milliseconds(5));
+        ASSERT_TRUE(received);
+        EXPECT_EQ(received->data[0], expected);
+    }
+}

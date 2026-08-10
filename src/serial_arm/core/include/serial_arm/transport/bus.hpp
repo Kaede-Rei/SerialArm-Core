@@ -5,6 +5,8 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -17,7 +19,17 @@ namespace serial_arm::transport {
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
+constexpr std::size_t DEFAULT_CAN_CHANNEL_MAX_PENDING_FRAMES = 256;
 
+/**
+ * @brief CAN 通道轻量运行统计
+ */
+struct CanChannelDiagnostics {
+    std::size_t pending_frames{ 0 };      ///< 当前待读帧数
+    std::size_t max_pending_frames{ 0 };  ///< 通道队列上限
+    std::uint64_t received_frames{ 0 };   ///< 已分发到本通道的总帧数
+    std::uint64_t dropped_frames{ 0 };    ///< 因队列达到上限而丢弃的最旧帧数
+};
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
@@ -71,10 +83,13 @@ public:
     /**
      * @brief 创建 CAN 通道
      * @param filters CAN ID 过滤规则，空列表表示接收所有 CAN 帧
+     * @param max_pending_frames 本通道待读队列上限，达到上限时丢弃最旧帧
      * @return CAN 通道
      * @note 具体 CanBus 必须由 std::shared_ptr 持有后才能调用本函数
      */
-    std::shared_ptr<CanChannel> create_channel(std::vector<CanFilter> filters = {});
+    std::shared_ptr<CanChannel> create_channel(
+        std::vector<CanFilter> filters = {},
+        std::size_t max_pending_frames = DEFAULT_CAN_CHANNEL_MAX_PENDING_FRAMES);
 
 private:
     friend class CanChannel;
@@ -120,8 +135,15 @@ public:
 
     /**
      * @brief 清空本通道待读队列
+     * @note 只清理当前逻辑通道，不影响同一物理总线上的其他 CanChannel
      */
     void flush() noexcept;
+
+    /**
+     * @brief 获取本通道轻量运行统计
+     * @return 当前队列长度、队列上限、累计接收帧数和累计丢帧数
+     */
+    CanChannelDiagnostics diagnostics() const noexcept;
 
     /**
      * @brief 判断 CAN 帧是否匹配本通道过滤规则
@@ -137,8 +159,12 @@ private:
      * @brief 创建逻辑 CAN 通道
      * @param bus 所属共享 CAN 总线
      * @param filters CAN ID 过滤规则
+     * @param max_pending_frames 待读队列上限
      */
-    CanChannel(std::shared_ptr<CanBus> bus, std::vector<CanFilter> filters);
+    CanChannel(
+        std::shared_ptr<CanBus> bus,
+        std::vector<CanFilter> filters,
+        std::size_t max_pending_frames);
 
     /**
      * @brief 弹出本通道已分发的待读帧
@@ -153,11 +179,14 @@ private:
     void enqueue(const CanFrame& frame);
 
 private:
-    std::shared_ptr<CanBus> bus_;           ///< 所属 CAN 总线
-    std::vector<CanFilter> filters_;        ///< CAN ID 过滤规则
-    std::deque<CanFrame> pending_;          ///< 已分发到本通道的待读帧
-    std::mutex mutex_;                      ///< 通道待读队列互斥锁
-    std::condition_variable pending_cv_;    ///< 通道待读队列通知
+    std::shared_ptr<CanBus> bus_;                   ///< 所属 CAN 总线
+    std::vector<CanFilter> filters_;                ///< CAN ID 过滤规则
+    std::deque<CanFrame> pending_;                  ///< 已分发到本通道的待读帧
+    const std::size_t max_pending_frames_;          ///< 待读队列上限
+    std::uint64_t received_frames_{ 0 };            ///< 累计分发帧数
+    std::uint64_t dropped_frames_{ 0 };             ///< 累计丢弃的最旧帧数
+    mutable std::mutex mutex_;                      ///< 通道待读队列互斥锁
+    std::condition_variable pending_cv_;            ///< 通道待读队列通知
 };
 
 /**
