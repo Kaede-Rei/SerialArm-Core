@@ -69,6 +69,7 @@ ament_export_dependencies(hardware_interface pluginlib)
 
 if(BUILD_TESTING)
     ament_add_pytest_test(test_profile_utils test/test_profile_utils.py)
+    ament_add_pytest_test(test_runtime_overrides_xacro test/test_runtime_overrides_xacro.py)
 endif()
 
 ament_package()

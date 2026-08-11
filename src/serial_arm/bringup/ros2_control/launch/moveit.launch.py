@@ -35,6 +35,9 @@ def resolve_profile(context):
                 "use_sim_time": context.launch_configurations.get(
                     "use_sim_time", "false"
                 ),
+                "serial_port": context.launch_configurations.get("serial_port", ""),
+                "baudrate": context.launch_configurations.get("baudrate", ""),
+                "bus": context.launch_configurations.get("bus", ""),
             }.items(),
         ),
         IncludeLaunchDescription(
@@ -67,6 +70,9 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("robot_profile"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
+            DeclareLaunchArgument("serial_port", default_value=""),
+            DeclareLaunchArgument("baudrate", default_value=""),
+            DeclareLaunchArgument("bus", default_value=""),
             OpaqueFunction(function=resolve_profile),
         ]
     )

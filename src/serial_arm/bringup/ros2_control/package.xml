@@ -27,6 +27,7 @@
     <exec_depend>joint_state_publisher_gui</exec_depend>
     <exec_depend>rviz2</exec_depend>
     <test_depend>ament_cmake_pytest</test_depend>
+    <test_depend>dm_arm_description</test_depend>
 
     <export>
         <build_type>ament_cmake</build_type>

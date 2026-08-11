@@ -142,6 +142,7 @@ private:
     std::string config_file_;              ///< Core YAML 配置文件路径
     std::string hardware_plugin_;          ///< Hardware Backend 动态库名称
     std::string hardware_config_;          ///< Hardware Backend 配置文件路径
+    serial_arm::HardwareConfigOverrides hardware_overrides_; ///< Runtime hardware connection overrides
     std::unique_ptr<serial_arm::MotorBus> hardware_bus_;   ///< 已配置的 Hardware Backend
     bool configured_{ false };             ///< 是否已完成 configure 阶段
 

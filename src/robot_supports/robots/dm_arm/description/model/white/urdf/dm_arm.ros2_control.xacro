@@ -3,12 +3,21 @@
     <xacro:arg name="config_file" default=""/>
     <xacro:arg name="hardware_plugin" default=""/>
     <xacro:arg name="hardware_config" default=""/>
+    <xacro:arg name="serial_port" default=""/>
+    <xacro:arg name="baudrate" default=""/>
+    <xacro:arg name="bus" default=""/>
 
     <xacro:include filename="$(find dm_arm_description)/model/white/urdf/dm_arm.urdf"/>
     <xacro:include filename="$(find serial_arm_ros2_control)/urdf/serial_arm_system.ros2_control.xacro"/>
 
     <ros2_control name="dm_arm" type="system">
-        <xacro:serial_arm_ros2_control_hardware config_file="$(arg config_file)" hardware_plugin="$(arg hardware_plugin)" hardware_config="$(arg hardware_config)"/>
+        <xacro:serial_arm_ros2_control_hardware
+            config_file="$(arg config_file)"
+            hardware_plugin="$(arg hardware_plugin)"
+            hardware_config="$(arg hardware_config)"
+            serial_port="$(arg serial_port)"
+            baudrate="$(arg baudrate)"
+            bus="$(arg bus)"/>
         <joint name="joint1">
             <command_interface name="position"/>
             <command_interface name="velocity"/>

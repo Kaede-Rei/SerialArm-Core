@@ -5,6 +5,7 @@
 #include "serial_arm/hardware/motor_bus.hpp"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace serial_arm {
@@ -16,6 +17,21 @@ enum class HardwareLoaderErr {
     SYMBOL_FAILED,     ///< 共享库缺少 create_motor_bus 或 destroy_motor_bus
     CREATE_FAILED,     ///< create_motor_bus 未能创建 MotorBus 实例
     CONFIGURE_FAILED,  ///< MotorBus::configure() 失败
+    CONFIG_OPEN_FAILED,      ///< Hardware YAML 无法打开
+    CONFIG_SYNTAX_ERROR,     ///< Hardware YAML 语法错误
+    INVALID_OVERRIDE,        ///< runtime override 参数非法
+};
+
+/**
+ * @brief Hardware YAML 运行时覆盖项
+ *
+ * 空 optional 表示不覆盖对应字段；覆盖只作用于本次 load() 调用，不会写回原始
+ * hardware.yaml
+ */
+struct HardwareConfigOverrides {
+    std::optional<std::string> serial_port;  ///< 覆盖 serial_port
+    std::optional<int> baudrate;             ///< 覆盖 baudrate
+    std::optional<std::string> bus;          ///< 覆盖 bus
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
@@ -48,6 +64,16 @@ public:
      * ROS 2、Python 和 Terminal 不需要感知 DSO 生命周期
      */
     tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> load(const std::string& plugin, const std::string& config_path);
+    /**
+     * @brief 加载 Hardware Backend，并在 configure() 前应用 runtime overrides
+     * @param plugin 共享库路径，或不含路径的插件名
+     * @param config_path Backend 专属 YAML 配置路径
+     * @param overrides 本次运行的硬件连接参数覆盖项
+     */
+    tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> load(
+        const std::string& plugin,
+        const std::string& config_path,
+        const HardwareConfigOverrides& overrides);
 };
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //

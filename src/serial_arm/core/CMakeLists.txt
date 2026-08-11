@@ -311,6 +311,36 @@ if(BUILD_TESTING)
 
     add_test(NAME serial_arm_core_contract_tests COMMAND serial_arm_core_contract_tests)
 
+    add_library(serial_arm_fake_hardware_plugin SHARED
+        tests/fake_hardware_plugin.cpp
+    )
+    target_link_libraries(serial_arm_fake_hardware_plugin
+        PRIVATE
+            serial_arm_core
+            ${SERIAL_ARM_YAML_CPP_TARGET}
+    )
+    target_compile_features(serial_arm_fake_hardware_plugin PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_fake_hardware_plugin)
+
+    add_executable(serial_arm_hardware_override_tests
+        tests/hardware_override_tests.cpp
+    )
+    target_compile_definitions(serial_arm_hardware_override_tests
+        PRIVATE
+            SERIAL_ARM_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
+            SERIAL_ARM_TEST_FAKE_HARDWARE_PLUGIN="$<TARGET_FILE:serial_arm_fake_hardware_plugin>"
+    )
+    target_link_libraries(serial_arm_hardware_override_tests
+        PRIVATE
+            serial_arm_config
+            GTest::gtest_main
+    )
+    add_dependencies(serial_arm_hardware_override_tests serial_arm_fake_hardware_plugin)
+    target_compile_features(serial_arm_hardware_override_tests PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_hardware_override_tests)
+
+    add_test(NAME serial_arm_hardware_override_tests COMMAND serial_arm_hardware_override_tests)
+
     add_executable(serial_arm_serial_port_tests
         tests/serial_port_tests.cpp
     )

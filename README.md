@@ -41,7 +41,7 @@ Core 提供：
 
 ROS 2 / ros2_control 是可选 Adapter，不是 Core 的运行前提
 
-当前 reference robot 为 DM-Arm，reference hardware backend 为 Damiao
+Reference robot 为 DM-Arm，reference hardware backend 为 Damiao
 
 ## 架构
 
@@ -78,7 +78,7 @@ Framework Adapter
     ROS 2 / ros2_control 等外部框架
 ```
 
-当前 Damiao 链路：
+Damiao 链路：
 
 ```text
 Robot
@@ -112,7 +112,7 @@ External actuator ─────── Tool CanChannel ─┘
 
 Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 slave ID 识别电机；参数事务按照 `slave ID + RID + response type` 精确匹配，并在 timeout 内持续跳过无关 CAN 流量
 
-## 当前能力
+## 能力
 
 | 能力 | 状态 |
 | --- | --- |
@@ -208,6 +208,54 @@ Terminal 直接使用 SerialArm-Core，不启动 ROS 2 node
 
 真机写入由 Core 配置中的 `control.runtime.write_enabled` 决定
 
+### Hardware connection
+
+默认启动使用 `robot profile -> hardware.yaml` 中的硬件连接参数：
+
+```bash
+serial_arm_terminal --robot-profile dm_arm_gray
+```
+
+串口设备使用 `/dev/ttyACM*` 设备名；查看可用串口：
+
+```bash
+ls /dev/ttyACM*
+```
+
+如果机械臂枚举为 `/dev/ttyACM1`，可以只覆盖当前进程的串口：
+
+```bash
+serial_arm_terminal \
+  --robot-profile dm_arm_gray \
+  --serial-port /dev/ttyACM1
+```
+
+也可以临时覆盖波特率或 bus：
+
+```bash
+serial_arm_terminal \
+  --robot-profile dm_arm_gray \
+  --serial-port /dev/ttyACM1 \
+  --baudrate 921600 \
+  --bus main_can
+```
+
+ROS 2 hardware launch 同样支持运行时覆盖：
+
+```bash
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=dm_arm_gray \
+  serial_port:=/dev/ttyACM1
+```
+
+硬件连接参数优先级为：
+
+```text
+runtime override > hardware.yaml
+```
+
+未被 runtime override 覆盖的字段继续使用 `hardware.yaml` 中的配置；Backend 默认值仅适用于 Backend 明确定义为可选的配置字段；runtime override 只影响当前进程，不会写回 `hardware.yaml`
+
 ### Python
 
 colcon 会同时安装 `serial_arm` Python binding：
@@ -259,7 +307,7 @@ target_link_libraries(my_robot_app
 )
 ```
 
-如果已经 `source install/setup.bash`，当前 colcon install prefix 会进入 CMake 搜索环境
+如果已经 `source install/setup.bash`，该 colcon install prefix 会进入 CMake 搜索环境
 
 ### Standalone CMake
 
@@ -345,4 +393,4 @@ Hardware Backend 通过 `MotorBus` 接收统一的 `position / velocity / torque
 
 ## License
 
-以仓库当前 [LICENSE](LICENSE) 为准
+许可证以仓库 [LICENSE](LICENSE) 为准

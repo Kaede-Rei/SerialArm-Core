@@ -141,7 +141,7 @@ bool tool_ok = tool_control.refresh_motor_status(tool_motor);
 
 ### 2.1. 基础依赖
 
-Core 使用 C++17，当前必需依赖包括
+Core 使用 C++17，必需依赖包括
 
 - CMake 3.20+
 - C++17 compiler
@@ -157,7 +157,7 @@ Python Binding 额外需要
 - NumPy
 - scikit-build-core
 
-ROS 2 Adapter 当前面向 ROS 2 Humble，并额外依赖 ros2_control、controller_manager、xacro、robot_state_publisher、ament_cmake_python、ament_index_python 和 PyYAML 等组件；`serial_arm` Python binding 的 ROS 2 安装由 `ament_cmake_python` 管理
+ROS 2 Adapter 面向 ROS 2 Humble，并额外依赖 ros2_control、controller_manager、xacro、robot_state_publisher、ament_cmake_python、ament_index_python 和 PyYAML 等组件；`serial_arm` Python binding 的 ROS 2 安装由 `ament_cmake_python` 管理
 
 MoveIt 2 只在运行 MoveIt 路径时需要
 
@@ -298,7 +298,7 @@ install/standalone/share/dm_arm_description/model/...
 
 Robot Profile 的作用是给一个完整机器人实例命名，并把 Core 配置、Hardware Backend、Hardware 配置、URDF、Controllers 和可选 MoveIt 配置关联起来
 
-当前 `dm_arm_gray` 的核心结构如下
+`dm_arm_gray` 的核心结构如下
 
 ```yaml
 profiles:
@@ -486,9 +486,42 @@ python src/serial_arm/core/app/serial_arm_terminal.py \
 
 如果 check-only 失败，优先修复配置，不要绕过错误进入真机
 
-### 7.3. Standalone wheel 与 ROS 2 Python binding 的区别
+### 7.3. 检查串口并按需覆盖
 
-Standalone Python 使用上面的 wheel / pip 安装方式；ROS 2 workspace 不需要手动 pip 安装当前源码，`serial_arm_core` 会在 ament 构建中通过 `ament_cmake_python` 安装 `serial_arm/__init__.py`，并将 pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
+实际连接机械臂前先查看可用的 `/dev/ttyACM*`：
+
+```bash
+ls /dev/ttyACM*
+```
+
+假设输出为：
+
+```text
+/dev/ttyACM0
+/dev/ttyACM1
+```
+
+如果机械臂连接在 `/dev/ttyACM1`，启动时覆盖 Robot Profile 对应 `hardware.yaml` 中的默认串口：
+
+```bash
+serial_arm_terminal \
+  --robot-profile dm_arm_gray \
+  --serial-port /dev/ttyACM1
+```
+
+Python Terminal 也使用同一套 runtime override：
+
+```bash
+python src/serial_arm/core/app/serial_arm_terminal.py \
+  --robot-profile dm_arm_gray \
+  --serial-port /dev/ttyACM1
+```
+
+未提供 `--serial-port` 时继续使用 Robot Profile 解析到的 `hardware.yaml` 默认值
+
+### 7.4. Standalone wheel 与 ROS 2 Python binding 的区别
+
+Standalone Python 使用上面的 wheel / pip 安装方式；ROS 2 workspace 不需要手动 pip 安装该 workspace 源码，`serial_arm_core` 会在 ament 构建中通过 `ament_cmake_python` 安装 `serial_arm/__init__.py`，并将 pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
 
 因此 ROS 2 下应使用：
 
@@ -499,7 +532,7 @@ source install/setup.bash
 python3 -c "import serial_arm; print(serial_arm.__file__)"
 ```
 
-输出路径应来自当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，不要依赖源码目录或之前手动安装的旧 wheel 来掩盖 workspace 安装问题
+输出路径应来自 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，不要依赖源码目录或手动安装的 wheel 来掩盖 workspace 安装问题
 
 ---
 
@@ -598,7 +631,7 @@ kd
 | `COMPLIANT_DRAG` | 每周期当前实测位置 | 否 | 手动拖拽与柔性示教 |
 | `COMPLIANT_TRACKING` | 上层命令 | 是 | 柔性轨迹跟踪 |
 
-模式切换后，Core 会清除原来的 tracking command，并以当前实测状态重新建立参考和 Safety 命令历史
+模式切换后，Core 会清除已有的 tracking command，并以当前实测状态重新建立参考和 Safety 命令历史
 
 因此正确流程是
 
@@ -1037,7 +1070,7 @@ arm.set_gravity_scale(
 
 不要先靠负 `gravity_scale` 修正体系错误
 
-当前 `gravity_scale` 的有效范围为 `[0, 1]`
+`gravity_scale` 的有效范围为 `[0, 1]`
 
 ---
 
@@ -1192,7 +1225,7 @@ with serial_arm.RobotSession(
 
 ### 15.4. Backend 侧
 
-当前 DM-Arm 示例配置
+DM-Arm 示例配置
 
 ```yaml
 damiao:
@@ -1247,7 +1280,7 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-`serial_arm_ros2_control` 的 `robot_profile` launch 通过 `serial_arm` Python binding 调用 Core Profile resolver；因此 `serial_arm_core` 必须以 `SERIAL_ARM_BUILD_PYTHON=ON` 构建；默认值已经是 `ON`，普通 `colcon build` 不需要额外参数；ROS 2 下 `serial_arm` 由 `ament_cmake_python` 安装，显式设置 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 时 C++ Core 仍可用，但当前 `robot_profile` ROS 2 launch 不可用
+`serial_arm_ros2_control` 的 `robot_profile` launch 通过 `serial_arm` Python binding 调用 Core Profile resolver；因此 `serial_arm_core` 必须以 `SERIAL_ARM_BUILD_PYTHON=ON` 构建；默认值已经是 `ON`，普通 `colcon build` 不需要额外参数；ROS 2 下 `serial_arm` 由 `ament_cmake_python` 安装，显式设置 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 时 C++ Core 仍可用，但 `robot_profile` ROS 2 launch 不可用
 
 启动 launch 前先验证 Python overlay：
 
@@ -1274,7 +1307,7 @@ print("serial_arm Python binding: OK")
 PY
 ```
 
-`serial_arm.__file__` 应指向当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/__init__.py`；如果这里失败，先修 Python binding 安装，不要直接继续 launch
+`serial_arm.__file__` 应指向该 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/__init__.py`；如果这里失败，先修 Python binding 安装，不要直接继续 launch
 
 只显示模型
 
@@ -1306,6 +1339,24 @@ URDF joint axis 和 actuator direction 属于不同层
 ros2 launch serial_arm_ros2_control \
   hardware.launch.py \
   robot_profile:=dm_arm_gray
+```
+
+如果机械臂枚举为 `/dev/ttyACM1`，可以只覆盖当前 ROS 2 启动的串口：
+
+```bash
+ros2 launch serial_arm_ros2_control \
+  hardware.launch.py \
+  robot_profile:=dm_arm_gray \
+  serial_port:=/dev/ttyACM1
+```
+
+MoveIt 顶层入口会继续透传相同参数：
+
+```bash
+ros2 launch serial_arm_ros2_control \
+  moveit.launch.py \
+  robot_profile:=dm_arm_gray \
+  serial_port:=/dev/ttyACM1
 ```
 
 该路径主要建立
@@ -1448,7 +1499,7 @@ controller joints                   # 仅 ROS 2 使用时
 
 ### 19.3. 创建 Robot Support 目录
 
-推荐直接参考当前 `dm_arm` 的资源组织方式
+推荐直接参考 `dm_arm` 的资源组织方式
 
 ```text
 src/robot_supports/robots/my_arm/
@@ -1487,7 +1538,7 @@ config/core/
 
 ### 19.4. 创建 description resource package
 
-当前 Robot Profile 的 resource resolver 会从安装目录或源码目录寻找包含 `package.xml` 的 resource package
+Robot Profile 的 resource resolver 会从安装目录或源码目录寻找包含 `package.xml` 的 resource package
 
 因此 `description/` 不只是 ROS package，也承担 framework-neutral resource package 的作用
 
@@ -1648,7 +1699,7 @@ model:
 
 模型安装后仍然需要能解析 mesh 和 URDF 依赖
 
-不要在 URDF 中写只在当前电脑成立的绝对路径，例如：
+不要在 URDF 中写机器相关的绝对路径，例如：
 
 ```text
 /home/user/project/...
@@ -1689,7 +1740,7 @@ model:
 检查：
 
 ```text
-urdf_path 相对当前 YAML 可解析
+urdf_path 相对该 YAML 可解析
 joint_names 与 URDF 一致
 base_frame / tool_frame 存在
 gravity_scale 长度等于 Joint 数量
@@ -1880,7 +1931,7 @@ shutdown:
 
 如果新机械臂继续使用现有 Backend，只需要为这台机器人提供新的 Hardware instance config
 
-以当前 Damiao Backend 为例：
+以 Damiao Backend 为例：
 
 ```yaml
 damiao:
@@ -1909,7 +1960,7 @@ damiao:
       motor_type: DM4310
 ```
 
-当前 Damiao Hardware YAML 中：
+Damiao Hardware YAML 中：
 
 ```text
 actuators 的 YAML key
@@ -1928,7 +1979,7 @@ motor_type
     → Backend 能识别的达妙电机型号名称
 ```
 
-当前实现下应保证：
+配置应保证：
 
 ```text
 actuator 数量 == model.joint_names 数量
@@ -1990,7 +2041,7 @@ Robot Profile 本身不是 ROS 2 专属配置
 
 ### 19.9. 使用 colcon 构建并验证新 Robot Support
 
-如果当前仓库本身使用 colcon 管理，直接：
+如果仓库本身使用 colcon 管理，直接：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -2171,7 +2222,7 @@ ROS 2 不是新增机械臂进入 Core 的前置条件
 model/default/urdf/my_arm.ros2_control.xacro
 ```
 
-最小结构参考当前 DM-Arm：
+最小结构参考 DM-Arm：
 
 ```xml
 <?xml version="1.0"?>
@@ -2484,7 +2535,7 @@ cmd_vel_scale: 0.2
 state_vel_scale: 0.5
 ```
 
-前提是这些值满足当前配置校验规则并且不会试图放宽底层物理限制
+前提是这些值满足配置校验规则并且不会试图放宽底层物理限制
 
 Safety 最终限制来自多个来源的交集
 
@@ -2634,7 +2685,7 @@ echo "$LD_LIBRARY_PATH"
 
 ### ROS 2 launch 报 `failed to import serial_arm Python binding`
 
-先确认已经重新构建并 source 当前 workspace：
+先确认已经重新构建并 source 该 workspace：
 
 ```bash
 rm -rf build install log
@@ -2659,7 +2710,7 @@ find install/serial_arm_core \
 
 `__init__.py` 与 `_serial_arm*.so` 应位于同一个 `serial_arm` Python package 中，并由 `source install/setup.bash` 加入 Python 搜索路径
 
-如果错误内容是 `No module named numpy`，通过 rosdep 或系统包补齐 `python3-numpy`；如果显式以 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 构建，则当前基于 `robot_profile` 的 ROS 2 launch 本身不可用
+如果错误内容是 `No module named numpy`，通过 rosdep 或系统包补齐 `python3-numpy`；如果显式以 `-DSERIAL_ARM_BUILD_PYTHON=OFF` 构建，则基于 `robot_profile` 的 ROS 2 launch 本身不可用
 
 ### `Robot::activate()` 返回 `WRITE_DISABLED`
 

@@ -112,7 +112,7 @@ target_link_libraries(my_dynamics_app
 #include "serial_arm/transport/serial_port.hpp"
 ```
 
-`CanFrame` 表示经典 CAN 数据帧，当前只支持 8 字节 classic CAN：
+`CanFrame` 表示经典 CAN 数据帧，仅支持 8 字节 classic CAN：
 
 ```cpp
 serial_arm::transport::CanFrame frame;
@@ -164,7 +164,7 @@ SerialPort
 
 `SerialPort` 位于 `serial_arm::transport` 命名空间，提供 `Config`、独立 `read_timeout/write_timeout`、`open()`、`set_config()`、`read()`、`read_exact()`、`write()`、`flush()`、`drain()`、`available()` 和 move 语义；它只负责 Linux tty 字节传输，不解析任何设备协议
 
-当前 robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
+robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
 
 硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`：
 
@@ -253,7 +253,7 @@ auto channel = result.value();
 
 `acquire_channel()` 会通过 Core `BusPool` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
 
-当前 `DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节；不提供扩展 CAN ID、CAN FD、RTR 或跨进程 CAN broker
+`DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节；不提供扩展 CAN ID、CAN FD、RTR 或跨进程 CAN broker
 
 ## 2.3. Damiao `MotorControl` API
 
@@ -383,14 +383,14 @@ SERIAL_ARM_BUILD_PYTHON=ON
 
 该选项默认开启，普通 `colcon build` 不需要额外设置
 
-验证当前 overlay：
+验证 workspace overlay：
 
 ```bash
 source install/setup.bash
 python3 -c "import serial_arm; print(serial_arm.__file__); from serial_arm import load_robot_profile_core; print('OK')"
 ```
 
-如果 `serial_arm.__file__` 不来自当前 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，应先排查 overlay 或旧 wheel 污染，不要直接继续 ROS 2 launch
+如果 `serial_arm.__file__` 不来自目标 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，应先排查 overlay 或其他 wheel 安装造成的环境冲突，不要直接继续 ROS 2 launch
 
 Standalone Python 则继续通过 `python -m build --wheel` 与 pip 安装，两种安装路径不要混为一套流程
 
@@ -1203,7 +1203,7 @@ Profile 找不到时优先调用这个函数，而不是在代码里硬编码更
 
 ### Doxygen 语义展开
 
-返回 Robot Profile resolver 当前会搜索的资源根目录，用于定位 profile 找不到的问题
+返回 Robot Profile resolver 使用的资源根目录，用于定位 profile 找不到的问题
 
 参数
 
@@ -1312,7 +1312,7 @@ struct ShutdownCfg {
 
 保存上层 Session、Terminal 或 Adapter 可以采用的停放姿态参数
 
-当前 `Robot::deactivate()` 本身直接调用 Backend deactivate，不会在 `Robot` 内部自动执行 park trajectory
+`Robot::deactivate()` 直接调用 Backend deactivate，不在 `Robot` 内部自动执行 park trajectory
 
 其中 `velocity_tolerance` 会被 `Robot::clear_fault()` 用作低速度恢复判据
 
@@ -1330,7 +1330,7 @@ shutdown.relaxed_tolerance_ratio = 2.0;
 shutdown.timeout_s = 15.0;
 ```
 
-`Robot::deactivate()` 当前不会自己执行 park trajectory，这组参数主要由 Session、Terminal 或 Adapter 使用
+这组参数主要由 Session、Terminal 或 Adapter 用于停放流程
 
 ---
 
@@ -2596,9 +2596,7 @@ std::cout << mapper.size() << "\n";  // 受控关节数量
 #include "serial_arm/core/joints_ctrller.hpp"
 ```
 
-当前公共类型名的拼写就是 `JointCtrller`
-
-应用代码需要使用这个精确名称
+类型：`serial_arm::JointCtrller`
 
 普通应用优先使用 `Robot`
 
@@ -5047,6 +5045,21 @@ tl::expected<
 load(
     const std::string& plugin,
     const std::string& config_path);
+
+struct HardwareConfigOverrides {
+    std::optional<std::string> serial_port;
+    std::optional<int> baudrate;
+    std::optional<std::string> bus;
+};
+
+tl::expected<
+    std::unique_ptr<MotorBus>,
+    HardwareLoaderErr
+>
+load(
+    const std::string& plugin,
+    const std::string& config_path,
+    const HardwareConfigOverrides& overrides);
 ```
 
 作用
@@ -5057,6 +5070,7 @@ load(
 - 创建 MotorBus
 - 调用 `MotorBus::configure()`
 - 把 Backend 对象生命周期与 DSO 生命周期绑定
+- 可选地为该次 `load()` 调用覆盖 `serial_port`、`baudrate`、`bus`
 
 示例
 
@@ -5075,6 +5089,27 @@ std::unique_ptr<MotorBus> bus =
     std::move(result.value());
 ```
 
+运行时硬件连接参数覆盖示例：
+
+```cpp
+serial_arm::HardwareConfigOverrides overrides;
+overrides.serial_port = "/dev/ttyACM1";
+overrides.baudrate = 921600;
+
+auto result = loader.load(
+    "serial_arm_hardware_damiao",
+    "/path/to/hardware.yaml",
+    overrides);
+```
+
+未设置的 `std::optional` 字段不会覆盖 YAML；硬件连接参数优先级为：
+
+```text
+runtime override > hardware.yaml
+```
+
+Backend 默认值仅适用于 Backend 明确定义为可选的配置字段；该 API 不会把覆盖值写回 `hardware.yaml`
+
 如果 `plugin` 不包含路径分隔符，Loader 还会尝试
 
 ```text
@@ -5089,6 +5124,7 @@ lib<plugin>.so
 
 - `plugin` 为共享库路径或插件名
 - `config_path` 为 Backend YAML
+- `overrides` 为运行时可选覆盖项；空 optional 表示保留 YAML 值
 
 返回值
 
@@ -5789,7 +5825,7 @@ if(robot.get_state() == serial_arm::RobotState::ACTIVE) {
 
 使用注意
 
-- 当前 Robot::deactivate 本身不会执行 shutdown park trajectory
+- `Robot::deactivate()` 不执行 shutdown park trajectory
 
 ---
 
@@ -5851,19 +5887,13 @@ tl::expected<void, RobotFault>
 reset_fault();
 ```
 
-当前实现是
-
-```text
-clear_fault()
-```
-
-的兼容别名
+`reset_fault()` 与 `clear_fault()` 提供等价的故障恢复入口
 
 不要把它理解成无条件清故障
 
 ### Doxygen 语义展开
 
-兼容旧代码的故障复位入口，当前实现直接调用 `clear_fault()`
+`reset_fault()` 执行与 `clear_fault()` 相同的恢复流程
 
 返回值
 
@@ -5991,7 +6021,7 @@ ACTIVE + RIGID_HOLD
 
 不是简单清变量
 
-当前实现要求
+恢复条件：
 
 - fault hold 有效
 - Backend 可以读到合法状态
@@ -7283,7 +7313,7 @@ print("hold requested at", snap.cycle.joint_state.pos)
 session.reset_fault()
 ```
 
-兼容接口，底层等价于 clear fault
+与 `clear_fault()` 执行相同的故障恢复流程
 
 ### `clear_fault()`
 
@@ -7334,7 +7364,7 @@ if session.state == serial_arm.RobotState.FAULT:
 
 使用注意
 
-- `reset_fault()` 只是 `clear_fault()` 的兼容别名
+- `reset_fault()` 与 `clear_fault()` 执行相同的故障恢复流程
 
 ---
 
@@ -7651,7 +7681,7 @@ joint2/velocity
 ...
 ```
 
-当前 Adapter 不向 ros2_control 上层直接暴露 effort、kp、kd 命令接口，因此完整 MIT 自定义控制仍应走 Core API 或后续专用 controller
+Adapter 不向 ros2_control 上层直接暴露 effort、kp、kd 命令接口，因此完整 MIT 自定义控制仍应走 Core API 或后续专用 controller
 
 ---
 
@@ -7664,7 +7694,7 @@ Doxygen 语义
 参数
 
 - `time` 为 controller_manager 当前时间
-- `period` 为 controller_manager 本次 update 周期
+- `period` 为 controller_manager 当前 update 周期
 
 返回值
 
@@ -7701,7 +7731,7 @@ Doxygen 语义
 参数
 
 - `time` 为 controller_manager 当前时间
-- `period` 为 controller_manager 本次 update 周期
+- `period` 为 controller_manager 当前 update 周期
 
 返回值
 
@@ -8605,7 +8635,7 @@ private:
 
 Backend shared library还需要按 HardwareLoader contract 导出创建和销毁入口
 
-具体命名必须与当前 `HardwareLoader` 约定保持一致
+具体命名必须与 `HardwareLoader` 约定保持一致
 
 ---
 

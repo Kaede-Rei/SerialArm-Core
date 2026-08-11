@@ -127,12 +127,16 @@ PyRobotSession::~PyRobotSession() {
 
 // ! ========================= 配 置 / 生 命 周 期 方 法 实 现 ========================= ! //
 
-void PyRobotSession::configure(const std::string& config_file, const std::string& hardware_plugin, const std::string& hardware_config) {
+void PyRobotSession::configure(
+    const std::string& config_file,
+    const std::string& hardware_plugin,
+    const std::string& hardware_config,
+    const HardwareConfigOverrides& hardware_overrides) {
     if(configured_) {
         throw SerialArmPythonError("RobotSession is already configured");
     }
 
-    auto hardware_result = hardware_loader_.load(hardware_plugin, hardware_config);
+    auto hardware_result = hardware_loader_.load(hardware_plugin, hardware_config, hardware_overrides);
     if(!hardware_result) {
         throw SerialArmPythonError("HardwareLoader failed; HardwareLoaderErr=" + std::to_string(static_cast<int>(hardware_result.error())));
     }

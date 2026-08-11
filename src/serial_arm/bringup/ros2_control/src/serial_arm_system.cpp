@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <sstream>
+#include <stdexcept>
 #include <utility>
 
 namespace serial_arm_ros2_control {
@@ -32,6 +33,24 @@ constexpr const char* kLoggerName = "serial_arm_ros2_control";  ///< ROS 日志�
  */
 bool has_interface(const std::vector<hardware_interface::InterfaceInfo>& interfaces, const std::string& name) {
     return std::any_of(interfaces.begin(), interfaces.end(), [&name](const auto& item) { return item.name == name; });
+}
+
+std::string hardware_param_or_empty(const hardware_interface::HardwareInfo& info, const std::string& name) {
+    const auto iter = info.hardware_parameters.find(name);
+    return iter == info.hardware_parameters.end() ? std::string{} : iter->second;
+}
+
+bool parse_positive_int(const std::string& text, int& value) {
+    try {
+        std::size_t parsed = 0;
+        const int result = std::stoi(text, &parsed);
+        if(parsed != text.size() || result <= 0) return false;
+        value = result;
+        return true;
+    }
+    catch(const std::exception&) {
+        return false;
+    }
 }
 
 /**
@@ -135,7 +154,32 @@ hardware_interface::CallbackReturn SerialArmSystem::on_init(const hardware_inter
     hardware_plugin_ = hardware_plugin_iter->second;
     hardware_config_ = hardware_config_iter->second;
 
-    auto bus_result = hardware_loader_.load(hardware_plugin_, hardware_config_);
+    hardware_overrides_ = serial_arm::HardwareConfigOverrides{};
+    const std::string serial_port = hardware_param_or_empty(info_, "serial_port");
+    if(!serial_port.empty()) hardware_overrides_.serial_port = serial_port;
+    const std::string bus = hardware_param_or_empty(info_, "bus");
+    if(!bus.empty()) hardware_overrides_.bus = bus;
+    const std::string baudrate = hardware_param_or_empty(info_, "baudrate");
+    if(!baudrate.empty()) {
+        int parsed_baudrate = 0;
+        if(!parse_positive_int(baudrate, parsed_baudrate)) {
+            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Invalid baudrate override: %s", baudrate.c_str());
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        hardware_overrides_.baudrate = parsed_baudrate;
+    }
+
+    if(hardware_overrides_.serial_port || hardware_overrides_.baudrate || hardware_overrides_.bus) {
+        const std::string baudrate_text = hardware_overrides_.baudrate ? std::to_string(*hardware_overrides_.baudrate) : std::string("<yaml>");
+        RCLCPP_INFO(
+            rclcpp::get_logger(kLoggerName),
+            "Hardware runtime overrides: serial_port=%s baudrate=%s bus=%s",
+            hardware_overrides_.serial_port ? hardware_overrides_.serial_port->c_str() : "<yaml>",
+            baudrate_text.c_str(),
+            hardware_overrides_.bus ? hardware_overrides_.bus->c_str() : "<yaml>");
+    }
+
+    auto bus_result = hardware_loader_.load(hardware_plugin_, hardware_config_, hardware_overrides_);
     if(!bus_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "HardwareLoader failed; HardwareLoaderErr=%d", static_cast<int>(bus_result.error()));
         return hardware_interface::CallbackReturn::ERROR;

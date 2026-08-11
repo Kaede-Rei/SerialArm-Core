@@ -10,6 +10,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -26,6 +27,17 @@ namespace python_binding {
 using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
 using Uint8Array = py::array_t<std::uint8_t, py::array::c_style | py::array::forcecast>;
 using IntArray = py::array_t<int, py::array::c_style | py::array::forcecast>;
+
+HardwareConfigOverrides make_hardware_overrides(
+    const std::optional<std::string>& serial_port,
+    const std::optional<int>& baudrate,
+    const std::optional<std::string>& bus) {
+    HardwareConfigOverrides overrides;
+    if(serial_port) overrides.serial_port = *serial_port;
+    if(baudrate) overrides.baudrate = *baudrate;
+    if(bus) overrides.bus = *bus;
+    return overrides;
+}
 
 // ! ========================= NumPy 转 换 方 法 实 现 ========================= ! //
 
@@ -623,11 +635,24 @@ void bind_config(py::module_& module) {
         .def_readwrite("safety", &RobotCfg::safety)
         .def_readwrite("dynamics", &RobotCfg::dynamics);
 
-    module.def("load_robot_cfg", [](const std::string& path, const std::string& hardware_plugin, const std::string& hardware_config) {
+    py::class_<HardwareConfigOverrides>(module, "HardwareConfigOverrides")
+        .def(py::init<>())
+        .def_readwrite("serial_port", &HardwareConfigOverrides::serial_port)
+        .def_readwrite("baudrate", &HardwareConfigOverrides::baudrate)
+        .def_readwrite("bus", &HardwareConfigOverrides::bus);
+
+    module.def("load_robot_cfg", [](
+        const std::string& path,
+        const std::string& hardware_plugin,
+        const std::string& hardware_config,
+        const std::optional<std::string>& serial_port,
+        const std::optional<int>& baudrate,
+        const std::optional<std::string>& bus_name) {
+        const HardwareConfigOverrides overrides = make_hardware_overrides(serial_port, baudrate, bus_name);
         HardwareLoader loader;
-        auto bus = unwrap_value(loader.load(hardware_plugin, hardware_config), [](HardwareLoaderErr error) { return "HardwareLoaderErr=" + std::to_string(static_cast<int>(error)); });
+        auto bus = unwrap_value(loader.load(hardware_plugin, hardware_config, overrides), [](HardwareLoaderErr error) { return "HardwareLoaderErr=" + std::to_string(static_cast<int>(error)); });
         return unwrap_value(load_robot_cfg(path, bus->capabilities()), [](const ConfigErrInfo& error) { return error.message; });
-        });
+        }, py::arg("path"), py::arg("hardware_plugin"), py::arg("hardware_config"), py::arg("serial_port") = py::none(), py::arg("baudrate") = py::none(), py::arg("bus") = py::none());
     module.def("load_robot_profile_core", [](const std::string& profile_name, const std::string& profile_file) {
         RobotProfileLoadOptions options;
         options.profile_file = profile_file;
@@ -814,7 +839,24 @@ void bind_robot_session(py::module_& module) {
 
     py::class_<PyRobotSession>(module, "_RobotSession")
         .def(py::init<>())
-        .def("configure", &PyRobotSession::configure, py::call_guard<py::gil_scoped_release>())
+        .def("configure", [](
+                 PyRobotSession& self,
+                 const std::string& config_file,
+                 const std::string& hardware_plugin,
+                 const std::string& hardware_config,
+                 const std::optional<std::string>& serial_port,
+                 const std::optional<int>& baudrate,
+                 const std::optional<std::string>& bus_name) {
+                const HardwareConfigOverrides overrides = make_hardware_overrides(serial_port, baudrate, bus_name);
+                self.configure(config_file, hardware_plugin, hardware_config, overrides);
+            },
+            py::arg("config_file"),
+            py::arg("hardware_plugin"),
+            py::arg("hardware_config"),
+            py::arg("serial_port") = py::none(),
+            py::arg("baudrate") = py::none(),
+            py::arg("bus") = py::none(),
+            py::call_guard<py::gil_scoped_release>())
         .def("start", &PyRobotSession::start, py::call_guard<py::gil_scoped_release>())
         .def("stop", &PyRobotSession::stop, py::call_guard<py::gil_scoped_release>())
         .def("reset_fault", &PyRobotSession::reset_fault, py::call_guard<py::gil_scoped_release>())

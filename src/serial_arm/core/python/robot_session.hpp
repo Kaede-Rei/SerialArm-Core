@@ -72,7 +72,11 @@ public:
      * @brief 加载配置并构建 Dynamics、MotorBus 和 Robot
      * @param config_file YAML 配置文件路径
      */
-    void configure(const std::string& config_file, const std::string& hardware_plugin, const std::string& hardware_config);
+    void configure(
+        const std::string& config_file,
+        const std::string& hardware_plugin,
+        const std::string& hardware_config,
+        const HardwareConfigOverrides& hardware_overrides = {});
     /**
      * @brief 激活真机并启动 C++ 控制线程
      */

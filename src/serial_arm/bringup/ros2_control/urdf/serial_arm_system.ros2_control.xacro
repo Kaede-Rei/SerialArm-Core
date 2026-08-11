@@ -1,11 +1,20 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
-    <xacro:macro name="serial_arm_ros2_control_hardware" params="config_file hardware_plugin hardware_config">
+    <xacro:macro name="serial_arm_ros2_control_hardware" params="config_file hardware_plugin hardware_config serial_port:='' baudrate:='' bus:=''">
         <hardware>
             <plugin>serial_arm_ros2_control/SerialArmSystem</plugin>
             <param name="config_file">${config_file}</param>
             <param name="hardware_plugin">${hardware_plugin}</param>
             <param name="hardware_config">${hardware_config}</param>
+            <xacro:if value="${serial_port != ''}">
+                <param name="serial_port">${serial_port}</param>
+            </xacro:if>
+            <xacro:if value="${baudrate != ''}">
+                <param name="baudrate">${baudrate}</param>
+            </xacro:if>
+            <xacro:if value="${bus != ''}">
+                <param name="bus">${bus}</param>
+            </xacro:if>
         </hardware>
     </xacro:macro>
 </robot>

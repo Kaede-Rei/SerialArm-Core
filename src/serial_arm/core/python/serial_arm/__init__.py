@@ -75,11 +75,28 @@ class RobotSession:
         config_file: str | Path,
         hardware_plugin: str,
         hardware_config: str | Path,
+        serial_port: str | None = None,
+        baudrate: int | None = None,
+        bus: str | None = None,
     ) -> None:
         """加载配置并构建底层会话；该阶段不会激活机械臂"""
-        self._cfg = load_robot_cfg(str(config_file), hardware_plugin, str(hardware_config))
+        self._cfg = load_robot_cfg(
+            str(config_file),
+            hardware_plugin,
+            str(hardware_config),
+            serial_port=serial_port,
+            baudrate=baudrate,
+            bus=bus,
+        )
         self._session = _RobotSession()
-        self._session.configure(str(config_file), hardware_plugin, str(hardware_config))
+        self._session.configure(
+            str(config_file),
+            hardware_plugin,
+            str(hardware_config),
+            serial_port=serial_port,
+            baudrate=baudrate,
+            bus=bus,
+        )
 
     def start(self) -> None:
         """激活后端并启动 C++ 控制线程"""

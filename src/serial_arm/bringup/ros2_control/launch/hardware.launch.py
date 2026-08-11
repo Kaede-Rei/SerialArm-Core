@@ -20,6 +20,9 @@ def resolve_profile(context):
     config_file = profile["core_config_path"]
     hardware_plugin = profile["hardware_plugin"]
     hardware_config = profile["hardware_config_path"]
+    serial_port = context.launch_configurations.get("serial_port", "")
+    baudrate = context.launch_configurations.get("baudrate", "")
+    bus = context.launch_configurations.get("bus", "")
     controllers_file = profile["controllers_path"]
     description_xacro = profile["ros2_control_xacro_path"]
     robot_description = Command(
@@ -33,6 +36,12 @@ def resolve_profile(context):
             hardware_plugin,
             " hardware_config:=",
             hardware_config,
+            " serial_port:=",
+            serial_port,
+            " baudrate:=",
+            baudrate,
+            " bus:=",
+            bus,
         ]
     )
     robot_description_param = ParameterValue(robot_description, value_type=str)
@@ -92,6 +101,9 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("robot_profile"),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
+            DeclareLaunchArgument("serial_port", default_value=""),
+            DeclareLaunchArgument("baudrate", default_value=""),
+            DeclareLaunchArgument("bus", default_value=""),
             DeclareLaunchArgument(
                 "controller_manager_name", default_value="/controller_manager"
             ),

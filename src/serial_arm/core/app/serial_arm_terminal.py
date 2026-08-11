@@ -171,15 +171,33 @@ class Terminal:
         config: Path,
         hardware_plugin: str,
         hardware_config: Path,
+        serial_port: Optional[str] = None,
+        baudrate: Optional[int] = None,
+        bus: Optional[str] = None,
     ) -> None:
         self.serial_arm_module = serial_arm_module
         self.config_path = config
         self.hardware_plugin = hardware_plugin
+        self.hardware_overrides = {
+            "serial_port": serial_port,
+            "baudrate": baudrate,
+            "bus": bus,
+        }
         self.cfg = serial_arm_module.load_robot_cfg(
-            str(config), hardware_plugin, str(hardware_config)
+            str(config),
+            hardware_plugin,
+            str(hardware_config),
+            serial_port=serial_port,
+            baudrate=baudrate,
+            bus=bus,
         )
         self.session = serial_arm_module.RobotSession(
-            config, hardware_plugin, hardware_config
+            config,
+            hardware_plugin,
+            hardware_config,
+            serial_port=serial_port,
+            baudrate=baudrate,
+            bus=bus,
         )
         self.joint_names = list(self.cfg.joint_names)
         self.dynamics = serial_arm_module.Dynamics()
@@ -193,6 +211,9 @@ class Terminal:
             f" backend: {self.hardware_plugin if self.cfg.runtime.write_enabled else 'offline'}"
         )
         print(f" config : {self.config_path}")
+        for name, value in self.hardware_overrides.items():
+            if value is not None:
+                print(f" {name:<7}: {value} (override)")
         print("==============================================")
         if self.cfg.runtime.write_enabled:
             print(
@@ -756,10 +777,21 @@ def import_serial_arm() -> Any:
 
 
 def check_only(
-    serial_arm_module: Any, config: Path, hardware_plugin: str, hardware_config: Path
+    serial_arm_module: Any,
+    config: Path,
+    hardware_plugin: str,
+    hardware_config: Path,
+    serial_port: Optional[str] = None,
+    baudrate: Optional[int] = None,
+    bus: Optional[str] = None,
 ) -> int:
     cfg = serial_arm_module.load_robot_cfg(
-        str(config), hardware_plugin, str(hardware_config)
+        str(config),
+        hardware_plugin,
+        str(hardware_config),
+        serial_port=serial_port,
+        baudrate=baudrate,
+        bus=bus,
     )
     dynamics = serial_arm_module.Dynamics()
     dynamics.configure(cfg.dynamics)
@@ -777,6 +809,22 @@ def check_only(
     return 0
 
 
+def positive_int(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(f"Invalid baudrate: {value}") from error
+    if result <= 0:
+        raise argparse.ArgumentTypeError(f"Invalid baudrate: {value}")
+    return result
+
+
+def non_empty(value: str) -> str:
+    if not value:
+        raise argparse.ArgumentTypeError("empty value is not allowed")
+    return value
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="SerialArm pybind11 Python terminal")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
@@ -784,6 +832,9 @@ def main() -> int:
     parser.add_argument("--hardware-config")
     parser.add_argument("--robot-profile")
     parser.add_argument("--profile-file", default="")
+    parser.add_argument("--serial-port", type=non_empty)
+    parser.add_argument("--baudrate", type=positive_int)
+    parser.add_argument("--bus", type=non_empty)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
@@ -822,10 +873,22 @@ def main() -> int:
 
         if args.check_only:
             return check_only(
-                serial_arm_module, config, hardware_plugin, hardware_config
+                serial_arm_module,
+                config,
+                hardware_plugin,
+                hardware_config,
+                serial_port=args.serial_port,
+                baudrate=args.baudrate,
+                bus=args.bus,
             )
         return Terminal(
-            serial_arm_module, config, hardware_plugin, hardware_config
+            serial_arm_module,
+            config,
+            hardware_plugin,
+            hardware_config,
+            serial_port=args.serial_port,
+            baudrate=args.baudrate,
+            bus=args.bus,
         ).run()
     except Exception as error:
         print(f"启动失败: {type(error).__name__}: {error}", file=sys.stderr)
