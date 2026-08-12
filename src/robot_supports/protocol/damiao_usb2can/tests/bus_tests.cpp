@@ -204,6 +204,49 @@ TEST(DamiaoUsbCanBusTests, DetectsConfigMismatchForSharedBusName) {
     EXPECT_EQ(second.error(), damiao_usb2can::Err::CONFIG_CONFLICT);
 }
 
+TEST(DamiaoUsbCanBusTests, DetectsPhysicalConflictForDifferentSharedBusNames) {
+    Pty pty;
+    auto first = damiao_usb2can::acquire_channel("protocol_physical_conflict_a", config(pty), {});
+    ASSERT_TRUE(first);
+
+    auto second = damiao_usb2can::acquire_channel("protocol_physical_conflict_b", config(pty), {});
+    ASSERT_FALSE(second);
+    EXPECT_EQ(second.error(), damiao_usb2can::Err::PHYSICAL_RESOURCE_CONFLICT);
+}
+
+TEST(DamiaoUsbCanBusTests, DetectsConfigConflictForSamePhysicalEndpoint) {
+    Pty pty;
+    auto first = damiao_usb2can::acquire_channel("protocol_physical_config_a", config(pty), {});
+    ASSERT_TRUE(first);
+
+    auto bad_config = config(pty);
+    bad_config.baudrate = 921600;
+    auto second = damiao_usb2can::acquire_channel("protocol_physical_config_b", bad_config, {});
+    ASSERT_FALSE(second);
+    EXPECT_EQ(second.error(), damiao_usb2can::Err::CONFIG_CONFLICT);
+}
+
+TEST(DamiaoUsbCanBusTests, RoutesFramesAcrossChannelsFromRegisteredBus) {
+    Pty pty;
+    auto arm = damiao_usb2can::acquire_channel("protocol_registry_shared", config(pty), { CanFilter{ 0x01, 0x7FF } });
+    auto tool = damiao_usb2can::acquire_channel("protocol_registry_shared", config(pty), { CanFilter{ 0x20, 0x7FF } });
+    ASSERT_TRUE(arm);
+    ASSERT_TRUE(tool);
+
+    const auto tool_packet = rx_packet(0x20, 20);
+    const auto arm_packet = rx_packet(0x01, 10);
+    ASSERT_EQ(::write(pty.master(), tool_packet.data(), tool_packet.size()), static_cast<ssize_t>(tool_packet.size()));
+    ASSERT_EQ(::write(pty.master(), arm_packet.data(), arm_packet.size()), static_cast<ssize_t>(arm_packet.size()));
+
+    auto arm_frame = (*arm)->receive(std::chrono::milliseconds(20));
+    ASSERT_TRUE(arm_frame);
+    EXPECT_EQ(arm_frame->id, 0x01u);
+
+    auto tool_frame = (*tool)->receive(std::chrono::milliseconds(5));
+    ASSERT_TRUE(tool_frame);
+    EXPECT_EQ(tool_frame->id, 0x20u);
+}
+
 TEST(DamiaoUsbCanBusTests, ConcurrentAcquireSameBusSucceeds) {
     Pty pty;
     constexpr int thread_count = 20;

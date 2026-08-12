@@ -22,6 +22,24 @@ std::chrono::milliseconds min_timeout(std::chrono::milliseconds lhs, std::chrono
     return lhs < rhs ? lhs : rhs;
 }
 
+const char* resource_kind_name(BusResourceKind kind) noexcept {
+    switch(kind) {
+        case BusResourceKind::CAN: return "can";
+        case BusResourceKind::SERIAL: return "serial";
+    }
+    return "unknown";
+}
+
+std::string physical_resource_key(const BusResourceDescriptor& resource) {
+    return std::string(resource_kind_name(resource.kind)) + '\n' + resource.physical_id;
+}
+
+bool resource_matches(const BusResourceDescriptor& lhs, const BusResourceDescriptor& rhs) {
+    return lhs.kind == rhs.kind &&
+        lhs.physical_id == rhs.physical_id &&
+        lhs.config_signature == rhs.config_signature;
+}
+
 } // namespace
 
 
@@ -222,6 +240,103 @@ std::unordered_map<std::string, std::weak_ptr<CanBus>>& BusPool::buses() {
  * @brief 获取总线共享池互斥锁
  */
 std::mutex& BusPool::mutex() {
+    static std::mutex instance;
+    return instance;
+}
+
+/**
+ * @brief 原子获取或创建共享 CAN Bus
+ */
+tl::expected<std::shared_ptr<CanBus>, BusRegistryErr> BusRegistry::get_or_create_can_bus(
+    const std::string& name,
+    const BusResourceDescriptor& resource,
+    const CanBusCreator& creator) {
+    return get_or_create<CanBus>(name, resource, creator);
+}
+
+/**
+ * @brief 原子获取或创建擦除类型后的共享 Bus
+ */
+tl::expected<std::shared_ptr<void>, BusRegistryErr> BusRegistry::get_or_create_erased(
+    const std::string& name,
+    const BusResourceDescriptor& resource,
+    std::type_index type,
+    const ErasedBusCreator& creator) {
+    if(name.empty() || resource.physical_id.empty()) {
+        return tl::make_unexpected(BusRegistryErr::INVALID_ARGUMENT);
+    }
+
+    std::lock_guard<std::mutex> lock(mutex());
+    auto& registry = buses();
+    auto& resources = physical_owners();
+
+    for(auto it = registry.begin(); it != registry.end();) {
+        if(it->second.bus.expired()) {
+            const auto key = physical_resource_key(it->second.resource);
+            auto resource_it = resources.find(key);
+            if(resource_it != resources.end() && resource_it->second == it->first) {
+                resources.erase(resource_it);
+            }
+            it = registry.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
+    auto logical_it = registry.find(name);
+    if(logical_it != registry.end()) {
+        auto existing = logical_it->second.bus.lock();
+        if(existing) {
+            if(logical_it->second.type != type) return tl::make_unexpected(BusRegistryErr::TYPE_MISMATCH);
+            if(!resource_matches(logical_it->second.resource, resource)) {
+                return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
+            }
+            return existing;
+        }
+        registry.erase(logical_it);
+    }
+
+    const auto key = physical_resource_key(resource);
+    auto resource_it = resources.find(key);
+    if(resource_it != resources.end()) {
+        auto owner_it = registry.find(resource_it->second);
+        if(owner_it != registry.end() && !owner_it->second.bus.expired()) {
+            if(!resource_matches(owner_it->second.resource, resource)) {
+                return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
+            }
+            return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
+        }
+        resources.erase(resource_it);
+    }
+
+    auto bus = creator();
+    if(!bus) return tl::make_unexpected(BusRegistryErr::CREATE_FAILED);
+
+    registry.emplace(name, Entry{ bus, type, resource });
+    resources[key] = name;
+    return bus;
+}
+
+/**
+ * @brief 获取进程内共享 Bus 弱引用表
+ */
+std::unordered_map<std::string, BusRegistry::Entry>& BusRegistry::buses() {
+    static std::unordered_map<std::string, Entry> instance;
+    return instance;
+}
+
+/**
+ * @brief 获取 physical resource owner 表
+ */
+std::unordered_map<std::string, std::string>& BusRegistry::physical_owners() {
+    static std::unordered_map<std::string, std::string> instance;
+    return instance;
+}
+
+/**
+ * @brief 获取 BusRegistry 互斥锁
+ */
+std::mutex& BusRegistry::mutex() {
     static std::mutex instance;
     return instance;
 }

@@ -27,9 +27,10 @@ struct Config {
  * @brief 达妙官方 USB2CAN 模块错误类型
  */
 enum class Err {
-    OPEN_FAILED,        ///< 打开失败
-    CONFIG_CONFLICT,   ///< 同名共享总线配置冲突
-    TYPE_MISMATCH,     ///< 同名共享总线不是达妙官方 USB2CAN 模块
+    OPEN_FAILED,                ///< 打开失败
+    CONFIG_CONFLICT,           ///< 共享总线配置冲突
+    TYPE_MISMATCH,             ///< 同名共享总线不是达妙官方 USB2CAN 模块
+    PHYSICAL_RESOURCE_CONFLICT, ///< 物理 CAN 端点已被其他 logical bus 持有
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //

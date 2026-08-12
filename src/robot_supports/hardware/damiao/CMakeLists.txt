@@ -12,6 +12,7 @@ find_package(ament_cmake QUIET)
 find_package(serial_arm_core CONFIG REQUIRED)
 find_package(serial_arm_protocol_damiao_usb2can CONFIG REQUIRED)
 find_package(yaml-cpp REQUIRED)
+include(CTest)
 
 if(TARGET yaml-cpp::yaml-cpp)
     set(SERIAL_ARM_DAMIAO_YAML_CPP_TARGET yaml-cpp::yaml-cpp)
@@ -56,6 +57,22 @@ install(DIRECTORY third_lib/damiao/include/dm_hw
 install(FILES package.xml
     DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
 )
+
+if(BUILD_TESTING)
+    find_package(GTest REQUIRED)
+
+    add_executable(serial_arm_hardware_damiao_tests
+        tests/damiao_motor_control_tests.cpp
+    )
+    target_link_libraries(serial_arm_hardware_damiao_tests
+        PRIVATE
+            serial_arm_hardware_damiao
+            GTest::gtest_main
+    )
+    target_compile_features(serial_arm_hardware_damiao_tests PRIVATE cxx_std_17)
+
+    add_test(NAME serial_arm_hardware_damiao_tests COMMAND serial_arm_hardware_damiao_tests)
+endif()
 
 if(ament_cmake_FOUND)
     ament_export_include_directories(include)

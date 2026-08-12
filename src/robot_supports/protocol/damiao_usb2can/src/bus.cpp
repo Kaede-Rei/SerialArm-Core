@@ -32,6 +32,29 @@ std::chrono::milliseconds remaining_time(const std::chrono::steady_clock::time_p
     return ms;
 }
 
+std::string config_signature(const Config& config) {
+    return "damiao_usb2can|baudrate=" + std::to_string(config.baudrate);
+}
+
+transport::BusResourceDescriptor resource_descriptor(const Config& config) {
+    transport::BusResourceDescriptor resource;
+    resource.kind = transport::BusResourceKind::CAN;
+    resource.physical_id = config.serial_port;
+    resource.config_signature = config_signature(config);
+    return resource;
+}
+
+Err to_err(transport::BusRegistryErr error, Err create_error) {
+    switch(error) {
+        case transport::BusRegistryErr::CREATE_FAILED: return create_error;
+        case transport::BusRegistryErr::TYPE_MISMATCH: return Err::TYPE_MISMATCH;
+        case transport::BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT: return Err::PHYSICAL_RESOURCE_CONFLICT;
+        case transport::BusRegistryErr::INVALID_ARGUMENT:
+        case transport::BusRegistryErr::CONFIG_CONFLICT: return Err::CONFIG_CONFLICT;
+    }
+    return Err::CONFIG_CONFLICT;
+}
+
 #pragma pack(push, 1)
 /**
  * @brief 达妙官方 USB2CAN 模块接收报文
@@ -181,25 +204,23 @@ tl::expected<std::shared_ptr<transport::CanChannel>, Err> acquire_channel(
     const Config& config,
     std::vector<transport::CanFilter> filters) {
     Err create_error = Err::OPEN_FAILED;
-    bool created = false;
-    auto bus = transport::BusPool::get_or_create(name, [&]() -> std::shared_ptr<transport::CanBus> {
+    auto bus = transport::BusRegistry::get_or_create_can_bus(name, resource_descriptor(config), [&]() -> std::shared_ptr<transport::CanBus> {
         auto candidate = std::make_shared<DamiaoUsbCanBus>(config);
         const auto opened = candidate->open();
         if(!opened) {
             create_error = Err::OPEN_FAILED;
             return nullptr;
         }
-        created = true;
         return candidate;
     });
 
-    if(!bus) return tl::make_unexpected(create_error);
-    auto damiao_bus = std::dynamic_pointer_cast<DamiaoUsbCanBus>(bus);
+    if(!bus) return tl::make_unexpected(to_err(bus.error(), create_error));
+    auto damiao_bus = std::dynamic_pointer_cast<DamiaoUsbCanBus>(*bus);
     if(!damiao_bus) return tl::make_unexpected(Err::TYPE_MISMATCH);
-    if(!created && !damiao_bus->config_matches(config)) {
+    if(!damiao_bus->config_matches(config)) {
         return tl::make_unexpected(Err::CONFIG_CONFLICT);
     }
-    return bus->create_channel(std::move(filters));
+    return (*bus)->create_channel(std::move(filters));
 }
 
 // ! ========================= 私 有 类 方 法 实 现 ========================= ! //
