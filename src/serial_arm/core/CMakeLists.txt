@@ -81,6 +81,7 @@ add_library(serial_arm_core SHARED
     src/core/joint_actuator_mapper.cpp
     src/core/safety.cpp
     src/transport/bus.cpp
+    src/transport/serial_bus.cpp
     src/transport/serial_port.cpp
 )
 add_library(serial_arm::core ALIAS serial_arm_core)

@@ -1,16 +1,24 @@
+#include "serial_arm/transport/serial_bus.hpp"
 #include "serial_arm/transport/serial_port.hpp"
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <atomic>
+#include <cerrno>
 #include <fcntl.h>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
 using serial_arm::transport::SerialPort;
+using serial_arm::transport::SerialBus;
+using serial_arm::transport::BusRegistry;
+using serial_arm::transport::BusRegistryErr;
 
 class Pty {
 public:
@@ -37,6 +45,14 @@ private:
     int master_{ -1 };
     std::string slave_;
 };
+
+SerialBus::Config bus_config(const Pty& pty) {
+    SerialBus::Config config;
+    config.serial_port = pty.slave();
+    config.port_config.read_timeout = std::chrono::milliseconds(5);
+    config.port_config.write_timeout = std::chrono::milliseconds(50);
+    return config;
+}
 
 } // namespace
 
@@ -139,4 +155,177 @@ TEST(SerialPortTests, BufferApisAndIndependentTimeoutSetters) {
     SerialPort::Buffer buffer;
     EXPECT_EQ(port.read(buffer, 2), 2u);
     EXPECT_EQ(buffer.size(), 2u);
+}
+
+TEST(SerialBusTests, OpensSerialPortOnceAndClosesWithBusLifetime) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+
+    bus.open();
+    const int fd = bus.transaction([](SerialPort& serial) {
+        return serial.native_handle();
+    });
+    bus.open();
+    const int same_fd = bus.transaction([](SerialPort& serial) {
+        return serial.native_handle();
+    });
+
+    EXPECT_GE(fd, 0);
+    EXPECT_EQ(same_fd, fd);
+    EXPECT_TRUE(bus.is_open());
+
+    bus.close();
+    EXPECT_FALSE(bus.is_open());
+}
+
+TEST(SerialBusTests, DestructorClosesOwnedSerialPort) {
+    int fd = -1;
+    {
+        Pty pty;
+        SerialBus bus(bus_config(pty));
+        bus.open();
+        fd = bus.transaction([](SerialPort& serial) {
+            return serial.native_handle();
+        });
+        ASSERT_GE(fd, 0);
+    }
+
+    errno = 0;
+    EXPECT_EQ(::fcntl(fd, F_GETFD), -1);
+    EXPECT_EQ(errno, EBADF);
+}
+
+TEST(SerialBusTests, ConcurrentTransactionsDoNotInterleaveReadWrite) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    std::array<std::uint8_t, 2> first{ 1, 2 };
+    std::array<std::uint8_t, 2> second{ 3, 4 };
+    std::atomic<bool> first_started{ false };
+    std::atomic<bool> first_can_finish{ false };
+    std::vector<std::uint8_t> master_bytes;
+    master_bytes.reserve(4);
+
+    std::thread first_thread([&]() {
+        bus.transaction([&](SerialPort& serial) {
+            first_started = true;
+            EXPECT_EQ(serial.write(first.data(), first.size()), first.size());
+            while(!first_can_finish) std::this_thread::yield();
+        });
+    });
+    while(!first_started) std::this_thread::yield();
+
+    std::thread second_thread([&]() {
+        bus.transaction([&](SerialPort& serial) {
+            EXPECT_EQ(serial.write(second.data(), second.size()), second.size());
+        });
+    });
+
+    std::array<std::uint8_t, 2> read_buf{};
+    ASSERT_EQ(::read(pty.master(), read_buf.data(), read_buf.size()), 2);
+    master_bytes.insert(master_bytes.end(), read_buf.begin(), read_buf.end());
+    first_can_finish = true;
+    first_thread.join();
+    second_thread.join();
+
+    ASSERT_EQ(::read(pty.master(), read_buf.data(), read_buf.size()), 2);
+    master_bytes.insert(master_bytes.end(), read_buf.begin(), read_buf.end());
+    EXPECT_EQ(master_bytes, (std::vector<std::uint8_t>{ 1, 2, 3, 4 }));
+}
+
+TEST(SerialBusTests, ExceptionReleasesTransactionLock) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    EXPECT_THROW(bus.transaction([](SerialPort&) {
+        throw std::runtime_error("transaction failed");
+    }), std::runtime_error);
+
+    EXPECT_NO_THROW(bus.transaction([](SerialPort& serial) {
+        EXPECT_TRUE(serial.is_open());
+    }));
+}
+
+TEST(SerialBusTests, TimeoutDoesNotBlockFollowingTransaction) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    const std::size_t received = bus.transaction([](SerialPort& serial) {
+        std::array<std::uint8_t, 1> value{};
+        return serial.read(value.data(), value.size());
+    });
+    EXPECT_EQ(received, 0u);
+
+    std::array<std::uint8_t, 1> input{ 9 };
+    ASSERT_EQ(::write(pty.master(), input.data(), input.size()), 1);
+    const std::size_t recovered = bus.transaction([](SerialPort& serial) {
+        std::array<std::uint8_t, 1> value{};
+        return serial.read(value.data(), value.size());
+    });
+    EXPECT_EQ(recovered, 1u);
+}
+
+TEST(SerialBusTests, FlushIsIsolatedInsideTransaction) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    std::array<std::uint8_t, 1> stale{ 7 };
+    ASSERT_EQ(::write(pty.master(), stale.data(), stale.size()), 1);
+    bus.transaction([](SerialPort& serial) {
+        serial.flush(SerialPort::FlushDirection::Input);
+    });
+
+    const std::size_t received = bus.transaction([](SerialPort& serial) {
+        std::array<std::uint8_t, 1> value{};
+        return serial.read(value.data(), value.size());
+    });
+    EXPECT_EQ(received, 0u);
+}
+
+TEST(SerialBusTests, OneWayWriteUsesTransactionArbitration) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    bus.transaction([](SerialPort& serial) {
+        EXPECT_EQ(serial.write({ 4, 5, 6 }), 3u);
+    });
+
+    std::array<std::uint8_t, 3> bytes{};
+    ASSERT_EQ(::read(pty.master(), bytes.data(), bytes.size()), 3);
+    EXPECT_EQ(bytes[0], 4);
+    EXPECT_EQ(bytes[1], 5);
+    EXPECT_EQ(bytes[2], 6);
+}
+
+TEST(SerialBusTests, BusRegistryRejectsConflictingSerialBusConfiguration) {
+    Pty pty;
+    auto config = bus_config(pty);
+    auto first = BusRegistry::get_or_create<SerialBus>(
+        "serial_bus_registry_a",
+        SerialBus::resource_descriptor(config),
+        [&]() {
+            auto bus = std::make_shared<SerialBus>(config);
+            bus->open();
+            return bus;
+        });
+    ASSERT_TRUE(first);
+
+    auto conflicting_config = config;
+    conflicting_config.port_config.baud_rate = 57600;
+    auto second = BusRegistry::get_or_create<SerialBus>(
+        "serial_bus_registry_b",
+        SerialBus::resource_descriptor(conflicting_config),
+        [&]() {
+            auto bus = std::make_shared<SerialBus>(conflicting_config);
+            bus->open();
+            return bus;
+        });
+
+    ASSERT_FALSE(second);
+    EXPECT_EQ(second.error(), BusRegistryErr::CONFIG_CONFLICT);
 }
