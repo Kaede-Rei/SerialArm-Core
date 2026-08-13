@@ -130,6 +130,8 @@ Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 s
 
 `BusRegistry` 和 physical `CanBus` ownership 由 acquisition helper 内部协调，普通 Protocol / Hardware consumer 不获取 raw `CanBus`
 
+Bus provider 的 `config_signature` 必须包含 provider identity 和物理兼容参数；Registry 使用 reservation 在全局锁外执行 creator/open，避免慢设备创建阻塞无关 Bus acquisition
+
 Driver 销毁时只释放自己的 `CanChannel`，不得管理 shared physical Bus 生命周期
 
 外部 Serial Driver 不接触底层 `SerialPort` 所有权

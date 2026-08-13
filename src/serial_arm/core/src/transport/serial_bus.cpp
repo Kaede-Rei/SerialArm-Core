@@ -310,10 +310,21 @@ SerialBusDiagnostics SerialBusClient::diagnostics() const {
 tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
     const std::string& name,
     const SerialBusConfig& config) {
+    if(name.empty() || config.serial_port.empty()) {
+        return tl::make_unexpected(BusRegistryErr::INVALID_ARGUMENT);
+    }
+
     SerialTransactionOptions options;
     options.read_timeout = config.port_config.read_timeout;
     options.write_timeout = config.port_config.write_timeout;
-    SerialBus::validate_transaction_options(options);
+    try {
+        SerialBus::validate_transaction_options(options);
+        SerialPort validator;
+        validator.set_config(config.port_config);
+    }
+    catch(const std::invalid_argument&) {
+        return tl::make_unexpected(BusRegistryErr::INVALID_ARGUMENT);
+    }
 
     auto bus = BusRegistry::get_or_create<SerialBus>(
         name,

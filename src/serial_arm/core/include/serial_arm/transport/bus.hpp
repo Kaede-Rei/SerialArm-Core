@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <typeindex>
 #include <unordered_map>
 #include <vector>
@@ -46,7 +47,7 @@ enum class BusResourceKind {
  * `physical_id` 表示 Bus 实现使用的物理端点，例如 `can0` 或 `/dev/ttyACM0`
  * `ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时回退使用 physical_id
  * 不同 Bus 类型如果最终访问同一个 tty，应提供相同 ownership key
- * `config_signature` 应包含 provider/backend identity 和会影响多使用者安全共存的物理通信参数
+ * `config_signature` 必须非空，并包含 provider/backend identity 和会影响多使用者安全共存的物理通信参数
  */
 struct BusResourceDescriptor {
     BusResourceKind kind{ BusResourceKind::CAN }; ///< Bus 资源类型
@@ -59,8 +60,8 @@ struct BusResourceDescriptor {
  * @brief 共享总线注册表错误类型
  */
 enum class BusRegistryErr {
-    INVALID_ARGUMENT,           ///< logical bus name 或 physical resource 为空
-    CREATE_FAILED,              ///< 创建函数未返回 Bus 实例
+    INVALID_ARGUMENT,           ///< logical name、resource、provider 或 acquisition 配置非法
+    CREATE_FAILED,              ///< creator/open 失败、抛出异常或未返回 Bus 实例
     CONFIG_CONFLICT,            ///< 同一 logical bus 或 physical resource 参数冲突
     TYPE_MISMATCH,              ///< 同一 logical bus 已被其他 Bus 类型占用
     PHYSICAL_RESOURCE_CONFLICT, ///< 同一物理资源已由其他 logical bus 持有
@@ -304,10 +305,17 @@ private:
 
     using ErasedBusCreator = std::function<std::shared_ptr<void>()>;
 
+    enum class EntryState {
+        CREATING, ///< creator 正在 Registry 锁外创建 Bus
+        READY,    ///< Bus 已创建并可复用
+    };
+
     struct Entry {
-        std::weak_ptr<void> bus;              ///< Bus 弱引用
+        std::weak_ptr<void> bus;              ///< READY 状态下的 Bus 弱引用
         std::type_index type;                 ///< Bus 具体类型
         BusResourceDescriptor resource;       ///< physical resource 描述
+        EntryState state{ EntryState::CREATING }; ///< 当前创建状态
+        std::thread::id creator_thread{};     ///< CREATING 状态的 creator 线程
     };
 
     /**
@@ -316,6 +324,9 @@ private:
      * @param resource physical resource 描述；同一物理端点在一个进程内只能有一个 owner
      * @param creator 不存在可复用 Bus 时调用的创建函数
      * @return 成功时返回共享 Bus；失败时返回冲突或创建错误
+     *
+     * Registry 使用创建 reservation 保证同一 logical bus 并发只执行一次 creator
+     * creator 在 Registry 全局互斥锁之外执行，避免慢 open 阻塞无关 Bus acquisition 和 creator 重入死锁
      *
      * 本接口仅供 Core acquisition helper 使用，不作为 Protocol / Hardware consumer API
      * consumer 应通过 acquire_can_channel() 或 acquire_serial_bus_client() 获取受限访问对象
@@ -340,6 +351,7 @@ private:
     static std::unordered_map<std::string, Entry>& buses();
     static std::unordered_map<std::string, std::string>& physical_owners();
     static std::mutex& mutex();
+    static std::condition_variable& condition();
 
     friend tl::expected<std::shared_ptr<CanChannel>, BusRegistryErr> acquire_can_channel(
         const std::string& name,

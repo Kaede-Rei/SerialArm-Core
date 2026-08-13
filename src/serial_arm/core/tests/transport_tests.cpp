@@ -4,7 +4,9 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <deque>
+#include <future>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -282,6 +284,141 @@ TEST(TransportTests, AcquireCanChannelSameLogicalBusReusesPhysicalBus) {
     ASSERT_TRUE(second);
     EXPECT_NE(first->get(), second->get());
     EXPECT_EQ(create_count.load(), 1);
+}
+
+
+TEST(TransportTests, AcquireCanChannelRejectsWrongResourceKind) {
+    auto resource = can_resource("can-registry-wrong-kind");
+    resource.kind = BusResourceKind::SERIAL;
+
+    auto channel = acquire_can_channel(
+        "registry_wrong_kind",
+        resource,
+        []() -> std::shared_ptr<CanBus> {
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+
+    ASSERT_FALSE(channel);
+    EXPECT_EQ(channel.error(), BusRegistryErr::INVALID_ARGUMENT);
+}
+
+TEST(TransportTests, AcquireCanChannelRejectsEmptyProviderSignature) {
+    auto resource = can_resource("can-registry-empty-signature");
+    resource.config_signature.clear();
+
+    auto channel = acquire_can_channel(
+        "registry_empty_signature",
+        resource,
+        []() -> std::shared_ptr<CanBus> {
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+
+    ASSERT_FALSE(channel);
+    EXPECT_EQ(channel.error(), BusRegistryErr::INVALID_ARGUMENT);
+}
+
+TEST(TransportTests, CreatorExceptionReturnsCreateFailedAndReleasesReservation) {
+    const auto resource = can_resource("can-registry-creator-failure");
+    auto failed = acquire_can_channel(
+        "registry_creator_failure",
+        resource,
+        []() -> std::shared_ptr<CanBus> {
+            throw std::runtime_error("creator failed");
+        });
+    ASSERT_FALSE(failed);
+    EXPECT_EQ(failed.error(), BusRegistryErr::CREATE_FAILED);
+
+    auto recovered = acquire_can_channel(
+        "registry_creator_failure",
+        resource,
+        []() -> std::shared_ptr<CanBus> {
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+    EXPECT_TRUE(recovered);
+}
+
+TEST(TransportTests, SlowCreatorDoesNotBlockUnrelatedBusAcquisition) {
+    std::mutex gate_mutex;
+    std::condition_variable gate_cv;
+    bool creator_started = false;
+    bool release_creator = false;
+
+    auto slow = std::async(std::launch::async, [&]() {
+        return acquire_can_channel(
+            "registry_slow_creator",
+            can_resource("can-registry-slow-creator"),
+            [&]() -> std::shared_ptr<CanBus> {
+                {
+                    std::lock_guard<std::mutex> lock(gate_mutex);
+                    creator_started = true;
+                }
+                gate_cv.notify_one();
+                std::unique_lock<std::mutex> lock(gate_mutex);
+                gate_cv.wait(lock, [&]() { return release_creator; });
+                auto bus = std::make_shared<MockCanBus>();
+                (void)bus->open();
+                return bus;
+            });
+    });
+
+    {
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        ASSERT_TRUE(gate_cv.wait_for(
+            lock,
+            std::chrono::milliseconds(100),
+            [&]() { return creator_started; }));
+    }
+
+    auto unrelated = std::async(std::launch::async, []() {
+        return acquire_can_channel(
+            "registry_unrelated_creator",
+            can_resource("can-registry-unrelated-creator"),
+            []() -> std::shared_ptr<CanBus> {
+                auto bus = std::make_shared<MockCanBus>();
+                (void)bus->open();
+                return bus;
+            });
+    });
+
+    const auto unrelated_status = unrelated.wait_for(std::chrono::milliseconds(50));
+    {
+        std::lock_guard<std::mutex> lock(gate_mutex);
+        release_creator = true;
+    }
+    gate_cv.notify_one();
+
+    EXPECT_EQ(unrelated_status, std::future_status::ready);
+    EXPECT_TRUE(unrelated.get());
+    EXPECT_TRUE(slow.get());
+}
+
+TEST(TransportTests, CreatorCanAcquireDifferentRegistryManagedBus) {
+    auto outer = acquire_can_channel(
+        "registry_reentrant_outer",
+        can_resource("can-registry-reentrant-outer"),
+        []() -> std::shared_ptr<CanBus> {
+            auto nested = acquire_can_channel(
+                "registry_reentrant_inner",
+                can_resource("can-registry-reentrant-inner"),
+                []() -> std::shared_ptr<CanBus> {
+                    auto bus = std::make_shared<MockCanBus>();
+                    (void)bus->open();
+                    return bus;
+                });
+            if(!nested) return nullptr;
+
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+
+    EXPECT_TRUE(outer);
 }
 
 TEST(TransportTests, BusRegistryRejectsLogicalBusTypeMismatchThroughConsumerApis) {

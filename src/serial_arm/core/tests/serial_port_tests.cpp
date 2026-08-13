@@ -25,6 +25,7 @@ namespace {
 
 using serial_arm::transport::SerialPort;
 using serial_arm::transport::SerialBus;
+using serial_arm::transport::SerialBusConfig;
 using serial_arm::transport::SerialBusClient;
 using serial_arm::transport::SerialTransaction;
 using serial_arm::transport::SerialTransactionOptions;
@@ -306,6 +307,36 @@ TEST(SerialPortTests, BufferApisAndIndependentTimeoutSetters) {
     SerialPort::Buffer buffer;
     EXPECT_EQ(port.read(buffer, 2), 2u);
     EXPECT_EQ(buffer.size(), 2u);
+}
+
+
+TEST(SerialBusTests, ClientAcquisitionRejectsInvalidTimeoutWithoutThrowing) {
+    Pty pty;
+    auto config = bus_config(pty);
+    config.port_config.read_timeout = std::chrono::milliseconds(-1);
+
+    auto client = acquire_serial_bus_client("serial_bus_invalid_timeout", config);
+    ASSERT_FALSE(client);
+    EXPECT_EQ(client.error(), BusRegistryErr::INVALID_ARGUMENT);
+}
+
+TEST(SerialBusTests, ClientAcquisitionReportsOpenFailureThroughExpected) {
+    SerialBusConfig config;
+    config.serial_port = "/definitely/not/a/serial-arm-tty";
+
+    auto client = acquire_serial_bus_client("serial_bus_open_failure", config);
+    ASSERT_FALSE(client);
+    EXPECT_EQ(client.error(), BusRegistryErr::CREATE_FAILED);
+}
+
+TEST(SerialBusTests, ClientAcquisitionRejectsUnsupportedSerialConfiguration) {
+    Pty pty;
+    auto config = bus_config(pty);
+    config.port_config.baud_rate = 12345;
+
+    auto client = acquire_serial_bus_client("serial_bus_invalid_config", config);
+    ASSERT_FALSE(client);
+    EXPECT_EQ(client.error(), BusRegistryErr::INVALID_ARGUMENT);
 }
 
 TEST(SerialBusTests, TtyOwnershipKeyCanonicalizesSymlinkAlias) {

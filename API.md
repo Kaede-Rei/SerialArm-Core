@@ -135,6 +135,8 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
 
+`config_signature` 是必填 provider contract，必须包含 provider/backend identity 和物理通信兼容参数，空 signature 会返回 `INVALID_ARGUMENT`
+
 `BusResourceDescriptor::ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
 
 同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
@@ -147,9 +149,11 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 不同 logical name 使用同一 ownership key 的其他重复占用情况返回 `PHYSICAL_RESOURCE_CONFLICT`
 
-创建函数返回空指针时返回 `CREATE_FAILED`
+creator 返回空指针、open 失败或抛出普通运行时异常时返回 `CREATE_FAILED`
 
 Registry acquisition 内部线程安全，并通过 weak pointer 管理 physical Bus 生命周期
+
+Registry 在锁内先写入 `CREATING` reservation，再到全局 Registry mutex 外执行 creator/open；相同 logical bus 的并发 acquisition 等待同一创建结果，不同 Bus acquisition 不会被慢 creator 长时间阻塞，creator 也可以安全获取其他 Registry-managed Bus
 
 普通 Protocol / Hardware consumer 不直接调用 Registry 获取 raw Bus，而应通过 `acquire_can_channel()` 或 `acquire_serial_bus_client()` 获取受限访问对象
 
@@ -244,7 +248,7 @@ auto channel = serial_arm::transport::acquire_can_channel(
     128);
 
 if(!channel) {
-    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+    // INVALID_ARGUMENT / CREATE_FAILED / type/config/physical resource conflict
 }
 ```
 
@@ -272,7 +276,8 @@ auto client = serial_arm::transport::acquire_serial_bus_client(
     config);
 
 if(!client) {
-    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+    // 非法串口配置返回 INVALID_ARGUMENT，open/creator 失败返回 CREATE_FAILED
+    // 其余错误根据 type/config/physical resource conflict 处理
     return;
 }
 

@@ -165,6 +165,8 @@ Core 只保证同进程资源唯一所有权、CAN channel fan-out 和 Serial tr
 
 扩展 CAN provider 通过 `acquire_can_channel()` 注册或复用 physical `CanBus`，consumer 最终只获得自己的 `CanChannel`
 
+`BusResourceDescriptor::config_signature` 必须非空，并包含 provider identity 和物理通信兼容参数
+
 ```cpp
 auto channel_a = serial_arm::transport::acquire_can_channel(
     "main_can",
@@ -193,6 +195,8 @@ auto channel_b = serial_arm::transport::acquire_can_channel(
 
 相同 logical bus、physical resource 和物理配置只创建一个 physical `CanBus`
 
+Registry 先 reservation 再在全局锁外执行 creator/open，因此慢 provider 创建不会阻塞无关 Bus acquisition，provider creator 也可以获取另一个 Registry-managed Bus
+
 两个 consumer 只持有各自的 `CanChannel`
 
 filter 独立
@@ -213,6 +217,12 @@ client 不直接接触底层 `SerialPort`
 auto client = serial_arm::transport::acquire_serial_bus_client(
     "tool_serial",
     config);
+
+if(!client) {
+    // 非法配置 -> INVALID_ARGUMENT
+    // physical open / creator failure -> CREATE_FAILED
+    return;
+}
 
 if(!client) {
     return;

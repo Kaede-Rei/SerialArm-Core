@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <climits>
 #include <cstdlib>
+#include <new>
 #include <sstream>
+#include <thread>
 
 namespace serial_arm::transport {
 
@@ -268,6 +270,10 @@ tl::expected<std::shared_ptr<CanChannel>, BusRegistryErr> acquire_can_channel(
     const CanBusCreator& creator,
     std::vector<CanFilter> filters,
     std::size_t max_pending_frames) {
+    if(resource.kind != BusResourceKind::CAN || resource.config_signature.empty() || !creator) {
+        return tl::make_unexpected(BusRegistryErr::INVALID_ARGUMENT);
+    }
+
     auto bus = BusRegistry::get_or_create<CanBus>(name, resource, creator);
     if(!bus) return tl::make_unexpected(bus.error());
     return (*bus)->create_channel(std::move(filters), max_pending_frames);
@@ -281,64 +287,138 @@ tl::expected<std::shared_ptr<void>, BusRegistryErr> BusRegistry::get_or_create_e
     const BusResourceDescriptor& resource,
     std::type_index type,
     const ErasedBusCreator& creator) {
-    if(name.empty() || resource.physical_id.empty()) {
+    if(name.empty() || resource.physical_id.empty() || resource.config_signature.empty() || !creator) {
         return tl::make_unexpected(BusRegistryErr::INVALID_ARGUMENT);
     }
 
-    std::lock_guard<std::mutex> lock(mutex());
-    auto& registry = buses();
-    auto& resources = physical_owners();
+    const auto key = physical_resource_key(resource);
+    const auto current_thread = std::this_thread::get_id();
 
-    for(auto it = registry.begin(); it != registry.end();) {
-        if(it->second.bus.expired()) {
-            const auto key = physical_resource_key(it->second.resource);
-            auto resource_it = resources.find(key);
-            if(resource_it != resources.end() && resource_it->second == it->first) {
-                resources.erase(resource_it);
+    while(true) {
+        std::unique_lock<std::mutex> lock(mutex());
+        auto& registry = buses();
+        auto& resources = physical_owners();
+
+        for(auto it = registry.begin(); it != registry.end();) {
+            if(it->second.state == EntryState::READY && it->second.bus.expired()) {
+                const auto expired_key = physical_resource_key(it->second.resource);
+                auto resource_it = resources.find(expired_key);
+                if(resource_it != resources.end() && resource_it->second == it->first) {
+                    resources.erase(resource_it);
+                }
+                it = registry.erase(it);
+                continue;
             }
-            it = registry.erase(it);
-            continue;
+            ++it;
         }
-        ++it;
-    }
 
-    auto logical_it = registry.find(name);
-    if(logical_it != registry.end()) {
-        auto existing = logical_it->second.bus.lock();
-        if(existing) {
-            if(logical_it->second.type != type) return tl::make_unexpected(BusRegistryErr::TYPE_MISMATCH);
+        auto logical_it = registry.find(name);
+        if(logical_it != registry.end()) {
+            if(logical_it->second.type != type) {
+                return tl::make_unexpected(BusRegistryErr::TYPE_MISMATCH);
+            }
             if(!resource_matches(logical_it->second.resource, resource)) {
                 return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
             }
-            return existing;
-        }
-        registry.erase(logical_it);
-    }
 
-    const auto key = physical_resource_key(resource);
-    auto resource_it = resources.find(key);
-    if(resource_it != resources.end()) {
-        auto owner_it = registry.find(resource_it->second);
-        if(owner_it != registry.end() && !owner_it->second.bus.expired()) {
-            const auto& owner_resource = owner_it->second.resource;
-            if(owner_resource.kind != resource.kind ||
-                owner_resource.physical_id != resource.physical_id) {
+            if(logical_it->second.state == EntryState::CREATING) {
+                if(logical_it->second.creator_thread == current_thread) {
+                    return tl::make_unexpected(BusRegistryErr::CREATE_FAILED);
+                }
+                condition().wait(lock);
+                continue;
+            }
+
+            auto existing = logical_it->second.bus.lock();
+            if(existing) return existing;
+
+            const auto expired_key = physical_resource_key(logical_it->second.resource);
+            auto resource_it = resources.find(expired_key);
+            if(resource_it != resources.end() && resource_it->second == logical_it->first) {
+                resources.erase(resource_it);
+            }
+            registry.erase(logical_it);
+            continue;
+        }
+
+        auto resource_it = resources.find(key);
+        if(resource_it != resources.end()) {
+            auto owner_it = registry.find(resource_it->second);
+            if(owner_it != registry.end()) {
+                const auto& owner_resource = owner_it->second.resource;
+                if(owner_resource.kind != resource.kind) {
+                    return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
+                }
+                if(owner_resource.config_signature != resource.config_signature) {
+                    return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
+                }
                 return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
             }
-            if(owner_resource.config_signature != resource.config_signature) {
-                return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
-            }
-            return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
+            resources.erase(resource_it);
         }
-        resources.erase(resource_it);
+
+        registry.emplace(name, Entry{
+            {},
+            type,
+            resource,
+            EntryState::CREATING,
+            current_thread,
+        });
+        resources[key] = name;
+        lock.unlock();
+
+        std::shared_ptr<void> bus;
+        try {
+            bus = creator();
+        }
+        catch(const std::bad_alloc&) {
+            lock.lock();
+            auto reservation = registry.find(name);
+            if(reservation != registry.end() &&
+                reservation->second.state == EntryState::CREATING &&
+                reservation->second.creator_thread == current_thread) {
+                registry.erase(reservation);
+                auto owner = resources.find(key);
+                if(owner != resources.end() && owner->second == name) resources.erase(owner);
+            }
+            lock.unlock();
+            condition().notify_all();
+            throw;
+        }
+        catch(...) {
+            bus.reset();
+        }
+
+        lock.lock();
+        auto reservation = registry.find(name);
+        if(!bus) {
+            if(reservation != registry.end() &&
+                reservation->second.state == EntryState::CREATING &&
+                reservation->second.creator_thread == current_thread) {
+                registry.erase(reservation);
+                auto owner = resources.find(key);
+                if(owner != resources.end() && owner->second == name) resources.erase(owner);
+            }
+            lock.unlock();
+            condition().notify_all();
+            return tl::make_unexpected(BusRegistryErr::CREATE_FAILED);
+        }
+
+        if(reservation == registry.end() ||
+            reservation->second.state != EntryState::CREATING ||
+            reservation->second.creator_thread != current_thread) {
+            lock.unlock();
+            condition().notify_all();
+            return tl::make_unexpected(BusRegistryErr::CREATE_FAILED);
+        }
+
+        reservation->second.bus = bus;
+        reservation->second.state = EntryState::READY;
+        reservation->second.creator_thread = {};
+        lock.unlock();
+        condition().notify_all();
+        return bus;
     }
-
-    auto bus = creator();
-    if(!bus) return tl::make_unexpected(BusRegistryErr::CREATE_FAILED);
-
-    registry.emplace(name, Entry{ bus, type, resource });
-    resources[key] = name;
-    return bus;
 }
 
 /**
@@ -362,6 +442,14 @@ std::unordered_map<std::string, std::string>& BusRegistry::physical_owners() {
  */
 std::mutex& BusRegistry::mutex() {
     static std::mutex instance;
+    return instance;
+}
+
+/**
+ * @brief 获取 BusRegistry 创建状态通知
+ */
+std::condition_variable& BusRegistry::condition() {
+    static std::condition_variable instance;
     return instance;
 }
 
