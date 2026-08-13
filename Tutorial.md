@@ -163,12 +163,10 @@ Core 只保证同进程资源唯一所有权、CAN channel fan-out 和 Serial tr
 
 ### 通用 CAN Shared Bus 示例
 
-扩展 CAN Driver 可以直接通过 `BusRegistry` 获取共享 `CanBus`
-
-每个 Driver 再创建自己的 `CanChannel`
+扩展 CAN provider 通过 `acquire_can_channel()` 注册或复用 physical `CanBus`，consumer 最终只获得自己的 `CanChannel`
 
 ```cpp
-auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
+auto channel_a = serial_arm::transport::acquire_can_channel(
     "main_can",
     resource_descriptor,
     [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
@@ -176,28 +174,34 @@ auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
         auto opened = value->open();
         if(!opened) return nullptr;
         return value;
-    });
-
-if(!bus) {
-    return;
-}
-
-auto channel_a = (*bus)->create_channel(
+    },
     {serial_arm::transport::CanFilter{0x100, 0x7FF}},
     64);
 
-auto channel_b = (*bus)->create_channel(
+auto channel_b = serial_arm::transport::acquire_can_channel(
+    "main_can",
+    resource_descriptor,
+    [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
+        auto value = std::make_shared<MyCanBus>(config);
+        auto opened = value->open();
+        if(!opened) return nullptr;
+        return value;
+    },
     {serial_arm::transport::CanFilter{0x200, 0x7FF}},
     64);
 ```
 
-两个 channel 共用一个 physical `CanBus`
+相同 logical bus、physical resource 和物理配置只创建一个 physical `CanBus`
+
+两个 consumer 只持有各自的 `CanChannel`
 
 filter 独立
 
 pending queue 独立
 
 `channel_a->flush()` 只清理 A 的 pending queue，不影响 B
+
+Protocol / Hardware consumer 不应通过 Registry 获取 raw `CanBus`，也不负责 open / close shared physical Bus
 
 ### 通用 Serial Shared Bus 示例
 

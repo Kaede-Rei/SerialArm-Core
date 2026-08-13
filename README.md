@@ -126,9 +126,11 @@ Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 s
 
 外部 CAN Driver 不拥有 physical CAN resource
 
-它应通过已有 Protocol helper 或 `BusRegistry::get_or_create_can_bus()` 获取共享 `CanBus`，再创建自己的 `CanChannel`
+它应通过已有 Protocol helper 或通用 `acquire_can_channel()` 获取自己的 `CanChannel`
 
-Driver 销毁时只释放自己的 `CanChannel` 和 `std::shared_ptr`，不得主动关闭仍被其他 Driver 使用的 Bus
+`BusRegistry` 和 physical `CanBus` ownership 由 acquisition helper 内部协调，普通 Protocol / Hardware consumer 不获取 raw `CanBus`
+
+Driver 销毁时只释放自己的 `CanChannel`，不得管理 shared physical Bus 生命周期
 
 外部 Serial Driver 不接触底层 `SerialPort` 所有权
 
@@ -151,8 +153,8 @@ Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial tran
 | Pinocchio Dynamics | 已实现 |
 | Safety / Mapping | 已实现 |
 | 五种阻抗模式 | 已实现 |
-| CAN Transport | `CanBus` / `CanChannel` / `BusRegistry` |
-| Shared Serial Transport | `SerialBusClient` / `SerialTransaction` / internal `SerialBus` / `BusRegistry` |
+| CAN Transport | `CanBus` provider interface / `CanChannel` / `acquire_can_channel()` |
+| Shared Serial Transport | `SerialBusClient` / `SerialTransaction` / internal `SerialBus` |
 | Python Binding | 已实现 |
 | C++ Terminal | 已实现 |
 | Damiao Backend | Reference backend |

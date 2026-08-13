@@ -260,47 +260,17 @@ void CanChannel::enqueue(const CanFrame& frame) {
 }
 
 /**
- * @brief 原子获取或创建共享 CAN 总线
+ * @brief 获取或创建共享 CAN Bus 并返回独立逻辑通道
  */
-std::shared_ptr<CanBus> BusPool::get_or_create(const std::string& name, const BusCreator& creator) {
-    std::lock_guard<std::mutex> lock(mutex());
-    auto& pool = buses();
-    auto it = pool.find(name);
-    if(it != pool.end()) {
-        auto bus = it->second.lock();
-        if(bus) return bus;
-        pool.erase(it);
-    }
-
-    auto bus = creator();
-    if(bus) pool[name] = bus;
-    return bus;
-}
-
-/**
- * @brief 获取进程内总线弱引用表
- */
-std::unordered_map<std::string, std::weak_ptr<CanBus>>& BusPool::buses() {
-    static std::unordered_map<std::string, std::weak_ptr<CanBus>> instance;
-    return instance;
-}
-
-/**
- * @brief 获取总线共享池互斥锁
- */
-std::mutex& BusPool::mutex() {
-    static std::mutex instance;
-    return instance;
-}
-
-/**
- * @brief 原子获取或创建共享 CAN Bus
- */
-tl::expected<std::shared_ptr<CanBus>, BusRegistryErr> BusRegistry::get_or_create_can_bus(
+tl::expected<std::shared_ptr<CanChannel>, BusRegistryErr> acquire_can_channel(
     const std::string& name,
     const BusResourceDescriptor& resource,
-    const CanBusCreator& creator) {
-    return get_or_create<CanBus>(name, resource, creator);
+    const CanBusCreator& creator,
+    std::vector<CanFilter> filters,
+    std::size_t max_pending_frames) {
+    auto bus = BusRegistry::get_or_create<CanBus>(name, resource, creator);
+    if(!bus) return tl::make_unexpected(bus.error());
+    return (*bus)->create_channel(std::move(filters), max_pending_frames);
 }
 
 /**

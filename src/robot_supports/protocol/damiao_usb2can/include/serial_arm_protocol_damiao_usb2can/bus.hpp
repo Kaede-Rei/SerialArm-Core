@@ -90,13 +90,6 @@ public:
      */
     void flush() noexcept override;
 
-    /**
-     * @brief 检查配置是否与当前总线一致
-     * @param config 待比较配置
-     * @return 完全一致时返回 true
-     */
-    bool config_matches(const Config& config) const noexcept;
-
 private:
     /**
      * @brief 尝试从缓存中解析完整 USB2CAN 接收报文

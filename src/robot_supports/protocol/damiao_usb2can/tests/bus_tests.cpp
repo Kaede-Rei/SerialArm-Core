@@ -204,6 +204,22 @@ TEST(DamiaoUsbCanBusTests, DetectsConfigMismatchForSharedBusName) {
     EXPECT_EQ(second.error(), damiao_usb2can::Err::CONFIG_CONFLICT);
 }
 
+TEST(DamiaoUsbCanBusTests, SameLogicalBusAcceptsEquivalentTtyAlias) {
+    Pty pty;
+    const std::string alias = "/tmp/serial_arm_damiao_alias_" + std::to_string(::getpid());
+    (void)::unlink(alias.c_str());
+    ASSERT_EQ(::symlink(pty.slave().c_str(), alias.c_str()), 0);
+
+    auto alias_config = config(pty);
+    alias_config.serial_port = alias;
+    auto first = damiao_usb2can::acquire_channel("protocol_tty_alias", alias_config, {});
+    auto second = damiao_usb2can::acquire_channel("protocol_tty_alias", config(pty), {});
+
+    EXPECT_TRUE(first);
+    EXPECT_TRUE(second);
+    (void)::unlink(alias.c_str());
+}
+
 TEST(DamiaoUsbCanBusTests, DetectsPhysicalConflictForDifferentSharedBusNames) {
     Pty pty;
     auto first = damiao_usb2can::acquire_channel("protocol_physical_conflict_a", config(pty), {});

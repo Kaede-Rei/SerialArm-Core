@@ -190,14 +190,6 @@ void DamiaoUsbCanBus::flush() noexcept {
 }
 
 /**
- * @brief 比较共享总线配置
- */
-bool DamiaoUsbCanBus::config_matches(const Config& config) const noexcept {
-    return config_.serial_port == config.serial_port &&
-        config_.baudrate == config.baudrate;
-}
-
-/**
  * @brief 获取或创建达妙 USB2CAN 逻辑通道
  */
 tl::expected<std::shared_ptr<transport::CanChannel>, Err> acquire_channel(
@@ -205,23 +197,22 @@ tl::expected<std::shared_ptr<transport::CanChannel>, Err> acquire_channel(
     const Config& config,
     std::vector<transport::CanFilter> filters) {
     Err create_error = Err::OPEN_FAILED;
-    auto bus = transport::BusRegistry::get_or_create_can_bus(name, resource_descriptor(config), [&]() -> std::shared_ptr<transport::CanBus> {
-        auto candidate = std::make_shared<DamiaoUsbCanBus>(config);
-        const auto opened = candidate->open();
-        if(!opened) {
-            create_error = Err::OPEN_FAILED;
-            return nullptr;
-        }
-        return candidate;
-    });
+    auto channel = transport::acquire_can_channel(
+        name,
+        resource_descriptor(config),
+        [&]() -> std::shared_ptr<transport::CanBus> {
+            auto candidate = std::make_shared<DamiaoUsbCanBus>(config);
+            const auto opened = candidate->open();
+            if(!opened) {
+                create_error = Err::OPEN_FAILED;
+                return nullptr;
+            }
+            return candidate;
+        },
+        std::move(filters));
 
-    if(!bus) return tl::make_unexpected(to_err(bus.error(), create_error));
-    auto damiao_bus = std::dynamic_pointer_cast<DamiaoUsbCanBus>(*bus);
-    if(!damiao_bus) return tl::make_unexpected(Err::TYPE_MISMATCH);
-    if(!damiao_bus->config_matches(config)) {
-        return tl::make_unexpected(Err::CONFIG_CONFLICT);
-    }
-    return (*bus)->create_channel(std::move(filters));
+    if(!channel) return tl::make_unexpected(to_err(channel.error(), create_error));
+    return *channel;
 }
 
 // ! ========================= 私 有 类 方 法 实 现 ========================= ! //

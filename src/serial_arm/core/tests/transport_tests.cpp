@@ -1,4 +1,5 @@
 #include "serial_arm/transport/bus.hpp"
+#include "serial_arm/transport/serial_bus.hpp"
 
 #include <gtest/gtest.h>
 
@@ -15,16 +16,17 @@ using serial_arm::transport::CanBus;
 using serial_arm::transport::CanErr;
 using serial_arm::transport::CanFilter;
 using serial_arm::transport::CanFrame;
-using serial_arm::transport::BusPool;
-using serial_arm::transport::BusRegistry;
 using serial_arm::transport::BusRegistryErr;
 using serial_arm::transport::BusResourceDescriptor;
 using serial_arm::transport::BusResourceKind;
+using serial_arm::transport::SerialBusConfig;
+using serial_arm::transport::acquire_can_channel;
+using serial_arm::transport::acquire_serial_bus_client;
 
 class FakeCanDriver final {
 public:
-    FakeCanDriver(std::shared_ptr<CanBus> bus, std::vector<CanFilter> filters, std::size_t max_pending_frames)
-        : channel_(bus->create_channel(std::move(filters), max_pending_frames)) {
+    explicit FakeCanDriver(std::shared_ptr<serial_arm::transport::CanChannel> channel)
+        : channel_(std::move(channel)) {
     }
 
     tl::expected<CanFrame, CanErr> receive(std::chrono::milliseconds timeout) {
@@ -163,9 +165,6 @@ BusResourceDescriptor can_resource(const std::string& physical_id) {
     return resource;
 }
 
-struct AlternateBus {
-};
-
 } // namespace
 
 TEST(TransportTests, SingleChannelReceivesMatchingFrame) {
@@ -259,77 +258,46 @@ TEST(TransportTests, ConcurrentTxRxDoesNotCrossChannels) {
     EXPECT_EQ(bus->tx_size(), 20u);
 }
 
-TEST(TransportTests, BusPoolGetOrCreateIsAtomic) {
-    constexpr int thread_count = 20;
+TEST(TransportTests, AcquireCanChannelSameLogicalBusReusesPhysicalBus) {
     std::atomic<int> create_count{ 0 };
-    std::vector<std::shared_ptr<CanBus>> buses(thread_count);
-    std::vector<std::thread> threads;
-    threads.reserve(thread_count);
+    auto creator = [&]() -> std::shared_ptr<CanBus> {
+        create_count.fetch_add(1);
+        auto bus = std::make_shared<MockCanBus>();
+        (void)bus->open();
+        return bus;
+    };
 
-    for(int i = 0; i < thread_count; ++i) {
-        threads.emplace_back([&, i]() {
-            buses[i] = BusPool::get_or_create("transport_test_atomic", [&]() {
-                create_count.fetch_add(1);
-                auto bus = std::make_shared<MockCanBus>();
-                (void)bus->open();
-                return bus;
-            });
-        });
-    }
-
-    for(auto& thread : threads) thread.join();
-
-    ASSERT_TRUE(buses.front());
-    for(const auto& bus : buses) {
-        EXPECT_EQ(bus.get(), buses.front().get());
-    }
-    EXPECT_EQ(create_count.load(), 1);
-}
-
-TEST(TransportTests, BusRegistrySameLogicalBusReturnsSameInstance) {
-    std::atomic<int> create_count{ 0 };
-    auto first = BusRegistry::get_or_create_can_bus(
+    auto first = acquire_can_channel(
         "registry_same_logical",
         can_resource("can-registry-same"),
-        [&]() {
-            ++create_count;
-            auto bus = std::make_shared<MockCanBus>();
-            (void)bus->open();
-            return bus;
-        });
-    auto second = BusRegistry::get_or_create_can_bus(
+        creator,
+        { CanFilter{ 0x01, 0x7FF } });
+    auto second = acquire_can_channel(
         "registry_same_logical",
         can_resource("can-registry-same"),
-        [&]() {
-            ++create_count;
-            auto bus = std::make_shared<MockCanBus>();
-            (void)bus->open();
-            return bus;
-        });
+        creator,
+        { CanFilter{ 0x02, 0x7FF } });
 
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
-    EXPECT_EQ(first->get(), second->get());
+    EXPECT_NE(first->get(), second->get());
     EXPECT_EQ(create_count.load(), 1);
 }
 
-TEST(TransportTests, BusRegistryRejectsLogicalBusTypeMismatch) {
-    auto first = BusRegistry::get_or_create_can_bus(
+TEST(TransportTests, BusRegistryRejectsLogicalBusTypeMismatchThroughConsumerApis) {
+    auto first = acquire_can_channel(
         "registry_type_mismatch",
         can_resource("can-registry-type-mismatch"),
-        []() {
+        []() -> std::shared_ptr<CanBus> {
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
         });
     ASSERT_TRUE(first);
 
-    auto second = BusRegistry::get_or_create<AlternateBus>(
-        "registry_type_mismatch",
-        can_resource("can-registry-type-mismatch"),
-        []() {
-            return std::make_shared<AlternateBus>();
-        });
+    SerialBusConfig serial;
+    serial.serial_port = "/dev/ttyACM-registry-type-mismatch";
+    auto second = acquire_serial_bus_client("registry_type_mismatch", serial);
 
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error(), BusRegistryErr::TYPE_MISMATCH);
@@ -338,45 +306,40 @@ TEST(TransportTests, BusRegistryRejectsLogicalBusTypeMismatch) {
 TEST(TransportTests, BusRegistryRejectsCrossKindOwnershipOfSamePhysicalResource) {
     auto can = can_resource("/dev/ttyACM-registry-shared");
     can.ownership_key = "tty:/dev/ttyACM-registry-shared";
-    auto first = BusRegistry::get_or_create_can_bus(
+    auto first = acquire_can_channel(
         "registry_tty_can_owner",
         can,
-        []() {
+        []() -> std::shared_ptr<CanBus> {
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
         });
     ASSERT_TRUE(first);
 
-    BusResourceDescriptor serial;
-    serial.kind = BusResourceKind::SERIAL;
-    serial.physical_id = "/dev/ttyACM-registry-shared";
-    serial.config_signature = "serial|baudrate=115200|data_bits=8|parity=N|stop_bits=1|flow_control=none";
-    serial.ownership_key = "tty:/dev/ttyACM-registry-shared";
-    auto second = BusRegistry::get_or_create<AlternateBus>(
-        "registry_tty_serial_owner",
-        serial,
-        []() {
-            return std::make_shared<AlternateBus>();
-        });
+    SerialBusConfig serial;
+    serial.serial_port = "/dev/ttyACM-registry-shared";
+    auto second = acquire_serial_bus_client("registry_tty_serial_owner", serial);
 
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error(), BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
 }
 
 TEST(TransportTests, BusRegistryDifferentBusesAreIndependent) {
-    auto first = BusRegistry::get_or_create_can_bus(
+    std::atomic<int> create_count{ 0 };
+    auto first = acquire_can_channel(
         "registry_independent_a",
         can_resource("can-registry-a"),
-        []() {
+        [&]() -> std::shared_ptr<CanBus> {
+            create_count.fetch_add(1);
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
         });
-    auto second = BusRegistry::get_or_create_can_bus(
+    auto second = acquire_can_channel(
         "registry_independent_b",
         can_resource("can-registry-b"),
-        []() {
+        [&]() -> std::shared_ptr<CanBus> {
+            create_count.fetch_add(1);
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
@@ -385,21 +348,22 @@ TEST(TransportTests, BusRegistryDifferentBusesAreIndependent) {
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     EXPECT_NE(first->get(), second->get());
+    EXPECT_EQ(create_count.load(), 2);
 }
 
 TEST(TransportTests, BusRegistryRejectsPhysicalResourceConflict) {
-    auto first = BusRegistry::get_or_create_can_bus(
+    auto first = acquire_can_channel(
         "registry_physical_owner_a",
         can_resource("can-registry-conflict"),
-        []() {
+        []() -> std::shared_ptr<CanBus> {
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
         });
-    auto second = BusRegistry::get_or_create_can_bus(
+    auto second = acquire_can_channel(
         "registry_physical_owner_b",
         can_resource("can-registry-conflict"),
-        []() {
+        []() -> std::shared_ptr<CanBus> {
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
@@ -424,19 +388,19 @@ TEST(TransportTests, BusRegistryErrorMessageContainsLogicalAndPhysicalContext) {
     EXPECT_NE(message.find("classic-can"), std::string::npos);
 }
 
-TEST(TransportTests, BusRegistryConcurrentGetDoesNotDuplicateOwnership) {
+TEST(TransportTests, BusRegistryConcurrentAcquireDoesNotDuplicateOwnership) {
     constexpr int thread_count = 20;
     std::atomic<int> create_count{ 0 };
-    std::vector<tl::expected<std::shared_ptr<CanBus>, BusRegistryErr>> buses(thread_count);
+    std::vector<tl::expected<std::shared_ptr<serial_arm::transport::CanChannel>, BusRegistryErr>> channels(thread_count);
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
 
     for(int i = 0; i < thread_count; ++i) {
         threads.emplace_back([&, i]() {
-            buses[i] = BusRegistry::get_or_create_can_bus(
+            channels[i] = acquire_can_channel(
                 "registry_concurrent",
                 can_resource("can-registry-concurrent"),
-                [&]() {
+                [&]() -> std::shared_ptr<CanBus> {
                     create_count.fetch_add(1);
                     auto bus = std::make_shared<MockCanBus>();
                     (void)bus->open();
@@ -447,20 +411,16 @@ TEST(TransportTests, BusRegistryConcurrentGetDoesNotDuplicateOwnership) {
 
     for(auto& thread : threads) thread.join();
 
-    ASSERT_TRUE(buses.front());
-    for(const auto& bus : buses) {
-        ASSERT_TRUE(bus);
-        EXPECT_EQ(bus->get(), buses.front()->get());
-    }
+    for(const auto& channel : channels) ASSERT_TRUE(channel);
     EXPECT_EQ(create_count.load(), 1);
 }
 
-TEST(TransportTests, BusRegistryReleasesResourceAfterBusLifetimeEnds) {
+TEST(TransportTests, BusRegistryReleasesResourceAfterLastCanChannelEnds) {
     {
-        auto first = BusRegistry::get_or_create_can_bus(
+        auto first = acquire_can_channel(
             "registry_release_a",
             can_resource("can-registry-release"),
-            []() {
+            []() -> std::shared_ptr<CanBus> {
                 auto bus = std::make_shared<MockCanBus>();
                 (void)bus->open();
                 return bus;
@@ -468,10 +428,10 @@ TEST(TransportTests, BusRegistryReleasesResourceAfterBusLifetimeEnds) {
         ASSERT_TRUE(first);
     }
 
-    auto second = BusRegistry::get_or_create_can_bus(
+    auto second = acquire_can_channel(
         "registry_release_b",
         can_resource("can-registry-release"),
-        []() {
+        []() -> std::shared_ptr<CanBus> {
             auto bus = std::make_shared<MockCanBus>();
             (void)bus->open();
             return bus;
@@ -480,53 +440,65 @@ TEST(TransportTests, BusRegistryReleasesResourceAfterBusLifetimeEnds) {
     ASSERT_TRUE(second);
 }
 
-TEST(TransportTests, ReleasingOneCanChannelOwnerDoesNotCloseSharedRegisteredBus) {
-    std::shared_ptr<MockCanBus> physical_bus;
-    auto registered_bus = BusRegistry::get_or_create_can_bus(
+TEST(TransportTests, ReleasingOneCanChannelDoesNotCloseSharedRegisteredBus) {
+    std::weak_ptr<MockCanBus> physical_bus;
+    auto creator = [&]() -> std::shared_ptr<CanBus> {
+        auto bus = std::make_shared<MockCanBus>();
+        (void)bus->open();
+        physical_bus = bus;
+        return bus;
+    };
+
+    auto first_channel = acquire_can_channel(
         "registry_channel_owner_lifetime",
         can_resource("can-registry-channel-owner-lifetime"),
-        [&]() -> std::shared_ptr<CanBus> {
-            physical_bus = std::make_shared<MockCanBus>();
-            (void)physical_bus->open();
-            return physical_bus;
-        });
-    ASSERT_TRUE(registered_bus);
+        creator,
+        { CanFilter{ 0x01, 0x7FF } });
+    auto second_channel = acquire_can_channel(
+        "registry_channel_owner_lifetime",
+        can_resource("can-registry-channel-owner-lifetime"),
+        creator,
+        { CanFilter{ 0x02, 0x7FF } });
+    ASSERT_TRUE(first_channel);
+    ASSERT_TRUE(second_channel);
 
-    auto first_channel = (*registered_bus)->create_channel({ CanFilter{ 0x01, 0x7FF } });
-    auto second_channel = (*registered_bus)->create_channel({ CanFilter{ 0x02, 0x7FF } });
-    first_channel.reset();
-
-    ASSERT_TRUE(physical_bus);
-    EXPECT_TRUE(physical_bus->is_open());
-    ASSERT_TRUE(second_channel->send(frame(0x02)));
-    EXPECT_EQ(physical_bus->tx_size(), 1u);
+    first_channel->reset();
+    auto bus = physical_bus.lock();
+    ASSERT_TRUE(bus);
+    EXPECT_TRUE(bus->is_open());
+    ASSERT_TRUE((*second_channel)->send(frame(0x02)));
+    EXPECT_EQ(bus->tx_size(), 1u);
 }
 
 TEST(TransportTests, TwoFakeDriversShareRegisteredCanBusWithIndependentChannels) {
     std::atomic<int> create_count{ 0 };
     std::shared_ptr<MockCanBus> physical_bus;
-    auto acquire_bus = [&]() {
-        return BusRegistry::get_or_create_can_bus(
-            "registry_fake_drivers",
-            can_resource("can-registry-fake-drivers"),
-            [&]() -> std::shared_ptr<CanBus> {
-                create_count.fetch_add(1);
-                physical_bus = std::make_shared<MockCanBus>();
-                (void)physical_bus->open();
-                return physical_bus;
-            });
+    auto creator = [&]() -> std::shared_ptr<CanBus> {
+        create_count.fetch_add(1);
+        physical_bus = std::make_shared<MockCanBus>();
+        (void)physical_bus->open();
+        return physical_bus;
     };
 
-    auto arm_bus = acquire_bus();
-    auto tool_bus = acquire_bus();
-    ASSERT_TRUE(arm_bus);
-    ASSERT_TRUE(tool_bus);
+    auto arm_channel = acquire_can_channel(
+        "registry_fake_drivers",
+        can_resource("can-registry-fake-drivers"),
+        creator,
+        { CanFilter{ 0x01, 0x7FF } },
+        8);
+    auto tool_channel = acquire_can_channel(
+        "registry_fake_drivers",
+        can_resource("can-registry-fake-drivers"),
+        creator,
+        { CanFilter{ 0x20, 0x7FF } },
+        2);
+    ASSERT_TRUE(arm_channel);
+    ASSERT_TRUE(tool_channel);
 
-    FakeCanDriver arm(*arm_bus, { CanFilter{ 0x01, 0x7FF } }, 8);
-    FakeCanDriver tool(*tool_bus, { CanFilter{ 0x20, 0x7FF } }, 2);
+    FakeCanDriver arm(*arm_channel);
+    FakeCanDriver tool(*tool_channel);
 
     ASSERT_EQ(create_count.load(), 1);
-    ASSERT_EQ(arm_bus->get(), tool_bus->get());
     ASSERT_TRUE(physical_bus);
 
     for(std::uint8_t i = 1; i <= 4; ++i) {

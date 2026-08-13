@@ -53,7 +53,7 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/hardware/motor_bus.hpp` | Hardware Backend contract |
 | `serial_arm/hardware/hardware_loader.hpp` | Backend shared library loader |
 | `serial_arm/transport/can.hpp` | `CanFrame`、`CanFilter`、`CanErr` |
-| `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel`、`BusRegistry` |
+| `serial_arm/transport/bus.hpp` | `CanBus` provider interface、`CanChannel`、`acquire_can_channel()`、`BusRegistryErr` |
 | `serial_arm/transport/serial_bus.hpp` | `SerialBusClient` / `SerialTransaction` / internal `SerialBus` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
 | `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
@@ -131,7 +131,7 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 `CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
 
-`BusRegistry` 是 v0.4.0 shared physical bus ownership 入口
+`BusRegistry` 是 v0.4.0 shared physical bus ownership 的内部协调层
 
 它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
 
@@ -149,9 +149,11 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 创建函数返回空指针时返回 `CREATE_FAILED`
 
-`BusRegistry::get_or_create()` 和 `get_or_create_can_bus()` 内部线程安全，并通过 weak pointer 管理生命周期
+Registry acquisition 内部线程安全，并通过 weak pointer 管理 physical Bus 生命周期
 
-最后一个 shared bus owner 释放后，下一次访问 Registry 时会清理对应 logical name 和 physical resource 占用记录
+普通 Protocol / Hardware consumer 不直接调用 Registry 获取 raw Bus，而应通过 `acquire_can_channel()` 或 `acquire_serial_bus_client()` 获取受限访问对象
+
+最后一个 logical access object 释放后，下一次 acquisition 会清理已过期的 logical name 和 physical resource 占用记录
 
 错误上下文可以通过 `bus_registry_error_message()` 构造：
 
@@ -163,11 +165,7 @@ std::string message =
         resource_descriptor);
 ```
 
-`CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；创建通道时可以显式指定上限：
-
-```cpp
-auto channel = bus->create_channel(filters, 128);
-```
+`CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；通过 `acquire_can_channel()` 创建通道时可以显式指定上限
 
 运行统计通过 `diagnostics()` 获取：
 
@@ -230,10 +228,10 @@ if(!result) {
 auto channel = result.value();
 ```
 
-如果扩展包提供自己的 physical `CanBus` 实现，应通过 `BusRegistry::get_or_create_can_bus()` 注册 physical owner，再为每个 Driver 创建独立 `CanChannel`：
+如果扩展包提供自己的 physical `CanBus` 实现，应通过 `acquire_can_channel()` 提交 resource descriptor 和 provider creator，最终只把 `CanChannel` 交给 Protocol / Hardware consumer：
 
 ```cpp
-auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
+auto channel = serial_arm::transport::acquire_can_channel(
     "main_can",
     resource_descriptor,
     [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
@@ -241,22 +239,20 @@ auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
         auto opened = value->open();
         if(!opened) return nullptr;
         return value;
-    });
-
-if(!bus) {
-    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
-}
-
-auto channel = (*bus)->create_channel(
+    },
     {serial_arm::transport::CanFilter{0x20, 0x7FF}},
     128);
+
+if(!channel) {
+    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+}
 ```
 
-Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `CanChannel` 和 `std::shared_ptr`
+Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `CanChannel`
 
-仍被其他 Driver 持有的 `CanBus` 不应被主动关闭
+`BusRegistry` 的 raw Bus 获取接口属于 Core internal implementation，不作为扩展 Driver API
 
-`BusPool` 只保留给 v0.3.x 兼容路径使用；新代码不应把它作为 physical ownership 入口
+v0.4.0 已移除 legacy `BusPool`，避免绕过 physical ownership registry 形成第二套 Bus 生命周期入口
 
 Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
 
@@ -364,7 +360,7 @@ CAN Driver 迁移：
 
 ```text
 old: Driver opens physical CAN or USB2CAN
-new: Driver obtains CanBus from BusRegistry and creates private CanChannel
+new: Driver obtains private CanChannel through acquire_can_channel() and does not own raw CanBus
 ```
 
 Serial Driver 迁移：

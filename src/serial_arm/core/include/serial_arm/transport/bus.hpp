@@ -45,13 +45,13 @@ enum class BusResourceKind {
  *
  * `physical_id` 表示 Bus 实现使用的物理端点，例如 `can0` 或 `/dev/ttyACM0`
  * `ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时回退使用 physical_id
- * 不同 Bus 类型如果最终访问同一个 tty，应提供相同 ownership key；`config_signature` 只描述会影响
- * 多使用者安全共存的物理通信参数
+ * 不同 Bus 类型如果最终访问同一个 tty，应提供相同 ownership key
+ * `config_signature` 应包含 provider/backend identity 和会影响多使用者安全共存的物理通信参数
  */
 struct BusResourceDescriptor {
     BusResourceKind kind{ BusResourceKind::CAN }; ///< Bus 资源类型
     std::string physical_id;                      ///< Bus 使用的物理端点标识
-    std::string config_signature;                 ///< 物理通信参数签名
+    std::string config_signature;                 ///< provider identity 与物理通信参数签名
     std::string ownership_key;                    ///< 底层物理资源唯一所有权键
 };
 
@@ -101,7 +101,41 @@ std::string bus_registry_error_message(
  */
 std::string tty_ownership_key(const std::string& device);
 
+class CanBus;
 class CanChannel;
+class SerialBusClient;
+struct SerialBusConfig;
+
+using CanBusCreator = std::function<std::shared_ptr<CanBus>()>;
+
+/**
+ * @brief 获取或创建共享 CAN Bus 并返回独立逻辑通道
+ * @param name logical CAN bus name
+ * @param resource physical CAN resource 描述
+ * @param creator 不存在可复用 CAN Bus 时调用的物理 Bus 创建函数
+ * @param filters CAN ID 过滤规则，空列表表示接收所有 CAN 帧
+ * @param max_pending_frames 本通道待读队列上限
+ * @return 成功时返回 CanChannel；失败时返回 BusRegistry 错误
+ *
+ * 协议与 Hardware consumer 应只持有返回的 CanChannel，不应持有 physical CanBus
+ * CanBus 的创建、复用与 physical resource 唯一所有权由本函数和 BusRegistry 内部协调
+ */
+tl::expected<std::shared_ptr<CanChannel>, BusRegistryErr> acquire_can_channel(
+    const std::string& name,
+    const BusResourceDescriptor& resource,
+    const CanBusCreator& creator,
+    std::vector<CanFilter> filters = {},
+    std::size_t max_pending_frames = DEFAULT_CAN_CHANNEL_MAX_PENDING_FRAMES);
+
+/**
+ * @brief 获取共享串行总线协议 client
+ * @param name logical serial bus name
+ * @param config 串行总线配置
+ * @return 成功时返回 transaction-only SerialBusClient
+ */
+tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+    const std::string& name,
+    const SerialBusConfig& config);
 
 /**
  * @brief 同进程共享 CAN 总线抽象
@@ -258,40 +292,23 @@ private:
 };
 
 /**
- * @brief 同进程 CAN 总线共享池
- *
- * BusPool 只保留给 v0.3.x 兼容路径使用；新代码必须通过 BusRegistry 获取共享 Bus
- * BusPool 不记录 physical resource 或通信参数，不能作为新的物理资源所有权入口
- */
-class BusPool final {
-public:
-    using BusCreator = std::function<std::shared_ptr<CanBus>()>;
-
-    /**
-     * @brief 原子获取或创建共享 CAN 总线
-     * @param name 总线名称
-     * @param creator 总线创建函数
-     * @return 如果存在则返回已有总线，否则创建、保存并返回新总线
-     */
-    static std::shared_ptr<CanBus> get_or_create(const std::string& name, const BusCreator& creator);
-
-private:
-    static std::unordered_map<std::string, std::weak_ptr<CanBus>>& buses();
-    static std::mutex& mutex();
-};
-
-/**
  * @brief 同进程共享总线注册表
  *
  * BusRegistry 只管理 logical bus name 到 Bus 实例的映射，以及 physical resource
  * 的进程内唯一所有权；它不理解任何具体设备、协议或机器人业务语义
  */
 class BusRegistry final {
-public:
+private:
     template<typename BusT>
     using BusCreator = std::function<std::shared_ptr<BusT>()>;
 
-    using CanBusCreator = std::function<std::shared_ptr<CanBus>()>;
+    using ErasedBusCreator = std::function<std::shared_ptr<void>()>;
+
+    struct Entry {
+        std::weak_ptr<void> bus;              ///< Bus 弱引用
+        std::type_index type;                 ///< Bus 具体类型
+        BusResourceDescriptor resource;       ///< physical resource 描述
+    };
 
     /**
      * @brief 原子获取或创建指定类型的共享 Bus
@@ -300,10 +317,8 @@ public:
      * @param creator 不存在可复用 Bus 时调用的创建函数
      * @return 成功时返回共享 Bus；失败时返回冲突或创建错误
      *
-     * Registry 只保存弱引用；调用方返回的 `std::shared_ptr` 决定 Bus 生命周期
-     * 最后一个 Bus 引用释放后，下一次访问 Registry 时会清理对应 physical resource
-     * 占用记录；该函数内部加锁，多个线程并发获取同一 logical bus 不会创建多个
-     * physical owner；创建函数会在锁内执行，创建函数不得递归调用 BusRegistry
+     * 本接口仅供 Core acquisition helper 使用，不作为 Protocol / Hardware consumer API
+     * consumer 应通过 acquire_can_channel() 或 acquire_serial_bus_client() 获取受限访问对象
      */
     template<typename BusT>
     static tl::expected<std::shared_ptr<BusT>, BusRegistryErr> get_or_create(
@@ -317,30 +332,6 @@ public:
         return std::static_pointer_cast<BusT>(*erased);
     }
 
-    /**
-     * @brief 原子获取或创建共享 CAN Bus
-     * @param name logical CAN bus name
-     * @param resource physical CAN resource 描述
-     * @param creator 不存在可复用 CAN Bus 时调用的创建函数
-     * @return 成功时返回共享 CanBus；失败时返回冲突或创建错误
-     *
-     * 返回 Bus 由调用方通过 `std::shared_ptr` 共享持有；函数内部线程安全，并保证
-     * 同一 physical CAN resource 不会被不同 logical bus 重复持有
-     */
-    static tl::expected<std::shared_ptr<CanBus>, BusRegistryErr> get_or_create_can_bus(
-        const std::string& name,
-        const BusResourceDescriptor& resource,
-        const CanBusCreator& creator);
-
-private:
-    using ErasedBusCreator = std::function<std::shared_ptr<void>()>;
-
-    struct Entry {
-        std::weak_ptr<void> bus;              ///< Bus 弱引用
-        std::type_index type;                 ///< Bus 具体类型
-        BusResourceDescriptor resource;       ///< physical resource 描述
-    };
-
     static tl::expected<std::shared_ptr<void>, BusRegistryErr> get_or_create_erased(
         const std::string& name,
         const BusResourceDescriptor& resource,
@@ -349,6 +340,16 @@ private:
     static std::unordered_map<std::string, Entry>& buses();
     static std::unordered_map<std::string, std::string>& physical_owners();
     static std::mutex& mutex();
+
+    friend tl::expected<std::shared_ptr<CanChannel>, BusRegistryErr> acquire_can_channel(
+        const std::string& name,
+        const BusResourceDescriptor& resource,
+        const CanBusCreator& creator,
+        std::vector<CanFilter> filters,
+        std::size_t max_pending_frames);
+    friend tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+        const std::string& name,
+        const SerialBusConfig& config);
 };
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
