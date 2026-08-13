@@ -1,6 +1,7 @@
 #include "serial_arm/transport/bus.hpp"
 
 #include <algorithm>
+#include <sstream>
 
 namespace serial_arm::transport {
 
@@ -22,16 +23,8 @@ std::chrono::milliseconds min_timeout(std::chrono::milliseconds lhs, std::chrono
     return lhs < rhs ? lhs : rhs;
 }
 
-const char* resource_kind_name(BusResourceKind kind) noexcept {
-    switch(kind) {
-        case BusResourceKind::CAN: return "can";
-        case BusResourceKind::SERIAL: return "serial";
-    }
-    return "unknown";
-}
-
 std::string physical_resource_key(const BusResourceDescriptor& resource) {
-    return std::string(resource_kind_name(resource.kind)) + '\n' + resource.physical_id;
+    return std::string(to_string(resource.kind)) + '\n' + resource.physical_id;
 }
 
 bool resource_matches(const BusResourceDescriptor& lhs, const BusResourceDescriptor& rhs) {
@@ -44,6 +37,47 @@ bool resource_matches(const BusResourceDescriptor& lhs, const BusResourceDescrip
 
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
+
+/**
+ * @brief 获取 BusResourceKind 的稳定文本名称
+ */
+const char* to_string(BusResourceKind kind) noexcept {
+    switch(kind) {
+        case BusResourceKind::CAN: return "can";
+        case BusResourceKind::SERIAL: return "serial";
+    }
+    return "unknown";
+}
+
+/**
+ * @brief 获取 BusRegistryErr 的稳定文本名称
+ */
+const char* to_string(BusRegistryErr error) noexcept {
+    switch(error) {
+        case BusRegistryErr::INVALID_ARGUMENT: return "invalid_argument";
+        case BusRegistryErr::CREATE_FAILED: return "create_failed";
+        case BusRegistryErr::CONFIG_CONFLICT: return "config_conflict";
+        case BusRegistryErr::TYPE_MISMATCH: return "type_mismatch";
+        case BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT: return "physical_resource_conflict";
+    }
+    return "unknown";
+}
+
+/**
+ * @brief 构造带上下文的 BusRegistry 错误信息
+ */
+std::string bus_registry_error_message(
+    BusRegistryErr error,
+    const std::string& name,
+    const BusResourceDescriptor& resource) {
+    std::ostringstream stream;
+    stream << "BusRegistryErr=" << to_string(error)
+           << "; logical_bus=" << name
+           << "; resource_kind=" << to_string(resource.kind)
+           << "; physical_id=" << resource.physical_id
+           << "; config_signature=" << resource.config_signature;
+    return stream.str();
+}
 
 /**
  * @brief 创建 CAN 通道

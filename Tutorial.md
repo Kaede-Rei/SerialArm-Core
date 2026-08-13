@@ -81,14 +81,14 @@ ARM MotorControl
   ↓
 ARM CanChannel ──────────┐
                          │
-External actuator        ├── BusPool ── DamiaoUsbCanBus ── physical CAN
+External actuator        ├── BusRegistry ── DamiaoUsbCanBus ── physical CAN
   ↓                      │
 MotorControl             │
   ↓                      │
 Tool CanChannel ─────────┘
 ```
 
-`BusPool` 只负责同进程 physical bus 复用，`CanChannel` 只负责通用 CAN frame 过滤、fan-out 和有界 pending queue；Damiao 的 slave、RID 和参数响应语义由 `MotorControl` 处理，不放入 transport 层
+`BusRegistry` 只负责同进程 physical bus 复用，`CanChannel` 只负责通用 CAN frame 过滤、fan-out 和有界 pending queue；Damiao 的 slave、RID 和参数响应语义由 `MotorControl` 处理，不放入 transport 层
 
 下面用两个独立 `MotorControl` 演示共享 `master_id = 0` 的设备：
 
@@ -134,6 +134,97 @@ bool tool_ok = tool_control.refresh_motor_status(tool_motor);
 两个 Channel 会各自收到匹配的 CAN ID 0 frame 副本；`MotorControl` 会继续根据 payload slave ID 找到自己的目标 motor，因此 tool motor 不需要加入 Robot joint 列表，也不需要新增 `Robot::send_can_frame()` 之类接口
 
 `CanChannel` 默认采用有界 pending queue，达到上限时丢弃最旧帧并累计 `dropped_frames`；这只解决长期运行的内存上限问题，transaction correctness 仍来自 `MotorControl` 的 targeted receive
+
+外部 CAN Driver 只拥有自己的 `CanChannel`
+
+Driver 销毁时释放 channel 和 shared pointer 即可，不应关闭仍被其他 Driver 使用的 physical bus
+
+串行扩展 Driver 应通过 `SerialBus::transaction()` 完成完整协议事务：
+
+```cpp
+bus->transaction([&](serial_arm::transport::SerialPort& serial) {
+    serial.write(request.data(), request.size());
+    serial.read_exact(response.data(), response.size());
+});
+```
+
+request 和 response 不要拆成两个 transaction
+
+transaction 外不要保存 `SerialPort&`、raw fd 或指向 `SerialPort` 的指针
+
+Core 只保证同进程资源唯一所有权、CAN channel fan-out 和 Serial transaction 仲裁
+
+不同厂家设备是否能共线仍由 bitrate、CAN ID、串口参数、电气层、地址、framing 和主动发送行为决定
+
+### 通用 CAN Shared Bus 示例
+
+扩展 CAN Driver 可以直接通过 `BusRegistry` 获取共享 `CanBus`
+
+每个 Driver 再创建自己的 `CanChannel`
+
+```cpp
+auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
+    "main_can",
+    resource_descriptor,
+    [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
+        auto value = std::make_shared<MyCanBus>(config);
+        auto opened = value->open();
+        if(!opened) return nullptr;
+        return value;
+    });
+
+if(!bus) {
+    return;
+}
+
+auto channel_a = (*bus)->create_channel(
+    {serial_arm::transport::CanFilter{0x100, 0x7FF}},
+    64);
+
+auto channel_b = (*bus)->create_channel(
+    {serial_arm::transport::CanFilter{0x200, 0x7FF}},
+    64);
+```
+
+两个 channel 共用一个 physical `CanBus`
+
+filter 独立
+
+pending queue 独立
+
+`channel_a->flush()` 只清理 A 的 pending queue，不影响 B
+
+### 通用 Serial Shared Bus 示例
+
+串行协议共享同一个 `SerialBus`
+
+client 不直接长期占有 `SerialPort`
+
+```cpp
+auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
+    "tool_serial",
+    serial_arm::transport::SerialBus::resource_descriptor(config),
+    [&]() {
+        auto value = std::make_shared<serial_arm::transport::SerialBus>(config);
+        value->open();
+        return value;
+    });
+
+if(!bus) {
+    return;
+}
+
+(*bus)->transaction([&](serial_arm::transport::SerialPort& serial) {
+    serial.write(request.data(), request.size());
+    serial.read_exact(response.data(), response.size());
+});
+```
+
+完整 request-response 放在一个 transaction
+
+两个 client 并发调用时会自动排队
+
+transaction callback 结束后不要保存 `SerialPort&`
 
 ---
 

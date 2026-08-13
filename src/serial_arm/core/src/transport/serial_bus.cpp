@@ -102,6 +102,19 @@ const SerialBus::Config& SerialBus::config() const noexcept {
 }
 
 /**
+ * @brief 获取共享串行总线轻量运行统计
+ */
+SerialBusDiagnostics SerialBus::diagnostics() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    SerialBusDiagnostics value;
+    value.is_open = serial_.is_open();
+    value.transaction_count = transaction_count_;
+    value.failed_transaction_count = failed_transaction_count_;
+    value.resource = resource_descriptor(config_);
+    return value;
+}
+
+/**
  * @brief 获取 physical resource descriptor
  */
 BusResourceDescriptor SerialBus::resource_descriptor() const {

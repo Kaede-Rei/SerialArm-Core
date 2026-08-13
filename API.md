@@ -53,7 +53,8 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/hardware/motor_bus.hpp` | Hardware Backend contract |
 | `serial_arm/hardware/hardware_loader.hpp` | Backend shared library loader |
 | `serial_arm/transport/can.hpp` | `CanFrame`、`CanFilter`、`CanErr` |
-| `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel` |
+| `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel`、`BusRegistry` |
+| `serial_arm/transport/serial_bus.hpp` | `SerialBus` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
 | `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
 | `dm_hw/damiao.hpp` | Damiao `Motor`、`MotorControl` 与 targeted receive |
@@ -109,6 +110,7 @@ target_link_libraries(my_dynamics_app
 ```cpp
 #include "serial_arm/transport/can.hpp"
 #include "serial_arm/transport/bus.hpp"
+#include "serial_arm/transport/serial_bus.hpp"
 #include "serial_arm/transport/serial_port.hpp"
 ```
 
@@ -129,6 +131,34 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 `CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
 
+`BusRegistry` 是 v0.4.0 shared physical bus ownership 入口
+
+它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
+
+同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
+
+同名但类型不同返回 `TYPE_MISMATCH`
+
+同名或同 physical resource 但配置不同返回 `CONFIG_CONFLICT`
+
+不同 logical name 指向同一 physical resource 且配置相同时返回 `PHYSICAL_RESOURCE_CONFLICT`
+
+创建函数返回空指针时返回 `CREATE_FAILED`
+
+`BusRegistry::get_or_create()` 和 `get_or_create_can_bus()` 内部线程安全，并通过 weak pointer 管理生命周期
+
+最后一个 shared bus owner 释放后，下一次访问 Registry 时会清理对应 logical name 和 physical resource 占用记录
+
+错误上下文可以通过 `bus_registry_error_message()` 构造：
+
+```cpp
+std::string message =
+    serial_arm::transport::bus_registry_error_message(
+        error,
+        "main_can",
+        resource_descriptor);
+```
+
 `CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；创建通道时可以显式指定上限：
 
 ```cpp
@@ -145,6 +175,12 @@ std::cout << stats.dropped_frames << "\n";
 ```
 
 有界队列只负责资源保护；设备事务的正确性仍由 hardware/protocol 层持续 drain 和 payload matching 保证
+
+`CanChannel::send()` 通过所属 `CanBus` 的 TX mutex 串行化发送
+
+`CanChannel::receive()` 通过所属 `CanBus` 的 RX mutex 串行化 physical receive 和 fan-out
+
+多个 channel 可以并发使用，但每个 Driver 仍应只消费自己的 channel
 
 正式链路：
 
@@ -166,7 +202,9 @@ SerialPort
 
 robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
 
-硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`：
+硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`
+
+如果使用已有 Damiao USB2CAN physical bus，推荐通过 protocol helper 获取 channel：
 
 ```cpp
 serial_arm::protocol::damiao_usb2can::Config config;
@@ -188,11 +226,133 @@ if(!result) {
 auto channel = result.value();
 ```
 
-`BusPool` 是 Core 内部共享池，用于保证同进程中同名 CAN bus 复用同一份 `CanBus` runtime；普通设备层代码不应直接操作物理 bus 的 `close()`、物理 `flush()` 或 raw `receive()`
+如果扩展包提供自己的 physical `CanBus` 实现，应通过 `BusRegistry::get_or_create_can_bus()` 注册 physical owner，再为每个 Driver 创建独立 `CanChannel`：
 
-Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusPool 状态
+```cpp
+auto bus = serial_arm::transport::BusRegistry::get_or_create_can_bus(
+    "main_can",
+    resource_descriptor,
+    [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
+        auto value = std::make_shared<MyCanBus>(my_config);
+        auto opened = value->open();
+        if(!opened) return nullptr;
+        return value;
+    });
 
-## 2.2. Damiao USB2CAN Protocol API
+if(!bus) {
+    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+}
+
+auto channel = (*bus)->create_channel(
+    {serial_arm::transport::CanFilter{0x20, 0x7FF}},
+    128);
+```
+
+Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `CanChannel` 和 `std::shared_ptr`
+
+仍被其他 Driver 持有的 `CanBus` 不应被主动关闭
+
+`BusPool` 只保留给 v0.3.x 兼容路径使用；新代码不应把它作为 physical ownership 入口
+
+Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
+
+### SerialBus 扩展契约
+
+串行扩展协议通过 `SerialBus` 共享同一个 physical serial endpoint
+
+`SerialBus` 唯一持有 `SerialPort`
+
+Driver 只能在 `transaction()` callback 生命周期内使用临时 `SerialPort&`
+
+```cpp
+auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
+    "tool_serial",
+    serial_arm::transport::SerialBus::resource_descriptor(config),
+    [&]() {
+        auto value = std::make_shared<serial_arm::transport::SerialBus>(config);
+        value->open();
+        return value;
+    });
+
+if(!bus) {
+    // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+}
+
+(*bus)->transaction([&](serial_arm::transport::SerialPort& serial) {
+    serial.flush(serial_arm::transport::SerialPort::FlushDirection::Input);
+    serial.write(request.data(), request.size());
+    serial.read_exact(response.data(), response.size());
+    validate_response(response);
+});
+```
+
+一个 request-response 协议交互必须放在同一个 transaction 内
+
+不要把 write request 和 read response 拆成两个 transaction，否则其他 client 可以在中间插入自己的事务
+
+不要在 transaction 外保存 `SerialPort&`、raw fd 或指向 `SerialPort` 的指针
+
+Core 不判断任意串行协议是否能共线
+
+扩展 Driver 仍需确认 electrical layer、baud rate、data bits、parity、stop bits、flow control、duplex mode、framing、地址和主动发送行为互相兼容
+
+`SerialBus::diagnostics()` 提供最小运行统计：
+
+```cpp
+auto stats = bus->diagnostics();
+std::cout << stats.is_open << "\n";
+std::cout << stats.transaction_count << "\n";
+std::cout << stats.failed_transaction_count << "\n";
+std::cout << stats.resource.physical_id << "\n";
+```
+
+`failed_transaction_count` 只统计 transaction callback 抛出的异常
+
+Core 不会把 callback 的原始异常改写成通用协议错误
+
+异常会原样继续抛给调用方
+
+`open()`、`close()`、`is_open()`、`diagnostics()` 和 `transaction()` 对同一 `SerialBus` 实例互斥
+
+不要在 transaction callback 内关闭串口
+
+## 2.2. v0.3.0 到 v0.4.0 Shared Bus 迁移
+
+旧模式：
+
+```text
+Driver owns/open physical device
+```
+
+新模式：
+
+```text
+Driver obtains shared Bus
+```
+
+CAN Driver 迁移：
+
+```text
+old: Driver opens physical CAN or USB2CAN
+new: Driver obtains CanBus from BusRegistry and creates private CanChannel
+```
+
+Serial Driver 迁移：
+
+```text
+old: Driver stores SerialPort and performs raw read/write
+new: Driver obtains SerialBus from BusRegistry and performs complete protocol transaction in callback
+```
+
+旧配置中的 inline `serial_port / baudrate / bus` 可以继续由兼容层解析
+
+新配置应优先把 physical endpoint 放在 named `buses:` 中，Driver 只引用 `bus` name
+
+Driver 不再作为 physical resource owner
+
+Driver destruction 只释放自己的 channel、transaction user state 和 shared pointer
+
+## 2.3. Damiao USB2CAN Protocol API
 
 头文件：
 
@@ -251,11 +411,11 @@ if(!result) {
 auto channel = result.value();
 ```
 
-`acquire_channel()` 会通过 Core `BusPool` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
+`acquire_channel()` 会通过 Core `BusRegistry` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
 
 `DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节；不提供扩展 CAN ID、CAN FD、RTR 或跨进程 CAN broker
 
-## 2.3. Damiao `MotorControl` API
+## 2.4. Damiao `MotorControl` API
 
 头文件：
 

@@ -293,6 +293,27 @@ TEST(SerialBusTests, ExceptionReleasesTransactionLock) {
     }));
 }
 
+TEST(SerialBusTests, DiagnosticsCountsTransactionsAndRethrowsOriginalException) {
+    Pty pty;
+    SerialBus bus(bus_config(pty));
+    bus.open();
+
+    EXPECT_NO_THROW(bus.transaction([](SerialPort& serial) {
+        EXPECT_TRUE(serial.is_open());
+    }));
+    EXPECT_THROW(bus.transaction([](SerialPort&) {
+        throw std::runtime_error("protocol callback failed");
+    }), std::runtime_error);
+
+    const auto diagnostics = bus.diagnostics();
+    EXPECT_TRUE(diagnostics.is_open);
+    EXPECT_EQ(diagnostics.transaction_count, 2u);
+    EXPECT_EQ(diagnostics.failed_transaction_count, 1u);
+    EXPECT_EQ(diagnostics.resource.kind, serial_arm::transport::BusResourceKind::SERIAL);
+    EXPECT_EQ(diagnostics.resource.physical_id, pty.slave());
+    EXPECT_NE(diagnostics.resource.config_signature.find("serial|baudrate="), std::string::npos);
+}
+
 TEST(SerialBusTests, TimeoutDoesNotBlockFollowingTransaction) {
     Pty pty;
     SerialBus bus(bus_config(pty));

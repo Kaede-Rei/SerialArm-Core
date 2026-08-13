@@ -67,6 +67,32 @@ enum class BusRegistryErr {
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
+/**
+ * @brief 获取 BusResourceKind 的稳定文本名称
+ * @param kind 物理资源类型
+ * @return 文本名称
+ */
+const char* to_string(BusResourceKind kind) noexcept;
+
+/**
+ * @brief 获取 BusRegistryErr 的稳定文本名称
+ * @param error BusRegistry 错误
+ * @return 文本名称
+ */
+const char* to_string(BusRegistryErr error) noexcept;
+
+/**
+ * @brief 构造带上下文的 BusRegistry 错误信息
+ * @param error BusRegistry 错误
+ * @param name logical bus name
+ * @param resource physical resource 描述
+ * @return 包含错误类型、logical name、resource kind、physical id 和 config signature 的文本
+ */
+std::string bus_registry_error_message(
+    BusRegistryErr error,
+    const std::string& name,
+    const BusResourceDescriptor& resource);
+
 class CanChannel;
 
 /**

@@ -351,6 +351,20 @@ TEST(TransportTests, BusRegistryRejectsPhysicalResourceConflict) {
     EXPECT_EQ(second.error(), BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
 }
 
+TEST(TransportTests, BusRegistryErrorMessageContainsLogicalAndPhysicalContext) {
+    const auto resource = can_resource("can-registry-diagnostic");
+    const std::string message = serial_arm::transport::bus_registry_error_message(
+        BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT,
+        "registry_diagnostic_bus",
+        resource);
+
+    EXPECT_NE(message.find("physical_resource_conflict"), std::string::npos);
+    EXPECT_NE(message.find("registry_diagnostic_bus"), std::string::npos);
+    EXPECT_NE(message.find("resource_kind=can"), std::string::npos);
+    EXPECT_NE(message.find("can-registry-diagnostic"), std::string::npos);
+    EXPECT_NE(message.find("classic-can"), std::string::npos);
+}
+
 TEST(TransportTests, BusRegistryConcurrentGetDoesNotDuplicateOwnership) {
     constexpr int thread_count = 20;
     std::atomic<int> create_count{ 0 };
@@ -405,6 +419,28 @@ TEST(TransportTests, BusRegistryReleasesResourceAfterBusLifetimeEnds) {
         });
 
     ASSERT_TRUE(second);
+}
+
+TEST(TransportTests, ReleasingOneCanChannelOwnerDoesNotCloseSharedRegisteredBus) {
+    std::shared_ptr<MockCanBus> physical_bus;
+    auto registered_bus = BusRegistry::get_or_create_can_bus(
+        "registry_channel_owner_lifetime",
+        can_resource("can-registry-channel-owner-lifetime"),
+        [&]() -> std::shared_ptr<CanBus> {
+            physical_bus = std::make_shared<MockCanBus>();
+            (void)physical_bus->open();
+            return physical_bus;
+        });
+    ASSERT_TRUE(registered_bus);
+
+    auto first_channel = (*registered_bus)->create_channel({ CanFilter{ 0x01, 0x7FF } });
+    auto second_channel = (*registered_bus)->create_channel({ CanFilter{ 0x02, 0x7FF } });
+    first_channel.reset();
+
+    ASSERT_TRUE(physical_bus);
+    EXPECT_TRUE(physical_bus->is_open());
+    ASSERT_TRUE(second_channel->send(frame(0x02)));
+    EXPECT_EQ(physical_bus->tx_size(), 1u);
 }
 
 TEST(TransportTests, TwoFakeDriversShareRegisteredCanBusWithIndependentChannels) {

@@ -3,6 +3,7 @@
 #include "serial_arm/transport/bus.hpp"
 #include "serial_arm/transport/serial_port.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -19,6 +20,16 @@ namespace serial_arm::transport {
 struct SerialBusConfig {
     std::string serial_port;          ///< 串口设备路径
     SerialPort::Config port_config{}; ///< POSIX 串口参数
+};
+
+/**
+ * @brief 共享串行总线轻量运行统计
+ */
+struct SerialBusDiagnostics {
+    bool is_open{ false };                         ///< 当前串口是否已打开
+    std::uint64_t transaction_count{ 0 };          ///< 已进入的 transaction 次数
+    std::uint64_t failed_transaction_count{ 0 };   ///< callback 抛出异常的 transaction 次数
+    BusResourceDescriptor resource;                ///< physical resource 描述
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
@@ -83,6 +94,12 @@ public:
     const Config& config() const noexcept;
 
     /**
+     * @brief 获取共享串行总线轻量运行统计
+     * @return 当前 open 状态、transaction 计数、失败计数和 physical resource
+     */
+    SerialBusDiagnostics diagnostics() const;
+
+    /**
      * @brief 获取 physical resource descriptor
      * @return 可传给 BusRegistry 的串口物理资源描述
      */
@@ -111,11 +128,18 @@ public:
     auto transaction(Fn&& fn) -> std::invoke_result_t<Fn, SerialPort&> {
         using Result = std::invoke_result_t<Fn, SerialPort&>;
         std::lock_guard<std::mutex> lock(mutex_);
-        if constexpr(std::is_void_v<Result>) {
-            std::invoke(std::forward<Fn>(fn), serial_);
+        ++transaction_count_;
+        try {
+            if constexpr(std::is_void_v<Result>) {
+                std::invoke(std::forward<Fn>(fn), serial_);
+            }
+            else {
+                return std::invoke(std::forward<Fn>(fn), serial_);
+            }
         }
-        else {
-            return std::invoke(std::forward<Fn>(fn), serial_);
+        catch(...) {
+            ++failed_transaction_count_;
+            throw;
         }
     }
 
@@ -123,6 +147,8 @@ private:
     Config config_;              ///< 串行总线配置
     SerialPort serial_;          ///< 唯一持有的底层串口
     mutable std::mutex mutex_;   ///< 串口生命周期和事务互斥锁
+    std::uint64_t transaction_count_{ 0 };          ///< 已进入 transaction 次数
+    std::uint64_t failed_transaction_count_{ 0 };   ///< callback 抛出异常次数
 };
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //

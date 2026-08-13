@@ -43,6 +43,16 @@ ROS 2 / ros2_control 是可选 Adapter，不是 Core 的运行前提
 
 Reference robot 为 DM-Arm，reference hardware backend 为 Damiao
 
+SerialArm-Core v0.4.0 introduces process-local shared physical bus ownership
+
+一个 Physical Bus 由 Core 唯一持有
+
+多个独立 Driver 可以共享同一个 Bus
+
+CAN 通过 independent `CanChannel` instances 分流
+
+Serial 通过 serialized `SerialBus::transaction()` 仲裁
+
 ## 架构
 
 ```mermaid
@@ -100,17 +110,33 @@ SerialPort
 
 ### Shared CAN
 
-同一进程中的多个驱动可以通过相同 bus name 从 `BusPool` 复用同一个 physical CAN bus，并分别持有自己的 `CanChannel`
+同一进程中的多个驱动可以通过相同 bus name 从 `BusRegistry` 复用同一个 physical CAN bus，并分别持有自己的 `CanChannel`
 
 ```text
 Robot / DamiaoMotorBus ── ARM CanChannel ──┐
-                                           ├── BusPool ── DamiaoUsbCanBus ── physical CAN
+                                           ├── BusRegistry ── DamiaoUsbCanBus ── physical CAN
 External actuator ─────── Tool CanChannel ─┘
 ```
 
 `CanChannel` 只负责通用 CAN transport 和有界 pending queue；具体协议层或 hardware 层负责根据 payload 识别设备；独立工具电机、附加轴或其他 CAN 外设不需要伪装成 Robot joint，也不需要向 `Robot` 或 `MotorBus` 增加 raw CAN API
 
 Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 slave ID 识别电机；参数事务按照 `slave ID + RID + response type` 精确匹配，并在 timeout 内持续跳过无关 CAN 流量
+
+### Shared Driver Contract
+
+外部 CAN Driver 不拥有 physical CAN resource
+
+它应通过已有 Protocol helper 或 `BusRegistry::get_or_create_can_bus()` 获取共享 `CanBus`，再创建自己的 `CanChannel`
+
+Driver 销毁时只释放自己的 `CanChannel` 和 `std::shared_ptr`，不得主动关闭仍被其他 Driver 使用的 Bus
+
+外部 Serial Driver 不长期保存 `SerialPort&`
+
+它应通过 `BusRegistry::get_or_create<SerialBus>()` 获取共享 `SerialBus`，并把完整 request-response 放进同一个 `transaction()` callback
+
+Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial transaction arbitration
+
+不同厂家或不同协议能否共线仍取决于 bitrate、ID/地址、framing、主动发送行为、电气层和总线负载等兼容条件
 
 ## 能力
 
@@ -121,7 +147,7 @@ Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 s
 | Pinocchio Dynamics | 已实现 |
 | Safety / Mapping | 已实现 |
 | 五种阻抗模式 | 已实现 |
-| CAN Transport | `CanBus` / `CanChannel` / `BusPool` |
+| CAN Transport | `CanBus` / `CanChannel` / `BusRegistry` |
 | Python Binding | 已实现 |
 | C++ Terminal | 已实现 |
 | Damiao Backend | Reference backend |
