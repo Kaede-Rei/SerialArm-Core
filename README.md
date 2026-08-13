@@ -130,9 +130,11 @@ Damiao hardware 在共享 `master_id = 0` 时会根据 feedback payload 中的 s
 
 Driver 销毁时只释放自己的 `CanChannel` 和 `std::shared_ptr`，不得主动关闭仍被其他 Driver 使用的 Bus
 
-外部 Serial Driver 不长期保存 `SerialPort&`
+外部 Serial Driver 不接触底层 `SerialPort` 所有权
 
-它应通过 `BusRegistry::get_or_create<SerialBus>()` 获取共享 `SerialBus`，并把完整 request-response 放进同一个 `transaction()` callback
+它应通过 `BusRegistry::get_or_create<SerialBus>()` 获取共享 `SerialBus`，并通过受限 `SerialTransaction` 把完整 request-response 放进同一个 `transaction()` callback
+
+不同 Driver 可以为各自 transaction 使用独立 read/write timeout，timeout 不属于串口物理兼容性签名
 
 Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial transaction arbitration
 
@@ -148,6 +150,7 @@ Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial tran
 | Safety / Mapping | 已实现 |
 | 五种阻抗模式 | 已实现 |
 | CAN Transport | `CanBus` / `CanChannel` / `BusRegistry` |
+| Shared Serial Transport | `SerialBus` / `SerialTransaction` / `BusRegistry` |
 | Python Binding | 已实现 |
 | C++ Terminal | 已实现 |
 | Damiao Backend | Reference backend |

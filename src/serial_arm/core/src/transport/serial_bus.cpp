@@ -1,5 +1,7 @@
 #include "serial_arm/transport/serial_bus.hpp"
 
+#include <stdexcept>
+
 namespace serial_arm::transport {
 
 // ! ========================= 宏 定 义 ========================= ! //
@@ -45,15 +47,163 @@ std::string config_signature(const SerialPort::Config& config) {
         "|data_bits=" + std::to_string(config.data_bits) +
         "|parity=" + to_string(config.parity) +
         "|stop_bits=" + to_string(config.stop_bits) +
-        "|flow_control=" + to_string(config.flow_control) +
-        "|read_timeout_ms=" + std::to_string(config.read_timeout.count()) +
-        "|write_timeout_ms=" + std::to_string(config.write_timeout.count());
+        "|flow_control=" + to_string(config.flow_control);
 }
 
 } // namespace
 
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
+
+/**
+ * @brief 创建受限串行事务视图
+ */
+SerialTransaction::SerialTransaction(SerialPort& serial, SerialTransactionOptions options) noexcept
+    : serial_(serial), options_(options) {
+}
+
+/**
+ * @brief 最多读取指定字节数
+ */
+std::size_t SerialTransaction::read(Byte* data, std::size_t len) {
+    return serial_.read(data, len, options_.read_timeout);
+}
+
+/**
+ * @brief 使用指定超时最多读取指定字节数
+ */
+std::size_t SerialTransaction::read(Byte* data, std::size_t len, std::chrono::milliseconds timeout) {
+    return serial_.read(data, len, timeout);
+}
+
+/**
+ * @brief 最多读取指定字节数并返回新缓冲区
+ */
+SerialTransaction::Buffer SerialTransaction::read(std::size_t max_bytes) {
+    Buffer buffer(max_bytes);
+    const std::size_t received = read(buffer.data(), buffer.size());
+    buffer.resize(received);
+    return buffer;
+}
+
+/**
+ * @brief 使用指定超时最多读取指定字节数并返回新缓冲区
+ */
+SerialTransaction::Buffer SerialTransaction::read(
+    std::size_t max_bytes,
+    std::chrono::milliseconds timeout) {
+    Buffer buffer(max_bytes);
+    const std::size_t received = read(buffer.data(), buffer.size(), timeout);
+    buffer.resize(received);
+    return buffer;
+}
+
+/**
+ * @brief 在事务默认读取超时内尽量读满指定长度
+ */
+std::size_t SerialTransaction::read_exact(Byte* data, std::size_t len) {
+    return serial_.read_exact(data, len, options_.read_timeout);
+}
+
+/**
+ * @brief 使用指定超时尽量读满指定长度
+ */
+std::size_t SerialTransaction::read_exact(
+    Byte* data,
+    std::size_t len,
+    std::chrono::milliseconds timeout) {
+    return serial_.read_exact(data, len, timeout);
+}
+
+/**
+ * @brief 在事务默认读取超时内尽量读满指定长度并返回新缓冲区
+ */
+SerialTransaction::Buffer SerialTransaction::read_exact(std::size_t len) {
+    Buffer buffer(len);
+    const std::size_t received = read_exact(buffer.data(), buffer.size());
+    buffer.resize(received);
+    return buffer;
+}
+
+/**
+ * @brief 使用指定超时尽量读满指定长度并返回新缓冲区
+ */
+SerialTransaction::Buffer SerialTransaction::read_exact(
+    std::size_t len,
+    std::chrono::milliseconds timeout) {
+    Buffer buffer(len);
+    const std::size_t received = read_exact(buffer.data(), buffer.size(), timeout);
+    buffer.resize(received);
+    return buffer;
+}
+
+/**
+ * @brief 在事务默认写入超时内尽量写出指定长度
+ */
+std::size_t SerialTransaction::write(const Byte* data, std::size_t len) {
+    return serial_.write(data, len, options_.write_timeout);
+}
+
+/**
+ * @brief 使用指定超时尽量写出指定长度
+ */
+std::size_t SerialTransaction::write(
+    const Byte* data,
+    std::size_t len,
+    std::chrono::milliseconds timeout) {
+    return serial_.write(data, len, timeout);
+}
+
+/**
+ * @brief 写出字节缓冲区
+ */
+std::size_t SerialTransaction::write(const Buffer& data) {
+    return write(data.data(), data.size());
+}
+
+/**
+ * @brief 使用指定超时写出字节缓冲区
+ */
+std::size_t SerialTransaction::write(const Buffer& data, std::chrono::milliseconds timeout) {
+    return write(data.data(), data.size(), timeout);
+}
+
+/**
+ * @brief 写出初始化列表
+ */
+std::size_t SerialTransaction::write(std::initializer_list<Byte> data) {
+    return write(data.begin(), data.size());
+}
+
+/**
+ * @brief 使用指定超时写出初始化列表
+ */
+std::size_t SerialTransaction::write(
+    std::initializer_list<Byte> data,
+    std::chrono::milliseconds timeout) {
+    return write(data.begin(), data.size(), timeout);
+}
+
+/**
+ * @brief 等待输出队列发送完成
+ */
+void SerialTransaction::drain() {
+    serial_.drain();
+}
+
+/**
+ * @brief 清空串口缓冲区
+ */
+void SerialTransaction::flush(FlushDirection direction) {
+    serial_.flush(direction);
+}
+
+/**
+ * @brief 查询内核输入缓冲区可读字节数
+ */
+std::size_t SerialTransaction::available() const {
+    return serial_.available();
+}
 
 /**
  * @brief 创建未打开的共享串行总线
@@ -129,7 +279,30 @@ BusResourceDescriptor SerialBus::resource_descriptor(const Config& config) {
     resource.kind = BusResourceKind::SERIAL;
     resource.physical_id = config.serial_port;
     resource.config_signature = config_signature(config.port_config);
+    resource.ownership_key = tty_ownership_key(config.serial_port);
     return resource;
+}
+
+/**
+ * @brief 获取默认串行事务超时
+ */
+SerialTransactionOptions SerialBus::default_transaction_options() const noexcept {
+    SerialTransactionOptions options;
+    options.read_timeout = config_.port_config.read_timeout;
+    options.write_timeout = config_.port_config.write_timeout;
+    return options;
+}
+
+/**
+ * @brief 校验事务超时配置
+ */
+void SerialBus::validate_transaction_options(const SerialTransactionOptions& options) {
+    if(options.read_timeout.count() < 0) {
+        throw std::invalid_argument("SerialBus read_timeout must be >= 0 ms");
+    }
+    if(options.write_timeout.count() < 0) {
+        throw std::invalid_argument("SerialBus write_timeout must be >= 0 ms");
+    }
 }
 
 } // namespace serial_arm::transport

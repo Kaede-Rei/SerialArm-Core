@@ -167,10 +167,18 @@ void SerialPort::set_write_timeout(std::chrono::milliseconds timeout) {
  * @brief 最多读取指定字节数
  */
 std::size_t SerialPort::read(Byte* data, std::size_t len) {
+    return read(data, len, config_.read_timeout);
+}
+
+/**
+ * @brief 使用指定超时最多读取指定字节数
+ */
+std::size_t SerialPort::read(Byte* data, std::size_t len, std::chrono::milliseconds timeout) {
     ensure_open();
     validate_buffer(data, len);
+    validate_timeout(timeout, "read_timeout");
     if(len == 0) return 0;
-    if(!wait_ready(POLLIN, config_.read_timeout)) return 0;
+    if(!wait_ready(POLLIN, timeout)) return 0;
 
     for(;;) {
         const ssize_t ret = ::read(fd_, data, len);
@@ -205,11 +213,19 @@ std::size_t SerialPort::read(Buffer& buffer, std::size_t max_bytes) {
  * @brief 在读取超时时间内尽量读满指定长度
  */
 std::size_t SerialPort::read_exact(Byte* data, std::size_t len) {
+    return read_exact(data, len, config_.read_timeout);
+}
+
+/**
+ * @brief 使用指定超时尽量读满指定长度
+ */
+std::size_t SerialPort::read_exact(Byte* data, std::size_t len, std::chrono::milliseconds timeout) {
     ensure_open();
     validate_buffer(data, len);
+    validate_timeout(timeout, "read_timeout");
     if(len == 0) return 0;
 
-    const auto deadline = std::chrono::steady_clock::now() + config_.read_timeout;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     std::size_t total = 0;
     while(total < len) {
         const auto remaining = remaining_time(deadline);
@@ -251,11 +267,22 @@ std::size_t SerialPort::read_exact(Buffer& buffer, std::size_t len) {
  * @brief 在写入超时时间内尽量写出指定长度
  */
 std::size_t SerialPort::write(const Byte* data, std::size_t len) {
+    return write(data, len, config_.write_timeout);
+}
+
+/**
+ * @brief 使用指定超时尽量写出指定长度
+ */
+std::size_t SerialPort::write(
+    const Byte* data,
+    std::size_t len,
+    std::chrono::milliseconds timeout) {
     ensure_open();
     validate_buffer(data, len);
+    validate_timeout(timeout, "write_timeout");
     if(len == 0) return 0;
 
-    const auto deadline = std::chrono::steady_clock::now() + config_.write_timeout;
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
     std::size_t total = 0;
     while(total < len) {
         const auto remaining = remaining_time(deadline);

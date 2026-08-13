@@ -43,15 +43,16 @@ enum class BusResourceKind {
 /**
  * @brief 进程内共享总线物理资源描述
  *
- * `physical_id` 表示同一进程内必须唯一持有的物理端点，例如 `can0`
- * 或 `/dev/ttyACM0`；`config_signature` 由具体 Bus 实现生成，用于描述
- * baudrate、data bits、parity、stop bits、flow control 等会影响共存安全
- * 的通信参数
+ * `physical_id` 表示 Bus 实现使用的物理端点，例如 `can0` 或 `/dev/ttyACM0`
+ * `ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时回退使用 physical_id
+ * 不同 Bus 类型如果最终访问同一个 tty，应提供相同 ownership key；`config_signature` 只描述会影响
+ * 多使用者安全共存的物理通信参数
  */
 struct BusResourceDescriptor {
-    BusResourceKind kind{ BusResourceKind::CAN }; ///< 物理资源类型
-    std::string physical_id;                      ///< 物理端点标识
-    std::string config_signature;                 ///< 通信参数签名
+    BusResourceKind kind{ BusResourceKind::CAN }; ///< Bus 资源类型
+    std::string physical_id;                      ///< Bus 使用的物理端点标识
+    std::string config_signature;                 ///< 物理通信参数签名
+    std::string ownership_key;                    ///< 底层物理资源唯一所有权键
 };
 
 /**
@@ -92,6 +93,13 @@ std::string bus_registry_error_message(
     BusRegistryErr error,
     const std::string& name,
     const BusResourceDescriptor& resource);
+
+/**
+ * @brief 构造 tty 物理资源唯一所有权键
+ * @param device tty 设备路径
+ * @return `tty:` 前缀加规范化设备路径；路径暂不存在时保留原始路径
+ */
+std::string tty_ownership_key(const std::string& device);
 
 class CanChannel;
 
@@ -276,7 +284,7 @@ private:
  * @brief 同进程共享总线注册表
  *
  * BusRegistry 只管理 logical bus name 到 Bus 实例的映射，以及 physical resource
- * 的进程内唯一所有权；它不理解 Damiao、Hiwonder、Gripper 或 Tool Button 等业务语义
+ * 的进程内唯一所有权；它不理解任何具体设备、协议或机器人业务语义
  */
 class BusRegistry final {
 public:

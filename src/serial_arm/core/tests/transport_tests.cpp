@@ -155,8 +155,16 @@ CanFrame frame(std::uint32_t id) {
 }
 
 BusResourceDescriptor can_resource(const std::string& physical_id) {
-    return BusResourceDescriptor{ BusResourceKind::CAN, physical_id, "classic-can" };
+    BusResourceDescriptor resource;
+    resource.kind = BusResourceKind::CAN;
+    resource.physical_id = physical_id;
+    resource.config_signature = "classic-can";
+    resource.ownership_key = "can:" + physical_id;
+    return resource;
 }
+
+struct AlternateBus {
+};
 
 } // namespace
 
@@ -303,6 +311,57 @@ TEST(TransportTests, BusRegistrySameLogicalBusReturnsSameInstance) {
     ASSERT_TRUE(second);
     EXPECT_EQ(first->get(), second->get());
     EXPECT_EQ(create_count.load(), 1);
+}
+
+TEST(TransportTests, BusRegistryRejectsLogicalBusTypeMismatch) {
+    auto first = BusRegistry::get_or_create_can_bus(
+        "registry_type_mismatch",
+        can_resource("can-registry-type-mismatch"),
+        []() {
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+    ASSERT_TRUE(first);
+
+    auto second = BusRegistry::get_or_create<AlternateBus>(
+        "registry_type_mismatch",
+        can_resource("can-registry-type-mismatch"),
+        []() {
+            return std::make_shared<AlternateBus>();
+        });
+
+    ASSERT_FALSE(second);
+    EXPECT_EQ(second.error(), BusRegistryErr::TYPE_MISMATCH);
+}
+
+TEST(TransportTests, BusRegistryRejectsCrossKindOwnershipOfSamePhysicalResource) {
+    auto can = can_resource("/dev/ttyACM-registry-shared");
+    can.ownership_key = "tty:/dev/ttyACM-registry-shared";
+    auto first = BusRegistry::get_or_create_can_bus(
+        "registry_tty_can_owner",
+        can,
+        []() {
+            auto bus = std::make_shared<MockCanBus>();
+            (void)bus->open();
+            return bus;
+        });
+    ASSERT_TRUE(first);
+
+    BusResourceDescriptor serial;
+    serial.kind = BusResourceKind::SERIAL;
+    serial.physical_id = "/dev/ttyACM-registry-shared";
+    serial.config_signature = "serial|baudrate=115200|data_bits=8|parity=N|stop_bits=1|flow_control=none";
+    serial.ownership_key = "tty:/dev/ttyACM-registry-shared";
+    auto second = BusRegistry::get_or_create<AlternateBus>(
+        "registry_tty_serial_owner",
+        serial,
+        []() {
+            return std::make_shared<AlternateBus>();
+        });
+
+    ASSERT_FALSE(second);
+    EXPECT_EQ(second.error(), BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
 }
 
 TEST(TransportTests, BusRegistryDifferentBusesAreIndependent) {

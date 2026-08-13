@@ -183,6 +183,15 @@ public:
     std::size_t read(Byte* data, std::size_t len);
 
     /**
+     * @brief 使用指定超时最多读取 len 字节
+     * @param data 目标缓冲区
+     * @param len 目标缓冲区长度
+     * @param timeout 本次读取超时时间
+     * @return 实际读取字节数，超时时返回 0
+     */
+    std::size_t read(Byte* data, std::size_t len, std::chrono::milliseconds timeout);
+
+    /**
      * @brief 最多读取 max_bytes 字节并返回新缓冲区
      * @param max_bytes 最大读取字节数
      * @return 实际读取到的字节
@@ -206,6 +215,15 @@ public:
     std::size_t read_exact(Byte* data, std::size_t len);
 
     /**
+     * @brief 使用指定超时尽量读取 len 字节
+     * @param data 目标缓冲区
+     * @param len 期望读取字节数
+     * @param timeout 本次读取超时时间
+     * @return 实际读取字节数，可能小于 len
+     */
+    std::size_t read_exact(Byte* data, std::size_t len, std::chrono::milliseconds timeout);
+
+    /**
      * @brief 在读取超时时间内尽量读取 len 字节并返回新缓冲区
      * @param len 期望读取字节数
      * @return 实际读取到的字节
@@ -227,6 +245,15 @@ public:
      * @return 实际写出字节数，可能小于 len
      */
     std::size_t write(const Byte* data, std::size_t len);
+
+    /**
+     * @brief 使用指定超时尽量写出 len 字节
+     * @param data 待写缓冲区
+     * @param len 待写字节数
+     * @param timeout 本次写入超时时间
+     * @return 实际写出字节数，可能小于 len
+     */
+    std::size_t write(const Byte* data, std::size_t len, std::chrono::milliseconds timeout);
 
     /**
      * @brief 写出缓冲区全部内容

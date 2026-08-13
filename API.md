@@ -54,7 +54,7 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/hardware/hardware_loader.hpp` | Backend shared library loader |
 | `serial_arm/transport/can.hpp` | `CanFrame`、`CanFilter`、`CanErr` |
 | `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel`、`BusRegistry` |
-| `serial_arm/transport/serial_bus.hpp` | `SerialBus` |
+| `serial_arm/transport/serial_bus.hpp` | `SerialBus` / `SerialTransaction` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
 | `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
 | `dm_hw/damiao.hpp` | Damiao `Motor`、`MotorControl` 与 targeted receive |
@@ -135,13 +135,17 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
 
+`BusResourceDescriptor::ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
+
 同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
 
 同名但类型不同返回 `TYPE_MISMATCH`
 
-同名或同 physical resource 但配置不同返回 `CONFIG_CONFLICT`
+同名同类型但 resource descriptor 不一致返回 `CONFIG_CONFLICT`
 
-不同 logical name 指向同一 physical resource 且配置相同时返回 `PHYSICAL_RESOURCE_CONFLICT`
+不同 logical name 使用同一 ownership key 时，如果是同类同 physical id 但物理通信参数不同则返回 `CONFIG_CONFLICT`
+
+不同 logical name 使用同一 ownership key 的其他重复占用情况返回 `PHYSICAL_RESOURCE_CONFLICT`
 
 创建函数返回空指针时返回 `CREATE_FAILED`
 
@@ -198,7 +202,7 @@ SerialPort
 达妙官方 USB2CAN 模块
 ```
 
-`SerialPort` 位于 `serial_arm::transport` 命名空间，提供 `Config`、独立 `read_timeout/write_timeout`、`open()`、`set_config()`、`read()`、`read_exact()`、`write()`、`flush()`、`drain()`、`available()` 和 move 语义；它只负责 Linux tty 字节传输，不解析任何设备协议
+`SerialPort` 位于 `serial_arm::transport` 命名空间，提供 `Config`、独立 `read_timeout/write_timeout`、`open()`、`set_config()`、`read()`、`read_exact()`、`write()`、`flush()`、`drain()`、`available()` 和 move 语义；`read()` / `read_exact()` / `write()` 还提供显式 operation timeout 重载，这些重载不会修改持久 `Config`；它只负责 Linux tty 字节传输，不解析任何设备协议
 
 robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
 
@@ -262,7 +266,7 @@ Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`s
 
 `SerialBus` 唯一持有 `SerialPort`
 
-Driver 只能在 `transaction()` callback 生命周期内使用临时 `SerialPort&`
+Driver 只能在 `transaction()` callback 生命周期内使用受限 `SerialTransaction&`
 
 ```cpp
 auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
@@ -278,10 +282,10 @@ if(!bus) {
     // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
 }
 
-(*bus)->transaction([&](serial_arm::transport::SerialPort& serial) {
-    serial.flush(serial_arm::transport::SerialPort::FlushDirection::Input);
-    serial.write(request.data(), request.size());
-    serial.read_exact(response.data(), response.size());
+(*bus)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.flush(serial_arm::transport::SerialTransaction::FlushDirection::Input);
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
     validate_response(response);
 });
 ```
@@ -290,9 +294,15 @@ if(!bus) {
 
 不要把 write request 和 read response 拆成两个 transaction，否则其他 client 可以在中间插入自己的事务
 
-不要在 transaction 外保存 `SerialPort&`、raw fd 或指向 `SerialPort` 的指针
+SerialTransaction 不提供 `open()`、`close()`、`set_config()` 或 `native_handle()`，协议 Driver 不能接管或破坏共享串口生命周期
 
 Core 不判断任意串行协议是否能共线
+
+`baud rate / data bits / parity / stop bits / flow control` 属于 physical serial compatibility fingerprint
+
+`read_timeout / write_timeout` 属于 transaction policy，不进入 physical compatibility fingerprint，不同 Driver 可以通过 `SerialTransactionOptions` 使用不同超时
+
+`SerialBusConfig::port_config` 中的 read/write timeout 只作为该 Bus 首次创建时的默认 transaction timeout；Registry 返回已有同名 Bus 时不会用后续调用方的 timeout 覆盖已有默认值，需要独立 timeout 的 Driver 应显式传入 `SerialTransactionOptions`
 
 扩展 Driver 仍需确认 electrical layer、baud rate、data bits、parity、stop bits、flow control、duplex mode、framing、地址和主动发送行为互相兼容
 
@@ -304,6 +314,7 @@ std::cout << stats.is_open << "\n";
 std::cout << stats.transaction_count << "\n";
 std::cout << stats.failed_transaction_count << "\n";
 std::cout << stats.resource.physical_id << "\n";
+std::cout << stats.resource.ownership_key << "\n";
 ```
 
 `failed_transaction_count` 只统计 transaction callback 抛出的异常
@@ -314,7 +325,7 @@ Core 不会把 callback 的原始异常改写成通用协议错误
 
 `open()`、`close()`、`is_open()`、`diagnostics()` 和 `transaction()` 对同一 `SerialBus` 实例互斥
 
-不要在 transaction callback 内关闭串口
+transaction callback 无法直接关闭底层串口
 
 ## 2.2. v0.3.0 到 v0.4.0 Shared Bus 迁移
 

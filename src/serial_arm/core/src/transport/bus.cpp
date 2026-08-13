@@ -1,6 +1,8 @@
 #include "serial_arm/transport/bus.hpp"
 
 #include <algorithm>
+#include <climits>
+#include <cstdlib>
 #include <sstream>
 
 namespace serial_arm::transport {
@@ -24,13 +26,15 @@ std::chrono::milliseconds min_timeout(std::chrono::milliseconds lhs, std::chrono
 }
 
 std::string physical_resource_key(const BusResourceDescriptor& resource) {
-    return std::string(to_string(resource.kind)) + '\n' + resource.physical_id;
+    if(!resource.ownership_key.empty()) return resource.ownership_key;
+    return resource.physical_id;
 }
 
 bool resource_matches(const BusResourceDescriptor& lhs, const BusResourceDescriptor& rhs) {
     return lhs.kind == rhs.kind &&
         lhs.physical_id == rhs.physical_id &&
-        lhs.config_signature == rhs.config_signature;
+        lhs.config_signature == rhs.config_signature &&
+        physical_resource_key(lhs) == physical_resource_key(rhs);
 }
 
 } // namespace
@@ -75,8 +79,20 @@ std::string bus_registry_error_message(
            << "; logical_bus=" << name
            << "; resource_kind=" << to_string(resource.kind)
            << "; physical_id=" << resource.physical_id
+           << "; ownership_key=" << physical_resource_key(resource)
            << "; config_signature=" << resource.config_signature;
     return stream.str();
+}
+
+/**
+ * @brief 构造 tty 物理资源唯一所有权键
+ */
+std::string tty_ownership_key(const std::string& device) {
+    char resolved[PATH_MAX]{};
+    if(!device.empty() && ::realpath(device.c_str(), resolved) != nullptr) {
+        return "tty:" + std::string(resolved);
+    }
+    return "tty:" + device;
 }
 
 /**
@@ -335,7 +351,12 @@ tl::expected<std::shared_ptr<void>, BusRegistryErr> BusRegistry::get_or_create_e
     if(resource_it != resources.end()) {
         auto owner_it = registry.find(resource_it->second);
         if(owner_it != registry.end() && !owner_it->second.bus.expired()) {
-            if(!resource_matches(owner_it->second.resource, resource)) {
+            const auto& owner_resource = owner_it->second.resource;
+            if(owner_resource.kind != resource.kind ||
+                owner_resource.physical_id != resource.physical_id) {
+                return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
+            }
+            if(owner_resource.config_signature != resource.config_signature) {
                 return tl::make_unexpected(BusRegistryErr::CONFIG_CONFLICT);
             }
             return tl::make_unexpected(BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);

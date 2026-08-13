@@ -41,6 +41,7 @@ transport::BusResourceDescriptor resource_descriptor(const Config& config) {
     resource.kind = transport::BusResourceKind::CAN;
     resource.physical_id = config.serial_port;
     resource.config_signature = config_signature(config);
+    resource.ownership_key = transport::tty_ownership_key(config.serial_port);
     return resource;
 }
 

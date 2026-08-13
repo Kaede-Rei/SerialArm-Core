@@ -142,15 +142,15 @@ Driver 销毁时释放 channel 和 shared pointer 即可，不应关闭仍被其
 串行扩展 Driver 应通过 `SerialBus::transaction()` 完成完整协议事务：
 
 ```cpp
-bus->transaction([&](serial_arm::transport::SerialPort& serial) {
-    serial.write(request.data(), request.size());
-    serial.read_exact(response.data(), response.size());
+bus->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
 });
 ```
 
 request 和 response 不要拆成两个 transaction
 
-transaction 外不要保存 `SerialPort&`、raw fd 或指向 `SerialPort` 的指针
+transaction callback 只获得受限 `SerialTransaction&`，不能 open/close 串口、修改持久配置或获取 raw fd
 
 Core 只保证同进程资源唯一所有权、CAN channel fan-out 和 Serial transaction 仲裁
 
@@ -198,7 +198,7 @@ pending queue 独立
 
 串行协议共享同一个 `SerialBus`
 
-client 不直接长期占有 `SerialPort`
+client 不直接接触底层 `SerialPort`
 
 ```cpp
 auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
@@ -214,9 +214,9 @@ if(!bus) {
     return;
 }
 
-(*bus)->transaction([&](serial_arm::transport::SerialPort& serial) {
-    serial.write(request.data(), request.size());
-    serial.read_exact(response.data(), response.size());
+(*bus)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
 });
 ```
 
@@ -224,7 +224,24 @@ if(!bus) {
 
 两个 client 并发调用时会自动排队
 
-transaction callback 结束后不要保存 `SerialPort&`
+不同协议需要不同超时时可以使用 `SerialTransactionOptions`
+
+```cpp
+serial_arm::transport::SerialTransactionOptions options;
+options.read_timeout = std::chrono::milliseconds(20);
+options.write_timeout = std::chrono::milliseconds(100);
+
+(*bus)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
+});
+```
+
+read/write timeout 属于事务策略，不属于 physical serial compatibility fingerprint
+
+同一个 named SerialBus 被多个 Driver 复用时，后续 Driver 不应依赖自己的 config 覆盖 Bus 默认 timeout，需要独立 timeout 时显式传入 `SerialTransactionOptions`
+
+不要在 transaction callback 外保存 `SerialTransaction&`
 
 ---
 
