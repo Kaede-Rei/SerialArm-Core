@@ -32,7 +32,6 @@ std::string physical_resource_key(const BusResourceDescriptor& resource) {
 
 bool resource_matches(const BusResourceDescriptor& lhs, const BusResourceDescriptor& rhs) {
     return lhs.kind == rhs.kind &&
-        lhs.physical_id == rhs.physical_id &&
         lhs.config_signature == rhs.config_signature &&
         physical_resource_key(lhs) == physical_resource_key(rhs);
 }

@@ -51,7 +51,7 @@ SerialArm-Core v0.4.0 introduces process-local shared physical bus ownership
 
 CAN 通过 independent `CanChannel` instances 分流
 
-Serial 通过 serialized `SerialBus::transaction()` 仲裁
+Serial 通过 `SerialBusClient` 发起 serialized transaction，由内部 `SerialBus` 仲裁
 
 ## 架构
 
@@ -132,9 +132,11 @@ Driver 销毁时只释放自己的 `CanChannel` 和 `std::shared_ptr`，不得�
 
 外部 Serial Driver 不接触底层 `SerialPort` 所有权
 
-它应通过 `BusRegistry::get_or_create<SerialBus>()` 获取共享 `SerialBus`，并通过受限 `SerialTransaction` 把完整 request-response 放进同一个 `transaction()` callback
+它应通过 `acquire_serial_bus_client()` 获取 transaction-only `SerialBusClient`，并通过受限 `SerialTransaction` 把完整 request-response 放进同一个 `transaction()` callback
 
 不同 Driver 可以为各自 transaction 使用独立 read/write timeout，timeout 不属于串口物理兼容性签名
+
+对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可直接使用 Shared Serial；需要显式 RTS / `TIOCSRS485` 方向控制的场景暂不属于 v0.4.0 范围
 
 Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial transaction arbitration
 
@@ -150,7 +152,7 @@ Core 只保证同进程 physical ownership、CAN channel fan-out 和 Serial tran
 | Safety / Mapping | 已实现 |
 | 五种阻抗模式 | 已实现 |
 | CAN Transport | `CanBus` / `CanChannel` / `BusRegistry` |
-| Shared Serial Transport | `SerialBus` / `SerialTransaction` / `BusRegistry` |
+| Shared Serial Transport | `SerialBusClient` / `SerialTransaction` / internal `SerialBus` / `BusRegistry` |
 | Python Binding | 已实现 |
 | C++ Terminal | 已实现 |
 | Damiao Backend | Reference backend |

@@ -240,35 +240,19 @@ void SerialBus::close() noexcept {
  * @brief 查询串口是否已打开
  */
 bool SerialBus::is_open() const noexcept {
-    std::lock_guard<std::mutex> lock(mutex_);
     return serial_.is_open();
-}
-
-/**
- * @brief 获取共享串行总线配置
- */
-const SerialBus::Config& SerialBus::config() const noexcept {
-    return config_;
 }
 
 /**
  * @brief 获取共享串行总线轻量运行统计
  */
 SerialBusDiagnostics SerialBus::diagnostics() const {
-    std::lock_guard<std::mutex> lock(mutex_);
     SerialBusDiagnostics value;
     value.is_open = serial_.is_open();
-    value.transaction_count = transaction_count_;
-    value.failed_transaction_count = failed_transaction_count_;
+    value.transaction_count = transaction_count_.load();
+    value.failed_transaction_count = failed_transaction_count_.load();
     value.resource = resource_descriptor(config_);
     return value;
-}
-
-/**
- * @brief 获取 physical resource descriptor
- */
-BusResourceDescriptor SerialBus::resource_descriptor() const {
-    return resource_descriptor(config_);
 }
 
 /**
@@ -284,16 +268,6 @@ BusResourceDescriptor SerialBus::resource_descriptor(const Config& config) {
 }
 
 /**
- * @brief 获取默认串行事务超时
- */
-SerialTransactionOptions SerialBus::default_transaction_options() const noexcept {
-    SerialTransactionOptions options;
-    options.read_timeout = config_.port_config.read_timeout;
-    options.write_timeout = config_.port_config.write_timeout;
-    return options;
-}
-
-/**
  * @brief 校验事务超时配置
  */
 void SerialBus::validate_transaction_options(const SerialTransactionOptions& options) {
@@ -303,6 +277,56 @@ void SerialBus::validate_transaction_options(const SerialTransactionOptions& opt
     if(options.write_timeout.count() < 0) {
         throw std::invalid_argument("SerialBus write_timeout must be >= 0 ms");
     }
+}
+
+
+/**
+ * @brief 创建协议层共享串行 client
+ */
+SerialBusClient::SerialBusClient(
+    std::shared_ptr<SerialBus> bus,
+    SerialTransactionOptions options) noexcept
+    : bus_(std::move(bus)), options_(options) {
+}
+
+/**
+ * @brief 查询共享串行总线是否已打开
+ */
+bool SerialBusClient::is_open() const noexcept {
+    return bus_ && bus_->is_open();
+}
+
+/**
+ * @brief 获取共享串行总线轻量运行统计
+ */
+SerialBusDiagnostics SerialBusClient::diagnostics() const {
+    if(!bus_) return {};
+    return bus_->diagnostics();
+}
+
+/**
+ * @brief 获取共享串行总线协议 client
+ */
+tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+    const std::string& name,
+    const SerialBusConfig& config) {
+    SerialTransactionOptions options;
+    options.read_timeout = config.port_config.read_timeout;
+    options.write_timeout = config.port_config.write_timeout;
+    SerialBus::validate_transaction_options(options);
+
+    auto bus = BusRegistry::get_or_create<SerialBus>(
+        name,
+        SerialBus::resource_descriptor(config),
+        [&]() {
+            auto value = std::shared_ptr<SerialBus>(new SerialBus(config));
+            value->open();
+            return value;
+        });
+    if(!bus) return tl::make_unexpected(bus.error());
+
+    return std::shared_ptr<SerialBusClient>(
+        new SerialBusClient(*bus, options));
 }
 
 } // namespace serial_arm::transport

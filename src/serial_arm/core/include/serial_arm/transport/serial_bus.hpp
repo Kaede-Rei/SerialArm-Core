@@ -3,11 +3,13 @@
 #include "serial_arm/transport/bus.hpp"
 #include "serial_arm/transport/serial_port.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -209,22 +211,15 @@ private:
 /**
  * @brief 同进程共享串行总线
  *
- * SerialBus 唯一持有一个 SerialPort，并通过 transaction() 将串口访问串行化
- * 协议层只能通过 SerialTransaction 完成自己的 write/read/flush/framing 逻辑
- * SerialBus 不解析任何具体协议，也不向 client 暴露底层 SerialPort 所有权
+ * SerialBus 唯一持有一个 SerialPort，并负责串行化完整协议事务
+ * 协议层不得直接持有 SerialBus，而应通过 acquire_serial_bus_client() 获取
+ * SerialBusClient；总线生命周期由共享引用和 RAII 管理
  */
+class SerialBusClient;
+
 class SerialBus final {
 public:
     using Config = SerialBusConfig;
-
-    /**
-     * @brief 创建未打开的共享串行总线
-     * @param config 串口设备路径、物理串口参数和默认事务超时
-     *
-     * 构造函数不打开物理设备；调用 open() 后 SerialBus 成为 SerialPort 唯一 owner
-     * 对同一 SerialBus 实例的 transaction() 调用线程安全并互斥执行完整事务
-     */
-    explicit SerialBus(Config config);
 
     /**
      * @brief 关闭串口并释放资源
@@ -237,17 +232,34 @@ public:
     SerialBus& operator=(SerialBus&&) = delete;
 
     /**
-     * @brief 打开底层串口
+     * @brief 根据配置生成 physical resource descriptor
+     * @param config 串口设备路径和 POSIX 串口参数
+     * @return 可传给 BusRegistry 的串口物理资源描述
      *
-     * 重复调用 open() 不会重复打开已经打开的 SerialPort；open() 与 transaction()
-     * 共用同一互斥锁，避免打开或关闭动作与协议事务交叉
+     * read/write timeout 不属于物理兼容性签名，不同协议 client 可以为每次事务
+     * 使用独立 timeout；该函数不打开串口，也不创建 SerialBus 实例
+     */
+    static BusResourceDescriptor resource_descriptor(const Config& config);
+
+private:
+    friend class SerialBusClient;
+    friend tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+        const std::string& name,
+        const Config& config);
+
+    /**
+     * @brief 创建未打开的共享串行总线
+     * @param config 串口设备路径、物理串口参数和默认 client 超时
+     */
+    explicit SerialBus(Config config);
+
+    /**
+     * @brief 打开底层串口
      */
     void open();
 
     /**
      * @brief 关闭底层串口
-     *
-     * close() 只由 SerialBus owner 调用；该函数与 transaction() 互斥
      */
     void close() noexcept;
 
@@ -258,52 +270,16 @@ public:
     bool is_open() const noexcept;
 
     /**
-     * @brief 获取共享串行总线配置
-     * @return 配置只读引用
-     */
-    const Config& config() const noexcept;
-
-    /**
      * @brief 获取共享串行总线轻量运行统计
      * @return 当前 open 状态、transaction 计数、失败计数和 physical resource
      */
     SerialBusDiagnostics diagnostics() const;
 
     /**
-     * @brief 获取 physical resource descriptor
-     * @return 可传给 BusRegistry 的串口物理资源描述
-     */
-    BusResourceDescriptor resource_descriptor() const;
-
-    /**
-     * @brief 根据配置生成 physical resource descriptor
-     * @param config 串口设备路径和 POSIX 串口参数
-     * @return 可传给 BusRegistry 的串口物理资源描述
-     *
-     * read/write timeout 不属于物理兼容性签名，不同协议 client 可以为每次事务
-     * 使用独立 timeout；该函数不打开串口，也不创建 SerialBus 实例
-     */
-    static BusResourceDescriptor resource_descriptor(const Config& config);
-
-    /**
-     * @brief 使用总线默认超时执行一次串口事务
-     * @param fn 协议 callback，参数为受限 SerialTransaction&
-     * @return callback 的返回值
-     */
-    template<typename Fn>
-    auto transaction(Fn&& fn) -> std::invoke_result_t<Fn, SerialTransaction&> {
-        return transaction(default_transaction_options(), std::forward<Fn>(fn));
-    }
-
-    /**
      * @brief 使用指定超时执行一次串口事务
      * @param options 本事务默认读写超时
      * @param fn 协议 callback，参数为受限 SerialTransaction&
      * @return callback 的返回值
-     *
-     * transaction() 在 callback 前获取总线互斥锁，并在 callback 正常返回或抛出
-     * 异常时自动释放；不同 client 的 timeout 只属于各自事务，不修改 SerialPort 的
-     * 持久配置；该函数不捕获异常，异常会原样传给调用方
      */
     template<typename Fn>
     auto transaction(const SerialTransactionOptions& options, Fn&& fn)
@@ -327,13 +303,6 @@ public:
         }
     }
 
-private:
-    /**
-     * @brief 获取默认串行事务超时
-     * @return 从 SerialBus 配置提取的默认读写超时
-     */
-    SerialTransactionOptions default_transaction_options() const noexcept;
-
     /**
      * @brief 校验事务超时配置
      * @param options 待校验事务配置
@@ -344,9 +313,87 @@ private:
     Config config_;              ///< 串行总线配置
     SerialPort serial_;          ///< 唯一持有的底层串口
     mutable std::mutex mutex_;   ///< 串口生命周期和事务互斥锁
-    std::uint64_t transaction_count_{ 0 };          ///< 已进入 transaction 次数
-    std::uint64_t failed_transaction_count_{ 0 };   ///< callback 抛出异常次数
+    std::atomic<std::uint64_t> transaction_count_{ 0 };        ///< 已进入 transaction 次数
+    std::atomic<std::uint64_t> failed_transaction_count_{ 0 }; ///< callback 抛出异常次数
 };
+
+/**
+ * @brief 共享串行总线协议 client
+ *
+ * SerialBusClient 只持有共享总线引用和当前 client 的默认事务超时
+ * 对协议层只暴露 transaction() 和只读运行状态，不暴露 open/close/config/raw port
+ * 因此一个协议 client 无法修改共享物理总线生命周期或其他 client 的持久状态
+ */
+class SerialBusClient final {
+public:
+    SerialBusClient(const SerialBusClient&) = delete;
+    SerialBusClient& operator=(const SerialBusClient&) = delete;
+    SerialBusClient(SerialBusClient&&) = delete;
+    SerialBusClient& operator=(SerialBusClient&&) = delete;
+
+    /**
+     * @brief 使用当前 client 默认超时执行一次串口事务
+     * @param fn 协议 callback，参数为受限 SerialTransaction&
+     * @return callback 的返回值
+     */
+    template<typename Fn>
+    auto transaction(Fn&& fn) -> std::invoke_result_t<Fn, SerialTransaction&> {
+        return bus_->transaction(options_, std::forward<Fn>(fn));
+    }
+
+    /**
+     * @brief 使用指定超时执行一次串口事务
+     * @param options 本事务默认读写超时
+     * @param fn 协议 callback，参数为受限 SerialTransaction&
+     * @return callback 的返回值
+     */
+    template<typename Fn>
+    auto transaction(const SerialTransactionOptions& options, Fn&& fn)
+        -> std::invoke_result_t<Fn, SerialTransaction&> {
+        return bus_->transaction(options, std::forward<Fn>(fn));
+    }
+
+    /**
+     * @brief 查询共享串行总线是否已打开
+     * @return 已打开时返回 true
+     */
+    bool is_open() const noexcept;
+
+    /**
+     * @brief 获取共享串行总线轻量运行统计
+     * @return 当前 open 状态、transaction 计数、失败计数和 physical resource
+     */
+    SerialBusDiagnostics diagnostics() const;
+
+private:
+    friend tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+        const std::string& name,
+        const SerialBusConfig& config);
+
+    /**
+     * @brief 创建协议层共享串行 client
+     * @param bus 共享物理串行总线
+     * @param options 当前 client 默认事务超时
+     */
+    SerialBusClient(std::shared_ptr<SerialBus> bus, SerialTransactionOptions options) noexcept;
+
+private:
+    std::shared_ptr<SerialBus> bus_;    ///< 共享串行总线，仅用于保持 owner 生命周期
+    SerialTransactionOptions options_; ///< 当前 client 默认事务超时
+};
+
+/**
+ * @brief 获取共享串行总线协议 client
+ * @param name logical serial bus name
+ * @param config 串行总线物理配置和当前 client 默认事务超时
+ * @return 成功时返回 transaction-only client；失败时返回 BusRegistry 错误
+ *
+ * 同名且 physical resource 等价、物理通信参数一致时复用同一个 SerialBus
+ * `read_timeout` 和 `write_timeout` 只保存到返回 client，不参与物理兼容性判断
+ */
+tl::expected<std::shared_ptr<SerialBusClient>, BusRegistryErr> acquire_serial_bus_client(
+    const std::string& name,
+    const SerialBusConfig& config);
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

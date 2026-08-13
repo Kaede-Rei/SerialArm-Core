@@ -139,10 +139,15 @@ bool tool_ok = tool_control.refresh_motor_status(tool_motor);
 
 Driver 销毁时释放 channel 和 shared pointer 即可，不应关闭仍被其他 Driver 使用的 physical bus
 
-串行扩展 Driver 应通过 `SerialBus::transaction()` 完成完整协议事务：
+串行扩展 Driver 应先通过 `acquire_serial_bus_client()` 获取 transaction-only client，再在 `SerialBusClient::transaction()` 中完成完整协议事务：
 
 ```cpp
-bus->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+auto client = serial_arm::transport::acquire_serial_bus_client("tool_serial", config);
+if(!client) {
+    return;
+}
+
+(*client)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
     transaction.write(request.data(), request.size());
     transaction.read_exact(response.data(), response.size());
 });
@@ -201,20 +206,15 @@ pending queue 独立
 client 不直接接触底层 `SerialPort`
 
 ```cpp
-auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
+auto client = serial_arm::transport::acquire_serial_bus_client(
     "tool_serial",
-    serial_arm::transport::SerialBus::resource_descriptor(config),
-    [&]() {
-        auto value = std::make_shared<serial_arm::transport::SerialBus>(config);
-        value->open();
-        return value;
-    });
+    config);
 
-if(!bus) {
+if(!client) {
     return;
 }
 
-(*bus)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+(*client)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
     transaction.write(request.data(), request.size());
     transaction.read_exact(response.data(), response.size());
 });
@@ -231,7 +231,7 @@ serial_arm::transport::SerialTransactionOptions options;
 options.read_timeout = std::chrono::milliseconds(20);
 options.write_timeout = std::chrono::milliseconds(100);
 
-(*bus)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
+(*client)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
     transaction.write(request.data(), request.size());
     transaction.read_exact(response.data(), response.size());
 });
@@ -239,7 +239,9 @@ options.write_timeout = std::chrono::milliseconds(100);
 
 read/write timeout 属于事务策略，不属于 physical serial compatibility fingerprint
 
-同一个 named SerialBus 被多个 Driver 复用时，后续 Driver 不应依赖自己的 config 覆盖 Bus 默认 timeout，需要独立 timeout 时显式传入 `SerialTransactionOptions`
+对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可直接复用该机制；需要显式 RTS 或 `TIOCSRS485` 方向控制的场景暂不属于 v0.4.0 范围
+
+同一个 named SerialBus 被多个 Driver 复用时，每次 `acquire_serial_bus_client()` 都会保留该 client 自己的默认 read/write timeout；这些 timeout 不会覆盖共享 Bus，也可以在单次 transaction 中通过 `SerialTransactionOptions` 临时覆盖
 
 不要在 transaction callback 外保存 `SerialTransaction&`
 

@@ -25,10 +25,12 @@ namespace {
 
 using serial_arm::transport::SerialPort;
 using serial_arm::transport::SerialBus;
+using serial_arm::transport::SerialBusClient;
 using serial_arm::transport::SerialTransaction;
 using serial_arm::transport::SerialTransactionOptions;
 using serial_arm::transport::BusRegistry;
 using serial_arm::transport::BusRegistryErr;
+using serial_arm::transport::acquire_serial_bus_client;
 
 template<typename T, typename = void>
 struct HasClose : std::false_type {
@@ -63,10 +65,34 @@ struct HasSetConfig<T, std::void_t<decltype(std::declval<T&>().set_config(std::d
     : std::true_type {
 };
 
+
+template<typename T, typename = void>
+struct HasOpenNoArgs : std::false_type {
+};
+
+template<typename T>
+struct HasOpenNoArgs<T, std::void_t<decltype(std::declval<T&>().open())>> : std::true_type {
+};
+
+template<typename T, typename = void>
+struct HasConfig : std::false_type {
+};
+
+template<typename T>
+struct HasConfig<T, std::void_t<decltype(std::declval<const T&>().config())>> : std::true_type {
+};
 static_assert(!HasClose<SerialTransaction>::value, "SerialTransaction must not expose close()");
 static_assert(!HasNativeHandle<SerialTransaction>::value, "SerialTransaction must not expose native_handle()");
 static_assert(!HasOpen<SerialTransaction>::value, "SerialTransaction must not expose open()");
 static_assert(!HasSetConfig<SerialTransaction>::value, "SerialTransaction must not expose set_config()");
+static_assert(!HasClose<SerialBusClient>::value, "SerialBusClient must not expose close()");
+static_assert(!HasOpenNoArgs<SerialBusClient>::value, "SerialBusClient must not expose open()");
+static_assert(!HasConfig<SerialBusClient>::value, "SerialBusClient must not expose config()");
+static_assert(!HasNativeHandle<SerialBusClient>::value, "SerialBusClient must not expose native_handle()");
+static_assert(!std::is_constructible_v<SerialBus, SerialBus::Config>,
+    "SerialBus construction must remain owner-only");
+static_assert(!HasClose<SerialBus>::value, "SerialBus close() must not be public");
+static_assert(!HasOpenNoArgs<SerialBus>::value, "SerialBus open() must not be public");
 
 class Pty {
 public:
@@ -294,70 +320,62 @@ TEST(SerialBusTests, TtyOwnershipKeyCanonicalizesSymlinkAlias) {
     EXPECT_EQ(::unlink(alias.c_str()), 0);
 }
 
-TEST(SerialBusTests, OpenIsIdempotentAndCloseStopsProtocolAccess) {
+TEST(SerialBusTests, ClientAcquisitionOpensOnePhysicalOwnerAndLastClientClosesIt) {
     Pty pty;
     const auto initial_fd_count = count_open_fds_for_path(pty.slave());
-    SerialBus bus(bus_config(pty));
+    auto config = bus_config(pty);
 
-    bus.open();
-    EXPECT_TRUE(bus.is_open());
+    auto first = acquire_serial_bus_client("serial_bus_client_lifetime", config);
+    ASSERT_TRUE(first);
+    EXPECT_TRUE((*first)->is_open());
     EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count + 1);
 
-    bus.open();
+    auto second = acquire_serial_bus_client("serial_bus_client_lifetime", config);
+    ASSERT_TRUE(second);
+    EXPECT_TRUE((*second)->is_open());
     EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count + 1);
 
-    bus.transaction([](SerialTransaction& transaction) {
+    (*first)->transaction([](SerialTransaction& transaction) {
         EXPECT_EQ(transaction.write({ 0x11 }), 1u);
     });
     std::array<std::uint8_t, 1> byte{};
     ASSERT_EQ(::read(pty.master(), byte.data(), byte.size()), 1);
     EXPECT_EQ(byte[0], 0x11);
 
-    bus.close();
-    EXPECT_FALSE(bus.is_open());
-    EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count);
-    EXPECT_THROW(bus.transaction([](SerialTransaction& transaction) {
-        (void)transaction.write({ 0x12 });
-    }), std::runtime_error);
-}
+    first->reset();
+    EXPECT_TRUE((*second)->is_open());
+    EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count + 1);
 
-TEST(SerialBusTests, DestructorClosesOwnedSerialPort) {
-    Pty pty;
-    const auto initial_fd_count = count_open_fds_for_path(pty.slave());
-    {
-        SerialBus bus(bus_config(pty));
-        bus.open();
-        ASSERT_TRUE(bus.is_open());
-        EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count + 1);
-    }
-
+    second->reset();
     EXPECT_EQ(count_open_fds_for_path(pty.slave()), initial_fd_count);
 }
 
-TEST(SerialBusTests, ConcurrentTransactionsDoNotInterleaveReadWrite) {
+TEST(SerialBusTests, ConcurrentClientsDoNotInterleaveReadWrite) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto first = acquire_serial_bus_client("serial_bus_concurrent_clients", bus_config(pty));
+    auto second = acquire_serial_bus_client("serial_bus_concurrent_clients", bus_config(pty));
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
 
-    std::array<std::uint8_t, 2> first{ 1, 2 };
-    std::array<std::uint8_t, 2> second{ 3, 4 };
+    std::array<std::uint8_t, 2> first_bytes{ 1, 2 };
+    std::array<std::uint8_t, 2> second_bytes{ 3, 4 };
     std::atomic<bool> first_started{ false };
     std::atomic<bool> first_can_finish{ false };
     std::vector<std::uint8_t> master_bytes;
     master_bytes.reserve(4);
 
     std::thread first_thread([&]() {
-        bus.transaction([&](SerialTransaction& transaction) {
+        (*first)->transaction([&](SerialTransaction& transaction) {
             first_started = true;
-            EXPECT_EQ(transaction.write(first.data(), first.size()), first.size());
+            EXPECT_EQ(transaction.write(first_bytes.data(), first_bytes.size()), first_bytes.size());
             while(!first_can_finish) std::this_thread::yield();
         });
     });
     while(!first_started) std::this_thread::yield();
 
     std::thread second_thread([&]() {
-        bus.transaction([&](SerialTransaction& transaction) {
-            EXPECT_EQ(transaction.write(second.data(), second.size()), second.size());
+        (*second)->transaction([&](SerialTransaction& transaction) {
+            EXPECT_EQ(transaction.write(second_bytes.data(), second_bytes.size()), second_bytes.size());
         });
     });
 
@@ -375,29 +393,29 @@ TEST(SerialBusTests, ConcurrentTransactionsDoNotInterleaveReadWrite) {
 
 TEST(SerialBusTests, ExceptionReleasesTransactionLock) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto client = acquire_serial_bus_client("serial_bus_exception_recovery", bus_config(pty));
+    ASSERT_TRUE(client);
 
-    EXPECT_THROW(bus.transaction([](SerialTransaction&) {
+    EXPECT_THROW((*client)->transaction([](SerialTransaction&) {
         throw std::runtime_error("transaction failed");
     }), std::runtime_error);
 
-    EXPECT_NO_THROW(bus.transaction([](SerialTransaction&) {
+    EXPECT_NO_THROW((*client)->transaction([](SerialTransaction&) {
     }));
 }
 
 TEST(SerialBusTests, DiagnosticsCountsTransactionsAndRethrowsOriginalException) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto client = acquire_serial_bus_client("serial_bus_diagnostics", bus_config(pty));
+    ASSERT_TRUE(client);
 
-    EXPECT_NO_THROW(bus.transaction([](SerialTransaction&) {
+    EXPECT_NO_THROW((*client)->transaction([](SerialTransaction&) {
     }));
-    EXPECT_THROW(bus.transaction([](SerialTransaction&) {
+    EXPECT_THROW((*client)->transaction([](SerialTransaction&) {
         throw std::runtime_error("protocol callback failed");
     }), std::runtime_error);
 
-    const auto diagnostics = bus.diagnostics();
+    const auto diagnostics = (*client)->diagnostics();
     EXPECT_TRUE(diagnostics.is_open);
     EXPECT_EQ(diagnostics.transaction_count, 2u);
     EXPECT_EQ(diagnostics.failed_transaction_count, 1u);
@@ -408,12 +426,24 @@ TEST(SerialBusTests, DiagnosticsCountsTransactionsAndRethrowsOriginalException) 
     EXPECT_EQ(diagnostics.resource.config_signature.find("timeout"), std::string::npos);
 }
 
+TEST(SerialBusTests, DiagnosticsCanBeReadInsideTransactionWithoutReentrantLock) {
+    Pty pty;
+    auto client = acquire_serial_bus_client("serial_bus_diagnostics_in_transaction", bus_config(pty));
+    ASSERT_TRUE(client);
+
+    (*client)->transaction([&](SerialTransaction&) {
+        const auto diagnostics = (*client)->diagnostics();
+        EXPECT_TRUE(diagnostics.is_open);
+        EXPECT_EQ(diagnostics.transaction_count, 1u);
+    });
+}
+
 TEST(SerialBusTests, TimeoutDoesNotBlockFollowingTransaction) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto client = acquire_serial_bus_client("serial_bus_timeout_recovery", bus_config(pty));
+    ASSERT_TRUE(client);
 
-    const std::size_t received = bus.transaction([](SerialTransaction& transaction) {
+    const std::size_t received = (*client)->transaction([](SerialTransaction& transaction) {
         std::array<std::uint8_t, 1> value{};
         return transaction.read(value.data(), value.size());
     });
@@ -421,7 +451,7 @@ TEST(SerialBusTests, TimeoutDoesNotBlockFollowingTransaction) {
 
     std::array<std::uint8_t, 1> input{ 9 };
     ASSERT_EQ(::write(pty.master(), input.data(), input.size()), 1);
-    const std::size_t recovered = bus.transaction([](SerialTransaction& transaction) {
+    const std::size_t recovered = (*client)->transaction([](SerialTransaction& transaction) {
         std::array<std::uint8_t, 1> value{};
         return transaction.read(value.data(), value.size());
     });
@@ -430,16 +460,16 @@ TEST(SerialBusTests, TimeoutDoesNotBlockFollowingTransaction) {
 
 TEST(SerialBusTests, FlushIsIsolatedInsideTransaction) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto client = acquire_serial_bus_client("serial_bus_flush", bus_config(pty));
+    ASSERT_TRUE(client);
 
     std::array<std::uint8_t, 1> stale{ 7 };
     ASSERT_EQ(::write(pty.master(), stale.data(), stale.size()), 1);
-    bus.transaction([](SerialTransaction& transaction) {
+    (*client)->transaction([](SerialTransaction& transaction) {
         transaction.flush(SerialTransaction::FlushDirection::Input);
     });
 
-    const std::size_t received = bus.transaction([](SerialTransaction& transaction) {
+    const std::size_t received = (*client)->transaction([](SerialTransaction& transaction) {
         std::array<std::uint8_t, 1> value{};
         return transaction.read(value.data(), value.size());
     });
@@ -448,10 +478,10 @@ TEST(SerialBusTests, FlushIsIsolatedInsideTransaction) {
 
 TEST(SerialBusTests, OneWayWriteUsesTransactionArbitration) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto client = acquire_serial_bus_client("serial_bus_one_way", bus_config(pty));
+    ASSERT_TRUE(client);
 
-    bus.transaction([](SerialTransaction& transaction) {
+    (*client)->transaction([](SerialTransaction& transaction) {
         EXPECT_EQ(transaction.write({ 4, 5, 6 }), 3u);
     });
 
@@ -465,29 +495,40 @@ TEST(SerialBusTests, OneWayWriteUsesTransactionArbitration) {
 TEST(SerialBusTests, BusRegistryRejectsConflictingSerialBusConfiguration) {
     Pty pty;
     auto config = bus_config(pty);
-    auto first = BusRegistry::get_or_create<SerialBus>(
-        "serial_bus_registry_a",
-        SerialBus::resource_descriptor(config),
-        [&]() {
-            auto bus = std::make_shared<SerialBus>(config);
-            bus->open();
-            return bus;
-        });
+    auto first = acquire_serial_bus_client("serial_bus_registry_conflict", config);
     ASSERT_TRUE(first);
 
     auto conflicting_config = config;
     conflicting_config.port_config.baud_rate = 57600;
-    auto second = BusRegistry::get_or_create<SerialBus>(
-        "serial_bus_registry_b",
-        SerialBus::resource_descriptor(conflicting_config),
-        [&]() {
-            auto bus = std::make_shared<SerialBus>(conflicting_config);
-            bus->open();
-            return bus;
-        });
+    auto second = acquire_serial_bus_client("serial_bus_registry_conflict", conflicting_config);
 
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error(), BusRegistryErr::CONFIG_CONFLICT);
+}
+
+TEST(SerialBusTests, SameLogicalBusAcceptsEquivalentTtyAlias) {
+    Pty pty;
+    const std::string alias = "/tmp/serial_arm_core_shared_tty_alias";
+    (void)::unlink(alias.c_str());
+    ASSERT_EQ(::symlink(pty.slave().c_str(), alias.c_str()), 0);
+
+    auto first_config = bus_config(pty);
+    auto second_config = first_config;
+    second_config.serial_port = alias;
+
+    auto first = acquire_serial_bus_client("serial_bus_alias_reuse", first_config);
+    auto second = acquire_serial_bus_client("serial_bus_alias_reuse", second_config);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+
+    (*first)->transaction([](SerialTransaction&) {
+    });
+    EXPECT_EQ((*second)->diagnostics().transaction_count, 1u);
+    EXPECT_EQ(
+        (*first)->diagnostics().resource.ownership_key,
+        (*second)->diagnostics().resource.ownership_key);
+
+    EXPECT_EQ(::unlink(alias.c_str()), 0);
 }
 
 TEST(SerialBusTests, ResourceDescriptorDoesNotTreatTimeoutAsPhysicalCompatibility) {
@@ -506,8 +547,11 @@ TEST(SerialBusTests, ResourceDescriptorDoesNotTreatTimeoutAsPhysicalCompatibilit
 TEST(SerialBusTests, IndependentClientsDoNotInterleaveRequestResponseTransactions) {
     Pty pty;
     auto config = bus_config(pty);
-    SerialBus bus(config);
-    bus.open();
+    config.port_config.read_timeout = std::chrono::milliseconds(200);
+    auto client_a = acquire_serial_bus_client("serial_bus_request_response", config);
+    auto client_b = acquire_serial_bus_client("serial_bus_request_response", config);
+    ASSERT_TRUE(client_a);
+    ASSERT_TRUE(client_b);
 
     constexpr std::array<std::uint8_t, 2> request_a{ 0xA1, 0x01 };
     constexpr std::array<std::uint8_t, 2> response_a{ 0xA2, 0x01 };
@@ -537,27 +581,27 @@ TEST(SerialBusTests, IndependentClientsDoNotInterleaveRequestResponseTransaction
     std::atomic<bool> start{ false };
     std::array<std::uint8_t, 2> client_a_response{};
     std::array<std::uint8_t, 2> client_b_response{};
-    SerialTransactionOptions options;
-    options.read_timeout = std::chrono::milliseconds(200);
-    options.write_timeout = std::chrono::milliseconds(50);
 
-    auto client = [&](const std::array<std::uint8_t, 2>& request, std::array<std::uint8_t, 2>& response) {
+    auto client = [&](
+        const std::shared_ptr<SerialBusClient>& bus_client,
+        const std::array<std::uint8_t, 2>& request,
+        std::array<std::uint8_t, 2>& response) {
         ++ready;
         while(!start) std::this_thread::yield();
-        bus.transaction(options, [&](SerialTransaction& transaction) {
+        bus_client->transaction([&](SerialTransaction& transaction) {
             EXPECT_EQ(transaction.write(request.data(), request.size()), request.size());
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
             EXPECT_EQ(transaction.read_exact(response.data(), response.size()), response.size());
         });
     };
 
-    std::thread client_a(client, std::cref(request_a), std::ref(client_a_response));
-    std::thread client_b(client, std::cref(request_b), std::ref(client_b_response));
+    std::thread first_thread(client, *client_a, std::cref(request_a), std::ref(client_a_response));
+    std::thread second_thread(client, *client_b, std::cref(request_b), std::ref(client_b_response));
     while(ready.load() != 2) std::this_thread::yield();
     start = true;
 
-    client_a.join();
-    client_b.join();
+    first_thread.join();
+    second_thread.join();
     responder.join();
     if(responder_error) std::rethrow_exception(responder_error);
 
@@ -569,10 +613,17 @@ TEST(SerialBusTests, IndependentClientsDoNotInterleaveRequestResponseTransaction
     EXPECT_EQ(client_b_response, response_b);
 }
 
-TEST(SerialBusTests, TimedOutClientReleasesBusForWaitingClientWithIndependentTimeout) {
+TEST(SerialBusTests, TimedOutClientReleasesBusForWaitingClientWithIndependentDefaultTimeout) {
     Pty pty;
-    SerialBus bus(bus_config(pty));
-    bus.open();
+    auto short_config = bus_config(pty);
+    short_config.port_config.read_timeout = std::chrono::milliseconds(10);
+    auto long_config = bus_config(pty);
+    long_config.port_config.read_timeout = std::chrono::milliseconds(100);
+
+    auto client_a = acquire_serial_bus_client("serial_bus_independent_timeouts", short_config);
+    auto client_b = acquire_serial_bus_client("serial_bus_independent_timeouts", long_config);
+    ASSERT_TRUE(client_a);
+    ASSERT_TRUE(client_b);
 
     constexpr std::array<std::uint8_t, 2> request_a{ 0xC1, 0x01 };
     constexpr std::array<std::uint8_t, 2> request_b{ 0xD1, 0x02 };
@@ -595,15 +646,8 @@ TEST(SerialBusTests, TimedOutClientReleasesBusForWaitingClientWithIndependentTim
         }
     });
 
-    SerialTransactionOptions short_timeout;
-    short_timeout.read_timeout = std::chrono::milliseconds(10);
-    short_timeout.write_timeout = std::chrono::milliseconds(50);
-    SerialTransactionOptions long_timeout;
-    long_timeout.read_timeout = std::chrono::milliseconds(100);
-    long_timeout.write_timeout = std::chrono::milliseconds(50);
-
-    std::thread client_a([&]() {
-        bus.transaction(short_timeout, [&](SerialTransaction& transaction) {
+    std::thread first_thread([&]() {
+        (*client_a)->transaction([&](SerialTransaction& transaction) {
             client_a_entered = true;
             EXPECT_EQ(transaction.write(request_a.data(), request_a.size()), request_a.size());
             EXPECT_EQ(transaction.read_exact(response_a.data(), response_a.size()), 0u);
@@ -611,54 +655,36 @@ TEST(SerialBusTests, TimedOutClientReleasesBusForWaitingClientWithIndependentTim
     });
     while(!client_a_entered) std::this_thread::yield();
 
-    std::thread client_b([&]() {
-        bus.transaction(long_timeout, [&](SerialTransaction& transaction) {
+    std::thread second_thread([&]() {
+        (*client_b)->transaction([&](SerialTransaction& transaction) {
             EXPECT_EQ(transaction.write(request_b.data(), request_b.size()), request_b.size());
             EXPECT_EQ(transaction.read_exact(received_b.data(), received_b.size()), received_b.size());
         });
     });
 
-    client_a.join();
-    client_b.join();
+    first_thread.join();
+    second_thread.join();
     responder.join();
     if(responder_error) std::rethrow_exception(responder_error);
 
     EXPECT_EQ(received_b, response_b);
-    EXPECT_TRUE(bus.is_open());
+    EXPECT_TRUE((*client_a)->is_open());
+    EXPECT_TRUE((*client_b)->is_open());
 }
 
-TEST(SerialBusTests, SharedRegistryOwnerSurvivesAfterOneClientReleasesReference) {
+TEST(SerialBusTests, SharedBusSurvivesAfterOneClientReleasesReference) {
     Pty pty;
     auto config = bus_config(pty);
 
-    std::shared_ptr<SerialBus> remaining_client;
-    {
-        auto first = BusRegistry::get_or_create<SerialBus>(
-            "serial_bus_shared_owner_lifetime",
-            SerialBus::resource_descriptor(config),
-            [&]() {
-                auto bus = std::make_shared<SerialBus>(config);
-                bus->open();
-                return bus;
-            });
-        auto second = BusRegistry::get_or_create<SerialBus>(
-            "serial_bus_shared_owner_lifetime",
-            SerialBus::resource_descriptor(config),
-            [&]() {
-                auto bus = std::make_shared<SerialBus>(config);
-                bus->open();
-                return bus;
-            });
+    auto first = acquire_serial_bus_client("serial_bus_shared_owner_lifetime", config);
+    auto second = acquire_serial_bus_client("serial_bus_shared_owner_lifetime", config);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
 
-        ASSERT_TRUE(first);
-        ASSERT_TRUE(second);
-        EXPECT_EQ(first->get(), second->get());
-        std::shared_ptr<SerialBus> released_client = *first;
-        remaining_client = *second;
-        released_client.reset();
-    }
+    first->reset();
+    ASSERT_TRUE(*second);
+    EXPECT_TRUE((*second)->is_open());
 
-    ASSERT_TRUE(remaining_client);
     constexpr std::array<std::uint8_t, 2> request{ 0x31, 0x41 };
     constexpr std::array<std::uint8_t, 2> response{ 0x32, 0x42 };
     std::exception_ptr responder_error;
@@ -673,7 +699,7 @@ TEST(SerialBusTests, SharedRegistryOwnerSurvivesAfterOneClientReleasesReference)
     });
 
     std::array<std::uint8_t, 2> received{};
-    remaining_client->transaction([&](SerialTransaction& transaction) {
+    (*second)->transaction([&](SerialTransaction& transaction) {
         EXPECT_EQ(transaction.write(request.data(), request.size()), request.size());
         EXPECT_EQ(transaction.read_exact(received.data(), received.size()), received.size());
     });
@@ -682,3 +708,4 @@ TEST(SerialBusTests, SharedRegistryOwnerSurvivesAfterOneClientReleasesReference)
     if(responder_error) std::rethrow_exception(responder_error);
     EXPECT_EQ(received, response);
 }
+

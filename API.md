@@ -54,7 +54,7 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/hardware/hardware_loader.hpp` | Backend shared library loader |
 | `serial_arm/transport/can.hpp` | `CanFrame`、`CanFilter`、`CanErr` |
 | `serial_arm/transport/bus.hpp` | `CanBus`、`CanChannel`、`BusRegistry` |
-| `serial_arm/transport/serial_bus.hpp` | `SerialBus` / `SerialTransaction` |
+| `serial_arm/transport/serial_bus.hpp` | `SerialBusClient` / `SerialTransaction` / internal `SerialBus` |
 | `serial_arm/transport/serial_port.hpp` | Linux/POSIX `SerialPort` |
 | `serial_arm_protocol_damiao_usb2can/bus.hpp` | 达妙官方 USB2CAN `DamiaoUsbCanBus` 与 `acquire_channel()` |
 | `dm_hw/damiao.hpp` | Damiao `Motor`、`MotorControl` 与 targeted receive |
@@ -260,29 +260,27 @@ Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `Can
 
 Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
 
-### SerialBus 扩展契约
+### Shared Serial 扩展契约
 
-串行扩展协议通过 `SerialBus` 共享同一个 physical serial endpoint
+串行扩展协议通过 `SerialBusClient` 共享同一个 physical serial endpoint
 
-`SerialBus` 唯一持有 `SerialPort`
+内部 `SerialBus` 唯一持有 `SerialPort`
 
-Driver 只能在 `transaction()` callback 生命周期内使用受限 `SerialTransaction&`
+协议 Driver 不直接构造、打开、关闭或持有 `SerialBus`
+
+Driver 通过 `acquire_serial_bus_client()` 获取 transaction-only client
 
 ```cpp
-auto bus = serial_arm::transport::BusRegistry::get_or_create<serial_arm::transport::SerialBus>(
+auto client = serial_arm::transport::acquire_serial_bus_client(
     "tool_serial",
-    serial_arm::transport::SerialBus::resource_descriptor(config),
-    [&]() {
-        auto value = std::make_shared<serial_arm::transport::SerialBus>(config);
-        value->open();
-        return value;
-    });
+    config);
 
-if(!bus) {
+if(!client) {
     // 根据 BusRegistryErr 处理 type/config/physical resource 冲突
+    return;
 }
 
-(*bus)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+(*client)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
     transaction.flush(serial_arm::transport::SerialTransaction::FlushDirection::Input);
     transaction.write(request.data(), request.size());
     transaction.read_exact(response.data(), response.size());
@@ -294,22 +292,43 @@ if(!bus) {
 
 不要把 write request 和 read response 拆成两个 transaction，否则其他 client 可以在中间插入自己的事务
 
-SerialTransaction 不提供 `open()`、`close()`、`set_config()` 或 `native_handle()`，协议 Driver 不能接管或破坏共享串口生命周期
+`SerialBusClient` 不提供 `open()`、`close()`、`config()` 或 raw Bus 访问
+
+`SerialTransaction` 不提供 `open()`、`close()`、`set_config()` 或 `native_handle()`
+
+因此协议 Driver 既不能接管共享 Bus 生命周期，也不能接管底层 `SerialPort`
 
 Core 不判断任意串行协议是否能共线
 
 `baud rate / data bits / parity / stop bits / flow control` 属于 physical serial compatibility fingerprint
 
-`read_timeout / write_timeout` 属于 transaction policy，不进入 physical compatibility fingerprint，不同 Driver 可以通过 `SerialTransactionOptions` 使用不同超时
+`read_timeout / write_timeout` 属于 client / transaction policy，不进入 physical compatibility fingerprint
 
-`SerialBusConfig::port_config` 中的 read/write timeout 只作为该 Bus 首次创建时的默认 transaction timeout；Registry 返回已有同名 Bus 时不会用后续调用方的 timeout 覆盖已有默认值，需要独立 timeout 的 Driver 应显式传入 `SerialTransactionOptions`
+每次 `acquire_serial_bus_client()` 都会把调用方配置中的 read/write timeout 保存到返回的 client，因此同一个 named SerialBus 上的不同 Driver 可以拥有不同默认 timeout
+
+单次事务还可以通过 `SerialTransactionOptions` 临时覆盖 client 默认 timeout
+
+```cpp
+serial_arm::transport::SerialTransactionOptions options;
+options.read_timeout = std::chrono::milliseconds(20);
+options.write_timeout = std::chrono::milliseconds(100);
+
+(*client)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
+});
+```
 
 扩展 Driver 仍需确认 electrical layer、baud rate、data bits、parity、stop bits、flow control、duplex mode、framing、地址和主动发送行为互相兼容
 
-`SerialBus::diagnostics()` 提供最小运行统计：
+对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可以直接使用 Shared Serial
+
+需要显式 RTS 或 `TIOCSRS485` 方向控制的 RS485 场景暂不属于 v0.4.0 范围
+
+`SerialBusClient::diagnostics()` 提供最小运行统计：
 
 ```cpp
-auto stats = bus->diagnostics();
+auto stats = (*client)->diagnostics();
 std::cout << stats.is_open << "\n";
 std::cout << stats.transaction_count << "\n";
 std::cout << stats.failed_transaction_count << "\n";
@@ -323,9 +342,9 @@ Core 不会把 callback 的原始异常改写成通用协议错误
 
 异常会原样继续抛给调用方
 
-`open()`、`close()`、`is_open()`、`diagnostics()` 和 `transaction()` 对同一 `SerialBus` 实例互斥
+不同 `SerialBusClient` 的 transaction 对同一个内部 `SerialBus` 串行化执行
 
-transaction callback 无法直接关闭底层串口
+最后一个 client 引用释放后，内部 `SerialBus` 通过 RAII 关闭底层 `SerialPort`
 
 ## 2.2. v0.3.0 到 v0.4.0 Shared Bus 迁移
 
@@ -352,7 +371,7 @@ Serial Driver 迁移：
 
 ```text
 old: Driver stores SerialPort and performs raw read/write
-new: Driver obtains SerialBus from BusRegistry and performs complete protocol transaction in callback
+new: Driver obtains SerialBusClient through acquire_serial_bus_client() and performs complete protocol transaction in callback
 ```
 
 旧配置中的 inline `serial_port / baudrate / bus` 可以继续由兼容层解析
