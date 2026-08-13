@@ -136,6 +136,11 @@ public:
      * @return 达妙执行器静态信息只读引用
      */
     const std::vector<DamiaoActuatorInfo>& get_actuator_info() const noexcept;
+    /**
+     * @brief 获取当前已解析配置
+     * @return 配置只读引用
+     */
+    const DamiaoBusCfg& config() const noexcept;
 
 private:
     /**

@@ -23,24 +23,57 @@ bool has_overrides(const HardwareConfigOverrides& overrides) {
     return overrides.serial_port.has_value() || overrides.baudrate.has_value() || overrides.bus.has_value();
 }
 
+bool has_map_key(const YAML::Node& node, const char* key) {
+    if(!node || !node.IsMap()) return false;
+    for(const auto& item : node) {
+        try {
+            if(item.first.as<std::string>() == key) return true;
+        }
+        catch(const YAML::BadConversion&) {
+            return false;
+        }
+    }
+    return false;
+}
+
 bool has_connection_field(const YAML::Node& node) {
-    return node && node.IsMap() && (node["serial_port"] || node["baudrate"] || node["bus"]);
+    return has_map_key(node, "serial_port") || has_map_key(node, "baudrate") || has_map_key(node, "bus");
 }
 
 YAML::Node select_connection_node(const YAML::Node& root) {
     if(!root || !root.IsMap()) return {};
     if(has_connection_field(root)) return root;
 
-    YAML::Node only_map_child;
+    std::string only_map_key;
     std::size_t map_child_count = 0;
     for(const auto& item : root) {
         if(!item.second.IsMap()) continue;
         ++map_child_count;
-        only_map_child = item.second;
+        try {
+            only_map_key = item.first.as<std::string>();
+        }
+        catch(const YAML::BadConversion&) {
+            return {};
+        }
         if(has_connection_field(item.second)) return item.second;
     }
-    if(map_child_count == 1) return only_map_child;
+    if(map_child_count == 1 && !only_map_key.empty()) return root[only_map_key];
     return {};
+}
+
+YAML::Node select_physical_connection_node(const YAML::Node& root, const YAML::Node& target) {
+    if(!root || !root.IsMap() || !target || !target.IsMap() || !has_map_key(target, "bus")) return target;
+    const YAML::Node buses = has_map_key(root, "buses") ? root["buses"] : YAML::Node{};
+    if(!buses || !buses.IsMap()) return target;
+
+    try {
+        const std::string bus_name = target["bus"].as<std::string>();
+        const YAML::Node bus = buses[bus_name];
+        if(bus && bus.IsMap()) return bus;
+    }
+    catch(const YAML::BadConversion&) {
+    }
+    return target;
 }
 
 tl::expected<void, HardwareLoaderErr> validate_overrides(const HardwareConfigOverrides& overrides) {
@@ -76,9 +109,27 @@ tl::expected<std::filesystem::path, HardwareLoaderErr> write_effective_config(
     YAML::Node target = select_connection_node(root);
     if(!target || !target.IsMap()) return tl::make_unexpected(HardwareLoaderErr::CONFIG_SYNTAX_ERROR);
 
-    if(overrides.serial_port) target["serial_port"] = *overrides.serial_port;
-    if(overrides.baudrate) target["baudrate"] = *overrides.baudrate;
     if(overrides.bus) target["bus"] = *overrides.bus;
+    YAML::Node physical_target = select_physical_connection_node(root, target);
+    if(overrides.serial_port) {
+        if(physical_target["device"] && !physical_target["serial_port"]) physical_target["device"] = *overrides.serial_port;
+        else physical_target["serial_port"] = *overrides.serial_port;
+    }
+    if(overrides.baudrate) physical_target["baudrate"] = *overrides.baudrate;
+    if(has_map_key(target, "bus") && has_map_key(root, "buses") && root["buses"].IsMap()) {
+        try {
+            const std::string bus_name = target["bus"].as<std::string>();
+            const YAML::Node bus = root["buses"][bus_name];
+            if(bus && bus.IsMap()) {
+                const YAML::Node serial_node = bus["serial_port"] ? bus["serial_port"] : bus["device"];
+                if(serial_node) target["serial_port"] = serial_node.as<std::string>();
+                if(bus["baudrate"]) target["baudrate"] = bus["baudrate"].as<int>();
+            }
+        }
+        catch(const YAML::Exception&) {
+            return tl::make_unexpected(HardwareLoaderErr::CONFIG_SYNTAX_ERROR);
+        }
+    }
 
     const std::filesystem::path temp_path = make_temp_config_path();
     std::ofstream output(temp_path);

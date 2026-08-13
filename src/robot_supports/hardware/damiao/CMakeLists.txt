@@ -62,6 +62,7 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
 
     add_executable(serial_arm_hardware_damiao_tests
+        tests/damiao_config_tests.cpp
         tests/damiao_motor_control_tests.cpp
     )
     target_link_libraries(serial_arm_hardware_damiao_tests

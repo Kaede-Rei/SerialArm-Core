@@ -15,8 +15,19 @@ public:
             const YAML::Node node = root["damiao"] ? root["damiao"] : root;
             if(!node || !node.IsMap()) return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CFG);
             const std::string bus = node["bus"].as<std::string>();
-            const std::string serial_port = node["serial_port"].as<std::string>();
-            const int baudrate = node["baudrate"].as<int>();
+            std::string serial_port;
+            int baudrate = 0;
+            const YAML::Node bus_node = root["buses"] && root["buses"].IsMap() ? root["buses"][bus] : YAML::Node{};
+            if(bus_node && bus_node.IsMap()) {
+                const YAML::Node serial_node = bus_node["serial_port"] ? bus_node["serial_port"] : bus_node["device"];
+                serial_port = serial_node.as<std::string>();
+                baudrate = bus_node["baudrate"].as<int>();
+            }
+            if(node["serial_port"]) serial_port = node["serial_port"].as<std::string>();
+            if(node["baudrate"]) baudrate = node["baudrate"].as<int>();
+            if(serial_port.empty() || baudrate <= 0) {
+                return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CFG);
+            }
             capabilities_.clear();
             serial_arm::ActuatorCapability capability;
             capability.actuator_name = bus + "|" + serial_port + "|" + std::to_string(baudrate);

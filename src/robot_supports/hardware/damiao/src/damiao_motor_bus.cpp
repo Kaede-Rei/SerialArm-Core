@@ -46,6 +46,47 @@ tl::expected<T, MotorBusErr> require_as(const YAML::Node& parent, const char* ke
     }
 }
 
+template<typename T>
+tl::expected<T, MotorBusErr> optional_as(const YAML::Node& parent, const char* key, const T& fallback) {
+    const YAML::Node node = parent[key];
+    if(!node) return fallback;
+    try {
+        return node.as<T>();
+    }
+    catch(const YAML::BadConversion&) {
+        return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+    }
+}
+
+tl::expected<bool, MotorBusErr> apply_named_bus_config(const YAML::Node& root, DamiaoBusCfg& cfg) {
+    const YAML::Node buses = root["buses"];
+    if(!buses) return false;
+    if(!buses.IsMap()) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+
+    const YAML::Node bus = buses[cfg.bus];
+    if(!bus) return false;
+    if(!bus.IsMap()) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+
+    auto type = optional_as<std::string>(bus, "type", "can");
+    auto backend = optional_as<std::string>(bus, "backend", "damiao_usb2can");
+    if(!type || !backend || *type != "can" || *backend != "damiao_usb2can") {
+        return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+    }
+
+    const YAML::Node serial_node = bus["serial_port"] ? bus["serial_port"] : bus["device"];
+    const YAML::Node baudrate_node = bus["baudrate"];
+    if(!serial_node || !baudrate_node) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+
+    try {
+        cfg.serial_port = serial_node.as<std::string>();
+        cfg.baudrate = baudrate_node.as<int>();
+    }
+    catch(const YAML::BadConversion&) {
+        return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+    }
+    return true;
+}
+
 } // namespace
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
@@ -62,10 +103,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const std::string& con
         if(!damiao || !damiao.IsMap()) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
 
         DamiaoBusCfg cfg;
-        auto bus = damiao["bus"] ? tl::expected<std::string, MotorBusErr>{ damiao["bus"].as<std::string>() } :
-            tl::expected<std::string, MotorBusErr>{ cfg.bus };
-        auto serial_port = require_as<std::string>(damiao, "serial_port");
-        auto baudrate = require_as<int>(damiao, "baudrate");
+        auto bus = optional_as<std::string>(damiao, "bus", cfg.bus);
         auto refresh_state_in_read = require_as<bool>(damiao, "refresh_state_in_read");
         auto feedback_timeout_s = require_as<double>(damiao, "feedback_timeout_s");
         auto activation_retries = require_as<std::size_t>(damiao, "activation_retries");
@@ -73,13 +111,28 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const std::string& con
         auto stop_kp = require_as<double>(damiao, "stop_kp");
         auto stop_kd = require_as<double>(damiao, "stop_kd");
         auto stop_cycles = require_as<std::size_t>(damiao, "stop_cycles");
-        if(!bus || !serial_port || !baudrate || !refresh_state_in_read || !feedback_timeout_s ||
+        if(!bus || !refresh_state_in_read || !feedback_timeout_s ||
             !activation_retries || !startup_read_cycles || !stop_kp || !stop_kd || !stop_cycles) {
             return tl::make_unexpected(MotorBusErr::INVALID_CFG);
         }
         cfg.bus = *bus;
-        cfg.serial_port = *serial_port;
-        cfg.baudrate = *baudrate;
+        auto named_bus = apply_named_bus_config(root, cfg);
+        if(!named_bus) return tl::make_unexpected(named_bus.error());
+
+        if(*named_bus) {
+            auto serial_port = optional_as<std::string>(damiao, "serial_port", cfg.serial_port);
+            auto baudrate = optional_as<int>(damiao, "baudrate", cfg.baudrate);
+            if(!serial_port || !baudrate) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+            cfg.serial_port = *serial_port;
+            cfg.baudrate = *baudrate;
+        }
+        else {
+            auto serial_port = require_as<std::string>(damiao, "serial_port");
+            auto baudrate = require_as<int>(damiao, "baudrate");
+            if(!serial_port || !baudrate) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+            cfg.serial_port = *serial_port;
+            cfg.baudrate = *baudrate;
+        }
         cfg.refresh_state_in_read = *refresh_state_in_read;
         cfg.feedback_timeout_s = *feedback_timeout_s;
         cfg.activation_retries = *activation_retries;
@@ -506,6 +559,14 @@ std::size_t DamiaoMotorBus::size() const noexcept {
  */
 const std::vector<DamiaoActuatorInfo>& DamiaoMotorBus::get_actuator_info() const noexcept {
     return actuator_info_;
+}
+
+/**
+ * @brief 获取当前已解析配置
+ * @return 配置只读引用
+ */
+const DamiaoBusCfg& DamiaoMotorBus::config() const noexcept {
+    return cfg_;
 }
 
 /**

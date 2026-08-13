@@ -6,7 +6,11 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <exception>
 #include <fcntl.h>
+#include <functional>
+#include <memory>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -52,6 +56,47 @@ SerialBus::Config bus_config(const Pty& pty) {
     config.port_config.read_timeout = std::chrono::milliseconds(5);
     config.port_config.write_timeout = std::chrono::milliseconds(50);
     return config;
+}
+
+std::array<std::uint8_t, 2> read_master_request(int fd) {
+    std::array<std::uint8_t, 2> value{};
+    std::size_t offset = 0;
+    while(offset < value.size()) {
+        const ssize_t received = ::read(fd, value.data() + offset, value.size() - offset);
+        if(received > 0) {
+            offset += static_cast<std::size_t>(received);
+            continue;
+        }
+        if(received < 0 && errno == EINTR) continue;
+        throw std::runtime_error("pty master read failed");
+    }
+    return value;
+}
+
+void write_master_response(int fd, const std::array<std::uint8_t, 2>& value) {
+    std::size_t offset = 0;
+    while(offset < value.size()) {
+        const ssize_t written = ::write(fd, value.data() + offset, value.size() - offset);
+        if(written > 0) {
+            offset += static_cast<std::size_t>(written);
+            continue;
+        }
+        if(written < 0 && errno == EINTR) continue;
+        throw std::runtime_error("pty master write failed");
+    }
+}
+
+bool master_has_input(int fd, std::chrono::milliseconds timeout) {
+    pollfd pfd{};
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    int ret;
+    do {
+        ret = ::poll(&pfd, 1, static_cast<int>(timeout.count()));
+    }
+    while(ret < 0 && errno == EINTR);
+    if(ret < 0) throw std::runtime_error("pty master poll failed");
+    return ret > 0 && (pfd.revents & POLLIN) != 0;
 }
 
 } // namespace
@@ -328,4 +373,125 @@ TEST(SerialBusTests, BusRegistryRejectsConflictingSerialBusConfiguration) {
 
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error(), BusRegistryErr::CONFIG_CONFLICT);
+}
+
+TEST(SerialBusTests, IndependentClientsDoNotInterleaveRequestResponseTransactions) {
+    Pty pty;
+    auto config = bus_config(pty);
+    config.port_config.read_timeout = std::chrono::milliseconds(200);
+    SerialBus bus(config);
+    bus.open();
+
+    constexpr std::array<std::uint8_t, 2> request_a{ 0xA1, 0x01 };
+    constexpr std::array<std::uint8_t, 2> response_a{ 0xA2, 0x01 };
+    constexpr std::array<std::uint8_t, 2> request_b{ 0xB1, 0x02 };
+    constexpr std::array<std::uint8_t, 2> response_b{ 0xB2, 0x02 };
+
+    std::array<std::uint8_t, 2> first_request{};
+    std::array<std::uint8_t, 2> second_request{};
+    std::atomic<bool> interleaved_before_first_response{ false };
+    std::exception_ptr responder_error;
+
+    std::thread responder([&]() {
+        try {
+            first_request = read_master_request(pty.master());
+            interleaved_before_first_response = master_has_input(pty.master(), std::chrono::milliseconds(60));
+            write_master_response(pty.master(), first_request == request_a ? response_a : response_b);
+
+            second_request = read_master_request(pty.master());
+            write_master_response(pty.master(), second_request == request_a ? response_a : response_b);
+        }
+        catch(...) {
+            responder_error = std::current_exception();
+        }
+    });
+
+    std::atomic<int> ready{ 0 };
+    std::atomic<bool> start{ false };
+    std::array<std::uint8_t, 2> client_a_response{};
+    std::array<std::uint8_t, 2> client_b_response{};
+
+    auto client = [&](const std::array<std::uint8_t, 2>& request, std::array<std::uint8_t, 2>& response) {
+        ++ready;
+        while(!start) std::this_thread::yield();
+        bus.transaction([&](SerialPort& serial) {
+            EXPECT_EQ(serial.write(request.data(), request.size()), request.size());
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            EXPECT_EQ(serial.read_exact(response.data(), response.size()), response.size());
+        });
+    };
+
+    std::thread client_a(client, std::cref(request_a), std::ref(client_a_response));
+    std::thread client_b(client, std::cref(request_b), std::ref(client_b_response));
+    while(ready.load() != 2) std::this_thread::yield();
+    start = true;
+
+    client_a.join();
+    client_b.join();
+    responder.join();
+    if(responder_error) std::rethrow_exception(responder_error);
+
+    EXPECT_FALSE(interleaved_before_first_response.load());
+    EXPECT_TRUE(
+        (first_request == request_a && second_request == request_b) ||
+        (first_request == request_b && second_request == request_a));
+    EXPECT_EQ(client_a_response, response_a);
+    EXPECT_EQ(client_b_response, response_b);
+}
+
+TEST(SerialBusTests, SharedRegistryOwnerSurvivesAfterOneClientReleasesReference) {
+    Pty pty;
+    auto config = bus_config(pty);
+    config.port_config.read_timeout = std::chrono::milliseconds(100);
+
+    std::shared_ptr<SerialBus> remaining_client;
+    {
+        auto first = BusRegistry::get_or_create<SerialBus>(
+            "serial_bus_shared_owner_lifetime",
+            SerialBus::resource_descriptor(config),
+            [&]() {
+                auto bus = std::make_shared<SerialBus>(config);
+                bus->open();
+                return bus;
+            });
+        auto second = BusRegistry::get_or_create<SerialBus>(
+            "serial_bus_shared_owner_lifetime",
+            SerialBus::resource_descriptor(config),
+            [&]() {
+                auto bus = std::make_shared<SerialBus>(config);
+                bus->open();
+                return bus;
+            });
+
+        ASSERT_TRUE(first);
+        ASSERT_TRUE(second);
+        EXPECT_EQ(first->get(), second->get());
+        std::shared_ptr<SerialBus> released_client = *first;
+        remaining_client = *second;
+        released_client.reset();
+    }
+
+    ASSERT_TRUE(remaining_client);
+    constexpr std::array<std::uint8_t, 2> request{ 0x31, 0x41 };
+    constexpr std::array<std::uint8_t, 2> response{ 0x32, 0x42 };
+    std::exception_ptr responder_error;
+    std::thread responder([&]() {
+        try {
+            EXPECT_EQ(read_master_request(pty.master()), request);
+            write_master_response(pty.master(), response);
+        }
+        catch(...) {
+            responder_error = std::current_exception();
+        }
+    });
+
+    std::array<std::uint8_t, 2> received{};
+    remaining_client->transaction([&](SerialPort& serial) {
+        EXPECT_EQ(serial.write(request.data(), request.size()), request.size());
+        EXPECT_EQ(serial.read_exact(received.data(), received.size()), received.size());
+    });
+
+    responder.join();
+    if(responder_error) std::rethrow_exception(responder_error);
+    EXPECT_EQ(received, response);
 }

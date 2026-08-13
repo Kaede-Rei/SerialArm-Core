@@ -26,10 +26,10 @@ struct SerialBusConfig {
 /**
  * @brief 同进程共享串行总线
  *
- * SerialBus 唯一持有一个 SerialPort，并通过 transaction() 将串口访问串行化。
+ * SerialBus 唯一持有一个 SerialPort，并通过 transaction() 将串口访问串行化
  * 协议层在 transaction callback 内完成自己的 write/read/flush/timeout/framing
  * 逻辑；SerialBus 不解析任何具体协议，也不提供绕过仲裁的 public raw write/read
- * 接口。
+ * 接口
  */
 class SerialBus final {
 public:
@@ -39,8 +39,8 @@ public:
      * @brief 创建未打开的共享串行总线
      * @param config 串口设备路径和 POSIX 串口参数
      *
-     * 构造函数不打开物理设备；调用 open() 后 SerialBus 成为 SerialPort 唯一 owner。
-     * 对同一 SerialBus 实例的 transaction() 调用线程安全并按调用进入顺序互斥执行。
+     * 构造函数不打开物理设备；调用 open() 后 SerialBus 成为 SerialPort 唯一 owner
+     * 对同一 SerialBus 实例的 transaction() 调用线程安全并按调用进入顺序互斥执行
      */
     explicit SerialBus(Config config);
 
@@ -57,8 +57,8 @@ public:
     /**
      * @brief 打开底层串口
      *
-     * 重复调用 open() 不会重复打开已经打开的 SerialPort。open() 与 transaction()
-     * 共用同一互斥锁，避免打开或关闭动作与协议事务交叉。
+     * 重复调用 open() 不会重复打开已经打开的 SerialPort；open() 与 transaction()
+     * 共用同一互斥锁，避免打开或关闭动作与协议事务交叉
      */
     void open();
 
@@ -66,7 +66,7 @@ public:
      * @brief 关闭底层串口
      *
      * close() 只由 SerialBus 生命周期或 owner 显式调用；client 不应在 transaction
-     * callback 内关闭串口。该函数与 transaction() 互斥。
+     * callback 内关闭串口；该函数与 transaction() 互斥
      */
     void close() noexcept;
 
@@ -93,8 +93,8 @@ public:
      * @param config 串口设备路径和 POSIX 串口参数
      * @return 可传给 BusRegistry 的串口物理资源描述
      *
-     * 该函数不打开串口，也不创建 SerialBus 实例。调用方可在 Registry 创建 Bus
-     * 前用它进行 physical resource 唯一所有权检查。
+     * 该函数不打开串口，也不创建 SerialBus 实例；调用方可在 Registry 创建 Bus
+     * 前用它进行 physical resource 唯一所有权检查
      */
     static BusResourceDescriptor resource_descriptor(const Config& config);
 
@@ -104,8 +104,8 @@ public:
      * @return callback 的返回值
      *
      * transaction() 在调用 callback 前获取总线互斥锁，并在 callback 正常返回或抛出
-     * 异常时自动释放。callback 独占 SerialPort，可执行 write/read/flush/timeout
-     * 处理；其他 client 必须等待本事务结束。该函数不捕获异常，异常会原样传给调用方。
+     * 异常时自动释放；callback 独占 SerialPort，可执行 write/read/flush/timeout
+     * 处理；其他 client 必须等待本事务结束；该函数不捕获异常，异常会原样传给调用方
      */
     template<typename Fn>
     auto transaction(Fn&& fn) -> std::invoke_result_t<Fn, SerialPort&> {

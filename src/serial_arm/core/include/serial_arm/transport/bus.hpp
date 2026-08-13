@@ -46,7 +46,7 @@ enum class BusResourceKind {
  * `physical_id` 表示同一进程内必须唯一持有的物理端点，例如 `can0`
  * 或 `/dev/ttyACM0`；`config_signature` 由具体 Bus 实现生成，用于描述
  * baudrate、data bits、parity、stop bits、flow control 等会影响共存安全
- * 的通信参数。
+ * 的通信参数
  */
 struct BusResourceDescriptor {
     BusResourceKind kind{ BusResourceKind::CAN }; ///< 物理资源类型
@@ -225,6 +225,9 @@ private:
 
 /**
  * @brief 同进程 CAN 总线共享池
+ *
+ * BusPool 只保留给 v0.3.x 兼容路径使用；新代码必须通过 BusRegistry 获取共享 Bus
+ * BusPool 不记录 physical resource 或通信参数，不能作为新的物理资源所有权入口
  */
 class BusPool final {
 public:
@@ -247,7 +250,7 @@ private:
  * @brief 同进程共享总线注册表
  *
  * BusRegistry 只管理 logical bus name 到 Bus 实例的映射，以及 physical resource
- * 的进程内唯一所有权；它不理解 Damiao、Hiwonder、Gripper 或 Tool Button 等业务语义。
+ * 的进程内唯一所有权；它不理解 Damiao、Hiwonder、Gripper 或 Tool Button 等业务语义
  */
 class BusRegistry final {
 public:
@@ -263,10 +266,10 @@ public:
      * @param creator 不存在可复用 Bus 时调用的创建函数
      * @return 成功时返回共享 Bus；失败时返回冲突或创建错误
      *
-     * Registry 只保存弱引用；调用方返回的 `std::shared_ptr` 决定 Bus 生命周期。
+     * Registry 只保存弱引用；调用方返回的 `std::shared_ptr` 决定 Bus 生命周期
      * 最后一个 Bus 引用释放后，下一次访问 Registry 时会清理对应 physical resource
      * 占用记录；该函数内部加锁，多个线程并发获取同一 logical bus 不会创建多个
-     * physical owner；创建函数会在锁内执行，创建函数不得递归调用 BusRegistry。
+     * physical owner；创建函数会在锁内执行，创建函数不得递归调用 BusRegistry
      */
     template<typename BusT>
     static tl::expected<std::shared_ptr<BusT>, BusRegistryErr> get_or_create(
@@ -288,7 +291,7 @@ public:
      * @return 成功时返回共享 CanBus；失败时返回冲突或创建错误
      *
      * 返回 Bus 由调用方通过 `std::shared_ptr` 共享持有；函数内部线程安全，并保证
-     * 同一 physical CAN resource 不会被不同 logical bus 重复持有。
+     * 同一 physical CAN resource 不会被不同 logical bus 重复持有
      */
     static tl::expected<std::shared_ptr<CanBus>, BusRegistryErr> get_or_create_can_bus(
         const std::string& name,

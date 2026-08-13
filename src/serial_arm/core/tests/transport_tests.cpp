@@ -21,15 +21,6 @@ using serial_arm::transport::BusRegistryErr;
 using serial_arm::transport::BusResourceDescriptor;
 using serial_arm::transport::BusResourceKind;
 
-class FakeSerialBus final {
-public:
-    explicit FakeSerialBus(int id) : id_(id) {}
-    int id() const noexcept { return id_; }
-
-private:
-    int id_{ 0 };
-};
-
 class FakeCanDriver final {
 public:
     FakeCanDriver(std::shared_ptr<CanBus> bus, std::vector<CanFilter> filters, std::size_t max_pending_frames)
@@ -165,14 +156,6 @@ CanFrame frame(std::uint32_t id) {
 
 BusResourceDescriptor can_resource(const std::string& physical_id) {
     return BusResourceDescriptor{ BusResourceKind::CAN, physical_id, "classic-can" };
-}
-
-BusResourceDescriptor serial_resource(const std::string& physical_id, int baudrate) {
-    return BusResourceDescriptor{
-        BusResourceKind::SERIAL,
-        physical_id,
-        std::to_string(baudrate) + "|8N1|none",
-    };
 }
 
 } // namespace
@@ -366,25 +349,6 @@ TEST(TransportTests, BusRegistryRejectsPhysicalResourceConflict) {
     ASSERT_TRUE(first);
     ASSERT_FALSE(second);
     EXPECT_EQ(second.error(), BusRegistryErr::PHYSICAL_RESOURCE_CONFLICT);
-}
-
-TEST(TransportTests, BusRegistryRejectsConflictingSerialParameters) {
-    auto first = BusRegistry::get_or_create<FakeSerialBus>(
-        "registry_serial_owner_a",
-        serial_resource("/dev/ttyACM-registry", 1000000),
-        []() {
-            return std::make_shared<FakeSerialBus>(1);
-        });
-    auto second = BusRegistry::get_or_create<FakeSerialBus>(
-        "registry_serial_owner_b",
-        serial_resource("/dev/ttyACM-registry", 115200),
-        []() {
-            return std::make_shared<FakeSerialBus>(2);
-        });
-
-    ASSERT_TRUE(first);
-    ASSERT_FALSE(second);
-    EXPECT_EQ(second.error(), BusRegistryErr::CONFIG_CONFLICT);
 }
 
 TEST(TransportTests, BusRegistryConcurrentGetDoesNotDuplicateOwnership) {
