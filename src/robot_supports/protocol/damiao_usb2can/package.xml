@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
     <name>serial_arm_protocol_damiao_usb2can</name>
-    <version>0.2.0</version>
+    <version>0.4.0</version>
     <description>Damiao official USB2CAN module protocol adapter for SerialArm CAN transport.</description>
     <maintainer email="kaerei@foxmail.com">SerialArm Maintainer</maintainer>
     <license>MIT</license>

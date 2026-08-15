@@ -887,7 +887,7 @@ void bind_robot_session(py::module_& module) {
  */
 PYBIND11_MODULE(_serial_arm, module) {
     module.doc() = "SerialArm C++17 control, dynamics and hardware bindings";
-    module.attr("__version__") = "0.2.0";
+    module.attr("__version__") = "0.4.0";
 
     py::register_exception<serial_arm::SerialArmPythonError>(module, "SerialArmError");
 

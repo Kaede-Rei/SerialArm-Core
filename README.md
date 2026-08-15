@@ -423,6 +423,7 @@ Hardware Backend 通过 `MotorBus` 接收统一的 `position / velocity / torque
 
 ## 文档
 
+- [Architecture.md](Architecture.md)：核心架构、模块边界、Shared Bus 与设计原则
 - [Tutorial.md](Tutorial.md)：完整构建、配置、真机、调参与扩展教程
 - [API.md](API.md)：C++ / Python / Transport / Hardware API Reference
 
