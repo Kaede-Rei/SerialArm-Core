@@ -81,7 +81,7 @@ runtime.write_enabled=true 时使用指定 Hardware Backend；false 时使用离
 RobotSession.stop() 当前会直接停止 C++ worker 并调用底层 deactivate；
 它本身不包含 C++ 终端中的停放轨迹
 
-本脚本的菜单 0 和菜单 3 会先执行
+本脚本的安全退出和“使能 / 失能 / 故障”子菜单中的正常停放会先执行
 
     move_to(park_pos)
     → 等待实测位置与速度判据
@@ -227,56 +227,24 @@ class Terminal:
 
     def menu(self) -> None:
         print("\n------------ 主菜单 ------------")
-        print(" 1. 查看 RobotSession 状态")
-        print(" 2. start() / activate()")
-        print(" 3. 回到停放姿态并 stop()")
-        print(" 4. clear_fault()")
-        print(" 5. 切换阻抗模式")
-        print(" 6. 切换模型前馈模式（仅 INACTIVE）")
-        print(" 7. 梯形参考移动到绝对位置")
-        print(" 8. 梯形参考执行相对移动")
-        print(" 9. 取消目标并切换当前位置刚性保持")
-        print("10. 查看 Joint / Actuator 周期状态")
-        print("11. 查看动力学向量与末端位姿")
-        print("12. 查看质量矩阵与末端 Jacobian")
-        print("13. 查看执行器静态参数")
-        print("14. 设置重力补偿比例")
-        print("15. 查看配置摘要")
-        print("16. 读取指定 Frame 位姿与 Jacobian")
-        print("17. 执行 pybinding 只读自检")
-        print("18. 连续监视状态")
-        print("21. 立即 stop() 并失能（危险）")
-        print("22. FAULT 进入受限柔性恢复")
-        print("23. FAULT 返回刚性保持")
-        print("24. 查看当前故障恢复模式")
+        print(" 1. 状态查看")
+        print(" 2. 使能 / 失能 / 故障")
+        print(" 3. 模式与补偿")
+        print(" 4. 运动与命令")
+        print(" 5. 动力学与配置")
+        print(" 6. 工具与监视")
         print(" 0. 回到停放姿态并安全退出")
 
     def run(self) -> int:
         self.banner()
         handlers: dict[int, Callable[[], Any]] = {
             0: self.safe_exit,
-            1: self.summary,
-            2: self.start,
-            3: self.park_and_stop,
-            4: self.clear_fault,
-            5: self.set_impedance,
-            6: self.set_model_mode,
-            7: self.move_absolute,
-            8: self.move_relative,
-            9: self.hold,
-            10: self.show_states,
-            11: self.show_dynamics,
-            12: self.show_matrices,
-            13: self.show_actuators,
-            14: self.set_gravity_scale,
-            15: self.show_config,
-            16: self.show_frame,
-            17: self.self_check,
-            18: self.monitor,
-            21: self.force_stop,
-            22: self.enter_fault_compliant_recovery,
-            23: self.return_to_fault_rigid_hold,
-            24: self.show_fault_hold_mode,
+            1: self.status_menu,
+            2: self.power_fault_menu,
+            3: self.mode_menu,
+            4: self.motion_menu,
+            5: self.dynamics_menu,
+            6: self.tools_menu,
         }
 
         while not self.quit:
@@ -299,6 +267,87 @@ class Terminal:
             except Exception as error:
                 print(f"Python 终端异常: {type(error).__name__}: {error}")
         return 0
+
+    def run_submenu(
+        self, title: str, items: list[tuple[int, str, Callable[[], Any]]]
+    ) -> None:
+        print(f"\n------------ {title} ------------")
+        for number, label, _ in items:
+            print(f"{number:2d}. {label}")
+        print(" 0. 返回主菜单")
+        choice = read_int("请选择: ")
+        if choice is None or choice == 0:
+            return
+        for number, _, handler in items:
+            if choice == number:
+                handler()
+                return
+        print("未知菜单编号")
+
+    def status_menu(self) -> None:
+        self.run_submenu(
+            "状态查看",
+            [
+                (1, "查看 RobotSession 状态", self.summary),
+                (2, "查看 Joint / Actuator 周期状态", self.show_states),
+                (3, "查看执行器静态参数", self.show_actuators),
+                (4, "查看配置摘要", self.show_config),
+            ],
+        )
+
+    def power_fault_menu(self) -> None:
+        self.run_submenu(
+            "使能 / 失能 / 故障",
+            [
+                (1, "start() / activate()", self.start),
+                (2, "回到停放姿态并 stop()", self.park_and_stop),
+                (3, "立即 stop() 并失能（危险）", self.force_stop),
+                (4, "clear_fault()", self.clear_fault),
+                (5, "FAULT 进入受限柔性恢复", self.enter_fault_compliant_recovery),
+                (6, "FAULT 返回刚性保持", self.return_to_fault_rigid_hold),
+                (7, "查看当前故障恢复模式", self.show_fault_hold_mode),
+            ],
+        )
+
+    def mode_menu(self) -> None:
+        self.run_submenu(
+            "模式与补偿",
+            [
+                (1, "切换阻抗模式", self.set_impedance),
+                (2, "切换模型前馈模式（仅 INACTIVE）", self.set_model_mode),
+                (3, "设置重力补偿比例", self.set_gravity_scale),
+            ],
+        )
+
+    def motion_menu(self) -> None:
+        self.run_submenu(
+            "运动与命令",
+            [
+                (1, "梯形参考移动到绝对位置", self.move_absolute),
+                (2, "梯形参考执行相对移动", self.move_relative),
+                (3, "取消目标并切换当前位置刚性保持", self.hold),
+            ],
+        )
+
+    def dynamics_menu(self) -> None:
+        self.run_submenu(
+            "动力学与配置",
+            [
+                (1, "查看动力学向量与末端位姿", self.show_dynamics),
+                (2, "查看质量矩阵与末端 Jacobian", self.show_matrices),
+                (3, "读取指定 Frame 位姿与 Jacobian", self.show_frame),
+                (4, "查看配置摘要", self.show_config),
+            ],
+        )
+
+    def tools_menu(self) -> None:
+        self.run_submenu(
+            "工具与监视",
+            [
+                (1, "执行 pybinding 只读自检", self.self_check),
+                (2, "连续监视状态", self.monitor),
+            ],
+        )
 
     def start(self) -> None:
         if self.session.running:
@@ -327,7 +376,7 @@ class Terminal:
 
         shutdown = self.cfg.shutdown
         if not shutdown.park_before_disable:
-            print("park_before_disable=false；安全路径不会自动直接失能，请使用菜单 21")
+            print("park_before_disable=false；安全路径不会自动直接失能，请使用“使能 / 失能 / 故障 > 立即 stop()”")
             return False
 
         target = vector(shutdown.park_pos)

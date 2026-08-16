@@ -376,6 +376,26 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
  * @return 成功时返回空值；失败时返回 DynamicsErr
  */
 tl::expected<void, DynamicsErr> Dynamics::update(const JointState& state, const JointVector& acc, const JointVector& ref_acc) {
+    const auto state_result = update_state(state, acc);
+    if(!state_result) {
+        return tl::make_unexpected(state_result.error());
+    }
+
+    const auto reference_result = update_reference(ref_acc);
+    if(!reference_result) {
+        return tl::make_unexpected(reference_result.error());
+    }
+
+    return {};
+}
+
+/**
+ * @brief 更新当前状态对应的运动学与动力学缓存
+ * @param state 当前关节位置、速度和反馈力矩
+ * @param acc 当前关节加速度估计
+ * @return 成功时返回空值；失败时返回 DynamicsErr
+ */
+tl::expected<void, DynamicsErr> Dynamics::update_state(const JointState& state, const JointVector& acc) {
     if(!is_configured()) {
         return tl::make_unexpected(DynamicsErr::NOT_CONFIGURED);
     }
@@ -384,16 +404,13 @@ tl::expected<void, DynamicsErr> Dynamics::update(const JointState& state, const 
     const auto vel_valid = validate_joint_vector(state.vel, impl_->info.joints_count);
     const auto tor_valid = validate_joint_vector(state.tor, impl_->info.joints_count);
     const auto acc_valid = validate_joint_vector(acc, impl_->info.joints_count);
-    const auto ref_acc_valid = validate_joint_vector(ref_acc, impl_->info.joints_count);
     if(!pos_valid) return tl::make_unexpected(pos_valid.error());
     if(!vel_valid) return tl::make_unexpected(vel_valid.error());
     if(!tor_valid) return tl::make_unexpected(tor_valid.error());
     if(!acc_valid) return tl::make_unexpected(acc_valid.error());
-    if(!ref_acc_valid) return tl::make_unexpected(ref_acc_valid.error());
 
     assign_joint_vector(state.pos, impl_->q_indices, impl_->q_model);
     assign_joint_vector(state.vel, impl_->v_indices, impl_->dq_model);
-    assign_joint_vector(ref_acc, impl_->v_indices, impl_->ddq_model);
     assign_joint_vector(state.tor, impl_->v_indices, impl_->tau_model);
 
     impl_->is_updated = false;
@@ -420,9 +437,6 @@ tl::expected<void, DynamicsErr> Dynamics::update(const JointState& state, const 
         impl_->data->M.triangularView<Eigen::StrictlyLower>() = impl_->data->M.transpose().triangularView<Eigen::StrictlyLower>();
         extract_joint_matrix(impl_->data->M, impl_->v_indices, impl_->state.mass_matrix);
 
-        const Eigen::VectorXd& inverse_dynamics = pinocchio::rnea(impl_->model, *impl_->data, impl_->q_model, impl_->dq_model, impl_->ddq_model);
-        extract_joint_vector(inverse_dynamics, impl_->v_indices, impl_->state.inverse_dynamics);
-
         const Eigen::VectorXd& forward_dynamics = pinocchio::aba(impl_->model, *impl_->data, impl_->q_model, impl_->dq_model, impl_->tau_model);
         extract_joint_vector(forward_dynamics, impl_->v_indices, impl_->state.forward_dynamics);
     }
@@ -434,10 +448,41 @@ tl::expected<void, DynamicsErr> Dynamics::update(const JointState& state, const 
     impl_->state.vel = state.vel;
     impl_->state.acc = acc;
     impl_->state.tor = state.tor;
-    impl_->state.ref_acc = ref_acc;
+    std::fill(impl_->state.ref_acc.begin(), impl_->state.ref_acc.end(), 0.0);
+    std::fill(impl_->state.inverse_dynamics.begin(), impl_->state.inverse_dynamics.end(), 0.0);
     impl_->state.tool_pose = impl_->frame_poses[impl_->tool_frame_id];
     impl_->state.tool_jacobian = impl_->frame_jacobians[impl_->tool_frame_id];
     impl_->is_updated = true;
+    return {};
+}
+
+/**
+ * @brief 使用当前状态缓存更新参考逆动力学
+ * @param ref_acc 当前关节参考加速度
+ * @return 成功时返回空值；失败时返回 DynamicsErr
+ */
+tl::expected<void, DynamicsErr> Dynamics::update_reference(const JointVector& ref_acc) {
+    if(!is_configured()) {
+        return tl::make_unexpected(DynamicsErr::NOT_CONFIGURED);
+    }
+    if(!is_updated()) {
+        return tl::make_unexpected(DynamicsErr::NOT_UPDATED);
+    }
+
+    const auto ref_acc_valid = validate_joint_vector(ref_acc, impl_->info.joints_count);
+    if(!ref_acc_valid) return tl::make_unexpected(ref_acc_valid.error());
+
+    assign_joint_vector(ref_acc, impl_->v_indices, impl_->ddq_model);
+
+    try {
+        const Eigen::VectorXd& inverse_dynamics = pinocchio::rnea(impl_->model, *impl_->data, impl_->q_model, impl_->dq_model, impl_->ddq_model);
+        extract_joint_vector(inverse_dynamics, impl_->v_indices, impl_->state.inverse_dynamics);
+    }
+    catch(...) {
+        return tl::make_unexpected(DynamicsErr::COMPUTE_FAILED);
+    }
+
+    impl_->state.ref_acc = ref_acc;
     return {};
 }
 

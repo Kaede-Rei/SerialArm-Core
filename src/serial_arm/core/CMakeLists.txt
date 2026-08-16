@@ -207,6 +207,35 @@ serial_arm_enable_warnings(serial_arm_dynamics)
 list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_dynamics)
 
 # =============================================================================
+# 必选模块：serial_arm_interaction
+# =============================================================================
+
+add_library(serial_arm_interaction
+    src/interaction/torque_residual_observer.cpp
+    src/interaction/interaction_controller.cpp
+)
+add_library(serial_arm::interaction ALIAS serial_arm_interaction)
+set_target_properties(serial_arm_interaction PROPERTIES EXPORT_NAME interaction)
+
+target_include_directories(serial_arm_interaction
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${SERIAL_ARM_TL_INCLUDE_DIR}>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+target_link_libraries(serial_arm_interaction
+    PUBLIC
+        serial_arm_core
+        serial_arm_dynamics
+)
+
+target_compile_features(serial_arm_interaction PUBLIC cxx_std_17)
+serial_arm_enable_warnings(serial_arm_interaction)
+
+list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_interaction)
+
+# =============================================================================
 # 可选模块：SERIAL_ARM_BUILD_PYTHON
 # =============================================================================
 
@@ -367,6 +396,35 @@ if(BUILD_TESTING)
     serial_arm_enable_warnings(serial_arm_transport_tests)
 
     add_test(NAME serial_arm_transport_tests COMMAND serial_arm_transport_tests)
+
+    add_executable(serial_arm_interaction_tests
+        tests/interaction_tests.cpp
+    )
+    target_link_libraries(serial_arm_interaction_tests
+        PRIVATE
+            serial_arm_interaction
+            GTest::gtest_main
+    )
+    target_compile_features(serial_arm_interaction_tests PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_interaction_tests)
+
+    add_test(NAME serial_arm_interaction_tests COMMAND serial_arm_interaction_tests)
+
+    add_executable(serial_arm_terminal_menu_tests
+        tests/terminal_menu_tests.cpp
+    )
+    target_compile_definitions(serial_arm_terminal_menu_tests
+        PRIVATE
+            SERIAL_ARM_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../.."
+    )
+    target_link_libraries(serial_arm_terminal_menu_tests
+        PRIVATE
+            GTest::gtest_main
+    )
+    target_compile_features(serial_arm_terminal_menu_tests PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_terminal_menu_tests)
+
+    add_test(NAME serial_arm_terminal_menu_tests COMMAND serial_arm_terminal_menu_tests)
 endif()
 
 # =============================================================================

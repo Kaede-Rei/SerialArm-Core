@@ -113,6 +113,19 @@ public:
      */
     tl::expected<void, DynamicsErr> update(const JointState& state, const JointVector& acc, const JointVector& ref_acc);
     /**
+     * @brief 更新当前状态对应的运动学与动力学缓存
+     * @param state 当前关节位置、速度和反馈力矩
+     * @param acc 当前关节加速度估计
+     * @return 成功时返回空值；失败时返回 DynamicsErr
+     */
+    tl::expected<void, DynamicsErr> update_state(const JointState& state, const JointVector& acc);
+    /**
+     * @brief 使用当前状态缓存更新参考逆动力学
+     * @param ref_acc 当前关节参考加速度
+     * @return 成功时返回空值；失败时返回 DynamicsErr
+     */
+    tl::expected<void, DynamicsErr> update_reference(const JointVector& ref_acc);
+    /**
      * @brief 更新重力补偿缩放系数
      * @param gravity_scale 重力补偿缩放系数
      * @return 成功时返回空值；失败时返回 DynamicsErr

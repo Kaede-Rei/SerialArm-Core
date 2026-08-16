@@ -69,6 +69,16 @@ JointCtrlCmd joint_cmd(std::size_t n) {
     };
 }
 
+DynamicsCfg dynamics_cfg(const std::vector<std::string>& names) {
+    DynamicsCfg cfg;
+    cfg.urdf_path = fixture_path("simple_4dof_revolute_arm.urdf");
+    cfg.joint_names = names;
+    cfg.base_frame = "base_link";
+    cfg.tool_frame = "tool0";
+    cfg.gravity_scale.assign(names.size(), 1.0);
+    return cfg;
+}
+
 SafetyCfg safety_cfg(bool continuous) {
     SafetyCfg cfg;
     cfg.joints_count = 1;
@@ -314,13 +324,7 @@ TEST(DynamicsMandatory, PlaceholderInertialFixtureComputesFiniteOutputs) {
     ASSERT_TRUE(loader.load(fixture_path("simple_4dof_revolute_arm.urdf"), names));
 
     Dynamics dynamics;
-    DynamicsCfg cfg;
-    cfg.urdf_path = fixture_path("simple_4dof_revolute_arm.urdf");
-    cfg.joint_names = names;
-    cfg.base_frame = "base_link";
-    cfg.tool_frame = "tool0";
-    cfg.gravity_scale.assign(names.size(), 1.0);
-    ASSERT_TRUE(dynamics.configure(cfg));
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
 
     JointState state = joint_state(names.size());
     JointVector acc(names.size(), 0.0);
@@ -336,6 +340,120 @@ TEST(DynamicsMandatory, PlaceholderInertialFixtureComputesFiniteOutputs) {
     EXPECT_EQ(dynamics.get_inverse_dynamics().size(), names.size());
     EXPECT_TRUE(dynamics.get_mass_matrix().allFinite());
     EXPECT_TRUE(dynamics.get_tool_jacobian().allFinite());
+}
+
+TEST(DynamicsTwoStage, LegacyUpdateMatchesStateThenReferenceUpdate) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    JointState state = joint_state(names.size());
+    state.pos = { 0.1, -0.2, 0.3, -0.4 };
+    state.vel = { 0.01, -0.02, 0.03, -0.04 };
+    state.tor = { 0.5, -0.6, 0.7, -0.8 };
+    const JointVector acc{ 0.02, -0.01, 0.03, -0.02 };
+    const JointVector ref_acc{ 0.04, -0.03, 0.02, -0.01 };
+
+    Dynamics legacy;
+    ASSERT_TRUE(legacy.configure(dynamics_cfg(names)));
+    ASSERT_TRUE(legacy.update(state, acc, ref_acc));
+
+    Dynamics staged;
+    ASSERT_TRUE(staged.configure(dynamics_cfg(names)));
+    ASSERT_TRUE(staged.update_state(state, acc));
+    ASSERT_TRUE(staged.update_reference(ref_acc));
+
+    const DynamicsState& legacy_state = legacy.get_state();
+    const DynamicsState& staged_state = staged.get_state();
+    EXPECT_EQ(staged_state.pos, state.pos);
+    EXPECT_EQ(staged_state.vel, state.vel);
+    EXPECT_EQ(staged_state.acc, acc);
+    EXPECT_EQ(staged_state.tor, state.tor);
+    EXPECT_EQ(staged_state.ref_acc, ref_acc);
+    EXPECT_EQ(staged_state.gravity.size(), names.size());
+    EXPECT_EQ(staged_state.inverse_dynamics.size(), names.size());
+    EXPECT_TRUE(staged_state.mass_matrix.isApprox(legacy_state.mass_matrix, 1e-12));
+    EXPECT_TRUE(staged_state.tool_jacobian.isApprox(legacy_state.tool_jacobian, 1e-12));
+    for(std::size_t i = 0; i < names.size(); ++i) {
+        EXPECT_NEAR(staged_state.gravity[i], legacy_state.gravity[i], 1e-12);
+        EXPECT_NEAR(staged_state.gravity_compensation[i], legacy_state.gravity_compensation[i], 1e-12);
+        EXPECT_NEAR(staged_state.nonlinear[i], legacy_state.nonlinear[i], 1e-12);
+        EXPECT_NEAR(staged_state.coriolis[i], legacy_state.coriolis[i], 1e-12);
+        EXPECT_NEAR(staged_state.forward_dynamics[i], legacy_state.forward_dynamics[i], 1e-12);
+        EXPECT_NEAR(staged_state.inverse_dynamics[i], legacy_state.inverse_dynamics[i], 1e-12);
+    }
+}
+
+TEST(DynamicsTwoStage, StateUpdateWorksWithoutReferenceAndClearsReferenceCache) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+
+    JointState state = joint_state(names.size());
+    const JointVector acc(names.size(), 0.0);
+    ASSERT_TRUE(dynamics.update(state, acc, JointVector(names.size(), 0.5)));
+    ASSERT_TRUE(dynamics.update_state(state, acc));
+
+    const DynamicsState& updated = dynamics.get_state();
+    EXPECT_TRUE(dynamics.is_updated());
+    EXPECT_EQ(updated.ref_acc, JointVector(names.size(), 0.0));
+    EXPECT_EQ(updated.inverse_dynamics, JointVector(names.size(), 0.0));
+    EXPECT_EQ(updated.gravity.size(), names.size());
+    EXPECT_EQ(updated.forward_dynamics.size(), names.size());
+    EXPECT_TRUE(updated.mass_matrix.allFinite());
+}
+
+TEST(DynamicsTwoStage, ReferenceUpdateRequiresStateUpdate) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+
+    auto result = dynamics.update_reference(JointVector(names.size(), 0.0));
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), DynamicsErr::NOT_UPDATED);
+}
+
+TEST(DynamicsTwoStage, StateUpdateValidatesInputs) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+
+    JointState state = joint_state(names.size());
+    auto size_result = dynamics.update_state(state, JointVector(names.size() - 1, 0.0));
+    ASSERT_FALSE(size_result);
+    EXPECT_EQ(size_result.error(), DynamicsErr::INVALID_INPUT_SIZE);
+
+    JointVector acc(names.size(), 0.0);
+    state.pos[1] = std::numeric_limits<double>::quiet_NaN();
+    auto nan_result = dynamics.update_state(state, acc);
+    ASSERT_FALSE(nan_result);
+    EXPECT_EQ(nan_result.error(), DynamicsErr::NON_FINITE_INPUT);
+
+    state = joint_state(names.size());
+    state.tor[2] = std::numeric_limits<double>::infinity();
+    auto inf_result = dynamics.update_state(state, acc);
+    ASSERT_FALSE(inf_result);
+    EXPECT_EQ(inf_result.error(), DynamicsErr::NON_FINITE_INPUT);
+}
+
+TEST(DynamicsTwoStage, ReferenceUpdateValidatesInputs) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+    ASSERT_TRUE(dynamics.update_state(joint_state(names.size()), JointVector(names.size(), 0.0)));
+
+    auto size_result = dynamics.update_reference(JointVector(names.size() - 1, 0.0));
+    ASSERT_FALSE(size_result);
+    EXPECT_EQ(size_result.error(), DynamicsErr::INVALID_INPUT_SIZE);
+
+    JointVector ref_acc(names.size(), 0.0);
+    ref_acc[0] = std::numeric_limits<double>::quiet_NaN();
+    auto nan_result = dynamics.update_reference(ref_acc);
+    ASSERT_FALSE(nan_result);
+    EXPECT_EQ(nan_result.error(), DynamicsErr::NON_FINITE_INPUT);
+
+    ref_acc.assign(names.size(), 0.0);
+    ref_acc[1] = std::numeric_limits<double>::infinity();
+    auto inf_result = dynamics.update_reference(ref_acc);
+    ASSERT_FALSE(inf_result);
+    EXPECT_EQ(inf_result.error(), DynamicsErr::NON_FINITE_INPUT);
 }
 
 TEST(MitBackendContract, MapperPassesFullCommandToMotorBus) {

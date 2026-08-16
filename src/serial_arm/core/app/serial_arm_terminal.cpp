@@ -800,63 +800,125 @@ private:
 
     void print_menu() const {
         std::cout << "\n------------ 主菜单 ------------\n";
-        std::cout << " 1. 查看 Robot 状态与 getter 输出\n";
-        std::cout << " 2. activate()\n";
-        std::cout << " 3. 回到停放姿态并失能\n";
-        std::cout << " 4. clear_fault()\n";
-        std::cout << " 5. 切换阻抗模式\n";
-        std::cout << " 6. 切换模型前馈模式（仅 INACTIVE）\n";
-        std::cout << " 7. 梯形参考移动到 6 轴绝对位置\n";
-        std::cout << " 8. 梯形参考执行 6 轴相对移动\n";
-        std::cout << " 9. 测试 JointPosCmd 输入\n";
-        std::cout << "10. 测试 JointPosVelCmd 输入\n";
-        std::cout << "11. 测试 JointPosVelTorCmd 输入\n";
-        std::cout << "12. 测试 set_full_cmd()\n";
-        std::cout << "13. 取消当前输入并切换到当前位置保持\n";
-        std::cout << "14. 查看全部 Joint / Actuator 周期状态\n";
-        std::cout << "15. 查看完整动力学向量与末端位姿\n";
-        std::cout << "16. 查看质量矩阵与末端 Jacobian\n";
-        std::cout << "17. 查看达妙执行器静态参数\n";
-        std::cout << "18. 设置重力补偿比例（仅 INACTIVE）\n";
-        std::cout << "19. 查看完整配置摘要\n";
-        std::cout << "20. 读取指定 Frame 的缓存位姿与 Jacobian\n";
-        std::cout << "21. 立即停止并失能（危险）\n";
-        std::cout << "22. FAULT 进入受限柔性恢复\n";
-        std::cout << "23. FAULT 返回刚性保持\n";
-        std::cout << "24. 查看当前故障恢复模式\n";
+        std::cout << " 1. 状态查看\n";
+        std::cout << " 2. 使能 / 失能 / 故障\n";
+        std::cout << " 3. 模式与补偿\n";
+        std::cout << " 4. 运动与命令\n";
+        std::cout << " 5. 动力学与配置\n";
         std::cout << " 0. 回到停放姿态并安全退出\n";
     }
 
     bool handle_menu(int selection) {
         switch(selection) {
             case 0: if(safe_exit()) return false; break;
-            case 1: show_robot_summary(); break;
-            case 2: activate(); break;
-            case 3: park_and_deactivate(); break;
-            case 4: clear_fault(); break;
-            case 5: set_impedance_mode(); break;
-            case 6: set_model_feedforward_mode(); break;
-            case 7: start_absolute_stream(); break;
-            case 8: start_relative_stream(); break;
-            case 9: set_joint_pos_cmd(); break;
-            case 10: set_joint_pos_vel_cmd(); break;
-            case 11: set_joint_pos_vel_tor_cmd(); break;
-            case 12: set_full_cmd(); break;
-            case 13: cancel_and_hold(); break;
-            case 14: show_all_states(); break;
-            case 15: show_dynamics_state(); break;
-            case 16: show_dynamics_matrices(); break;
-            case 17: show_actuator_info(); break;
-            case 18: set_gravity_scale(); break;
-            case 19: show_config_summary(); break;
-            case 20: show_frame_state(); break;
-            case 21: immediate_deactivate(); break;
-            case 22: enter_fault_compliant_recovery(); break;
-            case 23: return_to_fault_rigid_hold(); break;
-            case 24: show_fault_hold_mode(); break;
+            case 1: handle_status_menu(); break;
+            case 2: handle_power_fault_menu(); break;
+            case 3: handle_mode_menu(); break;
+            case 4: handle_motion_menu(); break;
+            case 5: handle_dynamics_menu(); break;
             default: std::cout << "未知菜单编号\n"; break;
         }
         return true;
+    }
+
+    void handle_status_menu() {
+        std::cout << "\n------------ 状态查看 ------------\n";
+        std::cout << " 1. 查看 Robot 状态与 getter 输出\n";
+        std::cout << " 2. 查看全部 Joint / Actuator 周期状态\n";
+        std::cout << " 3. 查看达妙执行器静态参数\n";
+        std::cout << " 4. 查看完整配置摘要\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        switch(*selection) {
+            case 1: show_robot_summary(); break;
+            case 2: show_all_states(); break;
+            case 3: show_actuator_info(); break;
+            case 4: show_config_summary(); break;
+            default: std::cout << "未知菜单编号\n"; break;
+        }
+    }
+
+    void handle_power_fault_menu() {
+        std::cout << "\n------------ 使能 / 失能 / 故障 ------------\n";
+        std::cout << " 1. activate()\n";
+        std::cout << " 2. 回到停放姿态并失能\n";
+        std::cout << " 3. 立即停止并失能（危险）\n";
+        std::cout << " 4. clear_fault()\n";
+        std::cout << " 5. FAULT 进入受限柔性恢复\n";
+        std::cout << " 6. FAULT 返回刚性保持\n";
+        std::cout << " 7. 查看当前故障恢复模式\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        switch(*selection) {
+            case 1: activate(); break;
+            case 2: park_and_deactivate(); break;
+            case 3: immediate_deactivate(); break;
+            case 4: clear_fault(); break;
+            case 5: enter_fault_compliant_recovery(); break;
+            case 6: return_to_fault_rigid_hold(); break;
+            case 7: show_fault_hold_mode(); break;
+            default: std::cout << "未知菜单编号\n"; break;
+        }
+    }
+
+    void handle_mode_menu() {
+        std::cout << "\n------------ 模式与补偿 ------------\n";
+        std::cout << " 1. 切换阻抗模式\n";
+        std::cout << " 2. 切换模型前馈模式（仅 INACTIVE）\n";
+        std::cout << " 3. 设置重力补偿比例（仅 INACTIVE）\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        switch(*selection) {
+            case 1: set_impedance_mode(); break;
+            case 2: set_model_feedforward_mode(); break;
+            case 3: set_gravity_scale(); break;
+            default: std::cout << "未知菜单编号\n"; break;
+        }
+    }
+
+    void handle_motion_menu() {
+        std::cout << "\n------------ 运动与命令 ------------\n";
+        std::cout << " 1. 梯形参考移动到 6 轴绝对位置\n";
+        std::cout << " 2. 梯形参考执行 6 轴相对移动\n";
+        std::cout << " 3. 取消当前输入并切换到当前位置保持\n";
+        std::cout << " 4. 测试 JointPosCmd 输入\n";
+        std::cout << " 5. 测试 JointPosVelCmd 输入\n";
+        std::cout << " 6. 测试 JointPosVelTorCmd 输入\n";
+        std::cout << " 7. 测试 set_full_cmd()\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        switch(*selection) {
+            case 1: start_absolute_stream(); break;
+            case 2: start_relative_stream(); break;
+            case 3: cancel_and_hold(); break;
+            case 4: set_joint_pos_cmd(); break;
+            case 5: set_joint_pos_vel_cmd(); break;
+            case 6: set_joint_pos_vel_tor_cmd(); break;
+            case 7: set_full_cmd(); break;
+            default: std::cout << "未知菜单编号\n"; break;
+        }
+    }
+
+    void handle_dynamics_menu() {
+        std::cout << "\n------------ 动力学与配置 ------------\n";
+        std::cout << " 1. 查看完整动力学向量与末端位姿\n";
+        std::cout << " 2. 查看质量矩阵与末端 Jacobian\n";
+        std::cout << " 3. 读取指定 Frame 的缓存位姿与 Jacobian\n";
+        std::cout << " 4. 查看完整配置摘要\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        switch(*selection) {
+            case 1: show_dynamics_state(); break;
+            case 2: show_dynamics_matrices(); break;
+            case 3: show_frame_state(); break;
+            case 4: show_config_summary(); break;
+            default: std::cout << "未知菜单编号\n"; break;
+        }
     }
 
     void activate() {
@@ -1106,7 +1168,7 @@ private:
         cfg_.runtime.model_feedforward_mode = mode;
         std::cout << "模型前馈模式已切换为 " << to_string(mode) << "\n";
         if(mode == ModelFeedforwardMode::GRAVITY && is_zero_vector(dynamics_.get_gravity_scale())) {
-            std::cout << "[提示] gravity_scale 全为 0，当前 GRAVITY 模式不会产生实际补偿，请在 INACTIVE 状态使用菜单 18 设置\n";
+            std::cout << "[提示] gravity_scale 全为 0，当前 GRAVITY 模式不会产生实际补偿，请在 INACTIVE 状态使用“模式与补偿 > 设置重力补偿比例”\n";
         }
     }
 
