@@ -61,8 +61,15 @@ tl::expected<void, ExternalTorqueObserverErr> ExternalTorqueObserver::configure(
     if(cfg.joints_count == 0 || !valid_source(cfg.source)) {
         return tl::make_unexpected(ExternalTorqueObserverErr::INVALID_CFG);
     }
+    if(!cfg.residual_bias.empty() &&
+        (cfg.residual_bias.size() != cfg.joints_count || !finite_vector(cfg.residual_bias))) {
+        return tl::make_unexpected(ExternalTorqueObserverErr::INVALID_CFG);
+    }
 
     cfg_ = cfg;
+    if(cfg_.residual_bias.empty()) {
+        cfg_.residual_bias.assign(cfg_.joints_count, 0.0);
+    }
     is_configured_ = true;
     return {};
 }
@@ -84,7 +91,13 @@ tl::expected<ExternalTorqueEstimate, ExternalTorqueObserverErr> ExternalTorqueOb
     if(!valid) return tl::make_unexpected(valid.error());
 
     ExternalTorqueEstimate estimate;
-    estimate.tau_ext_hat = source;
+    estimate.tau_ext_hat.resize(cfg_.joints_count);
+    for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
+        estimate.tau_ext_hat[i] = source[i] - cfg_.residual_bias[i];
+        if(!std::isfinite(estimate.tau_ext_hat[i])) {
+            return tl::make_unexpected(ExternalTorqueObserverErr::NON_FINITE_INPUT);
+        }
+    }
     return estimate;
 }
 

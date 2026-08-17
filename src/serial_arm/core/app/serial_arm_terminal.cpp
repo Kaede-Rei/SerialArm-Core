@@ -1595,7 +1595,6 @@ private:
             return;
         }
 
-        InteractionController controller;
         InteractionControllerCfg interaction_cfg;
         interaction_cfg.residual.joints_count = cfg_.joint_names.size();
         interaction_cfg.residual.filter_alpha = *filter_alpha;
@@ -1609,9 +1608,13 @@ private:
         interaction_cfg.admittance.stiffness.assign(cfg_.joint_names.size(), *stiffness);
         interaction_cfg.admittance.max_delta_q.assign(cfg_.joint_names.size(), *max_delta_q);
         interaction_cfg.admittance.max_delta_q_dot.assign(cfg_.joint_names.size(), *max_delta_q_dot);
-        const auto configure_result = controller.configure(interaction_cfg);
-        if(!configure_result) {
-            std::cout << "InteractionController configure() 失败\n";
+
+        TorqueResidualObserver baseline_observer;
+        TorqueResidualObserverCfg baseline_cfg;
+        baseline_cfg.joints_count = cfg_.joint_names.size();
+        baseline_cfg.filter_alpha = *filter_alpha;
+        if(!baseline_observer.configure(baseline_cfg)) {
+            std::cout << "无接触 baseline observer configure() 失败\n";
             return;
         }
 
@@ -1621,9 +1624,66 @@ private:
             return;
         }
 
+        constexpr double baseline_calibration_s = 2.0;
+        JointVector residual_bias(cfg_.joint_names.size(), 0.0);
+        std::size_t baseline_samples = 0;
+        const Robot::TimePoint baseline_started_at = Robot::Clock::now();
+        std::cout << "开始 " << baseline_calibration_s
+                  << " s 无接触 baseline 校准，请勿触碰机械臂\n";
+
+        while(robot_.get_state() == RobotState::ACTIVE) {
+            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
+            const Robot::TimePoint now = Robot::Clock::now();
+            if(std::chrono::duration<double>(now - baseline_started_at).count() > baseline_calibration_s) break;
+            if(!last_output_) continue;
+
+            const RobotCycleOutput output = *last_output_;
+            const auto update_result = dynamics_.update_state(output.joint_state, output.joint_acc);
+            if(!update_result) {
+                std::cout << "Dynamics update_state() 失败: " << to_string(update_result.error()) << '\n';
+                return;
+            }
+
+            const DynamicsState state = dynamics_.get_state();
+            lock.unlock();
+            const auto residual = baseline_observer.update(state);
+            lock.lock();
+            if(!residual) {
+                std::cout << "无接触 baseline observer update() 失败\n";
+                return;
+            }
+
+            for(std::size_t i = 0; i < residual_bias.size(); ++i) {
+                residual_bias[i] += residual->gravity_residual_filtered[i];
+            }
+            ++baseline_samples;
+        }
+
+        if(robot_.get_state() != RobotState::ACTIVE) {
+            std::cout << "Joint Admittance Test 在 baseline 校准期间终止：Robot 已不处于 ACTIVE\n";
+            return;
+        }
+        if(baseline_samples == 0) {
+            std::cout << "Joint Admittance Test baseline 校准失败：没有采到有效周期\n";
+            return;
+        }
+
+        for(double& value : residual_bias) {
+            value /= static_cast<double>(baseline_samples);
+        }
+        interaction_cfg.external_torque.residual_bias = residual_bias;
+        print_vector("residual_bias", residual_bias);
+
+        InteractionController controller;
+        const auto configure_result = controller.configure(interaction_cfg);
+        if(!configure_result) {
+            std::cout << "InteractionController configure() 失败\n";
+            return;
+        }
+
         const Robot::TimePoint started_at = Robot::Clock::now();
         Robot::TimePoint last_console_at = started_at;
-        std::cout << "开始 Joint Admittance Test，interaction ON，dry-run 不写入 corrected command\n";
+        std::cout << "baseline 校准完成，开始 Joint Admittance Test，interaction ON，dry-run 不写入 corrected command\n";
         while(robot_.get_state() == RobotState::ACTIVE) {
             cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
             const Robot::TimePoint now = Robot::Clock::now();

@@ -36,6 +36,7 @@ enum class ExternalTorqueObserverErr {
 struct ExternalTorqueObserverCfg {
     std::size_t joints_count{ 0 };                          ///< 受控关节数量
     ExternalTorqueSource source{ ExternalTorqueSource::GRAVITY };  ///< residual source
+    JointVector residual_bias;                              ///< 无接触 residual 常值偏置；空向量等价于全 0
 };
 
 /**

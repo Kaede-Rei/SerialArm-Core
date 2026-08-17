@@ -114,6 +114,13 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
         delta_q_[i] += delta_q_dot_[i] * input.dt;
         delta_q_[i] = clamp_symmetric(delta_q_[i], cfg_.max_delta_q[i]);
 
+        const bool at_upper_boundary = delta_q_[i] >= cfg_.max_delta_q[i];
+        const bool at_lower_boundary = delta_q_[i] <= -cfg_.max_delta_q[i];
+        if((at_upper_boundary && delta_q_dot_[i] > 0.0) ||
+            (at_lower_boundary && delta_q_dot_[i] < 0.0)) {
+            delta_q_dot_[i] = 0.0;
+        }
+
         if(!std::isfinite(delta_q_[i]) || !std::isfinite(delta_q_dot_[i])) {
             return tl::make_unexpected(JointAdmittanceControllerErr::NON_FINITE_INPUT);
         }

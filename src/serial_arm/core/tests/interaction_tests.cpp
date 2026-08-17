@@ -264,6 +264,58 @@ TEST(ExternalTorqueObserverTests, SelectsNonlinearFilteredResidual) {
     expect_vector_near(estimate->tau_ext_hat, { -3.0, 4.0 });
 }
 
+
+TEST(ExternalTorqueObserverTests, SubtractsConfiguredConstantBias) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 3;
+    cfg.source = ExternalTorqueSource::GRAVITY;
+    cfg.residual_bias = { 0.25, -0.50, 1.25 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    auto residual = residual_estimate(3);
+    residual.gravity_residual_filtered = { 1.25, -1.50, 2.00 };
+
+    auto estimate = observer.update(residual);
+    ASSERT_TRUE(estimate);
+    expect_vector_near(estimate->tau_ext_hat, { 1.00, -1.00, 0.75 });
+}
+
+TEST(ExternalTorqueObserverTests, RejectsInvalidConstantBiasConfiguration) {
+    ExternalTorqueObserver wrong_size_observer;
+    ExternalTorqueObserverCfg wrong_size_cfg;
+    wrong_size_cfg.joints_count = 2;
+    wrong_size_cfg.source = ExternalTorqueSource::GRAVITY;
+    wrong_size_cfg.residual_bias = { 0.1 };
+    auto wrong_size = wrong_size_observer.configure(wrong_size_cfg);
+    ASSERT_FALSE(wrong_size);
+    EXPECT_EQ(wrong_size.error(), ExternalTorqueObserverErr::INVALID_CFG);
+
+    ExternalTorqueObserver non_finite_observer;
+    ExternalTorqueObserverCfg non_finite_cfg;
+    non_finite_cfg.joints_count = 1;
+    non_finite_cfg.source = ExternalTorqueSource::GRAVITY;
+    non_finite_cfg.residual_bias = { std::numeric_limits<double>::quiet_NaN() };
+    auto non_finite = non_finite_observer.configure(non_finite_cfg);
+    ASSERT_FALSE(non_finite);
+    EXPECT_EQ(non_finite.error(), ExternalTorqueObserverErr::INVALID_CFG);
+}
+
+TEST(ExternalTorqueObserverTests, RejectsNonFiniteBiasCompensatedOutput) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.source = ExternalTorqueSource::GRAVITY;
+    cfg.residual_bias = { -std::numeric_limits<double>::max() };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    auto residual = residual_estimate(1);
+    residual.gravity_residual_filtered = { std::numeric_limits<double>::max() };
+    auto result = observer.update(residual);
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error(), ExternalTorqueObserverErr::NON_FINITE_INPUT);
+}
+
 TEST(ExternalTorqueObserverTests, RejectsInvalidConfigurationAndInput) {
     ExternalTorqueObserver observer;
     auto not_configured = observer.update(residual_estimate(1));
@@ -342,7 +394,7 @@ TEST(JointAdmittanceControllerTests, DisabledJointLimitsAndResetAreApplied) {
 
     output = controller.update(input);
     ASSERT_TRUE(output);
-    expect_vector_near(output->delta_q_dot, { 0.2, 0.0 });
+    expect_vector_near(output->delta_q_dot, { 0.0, 0.0 });
     expect_vector_near(output->delta_q, { 0.03, 0.0 });
 
     controller.reset();
@@ -353,6 +405,33 @@ TEST(JointAdmittanceControllerTests, DisabledJointLimitsAndResetAreApplied) {
     ASSERT_TRUE(reset_output);
     expect_vector_near(reset_output->delta_q, { 0.0, 0.0 });
     expect_vector_near(reset_output->delta_q_dot, { 0.0, 0.0 });
+}
+
+
+TEST(JointAdmittanceControllerTests, PositionBoundarySuppressesOutwardVelocityAndAllowsRecovery) {
+    JointAdmittanceControllerCfg cfg = admittance_cfg(1);
+    cfg.max_delta_q = { 0.03 };
+    cfg.max_delta_q_dot = { 0.20 };
+
+    JointAdmittanceController controller;
+    ASSERT_TRUE(controller.configure(cfg));
+
+    JointAdmittanceInput push_outward;
+    push_outward.tau_ext_hat = { 100.0 };
+    push_outward.dt = 0.1;
+    ASSERT_TRUE(controller.update(push_outward));
+    auto saturated = controller.update(push_outward);
+    ASSERT_TRUE(saturated);
+    expect_vector_near(saturated->delta_q, { 0.03 });
+    expect_vector_near(saturated->delta_q_dot, { 0.0 });
+
+    JointAdmittanceInput release_inward;
+    release_inward.tau_ext_hat = { -1.0 };
+    release_inward.dt = 0.1;
+    auto recovering = controller.update(release_inward);
+    ASSERT_TRUE(recovering);
+    EXPECT_LT(recovering->delta_q[0], 0.03);
+    EXPECT_LT(recovering->delta_q_dot[0], 0.0);
 }
 
 TEST(JointAdmittanceControllerTests, RejectsInvalidConfigurationAndInput) {
