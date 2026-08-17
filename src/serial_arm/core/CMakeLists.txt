@@ -213,6 +213,8 @@ list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_dynamics)
 add_library(serial_arm_interaction
     src/interaction/torque_residual_observer.cpp
     src/interaction/interaction_controller.cpp
+    src/interaction/external_torque_observer.cpp
+    src/interaction/joint_admittance_controller.cpp
 )
 add_library(serial_arm::interaction ALIAS serial_arm_interaction)
 set_target_properties(serial_arm_interaction PROPERTIES EXPORT_NAME interaction)
@@ -302,6 +304,7 @@ if(SERIAL_ARM_BUILD_TERMINAL)
             serial_arm_robot
             serial_arm_config
             serial_arm_dynamics
+            serial_arm_interaction
             Threads::Threads
     )
 

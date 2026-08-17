@@ -30,6 +30,7 @@ TEST(TerminalMenuTests, CppTerminalUsesClassifiedMenus) {
     EXPECT_EQ(source.find("6. 实验采集"), std::string::npos);
     EXPECT_EQ(source.find("handle_experiment_menu"), std::string::npos);
     EXPECT_EQ(source.find("Torque Residual Observer Test"), std::string::npos);
+    EXPECT_NE(source.find("Joint Admittance Test"), std::string::npos);
 }
 
 TEST(TerminalMenuTests, PythonTerminalUsesClassifiedMenus) {

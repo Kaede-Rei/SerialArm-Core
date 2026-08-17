@@ -1,0 +1,91 @@
+#pragma once
+
+#include <cstddef>
+#include <vector>
+
+#include <tl/expected.hpp>
+
+#include "serial_arm/core/types.hpp"
+
+namespace serial_arm {
+
+// ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
+
+/**
+ * @brief 关节导纳 controller 错误类型
+ */
+enum class JointAdmittanceControllerErr {
+    NOT_CONFIGURED,         ///< Controller 尚未完成配置
+    ALREADY_CONFIGURED,     ///< Controller 已经配置，不能重复配置
+    INVALID_CFG,            ///< Controller 配置内容无效
+    INVALID_INPUT_SIZE,     ///< 输入关节向量长度与配置的关节数量不一致
+    NON_FINITE_INPUT,       ///< 输入包含 NaN 或无穷值
+    INVALID_DT,             ///< dt 非有限或不大于 0
+};
+
+/**
+ * @brief 关节导纳 controller 配置
+ */
+struct JointAdmittanceControllerCfg {
+    std::size_t joints_count{ 0 };      ///< 受控关节数量
+    std::vector<std::uint8_t> enabled;  ///< 每个关节是否启用导纳
+    JointVector mass;                   ///< 虚拟质量
+    JointVector damping;                ///< 虚拟阻尼
+    JointVector stiffness;              ///< 虚拟刚度
+    JointVector max_delta_q;            ///< 位置偏移限幅
+    JointVector max_delta_q_dot;        ///< 速度偏移限幅
+};
+
+/**
+ * @brief 关节导纳单周期输入
+ */
+struct JointAdmittanceInput {
+    JointVector tau_ext_hat;    ///< 关节侧外力矩估计
+    double dt{ 0.0 };           ///< 控制周期
+};
+
+/**
+ * @brief 关节导纳单周期输出
+ */
+struct JointAdmittanceOutput {
+    JointVector delta_q;        ///< 位置偏移
+    JointVector delta_q_dot;    ///< 速度偏移
+};
+
+// ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
+
+/**
+ * @brief 关节空间导纳 controller
+ */
+class JointAdmittanceController {
+public:
+    /**
+     * @brief 配置 controller
+     * @param cfg controller 配置
+     * @return 成功时返回空值；失败时返回 JointAdmittanceControllerErr
+     */
+    tl::expected<void, JointAdmittanceControllerErr> configure(const JointAdmittanceControllerCfg& cfg);
+    /**
+     * @brief 更新导纳状态
+     * @param input 单周期输入
+     * @return 成功时返回导纳输出；失败时返回 JointAdmittanceControllerErr
+     */
+    tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> update(const JointAdmittanceInput& input);
+    /**
+     * @brief 清除导纳状态
+     */
+    void reset();
+    /**
+     * @brief 查询 controller 是否已经完成配置
+     * @return 已成功配置时返回 true，否则返回 false
+     */
+    bool is_configured() const noexcept;
+
+private:
+    JointAdmittanceControllerCfg cfg_;   ///< controller 配置
+    JointVector delta_q_;                ///< 位置偏移状态
+    JointVector delta_q_dot_;            ///< 速度偏移状态
+    bool is_configured_{ false };        ///< 是否已经完成配置
+};
+
+} // namespace serial_arm

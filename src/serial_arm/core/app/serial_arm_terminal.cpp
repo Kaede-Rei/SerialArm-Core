@@ -2,6 +2,7 @@
 #include "serial_arm/config/robot_profile.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
+#include "serial_arm/interaction/interaction_controller.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -888,6 +889,7 @@ private:
         std::cout << " 5. 测试 JointPosVelCmd 输入\n";
         std::cout << " 6. 测试 JointPosVelTorCmd 输入\n";
         std::cout << " 7. 测试 set_full_cmd()\n";
+        std::cout << " 8. Joint Admittance Test\n";
         std::cout << " 0. 返回主菜单\n";
         const auto selection = read_int("请选择: ");
         if(!selection || *selection == 0) return;
@@ -899,6 +901,7 @@ private:
             case 5: set_joint_pos_vel_cmd(); break;
             case 6: set_joint_pos_vel_tor_cmd(); break;
             case 7: set_full_cmd(); break;
+            case 8: run_joint_admittance_test(); break;
             default: std::cout << "未知菜单编号\n"; break;
         }
     }
@@ -1573,6 +1576,94 @@ private:
         }
         print_pose(frame_name + " pose", pose.value());
         print_matrix(frame_name + " Jacobian", jacobian.value());
+    }
+
+    void run_joint_admittance_test() {
+        const auto duration_s = read_double("采样时长 s: ");
+        const auto filter_alpha = read_double("residual filter_alpha (0, 1]: ");
+        const auto mass = read_double("admittance mass > 0: ");
+        const auto damping = read_double("admittance damping >= 0: ");
+        const auto stiffness = read_double("admittance stiffness >= 0: ");
+        const auto max_delta_q = read_double("max_delta_q rad，建议 0.005~0.02: ");
+        const auto max_delta_q_dot = read_double("max_delta_q_dot rad/s，建议 0.01~0.05: ");
+        if(!duration_s || !filter_alpha || !mass || !damping || !stiffness || !max_delta_q || !max_delta_q_dot ||
+            !std::isfinite(*duration_s) || !std::isfinite(*filter_alpha) || !std::isfinite(*mass) ||
+            !std::isfinite(*damping) || !std::isfinite(*stiffness) || !std::isfinite(*max_delta_q) || !std::isfinite(*max_delta_q_dot) ||
+            *duration_s <= 0.0 || *filter_alpha <= 0.0 || *filter_alpha > 1.0 ||
+            *mass <= 0.0 || *damping < 0.0 || *stiffness < 0.0 || *max_delta_q < 0.0 || *max_delta_q_dot < 0.0) {
+            std::cout << "Joint Admittance Test 参数无效\n";
+            return;
+        }
+
+        InteractionController controller;
+        InteractionControllerCfg interaction_cfg;
+        interaction_cfg.residual.joints_count = cfg_.joint_names.size();
+        interaction_cfg.residual.filter_alpha = *filter_alpha;
+        interaction_cfg.admittance_enabled = true;
+        interaction_cfg.external_torque.joints_count = cfg_.joint_names.size();
+        interaction_cfg.external_torque.source = ExternalTorqueSource::GRAVITY;
+        interaction_cfg.admittance.joints_count = cfg_.joint_names.size();
+        interaction_cfg.admittance.enabled.assign(cfg_.joint_names.size(), 1);
+        interaction_cfg.admittance.mass.assign(cfg_.joint_names.size(), *mass);
+        interaction_cfg.admittance.damping.assign(cfg_.joint_names.size(), *damping);
+        interaction_cfg.admittance.stiffness.assign(cfg_.joint_names.size(), *stiffness);
+        interaction_cfg.admittance.max_delta_q.assign(cfg_.joint_names.size(), *max_delta_q);
+        interaction_cfg.admittance.max_delta_q_dot.assign(cfg_.joint_names.size(), *max_delta_q_dot);
+        const auto configure_result = controller.configure(interaction_cfg);
+        if(!configure_result) {
+            std::cout << "InteractionController configure() 失败\n";
+            return;
+        }
+
+        std::unique_lock<std::mutex> lock(mutex_);
+        if(robot_.get_state() != RobotState::ACTIVE) {
+            std::cout << "请先 activate()，Joint Admittance Test 只在 ACTIVE 状态 dry-run\n";
+            return;
+        }
+
+        const Robot::TimePoint started_at = Robot::Clock::now();
+        Robot::TimePoint last_console_at = started_at;
+        std::cout << "开始 Joint Admittance Test，interaction ON，dry-run 不写入 corrected command\n";
+        while(robot_.get_state() == RobotState::ACTIVE) {
+            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
+            const Robot::TimePoint now = Robot::Clock::now();
+            const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
+            if(elapsed_s > *duration_s) break;
+            if(!last_output_) continue;
+
+            const RobotCycleOutput output = *last_output_;
+            const auto update_result = dynamics_.update_state(output.joint_state, output.joint_acc);
+            if(!update_result) {
+                std::cout << "Dynamics update_state() 失败: " << to_string(update_result.error()) << '\n';
+                break;
+            }
+
+            const DynamicsState state = dynamics_.get_state();
+            const JointCtrlCmd nominal = output.joint_cmd;
+            const double dt = output.dt;
+            lock.unlock();
+
+            const auto interaction = controller.update(InteractionInput{ state, nominal, dt });
+            if(!interaction) {
+                std::cout << "InteractionController update() 失败\n";
+                lock.lock();
+                break;
+            }
+
+            if(std::chrono::duration<double>(now - last_console_at).count() >= 0.2) {
+                std::cout << "\nJoint Admittance Test Sample\n";
+                std::cout << "interaction             ON dry-run\n";
+                print_vector("tau_ext_hat", interaction->tau_ext_hat);
+                print_vector("delta_q", interaction->delta_q);
+                print_vector("delta_q_dot", interaction->delta_q_dot);
+                print_vector("corrected_pos", interaction->corrected_cmd.pos);
+                print_vector("corrected_vel", interaction->corrected_cmd.vel);
+                print_vector("corrected_tor", interaction->corrected_cmd.tor);
+                last_console_at = now;
+            }
+            lock.lock();
+        }
+        std::cout << "Joint Admittance Test 结束\n";
     }
 
     bool safe_exit() {
