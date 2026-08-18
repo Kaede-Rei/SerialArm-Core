@@ -60,7 +60,7 @@ struct DynamicsState {
     JointVector gravity_compensation;   ///< 缩放后的重力补偿
     JointVector nonlinear;              ///< 非线性广义力
     JointVector coriolis;               ///< 科氏力和离心力广义力
-    JointVector inverse_dynamics;       ///< 使用 ref_acc 计算的逆动力学结果
+    JointVector inverse_dynamics;       ///< 使用 ref_acc 计算且应用 gravity_scale 校准后的逆动力学结果
     JointVector forward_dynamics;       ///< 使用反馈力矩计算的正向动力学结果
 
     Eigen::MatrixXd mass_matrix;        ///< 关节空间质量矩阵

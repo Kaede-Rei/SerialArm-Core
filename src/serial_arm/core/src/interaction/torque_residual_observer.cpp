@@ -34,12 +34,12 @@ tl::expected<void, TorqueResidualObserverErr> TorqueResidualObserver::configure(
 
 tl::expected<TorqueResidualEstimate, TorqueResidualObserverErr> TorqueResidualObserver::update(
     const JointVector& measured_torque,
-    const JointVector& gravity_torque) {
+    const JointVector& model_torque) {
     if(!is_configured_) return tl::make_unexpected(TorqueResidualObserverErr::NOT_CONFIGURED);
-    if(measured_torque.size() != cfg_.joints_count || gravity_torque.size() != cfg_.joints_count) {
+    if(measured_torque.size() != cfg_.joints_count || model_torque.size() != cfg_.joints_count) {
         return tl::make_unexpected(TorqueResidualObserverErr::INVALID_INPUT_SIZE);
     }
-    if(!valid_vector(measured_torque, cfg_.joints_count) || !valid_vector(gravity_torque, cfg_.joints_count)) {
+    if(!valid_vector(measured_torque, cfg_.joints_count) || !valid_vector(model_torque, cfg_.joints_count)) {
         return tl::make_unexpected(TorqueResidualObserverErr::NON_FINITE_INPUT);
     }
 
@@ -47,7 +47,7 @@ tl::expected<TorqueResidualEstimate, TorqueResidualObserverErr> TorqueResidualOb
     estimate.residual.resize(cfg_.joints_count);
     estimate.residual_filtered.resize(cfg_.joints_count);
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
-        estimate.residual[i] = gravity_torque[i] - measured_torque[i];
+        estimate.residual[i] = model_torque[i] - measured_torque[i];
         filtered_[i] = has_sample_ ?
             cfg_.filter_alpha * estimate.residual[i] + (1.0 - cfg_.filter_alpha) * filtered_[i] :
             estimate.residual[i];

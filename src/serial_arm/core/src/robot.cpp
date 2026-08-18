@@ -180,6 +180,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(fault);
     }
     interaction_controller_.reset();
+    admittance_suspended_ = false;
 
     const auto history = safety_.reset_cmd_history(joint_state.value());
     if(!history) {
@@ -330,6 +331,23 @@ const AdmittanceCapabilityCfg& Robot::get_admittance_cfg() const noexcept {
 }
 
 /**
+ * @brief 临时挂起或恢复导纳运行时修正
+ */
+void Robot::set_admittance_suspended(bool suspended) {
+    if(admittance_suspended_ == suspended) return;
+    admittance_suspended_ = suspended;
+    // 挂起和恢复都从零 observer / 零 delta 开始，避免旧积分状态跨越任务边界
+    interaction_controller_.reset();
+}
+
+/**
+ * @brief 查询导纳运行时是否被临时挂起
+ */
+bool Robot::is_admittance_suspended() const noexcept {
+    return admittance_suspended_;
+}
+
+/**
  * @brief 执行一次完整控制周期
  */
 tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
@@ -405,16 +423,17 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     const bool admittance_active = cfg_.capability.admittance.enabled &&
+        !admittance_suspended_ &&
         ctrller_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG;
     InteractionOutput interaction_telemetry;
     std::vector<std::uint8_t> safety_position_margin_active;
     std::vector<std::uint8_t> safety_velocity_margin_active;
     if(admittance_active) {
-        const auto gravity_torque = compute_interaction_gravity(
-            joint_state.value(), joint_acc, joint_ref_acc, dt, model_feedforward.value());
-        if(!gravity_torque) {
-            enter_fault(gravity_torque.error(), SafetyAction::STOP_HOLD);
-            return tl::make_unexpected(gravity_torque.error());
+        const auto interaction_model_torque = compute_interaction_model_torque(
+            joint_state.value(), joint_acc, dt);
+        if(!interaction_model_torque) {
+            enter_fault(interaction_model_torque.error(), SafetyAction::STOP_HOLD);
+            return tl::make_unexpected(interaction_model_torque.error());
         }
         const std::size_t joints_count = cfg_.joint_names.size();
         safety_position_margin_active.assign(joints_count, 0);
@@ -465,7 +484,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
 
         const auto interaction = interaction_controller_.update(InteractionInput{
             joint_state->tor,
-            gravity_torque.value(),
+            interaction_model_torque.value(),
             joint_cmd,
             dt,
             std::move(min_delta_q),
@@ -574,6 +593,7 @@ tl::expected<void, RobotFault> Robot::force_deactivate() {
     if(state_ == RobotState::INACTIVE) return {};
 
     fault_hold_active_ = false;
+    admittance_suspended_ = false;
     fault_hold_cmd_ = ActuatorCtrlCmd{};
     const auto result = motor_bus_->deactivate();
     if(!result && result.error() != MotorBusErr::NOT_CONNECTED) {
@@ -830,30 +850,30 @@ tl::expected<JointVector, RobotFault> Robot::compute_model_feedforward(const Joi
 }
 
 /**
- * @brief 为导纳能力计算当前重力模型力矩
+ * @brief 使用实际状态完整逆动力学计算导纳 observer 的内部模型力矩
  */
-tl::expected<JointVector, RobotFault> Robot::compute_interaction_gravity(
+tl::expected<JointVector, RobotFault> Robot::compute_interaction_model_torque(
     const JointState& state,
     const JointVector& joint_acc,
-    const JointVector& joint_ref_acc,
-    double dt,
-    const JointVector& configured_model_feedforward) const {
+    double dt) const {
     if(!cfg_.capability.admittance.enabled) {
         return JointVector(cfg_.joint_names.size(), 0.0);
-    }
-    if(cfg_.runtime.model_feedforward_mode == ModelFeedforwardMode::GRAVITY) {
-        return configured_model_feedforward;
     }
     if(!model_feedforward_) {
         return tl::make_unexpected(make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED));
     }
 
-    const auto gravity = model_feedforward_(ModelFeedforwardMode::GRAVITY, state, joint_acc, joint_ref_acc, dt);
-    if(!gravity) return tl::make_unexpected(make_model_fault(gravity.error()));
-    if(gravity->size() != cfg_.joint_names.size() || !finite_vector(gravity.value())) {
+    const auto dynamics_torque = model_feedforward_(
+        ModelFeedforwardMode::FULL_INVERSE_DYNAMICS,
+        state,
+        joint_acc,
+        joint_acc,
+        dt);
+    if(!dynamics_torque) return tl::make_unexpected(make_model_fault(dynamics_torque.error()));
+    if(dynamics_torque->size() != cfg_.joint_names.size() || !finite_vector(dynamics_torque.value())) {
         return tl::make_unexpected(make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD));
     }
-    return gravity.value();
+    return dynamics_torque.value();
 }
 
 /**
@@ -924,6 +944,7 @@ RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noe
  */
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
     fault_hold_active_ = false;
+    admittance_suspended_ = false;
     fault_hold_cmd_ = ActuatorCtrlCmd{};
     fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
     clear_fault_valid_cycles_ = 0;
@@ -1143,6 +1164,7 @@ void Robot::disable_noexcept() noexcept {
  */
 void Robot::clear_runtime_state() noexcept {
     interaction_controller_.reset();
+    admittance_suspended_ = false;
     joint_state_ = JointState{};
     joint_acc_.clear();
     joint_ref_acc_.clear();

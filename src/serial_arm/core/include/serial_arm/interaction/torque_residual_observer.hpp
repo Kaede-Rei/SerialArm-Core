@@ -33,21 +33,21 @@ struct TorqueResidualObserverCfg {
  * @brief 关节力矩 residual 估计结果
  */
 struct TorqueResidualEstimate {
-    JointVector residual;           ///< gravity_torque - measured_torque
+    JointVector residual;           ///< model_torque - measured_torque
     JointVector residual_filtered;  ///< 滤波后的 residual
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
 /**
- * @brief 基于重力模型与反馈力矩计算关节 residual
+ * @brief 基于当前模式对应的内部动力学模型力矩与反馈力矩计算关节 residual
  */
 class TorqueResidualObserver {
 public:
     tl::expected<void, TorqueResidualObserverErr> configure(const TorqueResidualObserverCfg& cfg);
     tl::expected<TorqueResidualEstimate, TorqueResidualObserverErr> update(
         const JointVector& measured_torque,
-        const JointVector& gravity_torque);
+        const JointVector& model_torque);
     void reset();
     bool is_configured() const noexcept;
 

@@ -41,7 +41,7 @@ InteractionControllerCfg enabled_cfg() {
 
 } // namespace
 
-TEST(TorqueResidualObserverTests, FiltersGravityMinusMeasuredTorque) {
+TEST(TorqueResidualObserverTests, FiltersModelTorqueMinusMeasuredTorque) {
     TorqueResidualObserver observer;
     ASSERT_TRUE(observer.configure(TorqueResidualObserverCfg{ 1, 0.5 }));
 
@@ -87,6 +87,26 @@ TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPos
     // filter_alpha tuning does not change the one-time calibration semantics.
     EXPECT_NEAR(result->residual_p99[0], 0.01, 1e-12);
     EXPECT_NEAR(result->torque_threshold[0], 0.012, 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, ThresholdAlsoCoversObservedStaticMaximum) {
+    AdmittanceStaticPoseSamples pose;
+    for(int k = 0; k < 199; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ 0.0 } });
+    }
+    pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.1 } });
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+    cfg.threshold_margin = 1.2;
+
+    auto result = calibrate_admittance_static({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_NEAR(result->residual_p99[0], 0.0, 1e-12);
+    EXPECT_NEAR(result->residual_max[0], 0.1, 1e-12);
+    EXPECT_NEAR(result->torque_threshold[0], 0.105, 1e-12);
 }
 
 TEST(AdmittanceStaticCalibrationTests, KeepsFallbackScaleWhenGravityIsUnobservable) {

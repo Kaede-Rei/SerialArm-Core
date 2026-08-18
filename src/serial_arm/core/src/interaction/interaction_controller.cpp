@@ -37,7 +37,7 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
     output.corrected_cmd = input.nominal_cmd;
     if(!cfg_.enabled) return output;
 
-    auto residual = residual_observer_.update(input.measured_torque, input.gravity_torque);
+    auto residual = residual_observer_.update(input.measured_torque, input.model_torque);
     if(!residual) return tl::make_unexpected(InteractionControllerErr::OBSERVER_FAILED);
     output.residual = residual.value();
 

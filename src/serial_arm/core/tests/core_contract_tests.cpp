@@ -344,6 +344,27 @@ TEST(DynamicsMandatory, PlaceholderInertialFixtureComputesFiniteOutputs) {
     EXPECT_TRUE(dynamics.get_tool_jacobian().allFinite());
 }
 
+TEST(DynamicsMandatory, FullInverseDynamicsUsesCalibratedGravityScale) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    DynamicsCfg cfg = dynamics_cfg(names);
+    cfg.gravity_scale = { 0.5, 0.6, 0.7, 0.8 };
+
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(cfg));
+
+    JointState state = joint_state(names.size());
+    state.pos = { 0.3, -0.4, 0.5, -0.2 };
+    state.vel.assign(names.size(), 0.0);
+    const JointVector zero(names.size(), 0.0);
+    ASSERT_TRUE(dynamics.update(state, zero, zero));
+
+    // dq=0 and ddq=0 => inverse dynamics must reduce to the same calibrated
+    // gravity term used by the quasi-static HOLD residual.
+    for(std::size_t i = 0; i < names.size(); ++i) {
+        EXPECT_NEAR(dynamics.get_inverse_dynamics()[i], dynamics.get_gravity_compensation()[i], 1e-10);
+    }
+}
+
 TEST(DynamicsTwoStage, LegacyUpdateMatchesStateThenReferenceUpdate) {
     const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
     JointState state = joint_state(names.size());
@@ -775,6 +796,151 @@ TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
     EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
 }
 
+
+
+TEST(RobotAdmittanceCapability, HoldUsesDynamicModelTorqueForResidual) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 1.0 };
+    admittance.max_delta_q_dot = { 1.0 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.tor[0] = 3.0;
+
+    int gravity_calls = 0;
+    int full_inverse_calls = 0;
+    ModelFeedforwardFn model = [&](ModelFeedforwardMode mode, const JointState& state, const JointVector&, const JointVector&, double) {
+        if(mode == ModelFeedforwardMode::GRAVITY) {
+            ++gravity_calls;
+            return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 1.0));
+        }
+        if(mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS) {
+            ++full_inverse_calls;
+            return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 3.0));
+        }
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+    };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));
+    ASSERT_TRUE(robot.activate());
+
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    ASSERT_TRUE(output->admittance_active);
+    ASSERT_EQ(output->residual_raw.size(), 1u);
+    EXPECT_NEAR(output->residual_raw[0], 0.0, 1e-12);
+    EXPECT_GT(gravity_calls, 0);
+    EXPECT_GT(full_inverse_calls, 0);
+}
+
+TEST(RobotAdmittanceCapability, TrackingUsesDynamicModelTorqueForResidual) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
+    cfg.safety.require_continuous_cmd = false;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 1.0 };
+    admittance.max_delta_q_dot = { 1.0 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.tor[0] = 3.0;
+
+    int gravity_calls = 0;
+    int full_inverse_calls = 0;
+    JointVector dynamic_acc;
+    JointVector dynamic_ref_acc;
+    ModelFeedforwardFn model = [&](ModelFeedforwardMode mode, const JointState& state, const JointVector& acc, const JointVector& ref_acc, double) {
+        if(mode == ModelFeedforwardMode::GRAVITY) {
+            ++gravity_calls;
+            return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 1.0));
+        }
+        if(mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS) {
+            ++full_inverse_calls;
+            dynamic_acc = acc;
+            dynamic_ref_acc = ref_acc;
+            return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 3.0));
+        }
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));
+    ASSERT_TRUE(robot.activate());
+    ASSERT_TRUE(robot.set_impedance_mode(JointImpedanceMode::RIGID_TRACKING));
+    ASSERT_TRUE(robot.set_cmd(JointPosVelCmd{ { 0.0 }, { 1.0 } }));
+
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    ASSERT_TRUE(output->admittance_active);
+    ASSERT_EQ(output->residual_raw.size(), 1u);
+    EXPECT_NEAR(output->residual_raw[0], 0.0, 1e-12);
+    EXPECT_GT(gravity_calls, 0);
+    EXPECT_GT(full_inverse_calls, 0);
+    ASSERT_EQ(dynamic_acc.size(), 1u);
+    ASSERT_EQ(dynamic_ref_acc.size(), 1u);
+    EXPECT_NEAR(dynamic_acc[0], 0.0, 1e-12);
+    EXPECT_NEAR(dynamic_ref_acc[0], dynamic_acc[0], 1e-12);
+}
+
+TEST(RobotAdmittanceCapability, RuntimeSuspensionBypassesAndResetsAdmittance) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 1.0 };
+    admittance.max_delta_q_dot = { 1.0 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.tor[0] = 1.0;
+    ModelFeedforwardFn gravity = [](ModelFeedforwardMode, const JointState& state, const JointVector&, const JointVector&, double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    ASSERT_TRUE(robot.activate());
+
+    robot.set_admittance_suspended(true);
+    auto suspended = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(suspended);
+    EXPECT_FALSE(suspended->admittance_active);
+    EXPECT_DOUBLE_EQ(suspended->joint_cmd.pos[0], bus_raw->state.pos[0]);
+
+    robot.set_admittance_suspended(false);
+    auto resumed = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(resumed);
+    EXPECT_TRUE(resumed->admittance_active);
+    EXPECT_LT(resumed->joint_cmd.pos[0], bus_raw->state.pos[0]);
+}
 
 TEST(RobotAdmittanceCapability, RuntimeConfigUpdateResetsStateAndExposesTelemetry) {
     RobotCfg cfg = robot_cfg_for_validation(false);

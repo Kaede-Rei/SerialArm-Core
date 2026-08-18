@@ -994,10 +994,17 @@ private:
             return;
         }
 
+        // 停放是确定性的安全轨迹任务，不允许导纳改变 park reference
+        robot_.set_admittance_suspended(true);
+        const auto resume_admittance = [this]() {
+            robot_.set_admittance_suspended(false);
+            };
+
         const auto mode_result = robot_.set_impedance_mode(JointImpedanceMode::RIGID_TRACKING, Robot::Clock::now());
         if(!mode_result) {
             std::cout << "切换 RIGID_TRACKING 失败：\n";
             print_fault(mode_result.error());
+            resume_admittance();
             return;
         }
 
@@ -1070,12 +1077,14 @@ private:
                     << cfg_.shutdown.position_tolerance << " rad，宽松允许=" << relaxed_position_tolerance << " rad\n";
                 std::cout << "最差速度=" << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")，允许="
                     << cfg_.shutdown.velocity_tolerance << " rad/s，宽松允许=" << relaxed_velocity_tolerance << " rad/s\n";
+                resume_admittance();
                 return;
             }
         }
 
         if(robot_.get_state() != RobotState::ACTIVE) {
             std::cout << "停放过程中 Robot 离开 ACTIVE：" << to_string(robot_.get_state()) << '\n';
+            resume_admittance();
             return;
         }
 
@@ -1084,6 +1093,7 @@ private:
         if(!hold_result) {
             std::cout << "停放后切换 RIGID_HOLD 失败：\n";
             print_fault(hold_result.error());
+            resume_admittance();
             return;
         }
 
@@ -1096,6 +1106,7 @@ private:
         if(!result) {
             std::cout << "停放后 deactivate() 失败：\n";
             print_fault(result.error());
+            resume_admittance();
             return;
         }
         last_output_.reset();
@@ -1606,6 +1617,7 @@ private:
 
         std::cout << "\n========== 导纳一次性静态标定 ==========\n";
         std::cout << "目标：一次联合标定 gravity_scale + torque_bias + torque_threshold\n";
+        std::cout << "threshold 规则：max(1.2 * P99, 1.05 * 静态最大残差)，优先保证无外力不触发导纳\n";
         std::cout << "请覆盖常用工作空间的伸展、弯曲、中间及边缘代表姿态；每次采样前必须完全松手\n";
 
         std::vector<AdmittanceStaticPoseSamples> poses;
@@ -1711,8 +1723,11 @@ private:
     void run_admittance_static_validation() {
         if(!ensure_admittance_tuning_active()) return;
         constexpr int kPoseCount = 5;
-        constexpr double kSettleS = 0.5;
-        constexpr double kSampleS = 1.0;
+        constexpr double kDragSettleS = 0.5;
+        constexpr double kSampleS = 2.0;
+        constexpr double kMaxStableDeltaQ = 0.005;       // rad，约 0.29 deg
+        constexpr double kMaxStableDeltaQDot = 0.02;     // rad/s
+        constexpr double kMaxStablePositionDrift = 0.005;// rad，约 0.29 deg
 
         JointImpedanceMode original_mode;
         AdmittanceCapabilityCfg original_admittance;
@@ -1724,55 +1739,113 @@ private:
 
         auto validation_cfg = original_admittance;
         validation_cfg.enabled = true;
-        validation_cfg.joint_enabled.assign(cfg_.joint_names.size(), 0);
         if(!apply_runtime_admittance_cfg(validation_cfg)) return;
         if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
             apply_runtime_admittance_cfg(original_admittance);
             return;
         }
 
-        std::vector<std::size_t> active_count(cfg_.joint_names.size(), 0);
-        std::vector<std::size_t> total_count(cfg_.joint_names.size(), 0);
         JointVector max_abs_tau(cfg_.joint_names.size(), 0.0);
+        JointVector max_abs_delta_q(cfg_.joint_names.size(), 0.0);
+        JointVector max_abs_delta_q_dot(cfg_.joint_names.size(), 0.0);
+        JointVector max_abs_position_drift(cfg_.joint_names.size(), 0.0);
+        std::vector<std::size_t> sample_count(cfg_.joint_names.size(), 0);
+        bool completed_all_poses = true;
 
         std::cout << "\n========== 导纳静态标定验证 ==========\n";
-        std::cout << "验证目标：不同静态姿态下 tau_ext_hat 不应持续误触发；验证期间导纳运动已禁用\n";
+        std::cout << "验证目标：RIGID_HOLD + 导纳完整闭环真实开启时，无外力不应产生可见自运动/抽搐\n";
+        std::cout << "记录：max|tau_ext_hat|、max|delta_q|、max|delta_q_dot|、max|实际位置漂移|\n";
+        std::cout << "PASS 判据：|delta_q| <= " << kMaxStableDeltaQ
+            << " rad，|delta_q_dot| <= " << kMaxStableDeltaQDot
+            << " rad/s，位置漂移 <= " << kMaxStablePositionDrift << " rad\n";
+
         for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
             std::string line;
             std::cout << "\n验证姿态 " << (pose_index + 1) << "/" << kPoseCount
-                << "：拖到代表姿态并完全松手\n";
-            if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") break;
-            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) break;
-            auto outputs = collect_admittance_outputs(kSettleS, kSampleS);
-            if(!outputs) break;
+                << "：当前为 COMPLIANT_DRAG，请拖到代表姿态并完全松手\n";
+            if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") {
+                completed_all_poses = false;
+                break;
+            }
+
+            if(kDragSettleS > 0.0) {
+                std::this_thread::sleep_for(std::chrono::duration<double>(kDragSettleS));
+            }
+            JointVector baseline_pos;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(robot_.get_state() != RobotState::ACTIVE) {
+                    completed_all_poses = false;
+                    break;
+                }
+                baseline_pos = robot_.get_joint_state().pos;
+            }
+            if(baseline_pos.size() != cfg_.joint_names.size()) {
+                completed_all_poses = false;
+                break;
+            }
+
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) {
+                completed_all_poses = false;
+                break;
+            }
+            auto outputs = collect_admittance_outputs(0.0, kSampleS);
+            if(!outputs) {
+                completed_all_poses = false;
+                break;
+            }
+
             for(const auto& output : *outputs) {
-                if(output.tau_ext_hat.size() != cfg_.joint_names.size()) continue;
+                if(!output.admittance_active ||
+                    output.tau_ext_hat.size() != cfg_.joint_names.size() ||
+                    output.delta_q.size() != cfg_.joint_names.size() ||
+                    output.delta_q_dot.size() != cfg_.joint_names.size() ||
+                    output.joint_state.pos.size() != cfg_.joint_names.size()) {
+                    continue;
+                }
                 for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-                    ++total_count[i];
-                    const double abs_tau = std::abs(output.tau_ext_hat[i]);
-                    max_abs_tau[i] = std::max(max_abs_tau[i], abs_tau);
-                    if(abs_tau > 1.0e-6) ++active_count[i];
+                    ++sample_count[i];
+                    max_abs_tau[i] = std::max(max_abs_tau[i], std::abs(output.tau_ext_hat[i]));
+                    max_abs_delta_q[i] = std::max(max_abs_delta_q[i], std::abs(output.delta_q[i]));
+                    max_abs_delta_q_dot[i] = std::max(max_abs_delta_q_dot[i], std::abs(output.delta_q_dot[i]));
+                    max_abs_position_drift[i] = std::max(
+                        max_abs_position_drift[i],
+                        std::abs(output.joint_state.pos[i] - baseline_pos[i]));
                 }
             }
-            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) break;
+
+            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
+                completed_all_poses = false;
+                break;
+            }
         }
 
         apply_runtime_admittance_cfg(original_admittance);
         set_tuning_impedance_mode(original_mode);
 
-        bool pass = true;
+        bool pass = completed_all_poses;
         std::cout << "\n========== 静态标定验证结果 ==========\n";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            const double rate = total_count[i] == 0 ? 100.0 :
-                100.0 * static_cast<double>(active_count[i]) / static_cast<double>(total_count[i]);
-            const bool joint_pass = total_count[i] != 0 && rate <= 1.0;
+            const bool joint_pass = sample_count[i] != 0 &&
+                max_abs_delta_q[i] <= kMaxStableDeltaQ &&
+                max_abs_delta_q_dot[i] <= kMaxStableDeltaQDot &&
+                max_abs_position_drift[i] <= kMaxStablePositionDrift;
             pass = pass && joint_pass;
             std::cout << cfg_.joint_names[i]
-                << " false_activation=" << std::fixed << std::setprecision(2) << rate << "%"
-                << " max_tau=" << std::setprecision(6) << max_abs_tau[i]
+                << " max_tau=" << std::fixed << std::setprecision(6) << max_abs_tau[i]
+                << " max_dq=" << max_abs_delta_q[i]
+                << " max_dqdot=" << max_abs_delta_q_dot[i]
+                << " max_q_drift=" << max_abs_position_drift[i]
                 << (joint_pass ? " PASS" : " FAIL") << '\n';
         }
-        std::cout << (pass ? "静态标定验证：PASS\n" : "静态标定验证：FAIL；先重新覆盖工作空间做一次性静态标定，不要先调 M/D/K\n");
+        if(!completed_all_poses) {
+            std::cout << "静态标定验证：未完成全部姿态，结果无效\n";
+        }
+        else {
+            std::cout << (pass
+                ? "静态标定验证：PASS；完整导纳闭环静止稳定，可进入 6 -> 1 -> 3 调 M/D/K/alpha/max\n"
+                : "静态标定验证：FAIL；完整导纳闭环仍存在自运动，先不要调 M/D/K\n");
+        }
     }
 
     void observe_admittance_realtime() {

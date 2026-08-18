@@ -100,7 +100,7 @@ struct RobotCycleOutput {
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
-    JointVector residual_raw;                              ///< gravity - measured_torque
+    JointVector residual_raw;                              ///< 当前模式 model_torque - measured_torque
     JointVector residual_filtered;                         ///< 低通后的 residual
     JointVector bias_compensated;                          ///< residual_filtered - torque_bias
     JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
@@ -187,6 +187,15 @@ public:
      * @brief 获取当前进程正在使用的导纳能力配置
      */
     const AdmittanceCapabilityCfg& get_admittance_cfg() const noexcept;
+    /**
+     * @brief 临时挂起/恢复导纳运行时修正，不改变 YAML/config 中的 enabled
+     * @param suspended true 时整条导纳修正旁路并清空 observer/delta 状态
+     */
+    void set_admittance_suspended(bool suspended);
+    /**
+     * @brief 查询当前是否临时挂起导纳运行时修正
+     */
+    bool is_admittance_suspended() const noexcept;
     /**
      * @brief 执行一次完整控制周期
      * @param now 当前时间点
@@ -310,9 +319,12 @@ private:
      */
     tl::expected<JointVector, RobotFault> compute_model_feedforward(const JointState& state, const JointVector& joint_acc, const JointVector& joint_ref_acc, double dt) const;
     /**
-     * @brief 为导纳能力计算当前重力模型力矩
+     * @brief 使用实际 q/dq/qdd 计算导纳 observer 的完整内部动力学模型力矩
      */
-    tl::expected<JointVector, RobotFault> compute_interaction_gravity(const JointState& state, const JointVector& joint_acc, const JointVector& joint_ref_acc, double dt, const JointVector& configured_model_feedforward) const;
+    tl::expected<JointVector, RobotFault> compute_interaction_model_torque(
+        const JointState& state,
+        const JointVector& joint_acc,
+        double dt) const;
 
     /**
      * @brief 构造仅包含通用错误码的故障对象
@@ -457,6 +469,7 @@ private:
     bool has_external_cmd_{ false };                ///< 跟踪模式是否收到过外部命令
     bool has_last_joint_cmd_{ false };              ///< 是否已有合法关节控制命令
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令
+    bool admittance_suspended_{ false };            ///< 运行时临时挂起导纳，不改变静态配置
     FaultHoldMode fault_hold_mode_{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 内部保持模式
     std::size_t clear_fault_valid_cycles_{ 0 };      ///< 清故障前连续有效周期数
 };

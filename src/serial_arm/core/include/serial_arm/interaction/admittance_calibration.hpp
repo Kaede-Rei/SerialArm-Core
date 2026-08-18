@@ -33,6 +33,7 @@ struct AdmittanceStaticCalibrationCfg {
     JointVector fallback_gravity_scale;        ///< 重力变化不可观测时保留的 gravity_scale
     double gravity_observability_span{ 0.25 }; ///< 至少覆盖该重力变化范围 Nm 才拟合 gravity_scale
     double threshold_margin{ 1.2 };            ///< P99 静态残差外的安全倍率
+    double threshold_max_margin{ 1.05 };       ///< 已观测静态最大残差外的安全倍率
 };
 
 /**
@@ -61,6 +62,9 @@ enum class AdmittanceStaticCalibrationErr {
  *   gravity_scale * gravity - measured_torque - torque_bias ~= 0
  *
  * 对重力变化不足的关节不强行拟合 gravity_scale，而使用 fallback_gravity_scale
+ * torque_threshold 同时覆盖统计 P99 与本次标定实际观测到的静态最大残差：
+ *   max(threshold_margin * P99, threshold_max_margin * max_abs_residual)
+ * 这样一次静态标定优先保证“无外力不触发导纳”，而不依赖后续 filter_alpha
  */
 tl::expected<AdmittanceStaticCalibrationResult, AdmittanceStaticCalibrationErr>
 calibrate_admittance_static(

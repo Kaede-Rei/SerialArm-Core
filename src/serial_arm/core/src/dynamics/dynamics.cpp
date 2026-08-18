@@ -477,6 +477,12 @@ tl::expected<void, DynamicsErr> Dynamics::update_reference(const JointVector& re
     try {
         const Eigen::VectorXd& inverse_dynamics = pinocchio::rnea(impl_->model, *impl_->data, impl_->q_model, impl_->dq_model, impl_->ddq_model);
         extract_joint_vector(inverse_dynamics, impl_->v_indices, impl_->state.inverse_dynamics);
+        // gravity_scale 是一次性机械臂动力学标定结果；FULL_INVERSE_DYNAMICS 也必须
+        // 使用同一套校准后的重力项，否则 HOLD 与 TRACKING 的 residual 基线会跳变
+        for(std::size_t i = 0; i < impl_->info.joints_count; ++i) {
+            impl_->state.inverse_dynamics[i] +=
+                impl_->state.gravity_compensation[i] - impl_->state.gravity[i];
+        }
     }
     catch(...) {
         return tl::make_unexpected(DynamicsErr::COMPUTE_FAILED);

@@ -29,7 +29,7 @@ struct InteractionControllerCfg {
 
 struct InteractionInput {
     const JointVector& measured_torque;  ///< 当前关节反馈力矩
-    const JointVector& gravity_torque;   ///< 当前关节重力模型力矩
+    const JointVector& model_torque;     ///< 实际 q/dq/qdd 对应的完整内部动力学模型力矩
     const JointCtrlCmd& nominal_cmd;     ///< 名义关节控制命令
     double dt{ 0.0 };                    ///< 控制周期
     JointVector min_delta_q;             ///< Safety 剩余空间给出的最小位置修正

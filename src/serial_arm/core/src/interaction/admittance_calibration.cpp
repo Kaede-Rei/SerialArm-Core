@@ -39,7 +39,8 @@ calibrate_admittance_static(
         cfg.fallback_gravity_scale.size() != cfg.joints_count ||
         !finite_vector(cfg.fallback_gravity_scale) ||
         !std::isfinite(cfg.gravity_observability_span) || cfg.gravity_observability_span < 0.0 ||
-        !std::isfinite(cfg.threshold_margin) || cfg.threshold_margin < 1.0) {
+        !std::isfinite(cfg.threshold_margin) || cfg.threshold_margin < 1.0 ||
+        !std::isfinite(cfg.threshold_max_margin) || cfg.threshold_max_margin < 1.0) {
         return tl::make_unexpected(AdmittanceStaticCalibrationErr::INVALID_CFG);
     }
 
@@ -119,7 +120,9 @@ calibrate_admittance_static(
         result.residual_p99[joint] = percentile(abs_static_error, 0.99);
         result.residual_max[joint] = abs_static_error.empty() ? 0.0 :
             *std::max_element(abs_static_error.begin(), abs_static_error.end());
-        result.torque_threshold[joint] = cfg.threshold_margin * result.residual_p99[joint];
+        result.torque_threshold[joint] = std::max(
+            cfg.threshold_margin * result.residual_p99[joint],
+            cfg.threshold_max_margin * result.residual_max[joint]);
     }
 
     return result;

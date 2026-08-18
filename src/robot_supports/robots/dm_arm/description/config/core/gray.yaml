@@ -16,7 +16,7 @@ model:
   tool_frame: tool0                                                           # 动力学末端坐标系
   gravity: [0.0, 0.0, -9.81]                                                  # 世界坐标系重力加速度 m/s^2\
   # 各关节重力补偿比例；1.0 表示使用完整模型重力
-  gravity_scale: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+  gravity_scale: {joint1: 1.000000, joint2: 1.000000, joint3: 0.998590, joint4: 0.994427, joint5: 1.000000, joint6: 1.000000}
 
 # 02 calibration
 calibration:
@@ -120,9 +120,9 @@ capability:
     # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
     stiffness: {joint1: 20.0, joint2: 20.0, joint3: 20.0, joint4: 20.0, joint5: 20.0, joint6: 20.0}
     # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动
-    torque_bias: {joint1: 0.034187, joint2: 0.068851, joint3: 0.052646, joint4: 0.016324, joint5: 0.012135, joint6: 0.008211}
+    torque_bias: {joint1: 0.034187, joint2: 0.046214, joint3: 0.030697, joint4: 0.016684, joint5: 0.011144, joint6: 0.008475}
     # bias 后的小力矩忽略阈值 Nm；0 表示关闭，增大可抑制噪声但会牺牲小外力灵敏度
-    torque_threshold: {joint1: 0.032819, joint2: 0.064836, joint3: 0.028601, joint4: 0.012200, joint5: 0.005938, joint6: 0.006757}
+    torque_threshold: {joint1: 0.032822, joint2: 0.076443, joint3: 0.032260, joint4: 0.014667, joint5: 0.012225, joint6: 0.007255}
     # 最大导纳位置修正 rad；决定最多主动退让多少角度
     max_delta_q: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
     # 最大导纳修正速度 rad/s；决定退让/回位的最快速度，过小会感觉“有力但不动”
