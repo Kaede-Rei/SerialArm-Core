@@ -47,9 +47,12 @@ compute_admittance_damping_metrics(double mass, double damping, double stiffness
     }
 
     const double critical_damping = 2.0 * std::sqrt(mass * stiffness);
+    const double natural_frequency = std::sqrt(stiffness / mass);
     return AdmittanceDampingMetrics{
         critical_damping,
         damping / critical_damping,
+        natural_frequency,
+        4.74 / natural_frequency,
     };
 }
 

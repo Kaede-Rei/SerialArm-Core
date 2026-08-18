@@ -43,9 +43,39 @@ struct AdmittanceStaticCalibrationResult {
     JointVector gravity_scale;                       ///< 每关节重力模型缩放
     JointVector torque_bias;                         ///< 每关节固定 residual 零偏 Nm
     JointVector torque_threshold;                    ///< 每关节小力矩阈值 Nm
-    JointVector residual_p99;                        ///< 标定后未滤波静态 |residual| P99 Nm
-    JointVector residual_max;                        ///< 标定后静态 |residual| 最大值 Nm
+    JointVector within_pose_residual_p99;            ///< 单姿态内未滤波静态噪声 |residual| P99 Nm
+    JointVector within_pose_residual_max;            ///< 单姿态内未滤波静态噪声 |residual| 最大值 Nm
+    JointVector lopo_residual_p99;                   ///< Leave-One-Pose-Out 跨姿态泛化 |residual| P99 Nm
+    JointVector lopo_residual_max;                   ///< Leave-One-Pose-Out 跨姿态泛化 |residual| 最大值 Nm
+    JointVector residual_p99;                        ///< threshold 使用的保守 P99 envelope Nm
+    JointVector residual_max;                        ///< threshold 使用的保守最大 residual envelope Nm
     std::vector<std::uint8_t> gravity_scale_observable; ///< 1 表示该轴本次数据足以拟合 gravity_scale
+};
+
+
+/**
+ * @brief 静态标定验证配置；只描述 observer 标定参数，不包含任何 M/D/K 导纳动态参数
+ */
+struct AdmittanceStaticValidationCfg {
+    std::size_t joints_count{ 0 };      ///< 关节数量
+    JointVector gravity_scale;          ///< 已标定重力缩放
+    JointVector torque_bias;            ///< 已标定 residual 零偏 Nm
+    JointVector torque_threshold;       ///< 已标定静态阈值 Nm
+};
+
+/**
+ * @brief 静态标定验证结果
+ */
+struct AdmittanceStaticValidationResult {
+    JointVector gravity_span;            ///< 验证姿态覆盖的未缩放模型重力范围 Nm
+    JointVector residual_rms;             ///< 未滤波、bias 后静态 residual RMS Nm
+    JointVector residual_p99;             ///< 未滤波、bias 后静态 |residual| P99 Nm
+    JointVector residual_max;             ///< 未滤波、bias 后静态 |residual| 最大值 Nm
+    JointVector feedback_quantization_step; ///< 验证样本中识别出的重复反馈量化步长 Nm；未识别时为 0
+    JointVector guarded_max_limit;        ///< 允许的单帧最大 residual：threshold + 1 个量化步长 Nm
+    JointVector threshold_utilization;    ///< residual_P99 / torque_threshold；越小静态裕量越大
+    JointVector guarded_max_utilization;  ///< residual_max / guarded_max_limit；越小单帧量化裕量越大
+    std::vector<std::uint8_t> pass;       ///< 1 表示 P99 在 threshold 内且 max 未超过一个额外量化步长
 };
 
 enum class AdmittanceStaticCalibrationErr {
@@ -60,15 +90,19 @@ enum class AdmittanceStaticCalibrationErr {
  *
  * 每个关节拟合关系：
  *   gravity_scale * gravity - measured_torque - torque_bias ~= 0
- *
- * 对重力变化不足的关节不强行拟合 gravity_scale，而使用 fallback_gravity_scale
- * torque_threshold 同时覆盖统计 P99 与本次标定实际观测到的静态最大残差：
- *   max(threshold_margin * P99, threshold_max_margin * max_abs_residual)
- * 这样一次静态标定优先保证“无外力不触发导纳”，而不依赖后续 filter_alpha
  */
 tl::expected<AdmittanceStaticCalibrationResult, AdmittanceStaticCalibrationErr>
 calibrate_admittance_static(
     const std::vector<AdmittanceStaticPoseSamples>& poses,
     const AdmittanceStaticCalibrationCfg& cfg);
+
+
+/**
+ * @brief 验证一次标定后的静态 residual envelope
+ */
+tl::expected<AdmittanceStaticValidationResult, AdmittanceStaticCalibrationErr>
+evaluate_admittance_static_validation(
+    const std::vector<AdmittanceStaticPoseSamples>& poses,
+    const AdmittanceStaticValidationCfg& cfg);
 
 } // namespace serial_arm

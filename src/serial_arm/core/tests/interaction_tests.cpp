@@ -101,6 +101,8 @@ TEST(JointAdmittanceControllerTests, ComputesCriticalDampingAndDampingRatio) {
     ASSERT_TRUE(metrics);
     EXPECT_NEAR(metrics->critical_damping, 2.0 * std::sqrt(7.5), 1e-12);
     EXPECT_NEAR(metrics->damping_ratio, 5.5 / (2.0 * std::sqrt(7.5)), 1e-12);
+    EXPECT_NEAR(metrics->natural_frequency, std::sqrt(30.0), 1e-12);
+    EXPECT_NEAR(metrics->settling_time_95_critical, 4.74 / std::sqrt(30.0), 1e-12);
 
     EXPECT_FALSE(compute_admittance_damping_metrics(0.5, 1.0, 0.0));
 }
@@ -134,7 +136,83 @@ TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPos
     // Threshold is derived from the unfiltered static residual envelope, so later
     // filter_alpha tuning does not change the one-time calibration semantics.
     EXPECT_NEAR(result->residual_p99[0], 0.01, 1e-12);
-    EXPECT_NEAR(result->torque_threshold[0], 0.012, 1e-12);
+    // The synthetic feedback occupies two repeated levels 0.02 Nm apart, so the
+    // quantization guard reserves one further level beyond the 0.01 Nm envelope.
+    EXPECT_NEAR(result->torque_threshold[0], 0.03 * (1.0 + 1e-6), 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, FitsEachStaticPoseWithEqualWeightRegardlessOfFrameCount) {
+    std::vector<AdmittanceStaticPoseSamples> poses(3);
+    poses[0].samples.push_back(AdmittanceStaticSample{ JointVector{ -1.0 }, JointVector{ -1.0 } });
+    poses[1].samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.2 } });
+    for(int k = 0; k < 100; ++k) {
+        poses[2].samples.push_back(AdmittanceStaticSample{ JointVector{ 1.0 }, JointVector{ 0.5 } });
+    }
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+
+    auto result = calibrate_admittance_static(poses, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_NEAR(result->gravity_scale[0], 0.75, 1e-12);
+    EXPECT_NEAR(result->torque_bias[0], 0.25, 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, ThresholdCoversLeaveOnePoseOutGeneralizationError) {
+    std::vector<AdmittanceStaticPoseSamples> poses(3);
+    poses[0].samples.push_back(AdmittanceStaticSample{ JointVector{ -1.0 }, JointVector{ -1.0 } });
+    poses[1].samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ 0.0 } });
+    poses[2].samples.push_back(AdmittanceStaticSample{ JointVector{ 1.0 }, JointVector{ 0.6 } });
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+    cfg.threshold_margin = 1.2;
+    cfg.threshold_max_margin = 1.05;
+
+    auto result = calibrate_admittance_static(poses, cfg);
+    ASSERT_TRUE(result);
+
+    // The all-pose fit only sees a 0.2 Nm in-sample residual, but leaving either
+    // endpoint pose out exposes a 0.4 Nm cross-pose generalization error.
+    // The calibration threshold must protect the latter rather than overfit the
+    // poses that were used to estimate gravity_scale / torque_bias.
+    EXPECT_NEAR(result->within_pose_residual_p99[0], 0.0, 1e-12);
+    EXPECT_NEAR(result->within_pose_residual_max[0], 0.0, 1e-12);
+    EXPECT_NEAR(result->lopo_residual_p99[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->lopo_residual_max[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->residual_p99[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->residual_max[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->torque_threshold[0], 0.48, 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, ThresholdAddsOneMeasuredTorqueQuantizationStepBeyondObservedEnvelope) {
+    std::vector<AdmittanceStaticPoseSamples> poses(3);
+    for(int k = 0; k < 20; ++k) {
+        poses[0].samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ (k % 2 == 0) ? 0.00 : 0.01 } });
+        poses[1].samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ (k % 2 == 0) ? 0.01 : 0.02 } });
+        poses[2].samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ (k % 2 == 0) ? 0.02 : 0.03 } });
+    }
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+    cfg.threshold_margin = 1.2;
+    cfg.threshold_max_margin = 1.05;
+
+    auto result = calibrate_admittance_static(poses, cfg);
+    ASSERT_TRUE(result);
+
+    // The observed LOPO/static envelope ends at 0.02 Nm, while measured torque
+    // itself changes only in 0.01 Nm discrete levels. One further feedback LSB
+    // must therefore be reserved beyond the observed envelope so a static
+    // validation sample landing on the next quantization bin is not rejected.
+    EXPECT_NEAR(result->residual_max[0], 0.02, 1e-12);
+    EXPECT_GT(result->torque_threshold[0], 0.03);
 }
 
 TEST(AdmittanceStaticCalibrationTests, ThresholdAlsoCoversObservedStaticMaximum) {
@@ -174,6 +252,68 @@ TEST(AdmittanceStaticCalibrationTests, KeepsFallbackScaleWhenGravityIsUnobservab
     EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 0 });
     EXPECT_NEAR(result->gravity_scale[0], 0.9, 1e-12);
     EXPECT_NEAR(result->torque_bias[0], 0.35, 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, ValidationChecksOnlyStaticObserverEnvelope) {
+    AdmittanceStaticPoseSamples pose;
+    pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 1.0 }, JointVector{ 0.79 } });
+    pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 1.0 }, JointVector{ 0.78 } });
+
+    AdmittanceStaticValidationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gravity_scale = { 1.0 };
+    cfg.torque_bias = { 0.2 };
+    cfg.torque_threshold = { 0.05 };
+
+    auto result = evaluate_admittance_static_validation({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_NEAR(result->residual_max[0], 0.02, 1e-12);
+    EXPECT_NEAR(result->threshold_utilization[0], 0.4, 1e-12);
+    EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 1 });
+}
+
+TEST(AdmittanceStaticCalibrationTests, ValidationAllowsOneQuantizationBinBeyondThresholdWhenP99IsInside) {
+    AdmittanceStaticPoseSamples pose;
+    for(int k = 0; k < 196; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.04 } });
+    }
+    for(int k = 0; k < 3; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.05 } });
+    }
+    pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.06 } });
+
+    AdmittanceStaticValidationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gravity_scale = { 1.0 };
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.05 };
+
+    auto result = evaluate_admittance_static_validation({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_NEAR(result->residual_p99[0], 0.05, 1e-12);
+    EXPECT_NEAR(result->residual_max[0], 0.06, 1e-12);
+    EXPECT_NEAR(result->feedback_quantization_step[0], 0.01, 1e-12);
+    EXPECT_GT(result->guarded_max_limit[0], 0.06);
+    EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 1 });
+}
+
+TEST(AdmittanceStaticCalibrationTests, ValidationStillFailsWhenPersistentResidualExceedsThreshold) {
+    AdmittanceStaticPoseSamples pose;
+    for(int k = 0; k < 200; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.06 } });
+    }
+
+    AdmittanceStaticValidationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gravity_scale = { 1.0 };
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.05 };
+
+    auto result = evaluate_admittance_static_validation({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_NEAR(result->residual_p99[0], 0.06, 1e-12);
+    EXPECT_NEAR(result->feedback_quantization_step[0], 0.0, 1e-12);
+    EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 0 });
 }
 
 TEST(ExternalTorqueObserverTests, AppliesBiasThenSmoothThresholdWithoutSubtractingThreshold) {

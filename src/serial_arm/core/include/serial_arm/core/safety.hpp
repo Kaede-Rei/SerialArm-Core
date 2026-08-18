@@ -151,6 +151,11 @@ public:
      */
     tl::expected<void, SafetyFault> check_state(const JointState& joint_state, const ActuatorState& actuator_state, double state_age_s) const;
     /**
+     * @brief FAULT 位置超限恢复专用状态检查；仅暂时跳过 JOINT_POS_LIMIT，其余状态安全项保持有效
+     */
+    tl::expected<void, SafetyFault> check_state_for_position_recovery(
+        const JointState& joint_state, const ActuatorState& actuator_state, double state_age_s) const;
+    /**
      * @brief 检查跟踪命令是否超时
      * @param cmd_age_s 距离上一帧合法命令的时间
      * @return 命令合法返回空，命令不合法返回 SafetyFault
@@ -164,6 +169,11 @@ public:
      * @return 命令合法返回安全命令，命令不合法返回 SafetyFault
      */
     tl::expected<JointCtrlCmd, SafetyFault> check_joint_cmd(const JointState& state, const JointCtrlCmd& cmd, double dt);
+    /**
+     * @brief FAULT 位置超限恢复专用命令检查；暂时跳过位置边界/位置步进检查，其余命令安全项保持有效
+     */
+    tl::expected<JointCtrlCmd, SafetyFault> check_joint_cmd_for_position_recovery(
+        const JointState& state, const JointCtrlCmd& cmd, double dt);
 
     /**
      * @brief 使用当前位置和零目标速度初始化/重置命令历史
@@ -201,6 +211,12 @@ private:
      * @return 配置合法返回空，配置不合法返回 SafetyFault
      */
     tl::expected<void, SafetyFault> validate_cfg(const SafetyCfg& cfg) const;
+    tl::expected<void, SafetyFault> check_state_impl(
+        const JointState& joint_state, const ActuatorState& actuator_state,
+        double state_age_s, bool enforce_position_limits) const;
+    tl::expected<JointCtrlCmd, SafetyFault> check_joint_cmd_impl(
+        const JointState& state, const JointCtrlCmd& cmd, double dt,
+        bool enforce_position_limits);
 
     /**
      * @brief 检查 Joint/Actuator 状态数组长度

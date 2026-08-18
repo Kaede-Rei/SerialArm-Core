@@ -268,6 +268,87 @@ TEST(ContinuousJointSafety, CommandStepUsesExistingPositionRepresentation) {
     EXPECT_EQ(result.error().code, SafetyErr::CMD_POS_STEP_LIMIT);
 }
 
+TEST(FaultRecoverySafety, PositionRecoverySkipsOnlyPositionRelatedChecks) {
+    Safety safety;
+    ASSERT_TRUE(safety.configure(safety_cfg(false)));
+
+    JointState state = joint_state(1);
+    state.pos[0] = 1.2;
+    ActuatorState actuators = actuator_state(1);
+
+    auto normal_state = safety.check_state(state, actuators, 0.0);
+    ASSERT_FALSE(normal_state);
+    EXPECT_EQ(normal_state.error().code, SafetyErr::JOINT_POS_LIMIT);
+    EXPECT_TRUE(safety.check_state_for_position_recovery(state, actuators, 0.0));
+
+    state.vel[0] = 4.0;
+    auto fast_state = safety.check_state_for_position_recovery(state, actuators, 0.0);
+    ASSERT_FALSE(fast_state);
+    EXPECT_EQ(fast_state.error().code, SafetyErr::JOINT_VEL_LIMIT);
+    state.vel[0] = 0.0;
+
+    JointCtrlCmd cmd = joint_cmd(1);
+    cmd.pos[0] = 1.2;
+    auto normal_cmd = safety.check_joint_cmd(state, cmd, 0.001);
+    ASSERT_FALSE(normal_cmd);
+    EXPECT_EQ(normal_cmd.error().code, SafetyErr::CMD_POS_LIMIT);
+    EXPECT_TRUE(safety.check_joint_cmd_for_position_recovery(state, cmd, 0.001));
+
+    cmd.tor[0] = 6.0;
+    auto effort_cmd = safety.check_joint_cmd_for_position_recovery(state, cmd, 0.001);
+    ASSERT_FALSE(effort_cmd);
+    EXPECT_EQ(effort_cmd.error().code, SafetyErr::CMD_EFFORT_LIMIT);
+}
+
+TEST(RobotFaultRecovery, ActivatePositionLimitFaultCanUseGravityCompensatedCompliantDragRecovery) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.safety.fault_recovery.compliant_recovery.effort_scale = 1.0;
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.pos[0] = 1.2;
+
+    ModelFeedforwardFn gravity = [](
+        ModelFeedforwardMode mode, const JointState& state,
+        const JointVector&, const JointVector&, double) {
+            return tl::expected<JointVector, ModelFeedforwardErr>(
+                JointVector(state.pos.size(), mode == ModelFeedforwardMode::GRAVITY ? 0.7 : 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    auto activated = robot.activate();
+    ASSERT_FALSE(activated);
+    ASSERT_EQ(activated.error().code, RobotErr::SAFETY_FAILED);
+    ASSERT_EQ(activated.error().safety_fault.code, SafetyErr::JOINT_POS_LIMIT);
+    EXPECT_EQ(robot.get_state(), RobotState::FAULT);
+
+    ASSERT_TRUE(robot.enter_fault_compliant_recovery());
+    EXPECT_EQ(robot.get_fault_hold_mode(), FaultHoldMode::COMPLIANT_RECOVERY);
+    ASSERT_FALSE(bus_raw->last_cmd.tor.empty());
+    EXPECT_NEAR(bus_raw->last_cmd.tor[0], 0.7, 1e-12);
+
+    bus_raw->state.pos[0] = 1.1;
+    ASSERT_TRUE(robot.maintain_fault_hold());
+    ASSERT_FALSE(bus_raw->last_cmd.pos.empty());
+    EXPECT_NEAR(bus_raw->last_cmd.pos[0], 1.1, 1e-12);
+    EXPECT_NEAR(bus_raw->last_cmd.tor[0], 0.7, 1e-12);
+
+    // 即使尚未回到合法区，操作员也应能取消 DRAG 并稳定回到刚性保持。
+    ASSERT_TRUE(robot.return_to_fault_rigid_hold());
+    EXPECT_EQ(robot.get_fault_hold_mode(), FaultHoldMode::RIGID_HOLD);
+    ASSERT_TRUE(robot.enter_fault_compliant_recovery());
+
+    // 掰回合法区并稳定若干周期后，正常 clear_fault() 恢复 ACTIVE。
+    bus_raw->state.pos[0] = 0.8;
+    ASSERT_TRUE(robot.maintain_fault_hold());
+    ASSERT_TRUE(robot.maintain_fault_hold());
+    ASSERT_TRUE(robot.maintain_fault_hold());
+    ASSERT_TRUE(robot.clear_fault());
+    EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
+}
+
 TEST(ModelLoaderLimitResolver, ContinuousJointResolvesWithoutPositionLimits) {
     const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
     ModelLoader loader;
@@ -830,7 +911,7 @@ TEST(RobotAdmittanceCapability, HoldUsesDynamicModelTorqueForResidual) {
             return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 3.0));
         }
         return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
-    };
+        };
 
     Robot robot;
     ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));

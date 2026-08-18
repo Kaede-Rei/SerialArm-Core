@@ -63,8 +63,10 @@ struct JointAdmittanceOutput {
  * @brief 单轴导纳二阶系统阻尼指标
  */
 struct AdmittanceDampingMetrics {
-    double critical_damping{ 0.0 };  ///< 临界阻尼 Dcrit = 2 * sqrt(mass * stiffness)
-    double damping_ratio{ 0.0 };     ///< 阻尼比 zeta = damping / Dcrit
+    double critical_damping{ 0.0 };          ///< 临界阻尼 Dcrit = 2 * sqrt(mass * stiffness)
+    double damping_ratio{ 0.0 };             ///< 阻尼比 zeta = damping / Dcrit
+    double natural_frequency{ 0.0 };         ///< 无阻尼自然频率 wn = sqrt(stiffness / mass) rad/s
+    double settling_time_95_critical{ 0.0 }; ///< 近临界阻尼时 95% 回零时间近似 4.74 / wn s
 };
 
 /**

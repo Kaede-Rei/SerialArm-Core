@@ -65,6 +65,21 @@ tl::expected<void, SafetyFault> Safety::check_state(
     const JointState& joint_state,
     const ActuatorState& actuator_state,
     double state_age_s) const {
+    return check_state_impl(joint_state, actuator_state, state_age_s, true);
+}
+
+tl::expected<void, SafetyFault> Safety::check_state_for_position_recovery(
+    const JointState& joint_state,
+    const ActuatorState& actuator_state,
+    double state_age_s) const {
+    return check_state_impl(joint_state, actuator_state, state_age_s, false);
+}
+
+tl::expected<void, SafetyFault> Safety::check_state_impl(
+    const JointState& joint_state,
+    const ActuatorState& actuator_state,
+    double state_age_s,
+    bool enforce_position_limits) const {
     if(!configured_) {
         return tl::make_unexpected(fault(SafetyErr::NOT_CONFIGURED));
     }
@@ -102,7 +117,7 @@ tl::expected<void, SafetyFault> Safety::check_state(
             return tl::make_unexpected(fault(SafetyErr::ACTUATOR_FAULT, i, static_cast<double>(actuator_state.err_code[i]), 0.0));
         }
 
-        if(cfg_.limits.has_position_limit[i] != 0) {
+        if(enforce_position_limits && cfg_.limits.has_position_limit[i] != 0) {
             if(joint_state.pos[i] < cfg_.limits.min_pos[i] - tolerance) {
                 return tl::make_unexpected(fault(SafetyErr::JOINT_POS_LIMIT, i, joint_state.pos[i], cfg_.limits.min_pos[i]));
             }
@@ -146,6 +161,16 @@ tl::expected<void, SafetyFault> Safety::check_cmd_age(double cmd_age_s) const {
  * @return 命令合法返回安全命令，命令不合法返回 SafetyFault
  */
 tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd(const JointState& state, const JointCtrlCmd& cmd, double dt) {
+    return check_joint_cmd_impl(state, cmd, dt, true);
+}
+
+tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd_for_position_recovery(
+    const JointState& state, const JointCtrlCmd& cmd, double dt) {
+    return check_joint_cmd_impl(state, cmd, dt, false);
+}
+
+tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd_impl(
+    const JointState& state, const JointCtrlCmd& cmd, double dt, bool enforce_position_limits) {
     if(!configured_) {
         return tl::make_unexpected(fault(SafetyErr::NOT_CONFIGURED));
     }
@@ -169,7 +194,7 @@ tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd(const JointState
     JointCtrlCmd safe_cmd = cmd;
 
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
-        if(cfg_.limits.has_position_limit[i] != 0) {
+        if(enforce_position_limits && cfg_.limits.has_position_limit[i] != 0) {
             const double cmd_min_pos = cfg_.limits.min_pos[i] + cfg_.limits.pos_margin[i];
             const double cmd_max_pos = cfg_.limits.max_pos[i] - cfg_.limits.pos_margin[i];
 
@@ -197,7 +222,7 @@ tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd(const JointState
         const JointVector& reference_vel = has_last_accepted_cmd_ ? last_accepted_cmd_.vel : state.vel;
 
         for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
-            if(safe_cmd.kp[i] > cfg_.numeric_tolerance) {
+            if(enforce_position_limits && safe_cmd.kp[i] > cfg_.numeric_tolerance) {
                 const double max_pos_delta = cfg_.limits.max_vel[i] * dt + 0.5 * cfg_.limits.max_acc[i] * dt * dt;
                 const double pos_delta = safe_cmd.pos[i] - reference_pos[i];
                 if(std::abs(pos_delta) > max_pos_delta + cfg_.numeric_tolerance) {

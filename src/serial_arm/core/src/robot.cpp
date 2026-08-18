@@ -168,7 +168,13 @@ tl::expected<void, RobotFault> Robot::activate() {
     const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
     if(!checked_state) {
         const RobotFault fault = make_safety_fault(checked_state.error());
-        enter_fault(fault, safety_.action_for(checked_state.error().code));
+        const SafetyAction action = safety_.action_for(checked_state.error().code);
+        if(action == SafetyAction::STOP_HOLD) {
+            actuator_state_ = actuator_state.value();
+            joint_state_ = joint_state.value();
+            has_state_ = true;
+        }
+        enter_fault(fault, action);
         return tl::make_unexpected(fault);
     }
 
@@ -639,7 +645,12 @@ tl::expected<void, RobotFault> Robot::enter_fault_compliant_recovery() {
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
+    const bool position_limit_recovery = current_fault_ &&
+        current_fault_->code == RobotErr::SAFETY_FAILED &&
+        current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
+    const auto checked_state = position_limit_recovery ?
+        safety_.check_state_for_position_recovery(joint_state.value(), actuator_state.value(), 0.0) :
+        safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
         return tl::make_unexpected(make_safety_fault(checked_state.error()));
@@ -1016,14 +1027,20 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
 
+    const bool position_limit_recovery = current_fault_ &&
+        current_fault_->code == RobotErr::SAFETY_FAILED &&
+        current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
     const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
-        if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY && checked_state.error().code == SafetyErr::JOINT_POS_LIMIT) {
-            // Joint 限位恢复只允许向限位内侧运动；若实测继续深入限位，立即退回刚性保持
-            fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
+        if(checked_state.error().code != SafetyErr::JOINT_POS_LIMIT) {
+            return tl::make_unexpected(make_safety_fault(checked_state.error()));
         }
-        if(checked_state.error().code != SafetyErr::JOINT_POS_LIMIT) return tl::make_unexpected(make_safety_fault(checked_state.error()));
+        if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY && position_limit_recovery) {
+            const auto recovery_state = safety_.check_state_for_position_recovery(
+                joint_state.value(), actuator_state.value(), 0.0);
+            if(!recovery_state) return tl::make_unexpected(make_safety_fault(recovery_state.error()));
+        }
     }
     else {
         ++clear_fault_valid_cycles_;
@@ -1031,7 +1048,11 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
 
     const auto joint_cmd = build_fault_joint_cmd(joint_state.value(), fault_hold_mode_, dt);
     if(!joint_cmd) return tl::make_unexpected(joint_cmd.error());
-    const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd.value(), std::min(dt, cfg_.safety.max_dt_s));
+    const bool bypass_position_cmd_limit = position_limit_recovery;
+    const auto safe_cmd = bypass_position_cmd_limit ?
+        safety_.check_joint_cmd_for_position_recovery(
+            joint_state.value(), joint_cmd.value(), std::min(dt, cfg_.safety.max_dt_s)) :
+        safety_.check_joint_cmd(joint_state.value(), joint_cmd.value(), std::min(dt, cfg_.safety.max_dt_s));
     if(!safe_cmd) {
         fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
         const auto rigid_cmd = build_fault_joint_cmd(joint_state.value(), FaultHoldMode::RIGID_HOLD, nominal_dt);
@@ -1041,11 +1062,15 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
         const auto rigid_actuator_cmd = mapper_.to_actuator_cmd(rigid_safe_cmd.value());
         if(!rigid_actuator_cmd) return tl::make_unexpected(make_mapper_fault(rigid_actuator_cmd.error()));
         fault_hold_cmd_ = rigid_actuator_cmd.value();
+        last_joint_cmd_ = rigid_safe_cmd.value();
+        has_last_joint_cmd_ = true;
     }
     else {
         const auto actuator_cmd = mapper_.to_actuator_cmd(safe_cmd.value());
         if(!actuator_cmd) return tl::make_unexpected(make_mapper_fault(actuator_cmd.error()));
         fault_hold_cmd_ = actuator_cmd.value();
+        last_joint_cmd_ = safe_cmd.value();
+        has_last_joint_cmd_ = true;
     }
 
     const auto result = motor_bus_->write(fault_hold_cmd_);
@@ -1075,17 +1100,8 @@ tl::expected<JointCtrlCmd, RobotFault> Robot::build_fault_joint_cmd(const JointS
     if(mode == FaultHoldMode::COMPLIANT_RECOVERY) {
         cmd.kp = cfg_.safety.fault_recovery.compliant_recovery.kp;
         cmd.kd = cfg_.safety.fault_recovery.compliant_recovery.kd;
-        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            const double error = last_joint_cmd_.pos[i] - state.pos[i];
-            cmd.vel[i] = std::clamp(error / std::max(dt, 1.0e-6), -cfg_.safety.fault_recovery.compliant_recovery.max_vel[i], cfg_.safety.fault_recovery.compliant_recovery.max_vel[i]);
-            if(current_fault_ && current_fault_->code == RobotErr::SAFETY_FAILED && current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT && current_fault_->safety_fault.index == i) {
-                if(cfg_.safety.limits.has_position_limit.empty() || cfg_.safety.limits.has_position_limit[i] != 0) {
-                    if(state.pos[i] > cfg_.safety.limits.max_pos[i] && cmd.vel[i] > 0.0) return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
-                    if(state.pos[i] < cfg_.safety.limits.min_pos[i] && cmd.vel[i] < 0.0) return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
-                }
-            }
-            cmd.pos[i] = state.pos[i] + cmd.vel[i] * dt;
-        }
+        cmd.pos = state.pos;
+        cmd.vel.assign(cfg_.joint_names.size(), 0.0);
     }
 
     if(model_feedforward_) {
