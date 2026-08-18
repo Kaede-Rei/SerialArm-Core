@@ -58,9 +58,13 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
         return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
     }
 
+    output.bias_compensated = std::move(tau_ext->bias_compensated);
     output.tau_ext_hat = std::move(tau_ext->tau_ext_hat);
+    output.threshold_active = std::move(tau_ext->threshold_active);
     output.delta_q = std::move(admittance->delta_q);
     output.delta_q_dot = std::move(admittance->delta_q_dot);
+    output.delta_q_limited = std::move(admittance->delta_q_limited);
+    output.delta_q_dot_limited = std::move(admittance->delta_q_dot_limited);
     for(std::size_t i = 0; i < output.delta_q.size(); ++i) {
         output.corrected_cmd.pos[i] += output.delta_q[i];
         output.corrected_cmd.vel[i] += output.delta_q_dot[i];

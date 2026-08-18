@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace serial_arm {
 
@@ -104,6 +105,9 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
         }
     }
 
+    std::vector<std::uint8_t> delta_q_limited(cfg_.joints_count, 0);
+    std::vector<std::uint8_t> delta_q_dot_limited(cfg_.joints_count, 0);
+
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
         if(cfg_.enabled[i] == 0) {
             delta_q_[i] = 0.0;
@@ -132,10 +136,13 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
         const double delta_q_ddot = (input.tau_ext_hat[i] -
             cfg_.damping[i] * delta_q_dot_[i] -
             cfg_.stiffness[i] * delta_q_[i]) / cfg_.mass[i];
-        delta_q_dot_[i] += delta_q_ddot * input.dt;
-        delta_q_dot_[i] = std::clamp(delta_q_dot_[i], min_delta_q_dot, max_delta_q_dot);
-        delta_q_[i] += delta_q_dot_[i] * input.dt;
-        delta_q_[i] = std::clamp(delta_q_[i], min_delta_q, max_delta_q);
+        const double unclamped_delta_q_dot = delta_q_dot_[i] + delta_q_ddot * input.dt;
+        delta_q_dot_[i] = std::clamp(unclamped_delta_q_dot, min_delta_q_dot, max_delta_q_dot);
+        if(delta_q_dot_[i] != unclamped_delta_q_dot) delta_q_dot_limited[i] = 1;
+
+        const double unclamped_delta_q = delta_q_[i] + delta_q_dot_[i] * input.dt;
+        delta_q_[i] = std::clamp(unclamped_delta_q, min_delta_q, max_delta_q);
+        if(delta_q_[i] != unclamped_delta_q) delta_q_limited[i] = 1;
 
         const bool at_upper_boundary = delta_q_[i] >= max_delta_q;
         const bool at_lower_boundary = delta_q_[i] <= min_delta_q;
@@ -149,7 +156,7 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
         }
     }
 
-    return JointAdmittanceOutput{ delta_q_, delta_q_dot_ };
+    return JointAdmittanceOutput{ delta_q_, delta_q_dot_, std::move(delta_q_limited), std::move(delta_q_dot_limited) };
 }
 
 /**

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "serial_arm/interaction/admittance_calibration.hpp"
 #include "serial_arm/interaction/external_torque_observer.hpp"
 #include "serial_arm/interaction/interaction_controller.hpp"
 #include "serial_arm/interaction/joint_admittance_controller.hpp"
@@ -55,7 +56,59 @@ TEST(TorqueResidualObserverTests, FiltersGravityMinusMeasuredTorque) {
     EXPECT_NEAR(second->residual_filtered[0], 0.0, 1e-12);
 }
 
-TEST(ExternalTorqueObserverTests, AppliesBiasThenHardThresholdWithoutSubtractingThreshold) {
+
+
+TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPoses) {
+    std::vector<AdmittanceStaticPoseSamples> poses(3);
+    const std::vector<double> gravity_values{ -2.0, 0.0, 2.0 };
+    for(std::size_t p = 0; p < poses.size(); ++p) {
+        for(int k = 0; k < 20; ++k) {
+            const double g = gravity_values[p];
+            const double noise = (k % 2 == 0) ? 0.01 : -0.01;
+            // production residual = gravity_scale * gravity - measured_torque - torque_bias
+            // target parameters: gravity_scale=0.8, torque_bias=0.2
+            const double measured = 0.8 * g - 0.2 + noise;
+            poses[p].samples.push_back(AdmittanceStaticSample{ JointVector{ g }, JointVector{ measured } });
+        }
+    }
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+    cfg.threshold_margin = 1.2;
+
+    auto result = calibrate_admittance_static(poses, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 1 });
+    EXPECT_NEAR(result->gravity_scale[0], 0.8, 1e-6);
+    EXPECT_NEAR(result->torque_bias[0], 0.2, 1e-6);
+    // Threshold is derived from the unfiltered static residual envelope, so later
+    // filter_alpha tuning does not change the one-time calibration semantics.
+    EXPECT_NEAR(result->residual_p99[0], 0.01, 1e-12);
+    EXPECT_NEAR(result->torque_threshold[0], 0.012, 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, KeepsFallbackScaleWhenGravityIsUnobservable) {
+    AdmittanceStaticPoseSamples pose;
+    for(int k = 0; k < 20; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.35 } });
+    }
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 0.9 };
+    cfg.gravity_observability_span = 0.25;
+    cfg.threshold_margin = 1.2;
+
+    auto result = calibrate_admittance_static({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 0 });
+    EXPECT_NEAR(result->gravity_scale[0], 0.9, 1e-12);
+    EXPECT_NEAR(result->torque_bias[0], 0.35, 1e-12);
+}
+
+TEST(ExternalTorqueObserverTests, AppliesBiasThenSmoothThresholdWithoutSubtractingThreshold) {
     ExternalTorqueObserver observer;
     ExternalTorqueObserverCfg cfg;
     cfg.joints_count = 1;
@@ -70,11 +123,22 @@ TEST(ExternalTorqueObserverTests, AppliesBiasThenHardThresholdWithoutSubtracting
     ASSERT_TRUE(below);
     EXPECT_DOUBLE_EQ(below->tau_ext_hat[0], 0.0);
 
-    residual.residual = { 0.8 };
-    residual.residual_filtered = { 0.8 };
+    // bias compensated = 0.45 lies halfway through [threshold, 2*threshold].
+    residual.residual = { 0.65 };
+    residual.residual_filtered = { 0.65 };
+    auto transition = observer.update(residual);
+    ASSERT_TRUE(transition);
+    EXPECT_GT(transition->tau_ext_hat[0], 0.0);
+    EXPECT_LT(transition->tau_ext_hat[0], 0.45);
+    EXPECT_EQ(transition->threshold_active[0], 1);
+
+    // Above 2*threshold preserves the full bias-compensated torque.
+    residual.residual = { 0.9 };
+    residual.residual_filtered = { 0.9 };
     auto above = observer.update(residual);
     ASSERT_TRUE(above);
-    EXPECT_NEAR(above->tau_ext_hat[0], 0.6, 1e-12);
+    EXPECT_NEAR(above->tau_ext_hat[0], 0.7, 1e-12);
+    EXPECT_EQ(above->threshold_active[0], 0);
 }
 
 TEST(JointAdmittanceControllerTests, BoundaryStopsOutwardVelocityAndAllowsReverseRecovery) {
@@ -184,7 +248,11 @@ TEST(InteractionControllerTests, EnabledCapabilityAppliesThresholdedExternalTorq
     auto output = controller.update(input);
     ASSERT_TRUE(output);
     // residual = gravity - measured = -0.8; bias -0.2 => -1.0, above threshold and preserved.
+    EXPECT_NEAR(output->bias_compensated[0], -1.0, 1e-12);
     EXPECT_NEAR(output->tau_ext_hat[0], -1.0, 1e-12);
+    EXPECT_EQ(output->threshold_active[0], 0);
     EXPECT_LT(output->corrected_cmd.pos[0], 0.0);
     EXPECT_LT(output->corrected_cmd.vel[0], 0.0);
+    EXPECT_EQ(output->delta_q_limited.size(), 1u);
+    EXPECT_EQ(output->delta_q_dot_limited.size(), 1u);
 }

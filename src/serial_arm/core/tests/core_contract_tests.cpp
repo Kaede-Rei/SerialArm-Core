@@ -775,6 +775,56 @@ TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
     EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
 }
 
+
+TEST(RobotAdmittanceCapability, RuntimeConfigUpdateResetsStateAndExposesTelemetry) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 0.1 };
+    admittance.max_delta_q_dot = { 0.1 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.tor[0] = 1.0;
+    ModelFeedforwardFn gravity = [](ModelFeedforwardMode, const JointState& state, const JointVector&, const JointVector&, double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    ASSERT_TRUE(robot.activate());
+
+    auto updated = admittance;
+    updated.mass[0] = 0.5;
+    updated.damping[0] = 2.0;
+    updated.max_delta_q_dot[0] = 0.2;
+    ASSERT_TRUE(robot.set_admittance_cfg(updated));
+    EXPECT_DOUBLE_EQ(robot.get_admittance_cfg().mass[0], 0.5);
+
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    EXPECT_TRUE(output->admittance_active);
+    ASSERT_EQ(output->bias_compensated.size(), 1u);
+    ASSERT_EQ(output->tau_ext_hat.size(), 1u);
+    ASSERT_EQ(output->delta_q.size(), 1u);
+    ASSERT_EQ(output->delta_q_dot.size(), 1u);
+    EXPECT_NEAR(output->bias_compensated[0], -1.0, 1e-12);
+    EXPECT_NEAR(output->tau_ext_hat[0], -1.0, 1e-12);
+    EXPECT_EQ(output->torque_threshold_active.size(), 1u);
+    EXPECT_EQ(output->delta_q_limited.size(), 1u);
+    EXPECT_EQ(output->delta_q_dot_limited.size(), 1u);
+    EXPECT_EQ(output->safety_position_margin_active.size(), 1u);
+    EXPECT_EQ(output->safety_velocity_margin_active.size(), 1u);
+}
+
 TEST(RobotAdmittanceCapability, DynamicAdmittanceLimitUsesRemainingSafetyPositionSpace) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;

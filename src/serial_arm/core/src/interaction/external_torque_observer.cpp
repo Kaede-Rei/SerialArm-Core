@@ -45,13 +45,32 @@ tl::expected<ExternalTorqueEstimate, ExternalTorqueObserverErr> ExternalTorqueOb
     }
 
     ExternalTorqueEstimate estimate;
+    estimate.bias_compensated.resize(cfg_.joints_count);
     estimate.tau_ext_hat.resize(cfg_.joints_count);
+    estimate.threshold_active.assign(cfg_.joints_count, 0);
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
         const double bias_compensated = residual.residual_filtered[i] - cfg_.torque_bias[i];
         if(!std::isfinite(bias_compensated)) {
             return tl::make_unexpected(ExternalTorqueObserverErr::NON_FINITE_INPUT);
         }
-        estimate.tau_ext_hat[i] = std::abs(bias_compensated) <= cfg_.torque_threshold[i] ? 0.0 : bias_compensated;
+
+        estimate.bias_compensated[i] = bias_compensated;
+        const double threshold = cfg_.torque_threshold[i];
+        const double magnitude = std::abs(bias_compensated);
+        if(threshold <= 0.0 || magnitude >= 2.0 * threshold) {
+            estimate.tau_ext_hat[i] = bias_compensated;
+            continue;
+        }
+
+        estimate.threshold_active[i] = 1;
+        if(magnitude <= threshold) {
+            estimate.tau_ext_hat[i] = 0.0;
+            continue;
+        }
+
+        const double u = (magnitude - threshold) / threshold;
+        const double gain = u * u * (3.0 - 2.0 * u);
+        estimate.tau_ext_hat[i] = bias_compensated * gain;
     }
     return estimate;
 }

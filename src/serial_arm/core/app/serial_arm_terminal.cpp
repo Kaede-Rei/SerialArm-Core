@@ -2,6 +2,7 @@
 #include "serial_arm/config/robot_profile.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
+#include "serial_arm/interaction/admittance_calibration.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -12,6 +13,7 @@
 #include <condition_variable>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <iomanip>
 #include <iostream>
@@ -271,6 +273,15 @@ void print_vector(const std::string& name, const std::vector<double>& values) {
         std::cout << std::fixed << std::setprecision(6) << values[i];
     }
     std::cout << "]\n";
+}
+
+void print_joint_yaml_map(const std::string& key, const std::vector<std::string>& joint_names, const JointVector& values) {
+    std::cout << key << ": {";
+    for(std::size_t i = 0; i < values.size() && i < joint_names.size(); ++i) {
+        if(i != 0) std::cout << ", ";
+        std::cout << joint_names[i] << ": " << std::fixed << std::setprecision(6) << values[i];
+    }
+    std::cout << "}\n";
 }
 
 void print_int_vector(const std::string& name, const std::vector<int>& values) {
@@ -718,6 +729,7 @@ private:
             return;
         }
         last_output_ = cycle_result.value();
+        ++cycle_counter_;
         cycle_cv_.notify_all();
     }
 
@@ -810,6 +822,7 @@ private:
         std::cout << " 3. 模式与补偿\n";
         std::cout << " 4. 运动与命令\n";
         std::cout << " 5. 动力学与配置\n";
+        std::cout << " 6. 调参与测试\n";
         std::cout << " 0. 回到停放姿态并安全退出\n";
     }
 
@@ -821,6 +834,7 @@ private:
             case 3: handle_mode_menu(); break;
             case 4: handle_motion_menu(); break;
             case 5: handle_dynamics_menu(); break;
+            case 6: handle_tuning_menu(); break;
             default: std::cout << "未知菜单编号\n"; break;
         }
         return true;
@@ -915,6 +929,34 @@ private:
             case 3: show_frame_state(); break;
             case 4: show_config_summary(); break;
             default: std::cout << "未知菜单编号\n"; break;
+        }
+    }
+
+    void handle_tuning_menu() {
+        std::cout << "\n------------ 调参与测试 ------------\n";
+        std::cout << " 1. 导纳控制\n";
+        std::cout << " 0. 返回主菜单\n";
+        const auto selection = read_int("请选择: ");
+        if(!selection || *selection == 0) return;
+        if(*selection == 1) handle_admittance_tuning_menu();
+        else std::cout << "未知菜单编号\n";
+    }
+
+    void handle_admittance_tuning_menu() {
+        while(true) {
+            std::cout << "\n------------ 导纳控制调参 ------------\n";
+            std::cout << " 1. 一次性静态标定\n";
+            std::cout << " 2. 静态标定验证\n";
+            std::cout << " 3. 导纳实时调参\n";
+            std::cout << " 0. 返回\n";
+            const auto selection = read_int("请选择: ");
+            if(!selection || *selection == 0) return;
+            switch(*selection) {
+                case 1: run_admittance_static_calibration(); break;
+                case 2: run_admittance_static_validation(); break;
+                case 3: run_admittance_live_tuning(); break;
+                default: std::cout << "未知菜单编号\n"; break;
+            }
         }
     }
 
@@ -1437,6 +1479,434 @@ private:
         std::cout << "重力补偿比例已更新该值只修改当前进程，不会回写 YAML\n";
     }
 
+
+    bool ensure_admittance_tuning_active() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_.get_state() != RobotState::ACTIVE) {
+            std::cout << "请先 activate()，导纳标定/调参只允许在 ACTIVE 状态进行\n";
+            return false;
+        }
+        if(!dynamics_.is_updated()) {
+            std::cout << "动力学尚未完成首次更新，请稍后重试\n";
+            return false;
+        }
+        return true;
+    }
+
+    bool set_tuning_impedance_mode(JointImpedanceMode mode) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto result = robot_.set_impedance_mode(mode);
+        if(!result) {
+            std::cout << "切换阻抗模式失败：\n";
+            print_fault(result.error());
+            return false;
+        }
+        last_output_.reset();
+        return true;
+    }
+
+    bool apply_runtime_admittance_cfg(const AdmittanceCapabilityCfg& candidate) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto result = robot_.set_admittance_cfg(candidate);
+        if(!result) {
+            std::cout << "更新导纳参数失败：\n";
+            print_fault(result.error());
+            return false;
+        }
+        cfg_.capability.admittance = candidate;
+        last_output_.reset();
+        return true;
+    }
+
+    std::optional<AdmittanceStaticPoseSamples> collect_static_pose_samples(double settle_s, double sample_s) {
+        if(settle_s > 0.0) std::this_thread::sleep_for(std::chrono::duration<double>(settle_s));
+
+        AdmittanceStaticPoseSamples pose;
+        const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(sample_s));
+        std::uint64_t cursor = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cursor = cycle_counter_;
+        }
+
+        while(Robot::Clock::now() < deadline) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
+                return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
+                });
+            if(robot_.get_state() != RobotState::ACTIVE) return std::nullopt;
+            if(!updated || cycle_counter_ <= cursor || !last_output_ || !dynamics_.is_updated()) continue;
+            cursor = cycle_counter_;
+            pose.samples.push_back(AdmittanceStaticSample{
+                dynamics_.get_gravity(),
+                last_output_->joint_state.tor,
+                });
+        }
+        if(pose.samples.empty()) return std::nullopt;
+        return pose;
+    }
+
+    std::optional<std::vector<RobotCycleOutput>> collect_admittance_outputs(double settle_s, double sample_s) {
+        if(settle_s > 0.0) std::this_thread::sleep_for(std::chrono::duration<double>(settle_s));
+
+        std::vector<RobotCycleOutput> outputs;
+        const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(sample_s));
+        std::uint64_t cursor = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cursor = cycle_counter_;
+        }
+        while(Robot::Clock::now() < deadline) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
+                return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
+                });
+            if(robot_.get_state() != RobotState::ACTIVE) return std::nullopt;
+            if(!updated || cycle_counter_ <= cursor || !last_output_) continue;
+            cursor = cycle_counter_;
+            outputs.push_back(*last_output_);
+        }
+        if(outputs.empty()) return std::nullopt;
+        return outputs;
+    }
+
+    void print_admittance_calibration_yaml(
+        const JointVector& gravity_scale,
+        const JointVector& torque_bias,
+        const JointVector& torque_threshold) const {
+        std::cout << "\n请将以下 3 行写回该机械臂的 core.yaml，之后正常使用无需重复标定：\n";
+        print_joint_yaml_map("gravity_scale", cfg_.joint_names, gravity_scale);
+        print_joint_yaml_map("torque_bias", cfg_.joint_names, torque_bias);
+        print_joint_yaml_map("torque_threshold", cfg_.joint_names, torque_threshold);
+    }
+
+    void run_admittance_static_calibration() {
+        if(!ensure_admittance_tuning_active()) return;
+        constexpr int kPoseCount = 8;
+        constexpr double kSettleS = 0.5;
+        constexpr double kSampleS = 1.0;
+
+        JointImpedanceMode original_mode;
+        AdmittanceCapabilityCfg original_admittance;
+        JointVector original_gravity_scale;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            original_mode = robot_.get_impedance_mode();
+            original_admittance = cfg_.capability.admittance;
+            original_gravity_scale = dynamics_.get_gravity_scale();
+        }
+
+        auto sampling_cfg = original_admittance;
+        sampling_cfg.enabled = false;
+        if(!apply_runtime_admittance_cfg(sampling_cfg)) return;
+        if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
+            apply_runtime_admittance_cfg(original_admittance);
+            return;
+        }
+
+        std::cout << "\n========== 导纳一次性静态标定 ==========\n";
+        std::cout << "目标：一次联合标定 gravity_scale + torque_bias + torque_threshold\n";
+        std::cout << "请覆盖常用工作空间的伸展、弯曲、中间及边缘代表姿态；每次采样前必须完全松手\n";
+
+        std::vector<AdmittanceStaticPoseSamples> poses;
+        poses.reserve(kPoseCount);
+        for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
+            std::string line;
+            std::cout << "\n姿态 " << (pose_index + 1) << "/" << kPoseCount
+                << "：当前为 COMPLIANT_DRAG，请拖到代表姿态并完全松手\n";
+            if(!read_line("准备好后按 Enter 开始采样，输入 q 取消: ", line) || line == "q" || line == "Q") {
+                std::cout << "标定已取消\n";
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    const auto restore_scale = dynamics_.set_gravity_scale(original_gravity_scale);
+                    if(restore_scale) cfg_.dynamics.gravity_scale = original_gravity_scale;
+                }
+                apply_runtime_admittance_cfg(original_admittance);
+                set_tuning_impedance_mode(original_mode);
+                return;
+            }
+
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) break;
+            std::cout << "保持不碰：稳定 " << kSettleS << " s，采样 " << kSampleS << " s...\n";
+            auto samples = collect_static_pose_samples(kSettleS, kSampleS);
+            if(!samples) {
+                std::cout << "采样失败，Robot 可能已退出 ACTIVE\n";
+                apply_runtime_admittance_cfg(original_admittance);
+                set_tuning_impedance_mode(original_mode);
+                return;
+            }
+            std::cout << "已采 " << samples->samples.size() << " 帧\n";
+            poses.push_back(std::move(*samples));
+            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) break;
+        }
+
+        if(poses.size() != static_cast<std::size_t>(kPoseCount)) {
+            std::cout << "标定未完成全部姿态，本次结果不应用\n";
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto restore_scale = dynamics_.set_gravity_scale(original_gravity_scale);
+                if(restore_scale) cfg_.dynamics.gravity_scale = original_gravity_scale;
+            }
+            apply_runtime_admittance_cfg(original_admittance);
+            set_tuning_impedance_mode(original_mode);
+            return;
+        }
+
+        AdmittanceStaticCalibrationCfg calibration_cfg;
+        calibration_cfg.joints_count = cfg_.joint_names.size();
+        calibration_cfg.fallback_gravity_scale = original_gravity_scale;
+        calibration_cfg.gravity_observability_span = 0.25;
+        calibration_cfg.threshold_margin = 1.2;
+        const auto result = calibrate_admittance_static(poses, calibration_cfg);
+        if(!result) {
+            std::cout << "静态标定计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            apply_runtime_admittance_cfg(original_admittance);
+            set_tuning_impedance_mode(original_mode);
+            return;
+        }
+
+        std::optional<DynamicsErr> scale_error;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto scale_result = dynamics_.set_gravity_scale(result->gravity_scale);
+            if(!scale_result) scale_error = scale_result.error();
+            else cfg_.dynamics.gravity_scale = result->gravity_scale;
+        }
+        if(scale_error) {
+            std::cout << "应用 gravity_scale 失败: " << to_string(*scale_error) << '\n';
+            apply_runtime_admittance_cfg(original_admittance);
+            set_tuning_impedance_mode(original_mode);
+            return;
+        }
+
+        auto calibrated_admittance = original_admittance;
+        calibrated_admittance.torque_bias = result->torque_bias;
+        calibrated_admittance.torque_threshold = result->torque_threshold;
+        if(!apply_runtime_admittance_cfg(calibrated_admittance)) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto restore_scale = dynamics_.set_gravity_scale(original_gravity_scale);
+                if(restore_scale) cfg_.dynamics.gravity_scale = original_gravity_scale;
+            }
+            apply_runtime_admittance_cfg(original_admittance);
+            set_tuning_impedance_mode(original_mode);
+            return;
+        }
+        set_tuning_impedance_mode(original_mode);
+
+        std::cout << "\n========== 静态标定结果 ==========\n";
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            std::cout << cfg_.joint_names[i]
+                << " gravity_scale=" << std::fixed << std::setprecision(6) << result->gravity_scale[i]
+                << (result->gravity_scale_observable[i] ? " [FIT]" : " [KEEP]")
+                << " bias=" << result->torque_bias[i]
+                << " P99=" << result->residual_p99[i]
+                << " threshold=" << result->torque_threshold[i]
+                << " max=" << result->residual_max[i] << '\n';
+        }
+        print_admittance_calibration_yaml(result->gravity_scale, result->torque_bias, result->torque_threshold);
+        std::cout << "本次运行已立即应用上述标定值；建议接着执行 6 -> 1 -> 2 静态标定验证\n";
+    }
+
+    void run_admittance_static_validation() {
+        if(!ensure_admittance_tuning_active()) return;
+        constexpr int kPoseCount = 5;
+        constexpr double kSettleS = 0.5;
+        constexpr double kSampleS = 1.0;
+
+        JointImpedanceMode original_mode;
+        AdmittanceCapabilityCfg original_admittance;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            original_mode = robot_.get_impedance_mode();
+            original_admittance = cfg_.capability.admittance;
+        }
+
+        auto validation_cfg = original_admittance;
+        validation_cfg.enabled = true;
+        validation_cfg.joint_enabled.assign(cfg_.joint_names.size(), 0);
+        if(!apply_runtime_admittance_cfg(validation_cfg)) return;
+        if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
+            apply_runtime_admittance_cfg(original_admittance);
+            return;
+        }
+
+        std::vector<std::size_t> active_count(cfg_.joint_names.size(), 0);
+        std::vector<std::size_t> total_count(cfg_.joint_names.size(), 0);
+        JointVector max_abs_tau(cfg_.joint_names.size(), 0.0);
+
+        std::cout << "\n========== 导纳静态标定验证 ==========\n";
+        std::cout << "验证目标：不同静态姿态下 tau_ext_hat 不应持续误触发；验证期间导纳运动已禁用\n";
+        for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
+            std::string line;
+            std::cout << "\n验证姿态 " << (pose_index + 1) << "/" << kPoseCount
+                << "：拖到代表姿态并完全松手\n";
+            if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") break;
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) break;
+            auto outputs = collect_admittance_outputs(kSettleS, kSampleS);
+            if(!outputs) break;
+            for(const auto& output : *outputs) {
+                if(output.tau_ext_hat.size() != cfg_.joint_names.size()) continue;
+                for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                    ++total_count[i];
+                    const double abs_tau = std::abs(output.tau_ext_hat[i]);
+                    max_abs_tau[i] = std::max(max_abs_tau[i], abs_tau);
+                    if(abs_tau > 1.0e-6) ++active_count[i];
+                }
+            }
+            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) break;
+        }
+
+        apply_runtime_admittance_cfg(original_admittance);
+        set_tuning_impedance_mode(original_mode);
+
+        bool pass = true;
+        std::cout << "\n========== 静态标定验证结果 ==========\n";
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            const double rate = total_count[i] == 0 ? 100.0 :
+                100.0 * static_cast<double>(active_count[i]) / static_cast<double>(total_count[i]);
+            const bool joint_pass = total_count[i] != 0 && rate <= 1.0;
+            pass = pass && joint_pass;
+            std::cout << cfg_.joint_names[i]
+                << " false_activation=" << std::fixed << std::setprecision(2) << rate << "%"
+                << " max_tau=" << std::setprecision(6) << max_abs_tau[i]
+                << (joint_pass ? " PASS" : " FAIL") << '\n';
+        }
+        std::cout << (pass ? "静态标定验证：PASS\n" : "静态标定验证：FAIL；先重新覆盖工作空间做一次性静态标定，不要先调 M/D/K\n");
+    }
+
+    void observe_admittance_realtime() {
+        std::atomic<bool> stop{ false };
+        std::thread display([&]() {
+            while(!stop.load()) {
+                std::optional<RobotCycleOutput> output;
+                {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    output = last_output_;
+                }
+                if(output && output->admittance_active && output->tau_ext_hat.size() == cfg_.joint_names.size()) {
+                    std::ostringstream flags;
+                    bool first_flag = true;
+                    for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                        std::string joint_flags;
+                        if(i < output->torque_threshold_active.size() && output->torque_threshold_active[i]) joint_flags += "TH|";
+                        if(i < output->delta_q_limited.size() && output->delta_q_limited[i]) joint_flags += "DQ|";
+                        if(i < output->delta_q_dot_limited.size() && output->delta_q_dot_limited[i]) joint_flags += "DQV|";
+                        if(i < output->safety_position_margin_active.size() && output->safety_position_margin_active[i]) joint_flags += "SP|";
+                        if(i < output->safety_velocity_margin_active.size() && output->safety_velocity_margin_active[i]) joint_flags += "SV|";
+                        if(!joint_flags.empty()) {
+                            joint_flags.pop_back();
+                            if(!first_flag) flags << ' ';
+                            flags << cfg_.joint_names[i] << ':' << joint_flags;
+                            first_flag = false;
+                        }
+                    }
+                    std::cout << "\ntau ";
+                    for(double v : output->tau_ext_hat) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    std::cout << "| dq ";
+                    for(double v : output->delta_q) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    std::cout << "| dqdot ";
+                    for(double v : output->delta_q_dot) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    if(!first_flag) std::cout << "| " << flags.str();
+                    std::cout << std::flush;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            });
+        std::string line;
+        read_line("\n实时观测中（TH=threshold, DQ=位置限幅, DQV=速度限幅, SP/SV=Safety 剩余空间）；按 Enter 停止: ", line);
+        stop.store(true);
+        display.join();
+        std::cout << '\n';
+    }
+
+    void edit_admittance_joint_parameter(const std::string& name, JointVector AdmittanceCapabilityCfg::* member, bool allow_zero) {
+        const auto joint = read_int("关节编号 1~6，输入 0 表示全部关节: ");
+        if(!joint || *joint < 0 || static_cast<std::size_t>(*joint) > cfg_.joint_names.size()) {
+            std::cout << "关节编号无效\n";
+            return;
+        }
+        const auto value = read_double((name + " 新值: ").c_str());
+        if(!value || (allow_zero ? *value < 0.0 : *value <= 0.0)) {
+            std::cout << "参数值无效\n";
+            return;
+        }
+
+        auto candidate = cfg_.capability.admittance;
+        JointVector& values = candidate.*member;
+        if(*joint == 0) std::fill(values.begin(), values.end(), *value);
+        else values[static_cast<std::size_t>(*joint - 1)] = *value;
+        if(apply_runtime_admittance_cfg(candidate)) {
+            std::cout << name << " 已更新当前进程，并自动 reset delta_q / delta_q_dot\n";
+        }
+    }
+
+    void print_live_tuning_yaml() const {
+        const auto& a = cfg_.capability.admittance;
+        std::cout << "\n当前实时调参结果（如需永久保存，请写回 core.yaml）：\n";
+        std::cout << "filter_alpha: " << std::fixed << std::setprecision(6) << a.filter_alpha << '\n';
+        print_joint_yaml_map("mass", cfg_.joint_names, a.mass);
+        print_joint_yaml_map("damping", cfg_.joint_names, a.damping);
+        print_joint_yaml_map("stiffness", cfg_.joint_names, a.stiffness);
+        print_joint_yaml_map("max_delta_q", cfg_.joint_names, a.max_delta_q);
+        print_joint_yaml_map("max_delta_q_dot", cfg_.joint_names, a.max_delta_q_dot);
+    }
+
+    void run_admittance_live_tuning() {
+        if(!ensure_admittance_tuning_active()) return;
+        if(!cfg_.capability.admittance.enabled) {
+            std::cout << "capability.admittance.enabled=false，请先在 core.yaml 开启能力\n";
+            return;
+        }
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return;
+
+        while(true) {
+            const auto& a = cfg_.capability.admittance;
+            std::cout << "\n========== 导纳实时调参（RIGID_HOLD） ==========\n";
+            std::cout << "filter_alpha=" << a.filter_alpha << '\n';
+            print_vector("mass", a.mass);
+            print_vector("damping", a.damping);
+            print_vector("stiffness", a.stiffness);
+            print_vector("max_delta_q", a.max_delta_q);
+            print_vector("max_delta_q_dot", a.max_delta_q_dot);
+            std::cout << " 1. 实时观测\n";
+            std::cout << " 2. 修改 mass\n";
+            std::cout << " 3. 修改 damping\n";
+            std::cout << " 4. 修改 stiffness\n";
+            std::cout << " 5. 修改 filter_alpha\n";
+            std::cout << " 6. 修改 max_delta_q\n";
+            std::cout << " 7. 修改 max_delta_q_dot\n";
+            std::cout << " 0. 返回并打印当前调参结果\n";
+            const auto selection = read_int("请选择: ");
+            if(!selection || *selection == 0) {
+                print_live_tuning_yaml();
+                return;
+            }
+            switch(*selection) {
+                case 1: observe_admittance_realtime(); break;
+                case 2: edit_admittance_joint_parameter("mass", &AdmittanceCapabilityCfg::mass, false); break;
+                case 3: edit_admittance_joint_parameter("damping", &AdmittanceCapabilityCfg::damping, true); break;
+                case 4: edit_admittance_joint_parameter("stiffness", &AdmittanceCapabilityCfg::stiffness, true); break;
+                case 5: {
+                    const auto value = read_double("filter_alpha 新值 (0, 1]: ");
+                    if(!value || *value <= 0.0 || *value > 1.0) {
+                        std::cout << "filter_alpha 必须位于 (0, 1]\n";
+                        break;
+                    }
+                    auto candidate = cfg_.capability.admittance;
+                    candidate.filter_alpha = *value;
+                    if(apply_runtime_admittance_cfg(candidate)) {
+                        std::cout << "filter_alpha 已更新当前进程，并自动 reset observer / delta_q\n";
+                    }
+                    break;
+                }
+                case 6: edit_admittance_joint_parameter("max_delta_q", &AdmittanceCapabilityCfg::max_delta_q, false); break;
+                case 7: edit_admittance_joint_parameter("max_delta_q_dot", &AdmittanceCapabilityCfg::max_delta_q_dot, false); break;
+                default: std::cout << "未知菜单编号\n"; break;
+            }
+        }
+    }
+
     void show_config_summary() {
         std::lock_guard<std::mutex> lock(mutex_);
         std::cout << "ctrl_frequency_hz       : " << cfg_.runtime.ctrl_frequency_hz << '\n';
@@ -1552,6 +2022,7 @@ private:
 
     StreamState stream_;
     std::optional<RobotCycleOutput> last_output_;
+    std::uint64_t cycle_counter_{ 0 };
     bool background_fault_reported_{ false };
     std::optional<DynamicsErr> last_dynamics_err_;
 };

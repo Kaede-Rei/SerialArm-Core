@@ -98,6 +98,19 @@ struct RobotCycleOutput {
     JointCtrlCmd joint_cmd;           ///< Safety 检查后的关节命令
     ActuatorCtrlCmd actuator_cmd;      ///< 实际发送的执行器命令
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
+
+    bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
+    JointVector residual_raw;                              ///< gravity - measured_torque
+    JointVector residual_filtered;                         ///< 低通后的 residual
+    JointVector bias_compensated;                          ///< residual_filtered - torque_bias
+    JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
+    JointVector delta_q;                                   ///< 导纳位置修正
+    JointVector delta_q_dot;                               ///< 导纳速度修正
+    std::vector<std::uint8_t> torque_threshold_active;     ///< threshold 抑制/过渡标志
+    std::vector<std::uint8_t> delta_q_limited;             ///< 导纳位置限幅标志
+    std::vector<std::uint8_t> delta_q_dot_limited;         ///< 导纳速度限幅标志
+    std::vector<std::uint8_t> safety_position_margin_active; ///< Safety 剩余位置空间收窄标志
+    std::vector<std::uint8_t> safety_velocity_margin_active; ///< Safety 剩余速度空间收窄标志
 };
 
 /**
@@ -166,6 +179,14 @@ public:
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> set_model_feedforward_mode(ModelFeedforwardMode mode);
+    /**
+     * @brief 运行时更新导纳能力配置；成功后自动清空 observer 与 delta_q 状态
+     */
+    tl::expected<void, RobotFault> set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
+    /**
+     * @brief 获取当前进程正在使用的导纳能力配置
+     */
+    const AdmittanceCapabilityCfg& get_admittance_cfg() const noexcept;
     /**
      * @brief 执行一次完整控制周期
      * @param now 当前时间点

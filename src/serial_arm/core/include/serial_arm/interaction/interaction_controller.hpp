@@ -39,11 +39,15 @@ struct InteractionInput {
 };
 
 struct InteractionOutput {
-    JointCtrlCmd corrected_cmd;          ///< 修正后的关节控制命令
-    TorqueResidualEstimate residual;     ///< residual 观测结果
-    JointVector tau_ext_hat;             ///< 关节侧外力矩估计
-    JointVector delta_q;                 ///< 导纳位置偏移
-    JointVector delta_q_dot;             ///< 导纳速度偏移
+    JointCtrlCmd corrected_cmd;                       ///< 修正后的关节控制命令
+    TorqueResidualEstimate residual;                  ///< residual 观测结果
+    JointVector bias_compensated;                     ///< residual_filtered - torque_bias
+    JointVector tau_ext_hat;                          ///< 阈值处理后的关节侧外力矩估计
+    std::vector<std::uint8_t> threshold_active;       ///< 1 表示当前处于 threshold 抑制/过渡区
+    JointVector delta_q;                              ///< 导纳位置偏移
+    JointVector delta_q_dot;                          ///< 导纳速度偏移
+    std::vector<std::uint8_t> delta_q_limited;        ///< 1 表示位置偏移触及限幅
+    std::vector<std::uint8_t> delta_q_dot_limited;    ///< 1 表示速度偏移触及限幅
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //

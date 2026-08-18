@@ -53,8 +53,10 @@ struct JointAdmittanceInput {
  * @brief 关节导纳单周期输出
  */
 struct JointAdmittanceOutput {
-    JointVector delta_q;        ///< 位置偏移
-    JointVector delta_q_dot;    ///< 速度偏移
+    JointVector delta_q;                              ///< 位置偏移
+    JointVector delta_q_dot;                          ///< 速度偏移
+    std::vector<std::uint8_t> delta_q_limited;        ///< 1 表示本周期位置偏移触及限幅
+    std::vector<std::uint8_t> delta_q_dot_limited;    ///< 1 表示本周期速度偏移触及限幅
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //

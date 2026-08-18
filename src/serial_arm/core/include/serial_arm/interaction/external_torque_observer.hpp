@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <vector>
 
 #include <tl/expected.hpp>
 
@@ -29,7 +31,9 @@ struct ExternalTorqueObserverCfg {
 };
 
 struct ExternalTorqueEstimate {
-    JointVector tau_ext_hat;    ///< 关节侧外力矩估计
+    JointVector bias_compensated;                 ///< residual_filtered - torque_bias
+    JointVector tau_ext_hat;                      ///< 平滑阈值处理后的关节侧外力矩估计
+    std::vector<std::uint8_t> threshold_active;   ///< 1 表示该轴当前处于 threshold 过渡/抑制区
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //

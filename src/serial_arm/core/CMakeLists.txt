@@ -215,6 +215,7 @@ add_library(serial_arm_interaction
     src/interaction/interaction_controller.cpp
     src/interaction/external_torque_observer.cpp
     src/interaction/joint_admittance_controller.cpp
+    src/interaction/admittance_calibration.cpp
 )
 add_library(serial_arm::interaction ALIAS serial_arm_interaction)
 set_target_properties(serial_arm_interaction PROPERTIES EXPORT_NAME interaction)
