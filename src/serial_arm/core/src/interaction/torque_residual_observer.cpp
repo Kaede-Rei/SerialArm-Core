@@ -25,9 +25,18 @@ tl::expected<void, TorqueResidualObserverErr> TorqueResidualObserver::configure(
         return tl::make_unexpected(TorqueResidualObserverErr::INVALID_CFG);
     }
 
+    if(!cfg.initial_filtered_residual.empty() &&
+        !valid_vector(cfg.initial_filtered_residual, cfg.joints_count)) {
+        return tl::make_unexpected(TorqueResidualObserverErr::INVALID_CFG);
+    }
+
     cfg_ = cfg;
     filtered_.assign(cfg_.joints_count, 0.0);
     has_sample_ = false;
+    if(!cfg_.initial_filtered_residual.empty()) {
+        filtered_ = cfg_.initial_filtered_residual;
+        has_sample_ = true;
+    }
     is_configured_ = true;
     return {};
 }
@@ -58,8 +67,13 @@ tl::expected<TorqueResidualEstimate, TorqueResidualObserverErr> TorqueResidualOb
 }
 
 void TorqueResidualObserver::reset() {
+    if(!is_configured_) return;
     std::fill(filtered_.begin(), filtered_.end(), 0.0);
     has_sample_ = false;
+    if(!cfg_.initial_filtered_residual.empty()) {
+        filtered_ = cfg_.initial_filtered_residual;
+        has_sample_ = true;
+    }
 }
 
 bool TorqueResidualObserver::is_configured() const noexcept {

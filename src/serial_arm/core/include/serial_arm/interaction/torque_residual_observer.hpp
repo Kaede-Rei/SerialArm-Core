@@ -25,8 +25,9 @@ enum class TorqueResidualObserverErr {
  * @brief 关节力矩 residual observer 配置
  */
 struct TorqueResidualObserverCfg {
-    std::size_t joints_count{ 0 };  ///< 受控关节数量
-    double filter_alpha{ 0.1 };     ///< 一阶低通滤波系数
+    std::size_t joints_count{ 0 };              ///< 受控关节数量
+    double filter_alpha{ 0.1 };                 ///< 一阶低通滤波系数
+    JointVector initial_filtered_residual;      ///< reset 后的滤波初值；导纳链使用 torque_bias，避免首帧 raw residual 直通
 };
 
 /**

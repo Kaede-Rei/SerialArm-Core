@@ -16,7 +16,11 @@ tl::expected<void, InteractionControllerErr> InteractionController::configure(co
     TorqueResidualObserver residual_observer;
     ExternalTorqueObserver external_torque_observer;
     JointAdmittanceController admittance_controller;
-    if(!residual_observer.configure(cfg.residual) ||
+    auto residual_cfg = cfg.residual;
+    if(residual_cfg.initial_filtered_residual.empty()) {
+        residual_cfg.initial_filtered_residual = cfg.external_torque.torque_bias;
+    }
+    if(!residual_observer.configure(residual_cfg) ||
         !external_torque_observer.configure(cfg.external_torque) ||
         !admittance_controller.configure(cfg.admittance)) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);

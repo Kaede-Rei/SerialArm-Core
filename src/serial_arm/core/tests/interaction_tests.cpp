@@ -57,6 +57,54 @@ TEST(TorqueResidualObserverTests, FiltersModelTorqueMinusMeasuredTorque) {
 }
 
 
+TEST(TorqueResidualObserverTests, BiasPrimedResetFiltersFirstSampleInsteadOfPassingRawResidual) {
+    TorqueResidualObserver observer;
+    TorqueResidualObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.filter_alpha = 0.1;
+    cfg.initial_filtered_residual = { 0.2 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    auto first = observer.update(JointVector{ 0.0 }, JointVector{ 0.5 });
+    ASSERT_TRUE(first);
+    EXPECT_DOUBLE_EQ(first->residual[0], 0.5);
+    EXPECT_NEAR(first->residual_filtered[0], 0.23, 1e-12);
+
+    observer.reset();
+    auto after_reset = observer.update(JointVector{ 0.0 }, JointVector{ 0.5 });
+    ASSERT_TRUE(after_reset);
+    EXPECT_NEAR(after_reset->residual_filtered[0], 0.23, 1e-12);
+}
+
+TEST(InteractionControllerTests, UsesTorqueBiasAsResidualFilterResetBaseline) {
+    auto cfg = enabled_cfg();
+    cfg.residual.filter_alpha = 0.1;
+    ASSERT_DOUBLE_EQ(cfg.external_torque.torque_bias[0], 0.2);
+
+    InteractionController controller;
+    ASSERT_TRUE(controller.configure(cfg));
+
+    const auto cmd = nominal_cmd();
+    auto output = controller.update(InteractionInput{
+        JointVector{ 0.0 },
+        JointVector{ 0.5 },
+        cmd,
+        0.01,
+    });
+    ASSERT_TRUE(output);
+    ASSERT_EQ(output->residual.residual_filtered.size(), 1u);
+    EXPECT_NEAR(output->residual.residual_filtered[0], 0.23, 1e-12);
+}
+
+TEST(JointAdmittanceControllerTests, ComputesCriticalDampingAndDampingRatio) {
+    const auto metrics = compute_admittance_damping_metrics(0.5, 5.5, 15.0);
+    ASSERT_TRUE(metrics);
+    EXPECT_NEAR(metrics->critical_damping, 2.0 * std::sqrt(7.5), 1e-12);
+    EXPECT_NEAR(metrics->damping_ratio, 5.5 / (2.0 * std::sqrt(7.5)), 1e-12);
+
+    EXPECT_FALSE(compute_admittance_damping_metrics(0.5, 1.0, 0.0));
+}
+
 
 TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPoses) {
     std::vector<AdmittanceStaticPoseSamples> poses(3);

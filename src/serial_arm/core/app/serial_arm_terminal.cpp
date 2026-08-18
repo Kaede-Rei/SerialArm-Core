@@ -3,6 +3,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/interaction/admittance_calibration.hpp"
+#include "serial_arm/interaction/joint_admittance_controller.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -1914,6 +1915,28 @@ private:
         }
     }
 
+    void print_admittance_damping_metrics(const AdmittanceCapabilityCfg& a) const {
+        std::cout << "阻尼指标（zeta<0.95 欠阻尼，0.95~1.05 近临界，>1.05 过阻尼）\n";
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            if(i >= a.mass.size() || i >= a.damping.size() || i >= a.stiffness.size()) continue;
+            const auto metrics = compute_admittance_damping_metrics(a.mass[i], a.damping[i], a.stiffness[i]);
+            std::cout << "  " << cfg_.joint_names[i] << ": ";
+            if(!metrics) {
+                std::cout << "zeta=N/A Dcrit=N/A（stiffness 必须 > 0 才能定义二阶回零阻尼）\n";
+                continue;
+            }
+
+            const char* regime = "NEAR_CRITICAL";
+            if(metrics->damping_ratio < 0.95) regime = "UNDERDAMPED";
+            else if(metrics->damping_ratio > 1.05) regime = "OVERDAMPED";
+            std::cout << std::fixed << std::setprecision(3)
+                << "zeta=" << metrics->damping_ratio
+                << " Dcrit=" << metrics->critical_damping
+                << " D=" << a.damping[i]
+                << ' ' << regime << '\n';
+        }
+    }
+
     void print_live_tuning_yaml() const {
         const auto& a = cfg_.capability.admittance;
         std::cout << "\n当前实时调参结果（如需永久保存，请写回 core.yaml）：\n";
@@ -1942,6 +1965,7 @@ private:
             print_vector("stiffness", a.stiffness);
             print_vector("max_delta_q", a.max_delta_q);
             print_vector("max_delta_q_dot", a.max_delta_q_dot);
+            print_admittance_damping_metrics(a);
             std::cout << " 1. 实时观测\n";
             std::cout << " 2. 修改 mass\n";
             std::cout << " 3. 修改 damping\n";

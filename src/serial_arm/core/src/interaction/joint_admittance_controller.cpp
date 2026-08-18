@@ -39,6 +39,20 @@ bool valid_cfg_vector(const JointVector& values, std::size_t expected_size, bool
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
 
+tl::expected<AdmittanceDampingMetrics, JointAdmittanceControllerErr>
+compute_admittance_damping_metrics(double mass, double damping, double stiffness) {
+    if(!std::isfinite(mass) || !std::isfinite(damping) || !std::isfinite(stiffness) ||
+        mass <= 0.0 || damping < 0.0 || stiffness <= 0.0) {
+        return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_CFG);
+    }
+
+    const double critical_damping = 2.0 * std::sqrt(mass * stiffness);
+    return AdmittanceDampingMetrics{
+        critical_damping,
+        damping / critical_damping,
+    };
+}
+
 /**
  * @brief 配置 controller
  * @param cfg controller 配置

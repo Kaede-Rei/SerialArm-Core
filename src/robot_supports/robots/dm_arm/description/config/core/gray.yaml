@@ -116,7 +116,7 @@ capability:
     # 虚拟质量 mass(M)：同样 tau_ext_hat 下决定 delta_q_ddot；越小起步越快/越敏感，越大越迟缓
     mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
     # 虚拟阻尼 damping(D)：抑制 delta_q_dot 与振荡；越大越稳但手感更“黏”，越小越灵活但更易摆动
-    damping: {joint1: 6.0, joint2: 6.0, joint3: 6.0, joint4: 6.0, joint5: 6.0, joint6: 6.0}
+    damping: {joint1: 9.0, joint2: 9.0, joint3: 9.0, joint4: 9.0, joint5: 9.0, joint6: 9.0}
     # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
     stiffness: {joint1: 20.0, joint2: 20.0, joint3: 20.0, joint4: 20.0, joint5: 20.0, joint6: 20.0}
     # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动

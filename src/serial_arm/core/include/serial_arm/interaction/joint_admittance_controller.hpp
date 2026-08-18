@@ -59,6 +59,21 @@ struct JointAdmittanceOutput {
     std::vector<std::uint8_t> delta_q_dot_limited;    ///< 1 表示本周期速度偏移触及限幅
 };
 
+/**
+ * @brief 单轴导纳二阶系统阻尼指标
+ */
+struct AdmittanceDampingMetrics {
+    double critical_damping{ 0.0 };  ///< 临界阻尼 Dcrit = 2 * sqrt(mass * stiffness)
+    double damping_ratio{ 0.0 };     ///< 阻尼比 zeta = damping / Dcrit
+};
+
+/**
+ * @brief 根据 mass / damping / stiffness 计算临界阻尼与阻尼比
+ * @return 参数有限且 mass、stiffness 大于 0、damping 不小于 0 时返回指标
+ */
+tl::expected<AdmittanceDampingMetrics, JointAdmittanceControllerErr>
+compute_admittance_damping_metrics(double mass, double damping, double stiffness);
+
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
 /**
