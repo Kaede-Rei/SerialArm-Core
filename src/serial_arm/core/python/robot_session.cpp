@@ -40,6 +40,9 @@ std::string make_robot_error(const char* action, const RobotFault& fault) {
     if(fault.code == RobotErr::MODEL_FEEDFORWARD_FAILED || fault.code == RobotErr::INVALID_MODEL_FEEDFORWARD) {
         stream << "; ModelFeedforwardErr=" << static_cast<int>(fault.model_feedforward_err);
     }
+    if(fault.code == RobotErr::INTERACTION_FAILED) {
+        stream << "; InteractionControllerErr=" << static_cast<int>(fault.interaction_err);
+    }
 
     return stream.str();
 }

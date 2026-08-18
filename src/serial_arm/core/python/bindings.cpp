@@ -385,6 +385,7 @@ void bind_enums(py::module_& module) {
         .value("SAFETY_FAILED", RobotErr::SAFETY_FAILED)
         .value("MODEL_FEEDFORWARD_FAILED", RobotErr::MODEL_FEEDFORWARD_FAILED)
         .value("INVALID_MODEL_FEEDFORWARD", RobotErr::INVALID_MODEL_FEEDFORWARD)
+        .value("INTERACTION_FAILED", RobotErr::INTERACTION_FAILED)
         .value("FAULT_RECOVERY_NOT_ALLOWED", RobotErr::FAULT_RECOVERY_NOT_ALLOWED);
 
     py::enum_<RobotState>(module, "RobotState")

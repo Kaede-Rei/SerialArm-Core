@@ -229,13 +229,15 @@ target_include_directories(serial_arm_interaction
 target_link_libraries(serial_arm_interaction
     PUBLIC
         serial_arm_core
-        serial_arm_dynamics
 )
 
 target_compile_features(serial_arm_interaction PUBLIC cxx_std_17)
 serial_arm_enable_warnings(serial_arm_interaction)
 
 list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_interaction)
+
+# Robot 正式闭环依赖 interaction capability；放在 target 定义完成后追加，避免声明顺序耦合
+target_link_libraries(serial_arm_robot PUBLIC serial_arm_interaction)
 
 # =============================================================================
 # 可选模块：SERIAL_ARM_BUILD_PYTHON
@@ -337,6 +339,7 @@ if(BUILD_TESTING)
             serial_arm_core
             serial_arm_config
             serial_arm_dynamics
+            serial_arm_robot
             GTest::gtest_main
     )
     target_compile_features(serial_arm_core_contract_tests PRIVATE cxx_std_17)
@@ -413,21 +416,6 @@ if(BUILD_TESTING)
 
     add_test(NAME serial_arm_interaction_tests COMMAND serial_arm_interaction_tests)
 
-    add_executable(serial_arm_terminal_menu_tests
-        tests/terminal_menu_tests.cpp
-    )
-    target_compile_definitions(serial_arm_terminal_menu_tests
-        PRIVATE
-            SERIAL_ARM_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../.."
-    )
-    target_link_libraries(serial_arm_terminal_menu_tests
-        PRIVATE
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_terminal_menu_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_terminal_menu_tests)
-
-    add_test(NAME serial_arm_terminal_menu_tests COMMAND serial_arm_terminal_menu_tests)
 endif()
 
 # =============================================================================

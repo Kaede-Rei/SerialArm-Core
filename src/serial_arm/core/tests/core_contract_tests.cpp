@@ -6,6 +6,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/model/model_loader.hpp"
+#include "serial_arm/robot.hpp"
 
 #include <gtest/gtest.h>
 
@@ -137,7 +138,7 @@ class FakeMotorBus final : public MotorBus {
 public:
     tl::expected<void, MotorBusErr> configure(const std::string&) override { return {}; }
     tl::expected<void, MotorBusErr> connect() override { return {}; }
-    tl::expected<ActuatorState, MotorBusErr> read() override { return actuator_state(caps_.size()); }
+    tl::expected<ActuatorState, MotorBusErr> read() override { return state; }
     tl::expected<void, MotorBusErr> activate() override { return {}; }
     tl::expected<void, MotorBusErr> write(const ActuatorCtrlCmd& cmd) override {
         last_cmd = cmd;
@@ -151,6 +152,7 @@ public:
     std::size_t size() const noexcept override { return caps_.size(); }
 
     HardwareCapabilities caps_{ { "actuator1", -10.0, 10.0, 10.0, 10.0, 100.0, 10.0 } };
+    ActuatorState state{ actuator_state(1) };
     ActuatorCtrlCmd last_cmd;
 };
 
@@ -639,3 +641,171 @@ TEST(RobotProfile, StandaloneInstalledResourceLayoutResolvesWithoutRosEnvironmen
     EXPECT_NE(profile->hardware_config_path.find("share/test_robot_description/config/hardware.yaml"), std::string::npos);
     EXPECT_NE(profile->hardware_plugin.find("libserial_arm_hardware_test.so"), std::string::npos);
 }
+
+TEST(AdmittanceCapabilityValidation, DisabledCapabilityDoesNotRequireJointParameters) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.capability.admittance.enabled = false;
+    EXPECT_TRUE(validate_robot_core_cfg(cfg));
+}
+
+TEST(AdmittanceCapabilityValidation, EnabledCapabilityRequiresValidPerJointParameters) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 0.1;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 5.0 };
+    admittance.damping = { 8.0 };
+    admittance.stiffness = { 20.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 0.005 };
+    admittance.max_delta_q_dot = { 0.01 };
+    EXPECT_TRUE(validate_robot_core_cfg(cfg));
+
+    admittance.mass[0] = 0.0;
+    auto invalid_mass = validate_robot_core_cfg(cfg);
+    ASSERT_FALSE(invalid_mass);
+    EXPECT_EQ(invalid_mass.error().code, ConfigErr::INVALID_VALUE);
+
+    admittance.mass[0] = 5.0;
+    admittance.torque_threshold[0] = -0.1;
+    auto invalid_threshold = validate_robot_core_cfg(cfg);
+    ASSERT_FALSE(invalid_threshold);
+    EXPECT_EQ(invalid_threshold.error().code, ConfigErr::INVALID_VALUE);
+}
+
+TEST(RobotAdmittanceCapability, EnabledCapabilityRequiresGravityModelCallback) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 0.1;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 5.0 };
+    admittance.damping = { 8.0 };
+    admittance.stiffness = { 20.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 0.005 };
+    admittance.max_delta_q_dot = { 0.01 };
+
+    Robot robot;
+    auto result = robot.configure(cfg, std::make_unique<FakeMotorBus>());
+    ASSERT_FALSE(result);
+    EXPECT_EQ(result.error().code, RobotErr::INVALID_CFG);
+}
+
+TEST(RobotAdmittanceCapability, DisabledCapabilityKeepsExistingRobotBehavior) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.capability.admittance.enabled = false;
+
+    Robot robot;
+    EXPECT_TRUE(robot.configure(cfg, std::make_unique<FakeMotorBus>()));
+}
+
+TEST(RobotAdmittanceCapability, EnabledCapabilityCorrectsNominalCommandBeforeSafety) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 0.1 };
+    admittance.max_delta_q_dot = { 0.1 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.pos[0] = -0.999;
+    bus_raw->state.tor[0] = 100.0;
+
+    ModelFeedforwardFn gravity = [](ModelFeedforwardMode mode, const JointState& state, const JointVector&, const JointVector&, double) {
+        if(mode == ModelFeedforwardMode::GRAVITY) return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    ASSERT_TRUE(robot.activate());
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    EXPECT_LT(output->joint_cmd.pos[0], 0.0);
+    EXPECT_LT(output->joint_cmd.vel[0], 0.0);
+    EXPECT_EQ(bus_raw->last_cmd.pos, output->actuator_cmd.pos);
+}
+
+TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 1.0 };
+    admittance.max_delta_q_dot = { 1.0 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.pos[0] = -0.999;
+    bus_raw->state.tor[0] = 100.0;
+
+    ModelFeedforwardFn gravity = [](ModelFeedforwardMode, const JointState& state, const JointVector&, const JointVector&, double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    ASSERT_TRUE(robot.activate());
+    ASSERT_TRUE(robot.set_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG));
+
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    EXPECT_DOUBLE_EQ(output->joint_cmd.pos[0], bus_raw->state.pos[0]);
+    EXPECT_DOUBLE_EQ(output->joint_cmd.vel[0], 0.0);
+    EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
+}
+
+TEST(RobotAdmittanceCapability, DynamicAdmittanceLimitUsesRemainingSafetyPositionSpace) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    auto& admittance = cfg.capability.admittance;
+    admittance.enabled = true;
+    admittance.filter_alpha = 1.0;
+    admittance.joint_enabled = { 1 };
+    admittance.mass = { 1.0 };
+    admittance.damping = { 0.0 };
+    admittance.stiffness = { 0.0 };
+    admittance.torque_bias = { 0.0 };
+    admittance.torque_threshold = { 0.0 };
+    admittance.max_delta_q = { 1.0 };
+    admittance.max_delta_q_dot = { 1.0 };
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.pos[0] = -0.899;
+    bus_raw->state.tor[0] = 100.0;
+
+    ModelFeedforwardFn gravity = [](ModelFeedforwardMode, const JointState& state, const JointVector&, const JointVector&, double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
+        };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), gravity));
+    ASSERT_TRUE(robot.activate());
+    auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    EXPECT_NEAR(output->joint_cmd.pos[0], -0.9, 1e-12);
+    EXPECT_DOUBLE_EQ(output->joint_cmd.vel[0], 0.0);
+    EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
+}
+

@@ -8,6 +8,7 @@
 #include "serial_arm/core/joints_ctrller.hpp"
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
+#include "serial_arm/interaction/interaction_controller.hpp"
 
 #include <chrono>
 #include <functional>
@@ -66,6 +67,7 @@ enum class RobotErr {
     SAFETY_FAILED,              ///< 安全检查失败
     MODEL_FEEDFORWARD_FAILED,   ///< 模型前馈计算失败
     INVALID_MODEL_FEEDFORWARD,  ///< 模型前馈结果非法
+    INTERACTION_FAILED,         ///< 导纳能力计算失败
     FAULT_RECOVERY_NOT_ALLOWED, ///< 当前故障不允许柔性恢复或清故障
 };
 
@@ -81,6 +83,7 @@ struct RobotFault {
     ModelFeedforwardErr model_feedforward_err{
         ModelFeedforwardErr::COMPUTE_FAILED
     };                                                                  ///< 模型前馈子错误
+    InteractionControllerErr interaction_err{ InteractionControllerErr::INVALID_CFG }; ///< 导纳能力子错误
 };
 
 /**
@@ -285,6 +288,10 @@ private:
      * @return 成功返回前馈向量，失败返回 RobotFault
      */
     tl::expected<JointVector, RobotFault> compute_model_feedforward(const JointState& state, const JointVector& joint_acc, const JointVector& joint_ref_acc, double dt) const;
+    /**
+     * @brief 为导纳能力计算当前重力模型力矩
+     */
+    tl::expected<JointVector, RobotFault> compute_interaction_gravity(const JointState& state, const JointVector& joint_acc, const JointVector& joint_ref_acc, double dt, const JointVector& configured_model_feedforward) const;
 
     /**
      * @brief 构造仅包含通用错误码的故障对象
@@ -328,6 +335,10 @@ private:
      * @return 构造后的 RobotFault
      */
     RobotFault make_model_fault(ModelFeedforwardErr err) const noexcept;
+    /**
+     * @brief 构造包含导纳能力子错误的故障对象
+     */
+    RobotFault make_interaction_fault(InteractionControllerErr err) const noexcept;
 
     /**
      * @brief 进入 FAULT 状态并执行对应安全动作
@@ -400,6 +411,7 @@ private:
     JointCtrller ctrller_;                          ///< Joint 控制器
     JointActuatorMapper mapper_;                    ///< Joint/Actuator 映射
     Safety safety_;                                 ///< 安全检查器
+    InteractionController interaction_controller_; ///< 可选导纳能力
     std::unique_ptr<MotorBus> motor_bus_;           ///< 执行器后端
     ModelFeedforwardFn model_feedforward_;          ///< 动力学前馈入口
 

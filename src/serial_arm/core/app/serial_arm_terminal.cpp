@@ -2,7 +2,6 @@
 #include "serial_arm/config/robot_profile.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
-#include "serial_arm/interaction/interaction_controller.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -14,7 +13,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
-#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -130,6 +128,7 @@ std::string to_string(RobotErr value) {
         case RobotErr::SAFETY_FAILED: return "SAFETY_FAILED";
         case RobotErr::MODEL_FEEDFORWARD_FAILED: return "MODEL_FEEDFORWARD_FAILED";
         case RobotErr::INVALID_MODEL_FEEDFORWARD: return "INVALID_MODEL_FEEDFORWARD";
+        case RobotErr::INTERACTION_FAILED: return "INTERACTION_FAILED";
         case RobotErr::FAULT_RECOVERY_NOT_ALLOWED: return "FAULT_RECOVERY_NOT_ALLOWED";
     }
     return "UNKNOWN";
@@ -319,6 +318,9 @@ void print_fault(const RobotFault& fault) {
         case RobotErr::INVALID_MODEL_FEEDFORWARD:
             std::cout << "  ModelFeedforwardErr: " << to_string(fault.model_feedforward_err) << '\n';
             break;
+        case RobotErr::INTERACTION_FAILED:
+            std::cout << "  InteractionControllerErr: " << static_cast<int>(fault.interaction_err) << '\n';
+            break;
         default:
             break;
     }
@@ -405,34 +407,50 @@ void print_usage(const char* program) {
 tl::expected<HardwareConnectionSummary, std::string> load_hardware_connection_summary(
     const std::string& hardware_config,
     const HardwareConfigOverrides& overrides) {
-    auto has_connection_field = [](const YAML::Node& node) {
-        return node && node.IsMap() && (node["serial_port"] || node["baudrate"] || node["bus"]);
-    };
-    auto select_connection_node = [&has_connection_field](const YAML::Node& root) {
-        if(!root || !root.IsMap()) return YAML::Node{};
-        if(has_connection_field(root)) return root;
-
-        YAML::Node only_map_child;
-        std::size_t map_child_count = 0;
-        for(const auto& item : root) {
-            if(!item.second.IsMap()) continue;
-            ++map_child_count;
-            only_map_child = item.second;
-            if(has_connection_field(item.second)) return item.second;
-        }
-        if(map_child_count == 1) return only_map_child;
-        return YAML::Node{};
-    };
-
     try {
         const YAML::Node root = YAML::LoadFile(hardware_config);
-        const YAML::Node node = select_connection_node(root);
-        if(!node || !node.IsMap()) return tl::make_unexpected("Hardware Config 加载失败: missing hardware map");
+        if(!root || !root.IsMap()) {
+            return tl::make_unexpected("Hardware Config 加载失败: root must be a map");
+        }
+
         HardwareConnectionSummary summary;
-        if(node["bus"]) summary.bus = node["bus"].as<std::string>();
-        if(node["serial_port"]) summary.serial_port = node["serial_port"].as<std::string>();
-        if(node["baudrate"]) summary.baudrate = node["baudrate"].as<int>();
-        if(overrides.bus) summary.bus = *overrides.bus;
+        const YAML::Node buses = root["buses"];
+
+        if(overrides.bus) {
+            summary.bus = *overrides.bus;
+        }
+        else {
+            std::string discovered_bus;
+            for(const auto& item : root) {
+                const std::string key = item.first.as<std::string>();
+                if(key == "buses" || !item.second.IsMap() || !item.second["bus"]) continue;
+                const std::string candidate = item.second["bus"].as<std::string>();
+                if(discovered_bus.empty()) discovered_bus = candidate;
+                else if(discovered_bus != candidate) {
+                    return tl::make_unexpected("Hardware Config 加载失败: ambiguous bus references");
+                }
+            }
+            if(!discovered_bus.empty()) {
+                summary.bus = discovered_bus;
+            }
+            else if(buses && buses.IsMap() && buses.size() == 1) {
+                summary.bus = buses.begin()->first.as<std::string>();
+            }
+        }
+
+        YAML::Node physical_node;
+        if(!summary.bus.empty() && buses && buses.IsMap()) {
+            physical_node = buses[summary.bus];
+        }
+        if(!physical_node || !physical_node.IsMap()) {
+            return tl::make_unexpected("Hardware Config 加载失败: missing buses." + summary.bus);
+        }
+
+        const YAML::Node serial_node = physical_node["serial_port"] ?
+            physical_node["serial_port"] : physical_node["device"];
+        if(serial_node) summary.serial_port = serial_node.as<std::string>();
+        if(physical_node["baudrate"]) summary.baudrate = physical_node["baudrate"].as<int>();
+
         if(overrides.serial_port) summary.serial_port = *overrides.serial_port;
         if(overrides.baudrate) summary.baudrate = *overrides.baudrate;
         return summary;
@@ -565,12 +583,12 @@ public:
         HardwareConnectionSummary connection_summary,
         std::string robot_profile)
         : cfg_(std::move(cfg)),
-          config_path_(std::move(config_path)),
-          hardware_plugin_(std::move(hardware_plugin)),
-          hardware_config_(std::move(hardware_config)),
-          hardware_overrides_(std::move(hardware_overrides)),
-          connection_summary_(std::move(connection_summary)),
-          robot_profile_(std::move(robot_profile)) {
+        config_path_(std::move(config_path)),
+        hardware_plugin_(std::move(hardware_plugin)),
+        hardware_config_(std::move(hardware_config)),
+        hardware_overrides_(std::move(hardware_overrides)),
+        connection_summary_(std::move(connection_summary)),
+        robot_profile_(std::move(robot_profile)) {
 
     }
 
@@ -690,20 +708,6 @@ private:
             const auto stream_result = update_stream(now);
             if(!stream_result) {
                 report_background_fault(stream_result.error());
-                return;
-            }
-        }
-        else if(latched_cmd_) {
-            const auto cmd_result = robot_.set_cmd(*latched_cmd_, now);
-            if(!cmd_result) {
-                report_background_fault(cmd_result.error());
-                return;
-            }
-        }
-        else if(latched_full_cmd_) {
-            const auto cmd_result = robot_.set_full_cmd(*latched_full_cmd_, now);
-            if(!cmd_result) {
-                report_background_fault(cmd_result.error());
                 return;
             }
         }
@@ -885,11 +889,6 @@ private:
         std::cout << " 1. 梯形参考移动到 6 轴绝对位置\n";
         std::cout << " 2. 梯形参考执行 6 轴相对移动\n";
         std::cout << " 3. 取消当前输入并切换到当前位置保持\n";
-        std::cout << " 4. 测试 JointPosCmd 输入\n";
-        std::cout << " 5. 测试 JointPosVelCmd 输入\n";
-        std::cout << " 6. 测试 JointPosVelTorCmd 输入\n";
-        std::cout << " 7. 测试 set_full_cmd()\n";
-        std::cout << " 8. Joint Admittance Test\n";
         std::cout << " 0. 返回主菜单\n";
         const auto selection = read_int("请选择: ");
         if(!selection || *selection == 0) return;
@@ -897,11 +896,6 @@ private:
             case 1: start_absolute_stream(); break;
             case 2: start_relative_stream(); break;
             case 3: cancel_and_hold(); break;
-            case 4: set_joint_pos_cmd(); break;
-            case 5: set_joint_pos_vel_cmd(); break;
-            case 6: set_joint_pos_vel_tor_cmd(); break;
-            case 7: set_full_cmd(); break;
-            case 8: run_joint_admittance_test(); break;
             default: std::cout << "未知菜单编号\n"; break;
         }
     }
@@ -1243,83 +1237,6 @@ private:
         return JointVector(cfg_.joint_names.size(), 0.0);
     }
 
-    void set_joint_pos_cmd() {
-        const auto pos = read_vector("输入目标位置 rad，以空格分隔: ", cfg_.joint_names.size());
-        if(!pos) {
-            std::cout << "输入无效\n";
-            return;
-        }
-        latch_joint_cmd(JointPosCmd{ *pos });
-    }
-
-    void set_joint_pos_vel_cmd() {
-        const auto pos = read_vector("输入目标位置 rad，以空格分隔: ", cfg_.joint_names.size());
-        const auto vel = read_vector("输入目标速度 rad/s，以空格分隔: ", cfg_.joint_names.size());
-        if(!pos || !vel) {
-            std::cout << "输入无效\n";
-            return;
-        }
-        latch_joint_cmd(JointPosVelCmd{ *pos, *vel });
-    }
-
-    void set_joint_pos_vel_tor_cmd() {
-        const auto pos = read_vector("输入目标位置 rad，以空格分隔: ", cfg_.joint_names.size());
-        const auto vel = read_vector("输入目标速度 rad/s，以空格分隔: ", cfg_.joint_names.size());
-        const auto tor = read_vector("输入附加力矩 N·m，以空格分隔: ", cfg_.joint_names.size());
-        if(!pos || !vel || !tor) {
-            std::cout << "输入无效\n";
-            return;
-        }
-        latch_joint_cmd(JointPosVelTorCmd{ *pos, *vel, *tor });
-    }
-
-    void latch_joint_cmd(const JointCmd& cmd) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(robot_.get_state() != RobotState::ACTIVE || !is_tracking_mode(robot_.get_impedance_mode())) {
-            std::cout << "请先 activate()，并切换到跟踪模式\n";
-            return;
-        }
-        clear_command_sources();
-        const auto result = robot_.set_cmd(cmd);
-        if(!result) {
-            std::cout << "set_cmd() 失败：\n";
-            print_fault(result.error());
-            return;
-        }
-        latched_cmd_ = cmd;
-        background_fault_reported_ = false;
-        std::cout << "命令已提交并将在后台周期持续刷新\n";
-    }
-
-    void set_full_cmd() {
-        const auto pos = read_vector("输入目标位置 rad: ", cfg_.joint_names.size());
-        const auto vel = read_vector("输入目标速度 rad/s: ", cfg_.joint_names.size());
-        const auto tor = read_vector("输入前馈力矩 N·m: ", cfg_.joint_names.size());
-        const auto kp = read_vector("输入 kp: ", cfg_.joint_names.size());
-        const auto kd = read_vector("输入 kd: ", cfg_.joint_names.size());
-        if(!pos || !vel || !tor || !kp || !kd) {
-            std::cout << "输入无效\n";
-            return;
-        }
-
-        JointCtrlCmd cmd{ *pos, *vel, *tor, *kp, *kd };
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(robot_.get_state() != RobotState::ACTIVE) {
-            std::cout << "请先 activate()\n";
-            return;
-        }
-        clear_command_sources();
-        const auto result = robot_.set_full_cmd(cmd);
-        if(!result) {
-            std::cout << "set_full_cmd() 失败：\n";
-            print_fault(result.error());
-            return;
-        }
-        latched_full_cmd_ = std::move(cmd);
-        background_fault_reported_ = false;
-        std::cout << "完整命令已提交并将在后台周期持续刷新\n";
-    }
-
     void cancel_and_hold() {
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::ACTIVE) {
@@ -1343,13 +1260,12 @@ private:
         std::cout << "JointImpedanceMode      : " << to_string(robot_.get_impedance_mode()) << '\n';
         std::cout << "ModelFeedforwardMode    : " << to_string(robot_.get_model_feedforward_mode()) << '\n';
         std::cout << "tracking_mode           : " << to_string(cfg_.runtime.tracking_impedance_mode) << '\n';
+        std::cout << "admittance_capability   : " << (cfg_.capability.admittance.enabled ? "ENABLED" : "DISABLED") << '\n';
         std::cout << "FaultHoldMode           : " << to_string(robot_.get_fault_hold_mode()) << '\n';
         std::cout << "Dynamics configured     : " << std::boolalpha << dynamics_.is_configured() << '\n';
         std::cout << "Dynamics updated        : " << std::boolalpha << dynamics_.is_updated() << '\n';
         std::cout << "Fault rigid hold        : " << std::boolalpha << robot_.is_fault_holding() << '\n';
         std::cout << "Streaming command       : " << std::boolalpha << stream_.enabled << '\n';
-        std::cout << "Latched JointCmd        : " << std::boolalpha << latched_cmd_.has_value() << '\n';
-        std::cout << "Latched full cmd        : " << std::boolalpha << latched_full_cmd_.has_value() << '\n';
         if(robot_.get_last_fault()) print_fault(*robot_.get_last_fault());
     }
 
@@ -1528,6 +1444,17 @@ private:
         std::cout << "write_enabled           : " << std::boolalpha << cfg_.runtime.write_enabled << '\n';
         std::cout << "model_feedforward_mode  : " << to_string(robot_.get_model_feedforward_mode()) << '\n';
         std::cout << "tracking_mode           : " << to_string(cfg_.runtime.tracking_impedance_mode) << '\n';
+        std::cout << "admittance_enabled      : " << std::boolalpha << cfg_.capability.admittance.enabled << '\n';
+        if(cfg_.capability.admittance.enabled || !cfg_.capability.admittance.mass.empty()) {
+            std::cout << "admittance_filter_alpha : " << cfg_.capability.admittance.filter_alpha << '\n';
+            print_vector("admittance_mass", cfg_.capability.admittance.mass);
+            print_vector("admittance_damping", cfg_.capability.admittance.damping);
+            print_vector("admittance_stiffness", cfg_.capability.admittance.stiffness);
+            print_vector("admittance_torque_bias", cfg_.capability.admittance.torque_bias);
+            print_vector("admittance_threshold", cfg_.capability.admittance.torque_threshold);
+            print_vector("admittance_max_delta_q", cfg_.capability.admittance.max_delta_q);
+            print_vector("admittance_max_dq_dot", cfg_.capability.admittance.max_delta_q_dot);
+        }
         std::cout << "park_before_disable     : " << std::boolalpha << cfg_.shutdown.park_before_disable << '\n';
         print_vector("park_pos", cfg_.shutdown.park_pos);
         std::cout << "park_speed_scale        : " << cfg_.shutdown.speed_scale << '\n';
@@ -1578,154 +1505,6 @@ private:
         print_matrix(frame_name + " Jacobian", jacobian.value());
     }
 
-    void run_joint_admittance_test() {
-        const auto duration_s = read_double("采样时长 s: ");
-        const auto filter_alpha = read_double("residual filter_alpha (0, 1]: ");
-        const auto mass = read_double("admittance mass > 0: ");
-        const auto damping = read_double("admittance damping >= 0: ");
-        const auto stiffness = read_double("admittance stiffness >= 0: ");
-        const auto max_delta_q = read_double("max_delta_q rad，建议 0.005~0.02: ");
-        const auto max_delta_q_dot = read_double("max_delta_q_dot rad/s，建议 0.01~0.05: ");
-        if(!duration_s || !filter_alpha || !mass || !damping || !stiffness || !max_delta_q || !max_delta_q_dot ||
-            !std::isfinite(*duration_s) || !std::isfinite(*filter_alpha) || !std::isfinite(*mass) ||
-            !std::isfinite(*damping) || !std::isfinite(*stiffness) || !std::isfinite(*max_delta_q) || !std::isfinite(*max_delta_q_dot) ||
-            *duration_s <= 0.0 || *filter_alpha <= 0.0 || *filter_alpha > 1.0 ||
-            *mass <= 0.0 || *damping < 0.0 || *stiffness < 0.0 || *max_delta_q < 0.0 || *max_delta_q_dot < 0.0) {
-            std::cout << "Joint Admittance Test 参数无效\n";
-            return;
-        }
-
-        InteractionControllerCfg interaction_cfg;
-        interaction_cfg.residual.joints_count = cfg_.joint_names.size();
-        interaction_cfg.residual.filter_alpha = *filter_alpha;
-        interaction_cfg.admittance_enabled = true;
-        interaction_cfg.external_torque.joints_count = cfg_.joint_names.size();
-        interaction_cfg.external_torque.source = ExternalTorqueSource::GRAVITY;
-        interaction_cfg.admittance.joints_count = cfg_.joint_names.size();
-        interaction_cfg.admittance.enabled.assign(cfg_.joint_names.size(), 1);
-        interaction_cfg.admittance.mass.assign(cfg_.joint_names.size(), *mass);
-        interaction_cfg.admittance.damping.assign(cfg_.joint_names.size(), *damping);
-        interaction_cfg.admittance.stiffness.assign(cfg_.joint_names.size(), *stiffness);
-        interaction_cfg.admittance.max_delta_q.assign(cfg_.joint_names.size(), *max_delta_q);
-        interaction_cfg.admittance.max_delta_q_dot.assign(cfg_.joint_names.size(), *max_delta_q_dot);
-
-        TorqueResidualObserver baseline_observer;
-        TorqueResidualObserverCfg baseline_cfg;
-        baseline_cfg.joints_count = cfg_.joint_names.size();
-        baseline_cfg.filter_alpha = *filter_alpha;
-        if(!baseline_observer.configure(baseline_cfg)) {
-            std::cout << "无接触 baseline observer configure() 失败\n";
-            return;
-        }
-
-        std::unique_lock<std::mutex> lock(mutex_);
-        if(robot_.get_state() != RobotState::ACTIVE) {
-            std::cout << "请先 activate()，Joint Admittance Test 只在 ACTIVE 状态 dry-run\n";
-            return;
-        }
-
-        constexpr double baseline_calibration_s = 2.0;
-        JointVector residual_bias(cfg_.joint_names.size(), 0.0);
-        std::size_t baseline_samples = 0;
-        const Robot::TimePoint baseline_started_at = Robot::Clock::now();
-        std::cout << "开始 " << baseline_calibration_s
-                  << " s 无接触 baseline 校准，请勿触碰机械臂\n";
-
-        while(robot_.get_state() == RobotState::ACTIVE) {
-            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
-            const Robot::TimePoint now = Robot::Clock::now();
-            if(std::chrono::duration<double>(now - baseline_started_at).count() > baseline_calibration_s) break;
-            if(!last_output_) continue;
-
-            const RobotCycleOutput output = *last_output_;
-            const auto update_result = dynamics_.update_state(output.joint_state, output.joint_acc);
-            if(!update_result) {
-                std::cout << "Dynamics update_state() 失败: " << to_string(update_result.error()) << '\n';
-                return;
-            }
-
-            const DynamicsState state = dynamics_.get_state();
-            lock.unlock();
-            const auto residual = baseline_observer.update(state);
-            lock.lock();
-            if(!residual) {
-                std::cout << "无接触 baseline observer update() 失败\n";
-                return;
-            }
-
-            for(std::size_t i = 0; i < residual_bias.size(); ++i) {
-                residual_bias[i] += residual->gravity_residual_filtered[i];
-            }
-            ++baseline_samples;
-        }
-
-        if(robot_.get_state() != RobotState::ACTIVE) {
-            std::cout << "Joint Admittance Test 在 baseline 校准期间终止：Robot 已不处于 ACTIVE\n";
-            return;
-        }
-        if(baseline_samples == 0) {
-            std::cout << "Joint Admittance Test baseline 校准失败：没有采到有效周期\n";
-            return;
-        }
-
-        for(double& value : residual_bias) {
-            value /= static_cast<double>(baseline_samples);
-        }
-        interaction_cfg.external_torque.residual_bias = residual_bias;
-        print_vector("residual_bias", residual_bias);
-
-        InteractionController controller;
-        const auto configure_result = controller.configure(interaction_cfg);
-        if(!configure_result) {
-            std::cout << "InteractionController configure() 失败\n";
-            return;
-        }
-
-        const Robot::TimePoint started_at = Robot::Clock::now();
-        Robot::TimePoint last_console_at = started_at;
-        std::cout << "baseline 校准完成，开始 Joint Admittance Test，interaction ON，dry-run 不写入 corrected command\n";
-        while(robot_.get_state() == RobotState::ACTIVE) {
-            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
-            const Robot::TimePoint now = Robot::Clock::now();
-            const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
-            if(elapsed_s > *duration_s) break;
-            if(!last_output_) continue;
-
-            const RobotCycleOutput output = *last_output_;
-            const auto update_result = dynamics_.update_state(output.joint_state, output.joint_acc);
-            if(!update_result) {
-                std::cout << "Dynamics update_state() 失败: " << to_string(update_result.error()) << '\n';
-                break;
-            }
-
-            const DynamicsState state = dynamics_.get_state();
-            const JointCtrlCmd nominal = output.joint_cmd;
-            const double dt = output.dt;
-            lock.unlock();
-
-            const auto interaction = controller.update(InteractionInput{ state, nominal, dt });
-            if(!interaction) {
-                std::cout << "InteractionController update() 失败\n";
-                lock.lock();
-                break;
-            }
-
-            if(std::chrono::duration<double>(now - last_console_at).count() >= 0.2) {
-                std::cout << "\nJoint Admittance Test Sample\n";
-                std::cout << "interaction             ON dry-run\n";
-                print_vector("tau_ext_hat", interaction->tau_ext_hat);
-                print_vector("delta_q", interaction->delta_q);
-                print_vector("delta_q_dot", interaction->delta_q_dot);
-                print_vector("corrected_pos", interaction->corrected_cmd.pos);
-                print_vector("corrected_vel", interaction->corrected_cmd.vel);
-                print_vector("corrected_tor", interaction->corrected_cmd.tor);
-                last_console_at = now;
-            }
-            lock.lock();
-        }
-        std::cout << "Joint Admittance Test 结束\n";
-    }
-
     bool safe_exit() {
         park_and_deactivate();
         {
@@ -1750,8 +1529,6 @@ private:
 
     void clear_command_sources() {
         stream_ = StreamState{};
-        latched_cmd_.reset();
-        latched_full_cmd_.reset();
     }
 
 private:
@@ -1774,8 +1551,6 @@ private:
     std::atomic<bool> quit_{ false };
 
     StreamState stream_;
-    std::optional<JointCmd> latched_cmd_;
-    std::optional<JointCtrlCmd> latched_full_cmd_;
     std::optional<RobotCycleOutput> last_output_;
     bool background_fault_reported_{ false };
     std::optional<DynamicsErr> last_dynamics_err_;

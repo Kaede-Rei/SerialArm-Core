@@ -65,7 +65,7 @@ tl::expected<void, RobotFault> Robot::configure(const RobotCfg& cfg, std::unique
     if(motor_bus->size() != cfg.joint_names.size()) {
         return tl::make_unexpected(make_fault(RobotErr::MOTOR_BUS_SIZE_MISMATCH));
     }
-    if(cfg.runtime.model_feedforward_mode != ModelFeedforwardMode::NONE && !model_feedforward) {
+    if((cfg.runtime.model_feedforward_mode != ModelFeedforwardMode::NONE || cfg.capability.admittance.enabled) && !model_feedforward) {
         RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
         fault.code = RobotErr::INVALID_CFG;
         return tl::make_unexpected(fault);
@@ -82,6 +82,28 @@ tl::expected<void, RobotFault> Robot::configure(const RobotCfg& cfg, std::unique
     const auto safety_result = safety_.configure(cfg.safety);
     if(!safety_result) {
         return tl::make_unexpected(make_safety_fault(safety_result.error()));
+    }
+
+    InteractionControllerCfg interaction_cfg;
+    interaction_cfg.enabled = cfg.capability.admittance.enabled;
+    if(interaction_cfg.enabled) {
+        const auto& admittance = cfg.capability.admittance;
+        interaction_cfg.residual.joints_count = cfg.joint_names.size();
+        interaction_cfg.residual.filter_alpha = admittance.filter_alpha;
+        interaction_cfg.external_torque.joints_count = cfg.joint_names.size();
+        interaction_cfg.external_torque.torque_bias = admittance.torque_bias;
+        interaction_cfg.external_torque.torque_threshold = admittance.torque_threshold;
+        interaction_cfg.admittance.joints_count = cfg.joint_names.size();
+        interaction_cfg.admittance.enabled = admittance.joint_enabled;
+        interaction_cfg.admittance.mass = admittance.mass;
+        interaction_cfg.admittance.damping = admittance.damping;
+        interaction_cfg.admittance.stiffness = admittance.stiffness;
+        interaction_cfg.admittance.max_delta_q = admittance.max_delta_q;
+        interaction_cfg.admittance.max_delta_q_dot = admittance.max_delta_q_dot;
+    }
+    const auto interaction_result = interaction_controller_.configure(interaction_cfg);
+    if(!interaction_result) {
+        return tl::make_unexpected(make_interaction_fault(interaction_result.error()));
     }
 
     cfg_ = cfg;
@@ -153,6 +175,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         enter_fault(fault, SafetyAction::DISABLE);
         return tl::make_unexpected(fault);
     }
+    interaction_controller_.reset();
 
     const auto history = safety_.reset_cmd_history(joint_state.value());
     if(!history) {
@@ -236,6 +259,7 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
 
     const auto mode_result = ctrller_.set_impedance_mode(mode, joint_state_);
     if(!mode_result) return tl::make_unexpected(make_ctrller_fault(mode_result.error()));
+    interaction_controller_.reset();
 
     const auto history = safety_.reset_cmd_history(joint_state_);
     if(!history) {
@@ -346,6 +370,71 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         joint_cmd.tor[i] += model_feedforward.value()[i];
     }
 
+    const bool admittance_active = cfg_.capability.admittance.enabled &&
+        ctrller_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG;
+    if(admittance_active) {
+        const auto gravity_torque = compute_interaction_gravity(
+            joint_state.value(), joint_acc, joint_ref_acc, dt, model_feedforward.value());
+        if(!gravity_torque) {
+            enter_fault(gravity_torque.error(), SafetyAction::STOP_HOLD);
+            return tl::make_unexpected(gravity_torque.error());
+        }
+        const std::size_t joints_count = cfg_.joint_names.size();
+        JointVector min_delta_q(joints_count, 0.0);
+        JointVector max_delta_q(joints_count, 0.0);
+        JointVector min_delta_q_dot(joints_count, 0.0);
+        JointVector max_delta_q_dot(joints_count, 0.0);
+        const auto& admittance_cfg = cfg_.capability.admittance;
+        const auto& limits = cfg_.safety.limits;
+
+        for(std::size_t i = 0; i < joints_count; ++i) {
+            min_delta_q[i] = -admittance_cfg.max_delta_q[i];
+            max_delta_q[i] = admittance_cfg.max_delta_q[i];
+            min_delta_q_dot[i] = -admittance_cfg.max_delta_q_dot[i];
+            max_delta_q_dot[i] = admittance_cfg.max_delta_q_dot[i];
+
+            if(limits.has_position_limit[i] != 0) {
+                const double cmd_min_pos = limits.min_pos[i] + limits.pos_margin[i];
+                const double cmd_max_pos = limits.max_pos[i] - limits.pos_margin[i];
+                if(joint_cmd.pos[i] < cmd_min_pos || joint_cmd.pos[i] > cmd_max_pos) {
+                    min_delta_q[i] = 0.0;
+                    max_delta_q[i] = 0.0;
+                }
+                else {
+                    min_delta_q[i] = std::max(min_delta_q[i], cmd_min_pos - joint_cmd.pos[i]);
+                    max_delta_q[i] = std::min(max_delta_q[i], cmd_max_pos - joint_cmd.pos[i]);
+                }
+            }
+
+            const double max_cmd_vel = limits.max_vel[i];
+            if(joint_cmd.vel[i] < -max_cmd_vel || joint_cmd.vel[i] > max_cmd_vel) {
+                min_delta_q_dot[i] = 0.0;
+                max_delta_q_dot[i] = 0.0;
+            }
+            else {
+                min_delta_q_dot[i] = std::max(min_delta_q_dot[i], -max_cmd_vel - joint_cmd.vel[i]);
+                max_delta_q_dot[i] = std::min(max_delta_q_dot[i], max_cmd_vel - joint_cmd.vel[i]);
+            }
+        }
+
+        const auto interaction = interaction_controller_.update(InteractionInput{
+            joint_state->tor,
+            gravity_torque.value(),
+            joint_cmd,
+            dt,
+            std::move(min_delta_q),
+            std::move(max_delta_q),
+            std::move(min_delta_q_dot),
+            std::move(max_delta_q_dot),
+            });
+        if(!interaction) {
+            const RobotFault fault = make_interaction_fault(interaction.error());
+            enter_fault(fault, SafetyAction::STOP_HOLD);
+            return tl::make_unexpected(fault);
+        }
+        joint_cmd = interaction->corrected_cmd;
+    }
+
     const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, dt);
     if(!safe_cmd) {
         const RobotFault fault = make_safety_fault(safe_cmd.error());
@@ -408,6 +497,7 @@ tl::expected<void, RobotFault> Robot::deactivate() {
     }
 
     ctrller_.reset();
+    interaction_controller_.reset();
     safety_.clear_cmd_history();
     clear_runtime_state();
     last_fault_.reset();
@@ -433,6 +523,7 @@ tl::expected<void, RobotFault> Robot::force_deactivate() {
     }
 
     ctrller_.reset();
+    interaction_controller_.reset();
     safety_.clear_cmd_history();
     clear_runtime_state();
     state_ = RobotState::INACTIVE;
@@ -678,6 +769,33 @@ tl::expected<JointVector, RobotFault> Robot::compute_model_feedforward(const Joi
 }
 
 /**
+ * @brief 为导纳能力计算当前重力模型力矩
+ */
+tl::expected<JointVector, RobotFault> Robot::compute_interaction_gravity(
+    const JointState& state,
+    const JointVector& joint_acc,
+    const JointVector& joint_ref_acc,
+    double dt,
+    const JointVector& configured_model_feedforward) const {
+    if(!cfg_.capability.admittance.enabled) {
+        return JointVector(cfg_.joint_names.size(), 0.0);
+    }
+    if(cfg_.runtime.model_feedforward_mode == ModelFeedforwardMode::GRAVITY) {
+        return configured_model_feedforward;
+    }
+    if(!model_feedforward_) {
+        return tl::make_unexpected(make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED));
+    }
+
+    const auto gravity = model_feedforward_(ModelFeedforwardMode::GRAVITY, state, joint_acc, joint_ref_acc, dt);
+    if(!gravity) return tl::make_unexpected(make_model_fault(gravity.error()));
+    if(gravity->size() != cfg_.joint_names.size() || !finite_vector(gravity.value())) {
+        return tl::make_unexpected(make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD));
+    }
+    return gravity.value();
+}
+
+/**
  * @brief 构造仅包含通用错误码的故障对象
  */
 RobotFault Robot::make_fault(RobotErr code) const noexcept {
@@ -732,6 +850,15 @@ RobotFault Robot::make_model_fault(ModelFeedforwardErr err) const noexcept {
 }
 
 /**
+ * @brief 构造包含导纳能力子错误的故障对象
+ */
+RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noexcept {
+    RobotFault fault = make_fault(RobotErr::INTERACTION_FAILED);
+    fault.interaction_err = err;
+    return fault;
+}
+
+/**
  * @brief 进入 FAULT 状态并执行对应安全动作
  */
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
@@ -749,6 +876,7 @@ void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
     }
 
     ctrller_.reset();
+    interaction_controller_.reset();
     safety_.clear_cmd_history();
     has_external_cmd_ = false;
     state_ = RobotState::FAULT;
@@ -918,6 +1046,7 @@ bool Robot::is_compliant_recovery_fault_allowed() const noexcept {
  */
 tl::expected<void, RobotFault> Robot::reset_reference_to_measured(const JointState& state) {
     ctrller_.reset();
+    interaction_controller_.reset();
     const auto initialized = ctrller_.initialize(state);
     if(!initialized) return tl::make_unexpected(make_ctrller_fault(initialized.error()));
 
@@ -952,6 +1081,7 @@ void Robot::disable_noexcept() noexcept {
  * @brief 清空运行时缓存状态
  */
 void Robot::clear_runtime_state() noexcept {
+    interaction_controller_.reset();
     joint_state_ = JointState{};
     joint_acc_.clear();
     joint_ref_acc_.clear();

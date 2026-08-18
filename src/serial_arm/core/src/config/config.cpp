@@ -6,6 +6,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -270,6 +271,50 @@ JointVector load_named_joint_vector(const YAML::Node& node, const std::vector<st
 }
 
 /**
+ * @brief 按 Joint 名称读取 bool map
+ */
+std::vector<std::uint8_t> load_named_joint_enabled(const YAML::Node& node, const std::vector<std::string>& joint_names, const char* context) {
+    if(!node || !node.IsMap()) throw ConfigLoadException(ConfigErr::MISSING_FIELD, std::string(context) + " must be a map");
+    reject_unknown_joint_keys(node, joint_names, context);
+    std::vector<std::uint8_t> values;
+    values.reserve(joint_names.size());
+    for(const auto& joint_name : joint_names) {
+        values.push_back(static_cast<std::uint8_t>(require_as<bool>(node, joint_name.c_str(), context) ? 1 : 0));
+    }
+    return values;
+}
+
+/**
+ * @brief 加载可选的导纳能力配置
+ */
+void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<std::string>& joint_names, CapabilityCfg& capability) {
+    const YAML::Node capability_node = root["capability"];
+    if(!capability_node) return;
+    if(!capability_node.IsMap()) {
+        throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(capability_node.Mark()) + "root.capability must be a map");
+    }
+    reject_unknown_keys(capability_node, "capability", { "admittance" });
+
+    const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
+    reject_unknown_keys(admittance, "capability.admittance", {
+        "enabled", "filter_alpha", "joint_enabled", "mass", "damping", "stiffness",
+        "torque_bias", "torque_threshold", "max_delta_q", "max_delta_q_dot"
+    });
+
+    auto& cfg = capability.admittance;
+    cfg.enabled = require_as<bool>(admittance, "enabled", "capability.admittance");
+    cfg.filter_alpha = require_as<double>(admittance, "filter_alpha", "capability.admittance");
+    cfg.joint_enabled = load_named_joint_enabled(require_map(admittance, "joint_enabled", "capability.admittance"), joint_names, "capability.admittance.joint_enabled");
+    cfg.mass = load_named_joint_vector(require_map(admittance, "mass", "capability.admittance"), joint_names, "capability.admittance.mass");
+    cfg.damping = load_named_joint_vector(require_map(admittance, "damping", "capability.admittance"), joint_names, "capability.admittance.damping");
+    cfg.stiffness = load_named_joint_vector(require_map(admittance, "stiffness", "capability.admittance"), joint_names, "capability.admittance.stiffness");
+    cfg.torque_bias = load_named_joint_vector(require_map(admittance, "torque_bias", "capability.admittance"), joint_names, "capability.admittance.torque_bias");
+    cfg.torque_threshold = load_named_joint_vector(require_map(admittance, "torque_threshold", "capability.admittance"), joint_names, "capability.admittance.torque_threshold");
+    cfg.max_delta_q = load_named_joint_vector(require_map(admittance, "max_delta_q", "capability.admittance"), joint_names, "capability.admittance.max_delta_q");
+    cfg.max_delta_q_dot = load_named_joint_vector(require_map(admittance, "max_delta_q_dot", "capability.admittance"), joint_names, "capability.admittance.max_delta_q_dot");
+}
+
+/**
  * @brief 从 YAML 读取 FAULT 恢复配置
  */
 void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::string>& joint_names, SafetyCfg& safety_cfg) {
@@ -448,7 +493,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
     try {
         const std::filesystem::path config_path = std::filesystem::absolute(path).lexically_normal();
         const YAML::Node root = YAML::LoadFile(path);
-        reject_unknown_keys(root, "root", { "model", "calibration", "control", "safety_policy", "shutdown" });
+        reject_unknown_keys(root, "root", { "model", "calibration", "control", "safety_policy", "shutdown", "capability" });
 
         const YAML::Node model_node = require_map(root, "model", "root");
         const YAML::Node calibration_node = require_map(root, "calibration", "root");
@@ -471,7 +516,13 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const JointVector gravity = require_as<JointVector>(model_node, "gravity", "model");
         if(gravity.size() != 3) throw ConfigLoadException(ConfigErr::INVALID_SIZE, "model.gravity must have length 3");
         cfg.dynamics.gravity = { gravity[0], gravity[1], gravity[2] };
-        cfg.dynamics.gravity_scale = require_as<JointVector>(model_node, "gravity_scale", "model");
+        const YAML::Node gravity_scale = model_node["gravity_scale"];
+        if(!gravity_scale) throw ConfigLoadException(ConfigErr::MISSING_FIELD, "model: missing field 'gravity_scale'");
+        cfg.dynamics.gravity_scale = gravity_scale.IsMap() ?
+            load_named_joint_vector(gravity_scale, cfg.joint_names, "model.gravity_scale") :
+            require_as<JointVector>(model_node, "gravity_scale", "model");
+
+        load_admittance_capability_cfg(root, cfg.joint_names, cfg.capability);
 
         const YAML::Node runtime = require_map(control_node, "runtime", "control");
         reject_unknown_keys(runtime, "control.runtime", { "ctrl_frequency_hz", "joint_acc_filter_alpha", "write_enabled", "model_feedforward_mode", "tracking_impedance_mode" });
@@ -609,6 +660,38 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         cfg.runtime.tracking_impedance_mode != JointImpedanceMode::COMPLIANT_TRACKING) {
         return fail(ConfigErr::INVALID_VALUE, "runtime.tracking_impedance_mode must be a tracking mode");
     }
+
+    const auto& admittance = cfg.capability.admittance;
+    const bool has_admittance_parameters = !admittance.joint_enabled.empty() || !admittance.mass.empty() ||
+        !admittance.damping.empty() || !admittance.stiffness.empty() || !admittance.torque_bias.empty() ||
+        !admittance.torque_threshold.empty() || !admittance.max_delta_q.empty() || !admittance.max_delta_q_dot.empty();
+    if(admittance.enabled || has_admittance_parameters) {
+        if(!std::isfinite(admittance.filter_alpha) || admittance.filter_alpha <= 0.0 || admittance.filter_alpha > 1.0) {
+            return fail(ConfigErr::INVALID_VALUE, "capability.admittance.filter_alpha must be in (0, 1]");
+        }
+        if(admittance.joint_enabled.size() != n || admittance.mass.size() != n || admittance.damping.size() != n ||
+            admittance.stiffness.size() != n || admittance.torque_bias.size() != n || admittance.torque_threshold.size() != n ||
+            admittance.max_delta_q.size() != n || admittance.max_delta_q_dot.size() != n) {
+            return fail(ConfigErr::INVALID_SIZE, "all capability.admittance joint arrays must match joint_names");
+        }
+        if(!std::all_of(admittance.joint_enabled.begin(), admittance.joint_enabled.end(), [](std::uint8_t value) {
+            return value == 0 || value == 1;
+            })) {
+            return fail(ConfigErr::INVALID_VALUE, "capability.admittance.joint_enabled values must be bool");
+        }
+        if(!finite_vector(admittance.mass) || !finite_vector(admittance.damping) || !finite_vector(admittance.stiffness) ||
+            !finite_vector(admittance.torque_bias) || !finite_vector(admittance.torque_threshold) ||
+            !finite_vector(admittance.max_delta_q) || !finite_vector(admittance.max_delta_q_dot)) {
+            return fail(ConfigErr::INVALID_VALUE, "capability.admittance contains NaN or Inf");
+        }
+        for(std::size_t i = 0; i < n; ++i) {
+            if(admittance.mass[i] <= 0.0 || admittance.damping[i] < 0.0 || admittance.stiffness[i] < 0.0 ||
+                admittance.torque_threshold[i] < 0.0 || admittance.max_delta_q[i] <= 0.0 || admittance.max_delta_q_dot[i] <= 0.0) {
+                return fail(ConfigErr::INVALID_VALUE, "invalid capability.admittance parameter at index " + std::to_string(i));
+            }
+        }
+    }
+
     const double nominal_dt = 1.0 / cfg.runtime.ctrl_frequency_hz;
     if(cfg.safety.max_dt_s < nominal_dt) {
         return fail(ConfigErr::INVALID_VALUE, "safety.max_dt_s must not be smaller than the nominal control period");
@@ -748,6 +831,13 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs->safety.limits.max_kd != rhs->safety.limits.max_kd) add("limits.max_kd");
     if(lhs->safety.cmd_timeout_s != rhs->safety.cmd_timeout_s || lhs->safety.state_timeout_s != rhs->safety.state_timeout_s || lhs->safety.max_dt_s != rhs->safety.max_dt_s) add("safety.timeout");
     if(lhs->dynamics.urdf_path != rhs->dynamics.urdf_path) add("dynamics.urdf_path");
+    const auto& lhs_adm = lhs->capability.admittance;
+    const auto& rhs_adm = rhs->capability.admittance;
+    if(lhs_adm.enabled != rhs_adm.enabled || lhs_adm.filter_alpha != rhs_adm.filter_alpha ||
+        lhs_adm.joint_enabled != rhs_adm.joint_enabled || lhs_adm.mass != rhs_adm.mass || lhs_adm.damping != rhs_adm.damping ||
+        lhs_adm.stiffness != rhs_adm.stiffness || lhs_adm.torque_bias != rhs_adm.torque_bias ||
+        lhs_adm.torque_threshold != rhs_adm.torque_threshold || lhs_adm.max_delta_q != rhs_adm.max_delta_q ||
+        lhs_adm.max_delta_q_dot != rhs_adm.max_delta_q_dot) add("capability.admittance");
     if(lhs->shutdown.park_before_disable != rhs->shutdown.park_before_disable || lhs->shutdown.park_pos != rhs->shutdown.park_pos ||
         lhs->shutdown.speed_scale != rhs->shutdown.speed_scale || lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
     return diffs;

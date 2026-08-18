@@ -34,16 +34,6 @@ bool valid_cfg_vector(const JointVector& values, std::size_t expected_size, bool
         });
 }
 
-/**
- * @brief 限幅
- * @param value 输入值
- * @param limit 对称限幅
- * @return 限幅后的值
- */
-double clamp_symmetric(double value, double limit) {
-    return std::clamp(value, -limit, limit);
-}
-
 } // namespace
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
@@ -99,6 +89,21 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
         return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DT);
     }
 
+    const bool has_dynamic_limits = !input.min_delta_q.empty() || !input.max_delta_q.empty() ||
+        !input.min_delta_q_dot.empty() || !input.max_delta_q_dot.empty();
+    if(has_dynamic_limits) {
+        if(input.min_delta_q.size() != cfg_.joints_count ||
+            input.max_delta_q.size() != cfg_.joints_count ||
+            input.min_delta_q_dot.size() != cfg_.joints_count ||
+            input.max_delta_q_dot.size() != cfg_.joints_count) {
+            return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_INPUT_SIZE);
+        }
+        if(!finite_vector(input.min_delta_q) || !finite_vector(input.max_delta_q) ||
+            !finite_vector(input.min_delta_q_dot) || !finite_vector(input.max_delta_q_dot)) {
+            return tl::make_unexpected(JointAdmittanceControllerErr::NON_FINITE_INPUT);
+        }
+    }
+
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
         if(cfg_.enabled[i] == 0) {
             delta_q_[i] = 0.0;
@@ -106,16 +111,34 @@ tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> JointAdmittanc
             continue;
         }
 
+        double min_delta_q = -cfg_.max_delta_q[i];
+        double max_delta_q = cfg_.max_delta_q[i];
+        double min_delta_q_dot = -cfg_.max_delta_q_dot[i];
+        double max_delta_q_dot = cfg_.max_delta_q_dot[i];
+        if(has_dynamic_limits) {
+            if(input.min_delta_q[i] > input.max_delta_q[i] ||
+                input.min_delta_q_dot[i] > input.max_delta_q_dot[i]) {
+                return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DYNAMIC_LIMITS);
+            }
+            min_delta_q = std::max(min_delta_q, input.min_delta_q[i]);
+            max_delta_q = std::min(max_delta_q, input.max_delta_q[i]);
+            min_delta_q_dot = std::max(min_delta_q_dot, input.min_delta_q_dot[i]);
+            max_delta_q_dot = std::min(max_delta_q_dot, input.max_delta_q_dot[i]);
+            if(min_delta_q > max_delta_q || min_delta_q_dot > max_delta_q_dot) {
+                return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DYNAMIC_LIMITS);
+            }
+        }
+
         const double delta_q_ddot = (input.tau_ext_hat[i] -
             cfg_.damping[i] * delta_q_dot_[i] -
             cfg_.stiffness[i] * delta_q_[i]) / cfg_.mass[i];
         delta_q_dot_[i] += delta_q_ddot * input.dt;
-        delta_q_dot_[i] = clamp_symmetric(delta_q_dot_[i], cfg_.max_delta_q_dot[i]);
+        delta_q_dot_[i] = std::clamp(delta_q_dot_[i], min_delta_q_dot, max_delta_q_dot);
         delta_q_[i] += delta_q_dot_[i] * input.dt;
-        delta_q_[i] = clamp_symmetric(delta_q_[i], cfg_.max_delta_q[i]);
+        delta_q_[i] = std::clamp(delta_q_[i], min_delta_q, max_delta_q);
 
-        const bool at_upper_boundary = delta_q_[i] >= cfg_.max_delta_q[i];
-        const bool at_lower_boundary = delta_q_[i] <= -cfg_.max_delta_q[i];
+        const bool at_upper_boundary = delta_q_[i] >= max_delta_q;
+        const bool at_lower_boundary = delta_q_[i] <= min_delta_q;
         if((at_upper_boundary && delta_q_dot_[i] > 0.0) ||
             (at_lower_boundary && delta_q_dot_[i] < 0.0)) {
             delta_q_dot_[i] = 0.0;

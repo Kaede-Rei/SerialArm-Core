@@ -33,6 +33,29 @@ struct RuntimeCfg {
 };
 
 /**
+ * @brief 关节空间导纳能力配置
+ */
+struct AdmittanceCapabilityCfg {
+    bool enabled{ false };                       ///< 导纳能力总开关
+    double filter_alpha{ 0.1 };                 ///< 外力矩估计一阶低通滤波系数
+    std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
+    JointVector mass;                           ///< 虚拟质量：决定同样外力矩下的 delta_q_ddot 响应速度
+    JointVector damping;                        ///< 虚拟阻尼：抑制 delta_q_dot 与振荡
+    JointVector stiffness;                      ///< 虚拟刚度：虚拟弹簧将 delta_q 拉回 0
+    JointVector torque_bias;                    ///< residual 固定零偏 Nm
+    JointVector torque_threshold;               ///< bias 后的小力矩忽略阈值 Nm
+    JointVector max_delta_q;                    ///< 最大导纳位置修正 rad
+    JointVector max_delta_q_dot;                ///< 最大导纳修正速度 rad/s
+};
+
+/**
+ * @brief 可选高级能力配置
+ */
+struct CapabilityCfg {
+    AdmittanceCapabilityCfg admittance;  ///< 导纳控制能力
+};
+
+/**
  * @brief 正常停机配置
  */
 struct ShutdownCfg {
@@ -64,6 +87,7 @@ struct DynamicsCfg {
 struct RobotCfg {
     std::vector<std::string> joint_names;  ///< 固定的 Joint 顺序
     RuntimeCfg runtime;                    ///< Robot 运行参数
+    CapabilityCfg capability;              ///< 可选高级能力
     ShutdownCfg shutdown;                  ///< 正常停机参数
     JointCtrllerCfg ctrller;               ///< Joint 控制器参数
     JointActuatorMapCfg mapper;            ///< Joint/Actuator 映射

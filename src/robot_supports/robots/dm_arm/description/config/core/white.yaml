@@ -3,118 +3,127 @@
 # 目录
 # 01 model            URDF 与模型基础信息
 # 02 calibration      单机方向、比例与零位
-# 03 control          运行时与控制增益
+# 03 control          运行时与基础控制增益
 # 04 safety_policy    运行安全策略与收窄值
-# 05 shutdown         停放姿态
+# 05 shutdown         停放与正常关机策略
+# 06 capability       可选高级能力
 
 # 01 model
 model:
-  urdf_path: ../../model/white/urdf/dm_arm.urdf                   # 有夹爪 URDF，路径相对当前 YAML
-  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]   # 受控关节名称
-  base_frame: base_link                                           # 动力学基坐标系
-  tool_frame: tool0                                               # 动力学末端坐标系
-  gravity: [0.0, 0.0, -9.81]                                      # 世界坐标系重力加速度
-  gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]                   # 重力补偿比例
+  urdf_path: ../../model/white/urdf/dm_arm.urdf                     # 有夹爪 URDF，路径相对当前 YAML
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]               # 受控关节名称与固定顺序
+  base_frame: base_link                                                       # 动力学基坐标系
+  tool_frame: tool0                                                           # 动力学末端坐标系
+  gravity: [0.0, 0.0, -9.81]                                                  # 世界坐标系重力加速度 m/s^2\
+  # 各关节重力补偿比例；1.0 表示使用完整模型重力
+  gravity_scale: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
 
 # 02 calibration
 calibration:
   joints:
-    joint1: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}  # 方向、比例与零位
+    # 方向、位置比例、力矩比例、关节零位、执行器零位
+    joint1: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0} 
     joint2: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}
     joint3: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}
     joint4: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}
     joint5: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}
     joint6: {direction: 1.0, pos_ratio: 1.0, tor_ratio: 1.0, joint_zero_offset: 0.0, actuator_zero_offset: 0.0}
 
-# 04 control
+# 03 control
 control:
   runtime:
-    ctrl_frequency_hz: 200.0                          # Robot cycle 目标频率
-    joint_acc_filter_alpha: 0.2                       # 关节加速度低通滤波系数
-    write_enabled: false                              # 真机确认前保持 false
-    model_feedforward_mode: GRAVITY                   # NONE / GRAVITY / FULL_INVERSE_DYNAMICS
-    tracking_impedance_mode: COMPLIANT_TRACKING       # RIGID_TRACKING / COMPLIANT_TRACKING
+    ctrl_frequency_hz: 200.0                            # Robot::cycle() 目标控制频率 Hz
+    joint_acc_filter_alpha: 0.2                         # 关节加速度一阶低通滤波系数；越小越平滑，越大越跟随实时变化
+    write_enabled: false                                 # 是否允许向真实执行器写入控制命令；White 真机确认前保持 false
+    model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
+    tracking_impedance_mode: COMPLIANT_TRACKING         # 跟踪模式默认阻抗：RIGID_TRACKING / COMPLIANT_TRACKING
   controller:
-    allow_full_cmd: false           # 是否允许完整 MIT 风格 Joint 命令
-    # 刚性保持参数
+    allow_full_cmd: false                               # 是否允许外部发送完整 MIT 风格 JointCtrlCmd
+    # 刚性保持：较高 kp/kd，使关节稳定保持切换模式时的位置
     rigid_hold:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}
-      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}
-    # 刚性跟踪参数
+      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
+      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}          # 各关节速度阻尼
+    # 刚性跟踪：较高 kp/kd，使关节严格跟踪外部位置/速度参考
     rigid_tracking:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}
-      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}
-    # 柔性保持参数
+      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
+      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}          # 各关节速度阻尼
+    # 柔性保持：降低 kp/kd，使机械臂仅依靠较软的 PD 保持当前位置
     compliant_hold:
-      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
-    # 柔性拖拽参数
+      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}       # 各关节低位置刚度
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节低速度阻尼
+    # 柔性拖拽：kp=0，不主动拉回原位，仅使用 kd 抑制过快运动
     compliant_drag:
-      kp: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
-    # 柔性跟踪参数
+      kp: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}         # 位置恢复刚度；0 表示不主动回原位
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节拖拽阻尼
+    # 柔性跟踪：较低 kp/kd，在跟踪外部参考时允许更明显的机械柔顺
     compliant_tracking:
-      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
+      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}       # 各关节跟踪位置刚度
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
 
-# 05 safety_policy
+# 04 safety_policy
 safety_policy:
-  position_margin: 0.0      # 命令位置距离 URDF 硬限位的边距
-  cmd_vel_scale: 1.0        # 命令速度相对 URDF velocity 的比例
-  state_vel_scale: 1.0      # 状态速度检查相对 URDF velocity 的比例
-  max_acc:
-    joint1: 10.8
-    joint2: 10.8
-    joint3: 10.8
-    joint4: 10.8
-    joint5: 10.8
-    joint6: 10.8
-  max_kp_override:
-    joint1: 100.0
-    joint2: 220.0
-    joint3: 140.0
-    joint4: 70.0
-    joint5: 50.0
-    joint6: 30.0
-  max_kd_override:
-    joint1: 1.0
-    joint2: 2.2
-    joint3: 1.4
-    joint4: 0.7
-    joint5: 0.5
-    joint6: 0.3
-  max_dt_s: 0.02                        # Safety 接受的最大控制周期
-  state_timeout_s: 0.05                 # 两帧合法硬件状态之间允许的最大间隔
-  cmd_timeout_s: 0.10                   # 跟踪模式收到过命令后的最大命令超时时间
-  require_all_actuators_online: true    # 是否要求所有执行器在线
-  require_all_actuators_enabled: true   # 是否要求所有执行器使能
-  reject_motor_error: true              # 是否拒绝执行器错误码
-  require_continuous_cmd: false         # 是否要求相邻命令连续，关闭后允许离散输入
+  position_margin: 0.0                              # 命令位置距离 URDF 硬限位的额外边距 rad
+  cmd_vel_scale: 1.0                                # 命令速度相对 URDF velocity 上限的缩放比例
+  state_vel_scale: 1.0                              # 状态速度检查相对 URDF velocity 上限的缩放比例
+  # 各关节最大允许加速度 rad/s^2
+  max_acc: {joint1: 10.8, joint2: 10.8, joint3: 10.8, joint4: 10.8, joint5: 10.8, joint6: 10.8}
+  # kp 安全上限
+  max_kp_override: {joint1: 100.0, joint2: 220.0, joint3: 140.0, joint4: 70.0, joint5: 50.0, joint6: 30.0}
+  # kd 安全上限
+  max_kd_override: {joint1: 1.0, joint2: 2.2, joint3: 1.4, joint4: 0.7, joint5: 0.5, joint6: 0.3}
+  max_dt_s: 0.02                                    # Safety 接受的最大控制周期 s
+  state_timeout_s: 0.05                             # 两帧合法硬件状态之间允许的最大间隔 s
+  cmd_timeout_s: 0.10                               # 跟踪模式收到外部命令后的最大命令超时时间 s
+  require_all_actuators_online: true                # 是否要求所有执行器在线
+  require_all_actuators_enabled: true               # 是否要求所有执行器处于使能状态
+  reject_motor_error: true                          # 是否在执行器返回错误码时进入安全处理
+  require_continuous_cmd: false                     # 是否强制相邻外部命令连续；false 允许离散输入
   fault_recovery:
-    default_mode: rigid_hold            # FAULT 默认刚性保持，不自动进入柔性恢复
-    allow_compliant_recovery: true      # 是否允许人工请求受限柔性恢复
-    require_operator_request: true      # 柔性恢复必须由操作员显式请求
-    gravity_model_validated: true       # 重力模型经验证后才允许低增益柔性恢复
-    recovery_timeout_s: 30.0            # 柔性恢复最大持续时间 s
-    compliant_recovery:                 # 低增益柔性恢复参数
+    default_mode: rigid_hold                        # FAULT 默认保持模式；当前固定为 rigid_hold
+    allow_compliant_recovery: true                  # 是否允许操作员请求受限柔性恢复
+    require_operator_request: true                  # 是否要求操作员显式请求柔性恢复
+    gravity_model_validated: true                   # 是否确认重力模型已验证，可用于低增益恢复
+    recovery_timeout_s: 30.0                        # 柔性恢复最大持续时间 s
+    compliant_recovery:
+      # 柔性恢复位置刚度
       kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}
+      # 柔性恢复速度阻尼
       kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
+      # 柔性恢复最大关节速度 rad/s
       max_vel: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
-      effort_scale: 1.0                 # 重力补偿力矩缩放 [0, 1]
+      effort_scale: 1.0                             # 柔性恢复重力补偿力矩缩放 [0, 1]
 
-# 06 shutdown
+# 05 shutdown
 shutdown:
-  park_before_disable: true       # 正常停机前先回到停放姿态
-  park_pos:
-    joint1: 0.0
-    joint2: 0.0
-    joint3: 0.0
-    joint4: 0.0
-    joint5: 0.0
-    joint6: 0.0
-  speed_scale: 0.10               # 停放轨迹速度比例
-  position_tolerance: 0.05        # 严格停放位置误差阈值 rad
-  velocity_tolerance: 0.05        # 严格停放速度阈值 rad/s
-  settle_time_s: 0.25             # 严格判据下持续稳定时间
-  relaxed_tolerance_ratio: 2.0    # 超时前宽松判据倍率
-  timeout_s: 15.0                 # 停放流程超时时间
+  park_before_disable: true                         # 正常停机前是否先回到停放姿态
+  # 各关节停放目标位置 rad
+  park_pos: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
+  speed_scale: 0.10                                 # 停放轨迹速度相对正常速度的比例
+  position_tolerance: 0.05                          # 严格停放位置误差阈值 rad
+  velocity_tolerance: 0.05                          # 严格停放速度阈值 rad/s
+  settle_time_s: 0.25                               # 严格判据下持续稳定时间 s
+  relaxed_tolerance_ratio: 2.0                      # 超时前宽松判据相对严格阈值的倍率
+  timeout_s: 15.0                                   # 停放流程最大允许时间 s
+
+# 06 capability
+capability:
+  # 导纳控制能力：tau_ext_hat = (mass * delta_q_ddot) + (damping * delta_q_dot) + (stiffness * delta_q)
+  admittance:
+    enabled: true                                   # 导纳能力总开关；false 时整条导纳链完全旁路
+    filter_alpha: 0.10                              # 外力矩 residual 一阶低通系数；越小越平滑但响应更慢，越大越灵敏但噪声更多
+    # 各关节是否参与导纳
+    joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
+    # 虚拟质量 mass(M)：同样 tau_ext_hat 下决定 delta_q_ddot；越小起步越快/越敏感，越大越迟缓
+    mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+    # 虚拟阻尼 damping(D)：抑制 delta_q_dot 与振荡；越大越稳但手感更“黏”，越小越灵活但更易摆动
+    damping: {joint1: 6.0, joint2: 6.0, joint3: 6.0, joint4: 6.0, joint5: 6.0, joint6: 6.0}
+    # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
+    stiffness: {joint1: 20.0, joint2: 20.0, joint3: 20.0, joint4: 20.0, joint5: 20.0, joint6: 20.0}
+    # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动
+    torque_bias: {joint1: 0.037, joint2: 0.116, joint3: 1.857, joint4: 0.428, joint5: 0.017, joint6: 0.007}
+    # bias 后的小力矩忽略阈值 Nm；0 表示关闭，增大可抑制噪声但会牺牲小外力灵敏度
+    torque_threshold: {joint1: 0.03, joint2: 0.02, joint3: 0.03, joint4: 0.02, joint5: 0.01, joint6: 0.01}
+    # 最大导纳位置修正 rad；决定最多主动退让多少角度
+    max_delta_q: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
+    # 最大导纳修正速度 rad/s；决定退让/回位的最快速度，过小会感觉“有力但不动”
+    max_delta_q_dot: {joint1: 0.30, joint2: 0.30, joint3: 0.30, joint4: 0.30, joint5: 0.30, joint6: 0.30}

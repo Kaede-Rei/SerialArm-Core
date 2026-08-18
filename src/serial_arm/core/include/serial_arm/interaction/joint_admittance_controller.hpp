@@ -21,6 +21,7 @@ enum class JointAdmittanceControllerErr {
     INVALID_INPUT_SIZE,     ///< 输入关节向量长度与配置的关节数量不一致
     NON_FINITE_INPUT,       ///< 输入包含 NaN 或无穷值
     INVALID_DT,             ///< dt 非有限或不大于 0
+    INVALID_DYNAMIC_LIMITS, ///< 单周期动态位置/速度限幅无效
 };
 
 /**
@@ -40,8 +41,12 @@ struct JointAdmittanceControllerCfg {
  * @brief 关节导纳单周期输入
  */
 struct JointAdmittanceInput {
-    JointVector tau_ext_hat;    ///< 关节侧外力矩估计
-    double dt{ 0.0 };           ///< 控制周期
+    JointVector tau_ext_hat;       ///< 关节侧外力矩估计
+    double dt{ 0.0 };              ///< 控制周期
+    JointVector min_delta_q;       ///< 单周期允许的最小位置修正；空向量表示仅使用配置限幅
+    JointVector max_delta_q;       ///< 单周期允许的最大位置修正；空向量表示仅使用配置限幅
+    JointVector min_delta_q_dot;   ///< 单周期允许的最小速度修正；空向量表示仅使用配置限幅
+    JointVector max_delta_q_dot;   ///< 单周期允许的最大速度修正；空向量表示仅使用配置限幅
 };
 
 /**

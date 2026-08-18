@@ -11,17 +11,6 @@ namespace serial_arm {
 
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
-/**
- * @brief 外力矩估计 source
- */
-enum class ExternalTorqueSource {
-    GRAVITY,     ///< 使用 filtered gravity residual
-    NONLINEAR,  ///< 使用 filtered nonlinear residual
-};
-
-/**
- * @brief 外力矩 observer 错误类型
- */
 enum class ExternalTorqueObserverErr {
     NOT_CONFIGURED,         ///< Observer 尚未完成配置
     ALREADY_CONFIGURED,     ///< Observer 已经配置，不能重复配置
@@ -31,17 +20,14 @@ enum class ExternalTorqueObserverErr {
 };
 
 /**
- * @brief 外力矩 observer 配置
+ * @brief 外力矩估计配置
  */
 struct ExternalTorqueObserverCfg {
-    std::size_t joints_count{ 0 };                          ///< 受控关节数量
-    ExternalTorqueSource source{ ExternalTorqueSource::GRAVITY };  ///< residual source
-    JointVector residual_bias;                              ///< 无接触 residual 常值偏置；空向量等价于全 0
+    std::size_t joints_count{ 0 };  ///< 受控关节数量
+    JointVector torque_bias;        ///< 每关节固定零偏；空向量等价于全 0
+    JointVector torque_threshold;   ///< 小力矩忽略阈值；空向量等价于全 0
 };
 
-/**
- * @brief 外力矩估计结果
- */
 struct ExternalTorqueEstimate {
     JointVector tau_ext_hat;    ///< 关节侧外力矩估计
 };
@@ -49,26 +35,12 @@ struct ExternalTorqueEstimate {
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
 /**
- * @brief 从 TorqueResidualEstimate 中选择经过 G1 验证的 residual source
+ * @brief 对滤波 residual 执行零偏修正与小信号阈值处理
  */
 class ExternalTorqueObserver {
 public:
-    /**
-     * @brief 配置 observer
-     * @param cfg observer 配置
-     * @return 成功时返回空值；失败时返回 ExternalTorqueObserverErr
-     */
     tl::expected<void, ExternalTorqueObserverErr> configure(const ExternalTorqueObserverCfg& cfg);
-    /**
-     * @brief 使用 residual 估计外力矩
-     * @param residual residual observer 输出
-     * @return 成功时返回外力矩估计；失败时返回 ExternalTorqueObserverErr
-     */
     tl::expected<ExternalTorqueEstimate, ExternalTorqueObserverErr> update(const TorqueResidualEstimate& residual) const;
-    /**
-     * @brief 查询 observer 是否已经完成配置
-     * @return 已成功配置时返回 true，否则返回 false
-     */
     bool is_configured() const noexcept;
 
 private:
