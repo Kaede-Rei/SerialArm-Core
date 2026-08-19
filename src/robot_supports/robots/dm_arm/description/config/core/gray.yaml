@@ -41,24 +41,24 @@ control:
     allow_full_cmd: false                               # 是否允许外部发送完整 MIT 风格 JointCtrlCmd
     # 刚性保持：较高 kp/kd，使关节稳定保持切换模式时的位置
     rigid_hold:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
-      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}          # 各关节速度阻尼
+      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
+      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}          # 各关节速度阻尼
     # 刚性跟踪：较高 kp/kd，使关节严格跟踪外部位置/速度参考
     rigid_tracking:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 120.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
-      kd: {joint1: 0.8, joint2: 2.0, joint3: 1.2, joint4: 0.5, joint5: 0.3, joint6: 0.1}          # 各关节速度阻尼
+      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
+      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}          # 各关节速度阻尼
     # 柔性保持：降低 kp/kd，使机械臂仅依靠较软的 PD 保持当前位置
     compliant_hold:
-      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}       # 各关节低位置刚度
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节低速度阻尼
+      kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节低位置刚度
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节低速度阻尼
     # 柔性拖拽：kp=0，不主动拉回原位，仅使用 kd 抑制过快运动
     compliant_drag:
       kp: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}         # 位置恢复刚度；0 表示不主动回原位
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节拖拽阻尼
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节拖拽阻尼
     # 柔性跟踪：较低 kp/kd，在跟踪外部参考时允许更明显的机械柔顺
     compliant_tracking:
-      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}       # 各关节跟踪位置刚度
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
+      kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节跟踪位置刚度
+      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
 
 # 04 safety_policy
 safety_policy:
@@ -68,9 +68,9 @@ safety_policy:
   # 各关节最大允许加速度 rad/s^2
   max_acc: {joint1: 10.8, joint2: 10.8, joint3: 10.8, joint4: 10.8, joint5: 10.8, joint6: 10.8}
   # kp 安全上限
-  max_kp_override: {joint1: 100.0, joint2: 220.0, joint3: 140.0, joint4: 70.0, joint5: 50.0, joint6: 30.0}
+  max_kp_override: {joint1: 100.0, joint2: 220.0, joint3: 220.0, joint4: 70.0, joint5: 50.0, joint6: 30.0}
   # kd 安全上限
-  max_kd_override: {joint1: 1.0, joint2: 2.2, joint3: 1.4, joint4: 0.7, joint5: 0.5, joint6: 0.3}
+  max_kd_override: {joint1: 1.8, joint2: 4.2, joint3: 4.2, joint4: 1.2, joint5: 0.8, joint6: 0.4}
   max_dt_s: 0.02                                    # Safety 接受的最大控制周期 s
   state_timeout_s: 0.05                             # 两帧合法硬件状态之间允许的最大间隔 s
   cmd_timeout_s: 0.10                               # 跟踪模式收到外部命令后的最大命令超时时间 s
@@ -90,7 +90,7 @@ safety_policy:
       # 柔性恢复速度阻尼
       kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
       # 柔性恢复最大关节速度 rad/s
-      max_vel: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+      max_vel: {joint1: 5.4, joint2: 5.4, joint3: 5.4, joint4: 5.4, joint5: 5.4, joint6: 5.4}
       effort_scale: 1.0                             # 柔性恢复重力补偿力矩缩放 [0, 1]
 
 # 05 shutdown
@@ -109,7 +109,7 @@ shutdown:
 capability:
   # 导纳控制能力：tau_ext_hat = (mass * delta_q_ddot) + (damping * delta_q_dot) + (stiffness * delta_q)
   admittance:
-    enabled: true                                   # 导纳能力总开关；false 时整条导纳链完全旁路
+    enabled: false                                   # 导纳能力总开关；false 时整条导纳链完全旁路
     filter_alpha: 0.95                              # 外力矩 residual 一阶低通系数；越小越平滑但响应更慢，越大越灵敏但噪声更多
     # 各关节是否参与导纳
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
