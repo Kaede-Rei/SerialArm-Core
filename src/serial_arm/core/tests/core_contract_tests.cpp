@@ -335,12 +335,10 @@ TEST(RobotFaultRecovery, ActivatePositionLimitFaultCanUseGravityCompensatedCompl
     EXPECT_NEAR(bus_raw->last_cmd.pos[0], 1.1, 1e-12);
     EXPECT_NEAR(bus_raw->last_cmd.tor[0], 0.7, 1e-12);
 
-    // 即使尚未回到合法区，操作员也应能取消 DRAG 并稳定回到刚性保持。
     ASSERT_TRUE(robot.return_to_fault_rigid_hold());
     EXPECT_EQ(robot.get_fault_hold_mode(), FaultHoldMode::RIGID_HOLD);
     ASSERT_TRUE(robot.enter_fault_compliant_recovery());
 
-    // 掰回合法区并稳定若干周期后，正常 clear_fault() 恢复 ACTIVE。
     bus_raw->state.pos[0] = 0.8;
     ASSERT_TRUE(robot.maintain_fault_hold());
     ASSERT_TRUE(robot.maintain_fault_hold());

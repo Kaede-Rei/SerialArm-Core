@@ -114,16 +114,16 @@ capability:
     # 各关节是否参与导纳
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
     # 虚拟质量 mass(M)：同样 tau_ext_hat 下决定 delta_q_ddot；越小起步越快/越敏感，越大越迟缓
-    mass: {joint1: 0.25, joint2: 0.25, joint3: 0.25, joint4: 0.25, joint5: 0.25, joint6: 0.25}
+    mass: {joint1: 0.5, joint2: 0.5, joint3: 0.5, joint4: 0.5, joint5: 0.5, joint6: 0.5}
     # 虚拟阻尼 damping(D)：抑制 delta_q_dot 与振荡；越大越稳但手感更“黏”，越小越灵活但更易摆动
-    damping: {joint1: 2.25, joint2: 2.25, joint3: 2.25, joint4: 2.25, joint5: 2.25, joint6: 2.25}
+    damping: {joint1: 4.5, joint2: 4.5, joint3: 4.5, joint4: 4.5, joint5: 4.5, joint6: 4.5}
     # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
-    stiffness: {joint1: 5.0, joint2: 5.0, joint3: 5.0, joint4: 5.0, joint5: 5.0, joint6: 5.0}
+    stiffness: {joint1: 10.0, joint2: 10.0, joint3: 10.0, joint4: 10.0, joint5: 10.0, joint6: 10.0}
     # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动
     torque_bias: {joint1: 0.034187, joint2: 0.047860, joint3: 0.043822, joint4: 0.017832, joint5: 0.012495, joint6: 0.007863}
     # bias 后的小力矩忽略阈值 Nm；0 表示关闭，增大可抑制噪声但会牺牲小外力灵敏度
     torque_threshold: {joint1: 0.054701, joint2: 0.079284, joint3: 0.067435, joint4: 0.023650, joint5: 0.016142, joint6: 0.011323}
     # 最大导纳位置修正 rad；决定最多主动退让多少角度
-    max_delta_q: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
+    max_delta_q: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
     # 最大导纳修正速度 rad/s；决定退让/回位的最快速度，过小会感觉“有力但不动”
-    max_delta_q_dot: {joint1: 0.30, joint2: 0.30, joint3: 0.30, joint4: 0.30, joint5: 0.30, joint6: 0.30}
+    max_delta_q_dot: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
