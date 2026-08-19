@@ -25,7 +25,7 @@ JointCtrlCmd nominal_cmd(double pos = 1.0) {
 InteractionControllerCfg enabled_cfg() {
     InteractionControllerCfg cfg;
     cfg.enabled = true;
-    cfg.residual = TorqueResidualObserverCfg{ 1, 1.0 };
+    cfg.residual = TorqueResidualObserverCfg{ 1, 1.0, {} };
     cfg.external_torque.joints_count = 1;
     cfg.external_torque.torque_bias = { 0.2 };
     cfg.external_torque.torque_threshold = { 0.3 };
@@ -90,6 +90,7 @@ TEST(InteractionControllerTests, UsesTorqueBiasAsResidualFilterResetBaseline) {
         JointVector{ 0.5 },
         cmd,
         0.01,
+        {}, {}, {}, {}, {},
     });
     ASSERT_TRUE(output);
     ASSERT_EQ(output->residual.residual_filtered.size(), 1u);
@@ -437,7 +438,7 @@ TEST(InteractionControllerTests, DisabledCapabilityPassesNominalCommandThroughWi
     ASSERT_TRUE(controller.configure(cfg));
 
     const auto nominal = nominal_cmd();
-    InteractionInput input{ JointVector{}, JointVector{}, nominal, 0.005, {}, {}, {}, {} };
+    InteractionInput input{ JointVector{}, JointVector{}, nominal, 0.005, {}, {}, {}, {}, {} };
     auto output = controller.update(input);
     ASSERT_TRUE(output);
     EXPECT_EQ(output->corrected_cmd.pos, nominal.pos);
@@ -452,7 +453,7 @@ TEST(InteractionControllerTests, EnabledCapabilityAppliesThresholdedExternalTorq
     ASSERT_TRUE(controller.configure(enabled_cfg()));
 
     const auto nominal = nominal_cmd(0.0);
-    InteractionInput input{ JointVector{ 0.8 }, JointVector{ 0.0 }, nominal, 0.1, {}, {}, {}, {} };
+    InteractionInput input{ JointVector{ 0.8 }, JointVector{ 0.0 }, nominal, 0.1, {}, {}, {}, {}, {} };
     auto output = controller.update(input);
     ASSERT_TRUE(output);
     // residual = gravity - measured = -0.8; bias -0.2 => -1.0, above threshold and preserved.
@@ -463,4 +464,119 @@ TEST(InteractionControllerTests, EnabledCapabilityAppliesThresholdedExternalTorq
     EXPECT_LT(output->corrected_cmd.vel[0], 0.0);
     EXPECT_EQ(output->delta_q_limited.size(), 1u);
     EXPECT_EQ(output->delta_q_dot_limited.size(), 1u);
+}
+
+TEST(AdmittanceFrictionCalibrationTests, FitsSignedForwardAndReverseResidualModel) {
+    std::vector<AdmittanceFrictionSample> samples;
+    for(int k = 0; k < 80; ++k) {
+        const double speed = 0.08 + 0.004 * static_cast<double>(k);
+        samples.push_back(AdmittanceFrictionSample{
+            JointVector{ speed }, JointVector{ 0.2 }, JointVector{ -0.18 - 0.12 * speed }
+        });
+        samples.push_back(AdmittanceFrictionSample{
+            JointVector{ -speed }, JointVector{ -0.2 }, JointVector{ 0.24 + 0.08 * speed }
+        });
+    }
+
+    AdmittanceFrictionCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.min_fit_velocity = 0.05;
+    cfg.max_fit_acceleration = 1.0;
+    cfg.min_samples_per_direction = 20;
+
+    const auto result = calibrate_admittance_friction(samples, cfg);
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->observable, std::vector<std::uint8_t>{ 1 });
+    EXPECT_NEAR(result->positive_coulomb[0], -0.18, 1e-6);
+    EXPECT_NEAR(result->positive_viscous[0], -0.12, 1e-6);
+    EXPECT_NEAR(result->negative_coulomb[0], 0.24, 1e-6);
+    EXPECT_NEAR(result->negative_viscous[0], 0.08, 1e-6);
+    EXPECT_LT(result->residual_rms_after[0], 1e-8);
+    EXPECT_GT(result->residual_rms_before[0], 0.1);
+}
+
+TEST(AdmittanceFrictionCalibrationTests, RejectsViscousFitWhenSpeedSpanIsTooSmall) {
+    std::vector<AdmittanceFrictionSample> samples;
+    for(int k = 0; k < 80; ++k) {
+        const double speed = 0.10 + 1.0e-5 * static_cast<double>(k);
+        samples.push_back(AdmittanceFrictionSample{
+            JointVector{ speed }, JointVector{ 0.1 }, JointVector{ -0.20 - 0.10 * speed }
+        });
+        samples.push_back(AdmittanceFrictionSample{
+            JointVector{ -speed }, JointVector{ -0.1 }, JointVector{ 0.25 + 0.08 * speed }
+        });
+    }
+
+    AdmittanceFrictionCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.min_fit_velocity = 0.05;
+    cfg.max_fit_acceleration = 1.0;
+    cfg.min_speed_span = 0.03;
+    cfg.min_samples_per_direction = 30;
+
+    const auto result = calibrate_admittance_friction(samples, cfg);
+    ASSERT_TRUE(result);
+    ASSERT_EQ(result->observable, std::vector<std::uint8_t>{ 0 });
+    EXPECT_LT(result->positive_speed_span[0], cfg.min_speed_span);
+    EXPECT_LT(result->negative_speed_span[0], cfg.min_speed_span);
+}
+
+TEST(ExternalTorqueObserverTests, RemovesCalibratedMovingFrictionResidualBeforeThreshold) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.0 };
+    cfg.friction.enabled = true;
+    cfg.friction.velocity_transition = 0.03;
+    cfg.friction.positive_coulomb = { -0.18 };
+    cfg.friction.positive_viscous = { -0.12 };
+    cfg.friction.negative_coulomb = { 0.24 };
+    cfg.friction.negative_viscous = { 0.08 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    TorqueResidualEstimate residual;
+    residual.residual = { -0.128 };
+    residual.residual_filtered = { -0.128 }; // friction -0.228 + true external +0.10 at dq=+0.4
+    const auto estimate = observer.update(residual, JointVector{ 0.4 });
+    ASSERT_TRUE(estimate);
+    EXPECT_NEAR(estimate->friction_residual_hat[0], -0.228, 1e-12);
+    EXPECT_NEAR(estimate->friction_compensated[0], 0.10, 1e-12);
+    EXPECT_NEAR(estimate->tau_ext_hat[0], 0.10, 1e-12);
+}
+
+TEST(ExternalTorqueObserverTests, RetainsLastMotionDirectionNearZeroWithoutOverSubtractingObservedResidual) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.0 };
+    cfg.friction.enabled = true;
+    cfg.friction.velocity_transition = 0.03;
+    cfg.friction.positive_coulomb = { -0.20 };
+    cfg.friction.positive_viscous = { 0.0 };
+    cfg.friction.negative_coulomb = { 0.20 };
+    cfg.friction.negative_viscous = { 0.0 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    TorqueResidualEstimate moving;
+    moving.residual = { -0.20 };
+    moving.residual_filtered = { -0.20 };
+    ASSERT_TRUE(observer.update(moving, JointVector{ 0.2 }));
+
+    TorqueResidualEstimate stopped;
+    stopped.residual = { -0.15 };
+    stopped.residual_filtered = { -0.15 };
+    const auto estimate = observer.update(stopped, JointVector{ 0.0 });
+    ASSERT_TRUE(estimate);
+    EXPECT_NEAR(estimate->friction_residual_hat[0], -0.15, 1e-12);
+    EXPECT_NEAR(estimate->friction_compensated[0], 0.0, 1e-12);
+
+    // If the static residual is larger than the learned friction component, keep the excess as external torque.
+    stopped.residual = { -0.35 };
+    stopped.residual_filtered = { -0.35 };
+    const auto with_external = observer.update(stopped, JointVector{ 0.0 });
+    ASSERT_TRUE(with_external);
+    EXPECT_NEAR(with_external->friction_residual_hat[0], -0.20, 1e-12);
+    EXPECT_NEAR(with_external->friction_compensated[0], -0.15, 1e-12);
 }

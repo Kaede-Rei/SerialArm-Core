@@ -45,7 +45,9 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
     if(!residual) return tl::make_unexpected(InteractionControllerErr::OBSERVER_FAILED);
     output.residual = residual.value();
 
-    auto tau_ext = external_torque_observer_.update(output.residual);
+    JointVector measured_velocity = input.measured_velocity;
+    if(measured_velocity.empty()) measured_velocity.assign(cfg_.external_torque.joints_count, 0.0);
+    auto tau_ext = external_torque_observer_.update(output.residual, measured_velocity);
     if(!tau_ext) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
 
     auto admittance = admittance_controller_.update(JointAdmittanceInput{
@@ -63,6 +65,8 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
     }
 
     output.bias_compensated = std::move(tau_ext->bias_compensated);
+    output.friction_residual_hat = std::move(tau_ext->friction_residual_hat);
+    output.friction_compensated = std::move(tau_ext->friction_compensated);
     output.tau_ext_hat = std::move(tau_ext->tau_ext_hat);
     output.threshold_active = std::move(tau_ext->threshold_active);
     output.delta_q = std::move(admittance->delta_q);
@@ -79,6 +83,7 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
 void InteractionController::reset() {
     if(!is_configured_ || !cfg_.enabled) return;
     residual_observer_.reset();
+    external_torque_observer_.reset();
     admittance_controller_.reset();
 }
 

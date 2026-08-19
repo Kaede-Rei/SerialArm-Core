@@ -6,6 +6,7 @@
 #include "serial_arm/core/joints_ctrller.hpp"
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/hardware/hardware_capability.hpp"
+#include "serial_arm/interaction/friction_residual_model.hpp"
 
 #include <array>
 #include <cstddef>
@@ -43,7 +44,8 @@ struct AdmittanceCapabilityCfg {
     JointVector damping;                        ///< 虚拟阻尼：抑制 delta_q_dot 与振荡
     JointVector stiffness;                      ///< 虚拟刚度：虚拟弹簧将 delta_q 拉回 0
     JointVector torque_bias;                    ///< residual 固定零偏 Nm
-    JointVector torque_threshold;               ///< bias 后的小力矩忽略阈值 Nm
+    JointVector torque_threshold;               ///< bias + friction 补偿后的小力矩忽略阈值 Nm
+    FrictionResidualModelCfg friction;           ///< 速度相关摩擦 residual 模型
     JointVector max_delta_q;                    ///< 最大导纳位置修正 rad
     JointVector max_delta_q_dot;                ///< 最大导纳修正速度 rad/s
 };

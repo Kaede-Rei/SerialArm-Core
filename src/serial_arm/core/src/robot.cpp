@@ -39,6 +39,7 @@ InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& adm
     interaction_cfg.external_torque.joints_count = joints_count;
     interaction_cfg.external_torque.torque_bias = admittance.torque_bias;
     interaction_cfg.external_torque.torque_threshold = admittance.torque_threshold;
+    interaction_cfg.external_torque.friction = admittance.friction;
     interaction_cfg.admittance.joints_count = joints_count;
     interaction_cfg.admittance.enabled = admittance.joint_enabled;
     interaction_cfg.admittance.mass = admittance.mass;
@@ -497,6 +498,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             std::move(max_delta_q),
             std::move(min_delta_q_dot),
             std::move(max_delta_q_dot),
+            joint_state->vel,
             });
         if(!interaction) {
             const RobotFault fault = make_interaction_fault(interaction.error());
@@ -554,6 +556,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         output.residual_raw = interaction_telemetry.residual.residual;
         output.residual_filtered = interaction_telemetry.residual.residual_filtered;
         output.bias_compensated = interaction_telemetry.bias_compensated;
+        output.friction_residual_hat = interaction_telemetry.friction_residual_hat;
+        output.friction_compensated = interaction_telemetry.friction_compensated;
         output.tau_ext_hat = interaction_telemetry.tau_ext_hat;
         output.delta_q = interaction_telemetry.delta_q;
         output.delta_q_dot = interaction_telemetry.delta_q_dot;

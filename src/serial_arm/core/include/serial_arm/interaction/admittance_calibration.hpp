@@ -78,6 +78,45 @@ struct AdmittanceStaticValidationResult {
     std::vector<std::uint8_t> pass;       ///< 1 表示 P99 在 threshold 内且 max 未超过一个额外量化步长
 };
 
+
+/**
+ * @brief 一帧无外力摩擦标定回放样本
+ */
+struct AdmittanceFrictionSample {
+    JointVector velocity;             ///< 实测关节速度 rad/s
+    JointVector acceleration;         ///< 实测/滤波关节加速度 rad/s^2
+    JointVector residual_after_bias;  ///< raw model_torque - measured_torque - torque_bias Nm
+};
+
+/**
+ * @brief 双向无外力回放摩擦标定配置
+ */
+struct AdmittanceFrictionCalibrationCfg {
+    std::size_t joints_count{ 0 };
+    double min_fit_velocity{ 0.05 };       ///< 低于该速度不参与动态摩擦拟合，避免静摩擦不可辨识区
+    double max_fit_acceleration{ 1.5 };    ///< 高于该加速度不参与拟合，降低惯性/qdd 误差污染
+    double min_speed_span{ 0.03 };         ///< 每个方向至少覆盖的 |dq| 速度跨度 rad/s，保证 Coulomb/viscous 可分辨
+    std::size_t min_samples_per_direction{ 30 }; ///< 每轴每个方向至少需要的有效样本
+};
+
+/**
+ * @brief 双向回放摩擦 residual 模型标定结果
+ */
+struct AdmittanceFrictionCalibrationResult {
+    JointVector positive_coulomb;
+    JointVector positive_viscous;
+    JointVector negative_coulomb;
+    JointVector negative_viscous;
+    JointVector residual_rms_before;
+    JointVector residual_rms_after;
+    JointVector residual_p99_after;
+    std::vector<std::size_t> positive_samples;
+    std::vector<std::size_t> negative_samples;
+    JointVector positive_speed_span;
+    JointVector negative_speed_span;
+    std::vector<std::uint8_t> observable;
+};
+
 enum class AdmittanceStaticCalibrationErr {
     INVALID_CFG,
     EMPTY_SAMPLES,
@@ -96,6 +135,15 @@ calibrate_admittance_static(
     const std::vector<AdmittanceStaticPoseSamples>& poses,
     const AdmittanceStaticCalibrationCfg& cfg);
 
+
+
+/**
+ * @brief 根据 DRAG 示教轨迹的无外力正/反向回放数据拟合每轴 signed friction residual 模型
+ */
+tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
+calibrate_admittance_friction(
+    const std::vector<AdmittanceFrictionSample>& samples,
+    const AdmittanceFrictionCalibrationCfg& cfg);
 
 /**
  * @brief 验证一次标定后的静态 residual envelope

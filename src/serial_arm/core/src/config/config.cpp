@@ -298,7 +298,7 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
     reject_unknown_keys(admittance, "capability.admittance", {
         "enabled", "filter_alpha", "joint_enabled", "mass", "damping", "stiffness",
-        "torque_bias", "torque_threshold", "max_delta_q", "max_delta_q_dot"
+        "torque_bias", "torque_threshold", "friction_compensation", "max_delta_q", "max_delta_q_dot"
     });
 
     auto& cfg = capability.admittance;
@@ -310,6 +310,24 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     cfg.stiffness = load_named_joint_vector(require_map(admittance, "stiffness", "capability.admittance"), joint_names, "capability.admittance.stiffness");
     cfg.torque_bias = load_named_joint_vector(require_map(admittance, "torque_bias", "capability.admittance"), joint_names, "capability.admittance.torque_bias");
     cfg.torque_threshold = load_named_joint_vector(require_map(admittance, "torque_threshold", "capability.admittance"), joint_names, "capability.admittance.torque_threshold");
+
+    const YAML::Node friction = admittance["friction_compensation"];
+    if(friction) {
+        if(!friction.IsMap()) {
+            throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(friction.Mark()) + "capability.admittance.friction_compensation must be a map");
+        }
+        reject_unknown_keys(friction, "capability.admittance.friction_compensation", {
+            "enabled", "velocity_transition", "positive_coulomb", "positive_viscous",
+            "negative_coulomb", "negative_viscous"
+        });
+        cfg.friction.enabled = require_as<bool>(friction, "enabled", "capability.admittance.friction_compensation");
+        cfg.friction.velocity_transition = require_as<double>(friction, "velocity_transition", "capability.admittance.friction_compensation");
+        cfg.friction.positive_coulomb = load_named_joint_vector(require_map(friction, "positive_coulomb", "capability.admittance.friction_compensation"), joint_names, "capability.admittance.friction_compensation.positive_coulomb");
+        cfg.friction.positive_viscous = load_named_joint_vector(require_map(friction, "positive_viscous", "capability.admittance.friction_compensation"), joint_names, "capability.admittance.friction_compensation.positive_viscous");
+        cfg.friction.negative_coulomb = load_named_joint_vector(require_map(friction, "negative_coulomb", "capability.admittance.friction_compensation"), joint_names, "capability.admittance.friction_compensation.negative_coulomb");
+        cfg.friction.negative_viscous = load_named_joint_vector(require_map(friction, "negative_viscous", "capability.admittance.friction_compensation"), joint_names, "capability.admittance.friction_compensation.negative_viscous");
+    }
+
     cfg.max_delta_q = load_named_joint_vector(require_map(admittance, "max_delta_q", "capability.admittance"), joint_names, "capability.admittance.max_delta_q");
     cfg.max_delta_q_dot = load_named_joint_vector(require_map(admittance, "max_delta_q_dot", "capability.admittance"), joint_names, "capability.admittance.max_delta_q_dot");
 }
@@ -684,6 +702,16 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
             !finite_vector(admittance.max_delta_q) || !finite_vector(admittance.max_delta_q_dot)) {
             return fail(ConfigErr::INVALID_VALUE, "capability.admittance contains NaN or Inf");
         }
+        if(admittance.friction.enabled) {
+            const auto& friction = admittance.friction;
+            if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition <= 0.0 ||
+                friction.positive_coulomb.size() != n || friction.positive_viscous.size() != n ||
+                friction.negative_coulomb.size() != n || friction.negative_viscous.size() != n ||
+                !finite_vector(friction.positive_coulomb) || !finite_vector(friction.positive_viscous) ||
+                !finite_vector(friction.negative_coulomb) || !finite_vector(friction.negative_viscous)) {
+                return fail(ConfigErr::INVALID_VALUE, "invalid capability.admittance.friction_compensation");
+            }
+        }
         for(std::size_t i = 0; i < n; ++i) {
             if(admittance.mass[i] <= 0.0 || admittance.damping[i] < 0.0 || admittance.stiffness[i] < 0.0 ||
                 admittance.torque_threshold[i] < 0.0 || admittance.max_delta_q[i] <= 0.0 || admittance.max_delta_q_dot[i] <= 0.0) {
@@ -836,8 +864,14 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs_adm.enabled != rhs_adm.enabled || lhs_adm.filter_alpha != rhs_adm.filter_alpha ||
         lhs_adm.joint_enabled != rhs_adm.joint_enabled || lhs_adm.mass != rhs_adm.mass || lhs_adm.damping != rhs_adm.damping ||
         lhs_adm.stiffness != rhs_adm.stiffness || lhs_adm.torque_bias != rhs_adm.torque_bias ||
-        lhs_adm.torque_threshold != rhs_adm.torque_threshold || lhs_adm.max_delta_q != rhs_adm.max_delta_q ||
-        lhs_adm.max_delta_q_dot != rhs_adm.max_delta_q_dot) add("capability.admittance");
+        lhs_adm.torque_threshold != rhs_adm.torque_threshold ||
+        lhs_adm.friction.enabled != rhs_adm.friction.enabled ||
+        lhs_adm.friction.velocity_transition != rhs_adm.friction.velocity_transition ||
+        lhs_adm.friction.positive_coulomb != rhs_adm.friction.positive_coulomb ||
+        lhs_adm.friction.positive_viscous != rhs_adm.friction.positive_viscous ||
+        lhs_adm.friction.negative_coulomb != rhs_adm.friction.negative_coulomb ||
+        lhs_adm.friction.negative_viscous != rhs_adm.friction.negative_viscous ||
+        lhs_adm.max_delta_q != rhs_adm.max_delta_q || lhs_adm.max_delta_q_dot != rhs_adm.max_delta_q_dot) add("capability.admittance");
     if(lhs->shutdown.park_before_disable != rhs->shutdown.park_before_disable || lhs->shutdown.park_pos != rhs->shutdown.park_pos ||
         lhs->shutdown.speed_scale != rhs->shutdown.speed_scale || lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
     return diffs;

@@ -78,6 +78,59 @@ double estimate_repeated_torque_quantization_step(
     return std::isfinite(estimated_step) ? estimated_step : 0.0;
 }
 
+
+struct RobustLineFit {
+    double intercept{ 0.0 };
+    double slope{ 0.0 };
+    bool valid{ false };
+};
+
+RobustLineFit fit_line_once(const std::vector<double>& x, const std::vector<double>& y) {
+    RobustLineFit fit;
+    if(x.size() != y.size() || x.size() < 2) return fit;
+    const double mean_x = std::accumulate(x.begin(), x.end(), 0.0) / static_cast<double>(x.size());
+    const double mean_y = std::accumulate(y.begin(), y.end(), 0.0) / static_cast<double>(y.size());
+    double var_x = 0.0;
+    double cov_xy = 0.0;
+    for(std::size_t i = 0; i < x.size(); ++i) {
+        const double dx = x[i] - mean_x;
+        var_x += dx * dx;
+        cov_xy += dx * (y[i] - mean_y);
+    }
+    if(var_x <= std::numeric_limits<double>::epsilon()) return fit;
+    fit.slope = cov_xy / var_x;
+    fit.intercept = mean_y - fit.slope * mean_x;
+    fit.valid = std::isfinite(fit.intercept) && std::isfinite(fit.slope);
+    return fit;
+}
+
+RobustLineFit fit_line_robust(const std::vector<double>& x, const std::vector<double>& y) {
+    auto first = fit_line_once(x, y);
+    if(!first.valid) return first;
+
+    std::vector<double> abs_error;
+    abs_error.reserve(x.size());
+    for(std::size_t i = 0; i < x.size(); ++i) {
+        abs_error.push_back(std::abs(y[i] - (first.intercept + first.slope * x[i])));
+    }
+    const double mad = median(abs_error);
+    const double inlier_limit = std::max(1.0e-9, 3.5 * 1.4826 * mad);
+
+    std::vector<double> inlier_x;
+    std::vector<double> inlier_y;
+    inlier_x.reserve(x.size());
+    inlier_y.reserve(y.size());
+    for(std::size_t i = 0; i < x.size(); ++i) {
+        if(std::abs(y[i] - (first.intercept + first.slope * x[i])) <= inlier_limit) {
+            inlier_x.push_back(x[i]);
+            inlier_y.push_back(y[i]);
+        }
+    }
+    if(inlier_x.size() < 2) return first;
+    auto refined = fit_line_once(inlier_x, inlier_y);
+    return refined.valid ? refined : first;
+}
+
 struct StaticJointFit {
     double gravity_scale{ 1.0 };
     double torque_bias{ 0.0 };
@@ -289,6 +342,122 @@ calibrate_admittance_static(
     return result;
 }
 
+
+
+tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
+calibrate_admittance_friction(
+    const std::vector<AdmittanceFrictionSample>& samples,
+    const AdmittanceFrictionCalibrationCfg& cfg) {
+    if(cfg.joints_count == 0 ||
+        !std::isfinite(cfg.min_fit_velocity) || cfg.min_fit_velocity <= 0.0 ||
+        !std::isfinite(cfg.max_fit_acceleration) || cfg.max_fit_acceleration <= 0.0 ||
+        !std::isfinite(cfg.min_speed_span) || cfg.min_speed_span < 0.0 ||
+        cfg.min_samples_per_direction < 2) {
+        return tl::make_unexpected(AdmittanceStaticCalibrationErr::INVALID_CFG);
+    }
+    if(samples.empty()) return tl::make_unexpected(AdmittanceStaticCalibrationErr::EMPTY_SAMPLES);
+    for(const auto& sample : samples) {
+        if(sample.velocity.size() != cfg.joints_count ||
+            sample.acceleration.size() != cfg.joints_count ||
+            sample.residual_after_bias.size() != cfg.joints_count) {
+            return tl::make_unexpected(AdmittanceStaticCalibrationErr::INVALID_SAMPLE_SIZE);
+        }
+        if(!finite_vector(sample.velocity) || !finite_vector(sample.acceleration) ||
+            !finite_vector(sample.residual_after_bias)) {
+            return tl::make_unexpected(AdmittanceStaticCalibrationErr::NON_FINITE_SAMPLE);
+        }
+    }
+
+    AdmittanceFrictionCalibrationResult result;
+    result.positive_coulomb.assign(cfg.joints_count, 0.0);
+    result.positive_viscous.assign(cfg.joints_count, 0.0);
+    result.negative_coulomb.assign(cfg.joints_count, 0.0);
+    result.negative_viscous.assign(cfg.joints_count, 0.0);
+    result.residual_rms_before.assign(cfg.joints_count, 0.0);
+    result.residual_rms_after.assign(cfg.joints_count, 0.0);
+    result.residual_p99_after.assign(cfg.joints_count, 0.0);
+    result.positive_samples.assign(cfg.joints_count, 0);
+    result.negative_samples.assign(cfg.joints_count, 0);
+    result.positive_speed_span.assign(cfg.joints_count, 0.0);
+    result.negative_speed_span.assign(cfg.joints_count, 0.0);
+    result.observable.assign(cfg.joints_count, 0);
+
+    for(std::size_t joint = 0; joint < cfg.joints_count; ++joint) {
+        std::vector<double> pos_x;
+        std::vector<double> pos_y;
+        std::vector<double> neg_x;
+        std::vector<double> neg_y;
+        for(const auto& sample : samples) {
+            const double velocity = sample.velocity[joint];
+            if(std::abs(velocity) < cfg.min_fit_velocity ||
+                std::abs(sample.acceleration[joint]) > cfg.max_fit_acceleration) {
+                continue;
+            }
+            if(velocity > 0.0) {
+                pos_x.push_back(std::abs(velocity));
+                pos_y.push_back(sample.residual_after_bias[joint]);
+            }
+            else {
+                neg_x.push_back(std::abs(velocity));
+                neg_y.push_back(sample.residual_after_bias[joint]);
+            }
+        }
+        result.positive_samples[joint] = pos_x.size();
+        result.negative_samples[joint] = neg_x.size();
+        if(!pos_x.empty()) {
+            const auto [lo, hi] = std::minmax_element(pos_x.begin(), pos_x.end());
+            result.positive_speed_span[joint] = *hi - *lo;
+        }
+        if(!neg_x.empty()) {
+            const auto [lo, hi] = std::minmax_element(neg_x.begin(), neg_x.end());
+            result.negative_speed_span[joint] = *hi - *lo;
+        }
+        if(pos_x.size() < cfg.min_samples_per_direction || neg_x.size() < cfg.min_samples_per_direction ||
+            result.positive_speed_span[joint] < cfg.min_speed_span ||
+            result.negative_speed_span[joint] < cfg.min_speed_span) {
+            continue;
+        }
+
+        const auto pos_fit = fit_line_robust(pos_x, pos_y);
+        const auto neg_fit = fit_line_robust(neg_x, neg_y);
+        if(!pos_fit.valid || !neg_fit.valid) continue;
+
+        result.positive_coulomb[joint] = pos_fit.intercept;
+        result.positive_viscous[joint] = pos_fit.slope;
+        result.negative_coulomb[joint] = neg_fit.intercept;
+        result.negative_viscous[joint] = neg_fit.slope;
+        result.observable[joint] = 1;
+
+        std::vector<double> abs_after;
+        double sum_before_sq = 0.0;
+        double sum_after_sq = 0.0;
+        std::size_t count = 0;
+        for(const auto& sample : samples) {
+            const double velocity = sample.velocity[joint];
+            if(std::abs(velocity) < cfg.min_fit_velocity ||
+                std::abs(sample.acceleration[joint]) > cfg.max_fit_acceleration) {
+                continue;
+            }
+            const double abs_velocity = std::abs(velocity);
+            const double model = velocity > 0.0 ?
+                pos_fit.intercept + pos_fit.slope * abs_velocity :
+                neg_fit.intercept + neg_fit.slope * abs_velocity;
+            const double before = sample.residual_after_bias[joint];
+            const double after = before - model;
+            sum_before_sq += before * before;
+            sum_after_sq += after * after;
+            abs_after.push_back(std::abs(after));
+            ++count;
+        }
+        if(count > 0) {
+            result.residual_rms_before[joint] = std::sqrt(sum_before_sq / static_cast<double>(count));
+            result.residual_rms_after[joint] = std::sqrt(sum_after_sq / static_cast<double>(count));
+            result.residual_p99_after[joint] = percentile(abs_after, 0.99);
+        }
+    }
+
+    return result;
+}
 
 tl::expected<AdmittanceStaticValidationResult, AdmittanceStaticCalibrationErr>
 evaluate_admittance_static_validation(

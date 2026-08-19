@@ -68,6 +68,11 @@ struct StreamState {
     bool has_last_update_time{ false };
 };
 
+struct FrictionCalibrationTrajectory {
+    std::vector<JointVector> positions;
+    double sample_dt{ 0.02 };
+};
+
 std::string to_string(RobotState value) {
     switch(value) {
         case RobotState::UNCONFIGURED: return "UNCONFIGURED";
@@ -945,17 +950,19 @@ private:
 
     void handle_admittance_tuning_menu() {
         while(true) {
-            std::cout << "\n------------ 导纳控制调参 ------------\n";
-            std::cout << " 1. 一次性静态标定\n";
-            std::cout << " 2. 静态标定验证\n";
-            std::cout << " 3. 导纳实时调参\n";
+            std::cout << "\n------------ 导纳控制：标定与调参 ------------\n";
+            std::cout << " 1. 静态残差标定（gravity_scale / torque_bias / torque_threshold）\n";
+            std::cout << " 2. 静态残差验证（gravity_scale / torque_bias / torque_threshold）\n";
+            std::cout << " 3. 摩擦残差标定（DRAG 示教 + 无外力双向回放）\n";
+            std::cout << " 4. 导纳动态调参（M / D / K / alpha / max）\n";
             std::cout << " 0. 返回\n";
             const auto selection = read_int("请选择: ");
             if(!selection || *selection == 0) return;
             switch(*selection) {
                 case 1: run_admittance_static_calibration(); break;
                 case 2: run_admittance_static_validation(); break;
-                case 3: run_admittance_live_tuning(); break;
+                case 3: run_admittance_friction_calibration(); break;
+                case 4: run_admittance_live_tuning(); break;
                 default: std::cout << "未知菜单编号\n"; break;
             }
         }
@@ -1628,6 +1635,376 @@ private:
         return outputs;
     }
 
+
+    std::optional<FrictionCalibrationTrajectory> collect_friction_drag_trajectory(double duration_s) {
+        constexpr std::size_t kRecordStride = 4; // 200 Hz control -> about 50 Hz recorded path
+        FrictionCalibrationTrajectory trajectory;
+        trajectory.sample_dt = static_cast<double>(kRecordStride) / cfg_.runtime.ctrl_frequency_hz;
+
+        const auto deadline = Robot::Clock::now() +
+            std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(duration_s));
+        std::uint64_t cursor = 0;
+        std::size_t received_cycles = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cursor = cycle_counter_;
+        }
+
+        while(Robot::Clock::now() < deadline) {
+            std::unique_lock<std::mutex> lock(mutex_);
+            const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
+                return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
+                });
+            if(robot_.get_state() != RobotState::ACTIVE) return std::nullopt;
+            if(!updated || cycle_counter_ <= cursor || !last_output_) continue;
+            cursor = cycle_counter_;
+            if((received_cycles++ % kRecordStride) == 0) {
+                trajectory.positions.push_back(last_output_->joint_state.pos);
+            }
+        }
+
+        if(trajectory.positions.size() < 20) return std::nullopt;
+        return trajectory;
+    }
+
+    FrictionCalibrationTrajectory smooth_friction_trajectory(const FrictionCalibrationTrajectory& input) const {
+        FrictionCalibrationTrajectory result = input;
+        if(input.positions.size() < 5) return result;
+        for(std::size_t k = 2; k + 2 < input.positions.size(); ++k) {
+            result.positions[k].assign(cfg_.joint_names.size(), 0.0);
+            for(std::size_t joint = 0; joint < cfg_.joint_names.size(); ++joint) {
+                double sum = 0.0;
+                for(std::size_t j = k - 2; j <= k + 2; ++j) sum += input.positions[j][joint];
+                result.positions[k][joint] = sum / 5.0;
+            }
+        }
+        return result;
+    }
+
+    bool friction_trajectory_inside_safe_replay_range(const FrictionCalibrationTrajectory& trajectory) const {
+        constexpr double kCalibrationInnerMargin = 0.05; // rad; calibration replay stays away from URDF hard limits
+        const auto& limits = cfg_.safety.limits;
+        for(const auto& q : trajectory.positions) {
+            if(q.size() != cfg_.joint_names.size()) return false;
+            for(std::size_t i = 0; i < q.size(); ++i) {
+                if(!std::isfinite(q[i])) return false;
+                if(i < limits.has_position_limit.size() && limits.has_position_limit[i] != 0) {
+                    const double margin = std::max(kCalibrationInnerMargin, limits.pos_margin[i]);
+                    const double lower = limits.min_pos[i] + margin;
+                    const double upper = limits.max_pos[i] - margin;
+                    if(lower < upper && (q[i] < lower || q[i] > upper)) {
+                        std::cout << "[拒绝回放] " << cfg_.joint_names[i]
+                            << " 示教轨迹进入距硬限位 " << margin
+                            << " rad 的标定保护区；请重新示教更保守的轨迹\n";
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    double friction_replay_rate(const FrictionCalibrationTrajectory& trajectory) const {
+        constexpr double kNominalReplayRate = 0.50; // 默认按示教时间轴的 0.5 倍速回放
+        constexpr double kSafetyVelocityRatio = 0.35;
+        constexpr double kSafetyAccelerationRatio = 0.35;
+        double rate = kNominalReplayRate;
+        if(trajectory.positions.size() < 2 || trajectory.sample_dt <= 0.0) return rate;
+
+        for(std::size_t k = 1; k < trajectory.positions.size(); ++k) {
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                const double demonstrated_speed = std::abs(
+                    trajectory.positions[k][i] - trajectory.positions[k - 1][i]) / trajectory.sample_dt;
+                if(demonstrated_speed > 1.0e-9) {
+                    const double safe_speed = kSafetyVelocityRatio * cfg_.safety.limits.max_vel[i];
+                    if(safe_speed > 0.0) rate = std::min(rate, safe_speed / demonstrated_speed);
+                }
+
+                if(k >= 2) {
+                    const double demonstrated_acceleration = std::abs(
+                        trajectory.positions[k][i] - 2.0 * trajectory.positions[k - 1][i] +
+                        trajectory.positions[k - 2][i]) /
+                        (trajectory.sample_dt * trajectory.sample_dt);
+                    if(demonstrated_acceleration > 1.0e-9) {
+                        const double safe_acceleration =
+                            kSafetyAccelerationRatio * cfg_.safety.limits.max_acc[i];
+                        if(safe_acceleration > 0.0) {
+                            rate = std::min(
+                                rate,
+                                std::sqrt(safe_acceleration / demonstrated_acceleration));
+                        }
+                    }
+                }
+            }
+        }
+        return std::min(rate, kNominalReplayRate);
+    }
+
+    bool play_friction_calibration_pass(
+        const FrictionCalibrationTrajectory& trajectory,
+        bool reverse,
+        double playback_rate,
+        const JointVector& torque_bias,
+        std::vector<AdmittanceFrictionSample>& samples) {
+        if(trajectory.positions.size() < 2 || trajectory.sample_dt <= 0.0) return false;
+
+        std::vector<JointVector> ordered = trajectory.positions;
+        if(reverse) std::reverse(ordered.begin(), ordered.end());
+
+        const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
+        const double index_step = playback_rate * nominal_dt / trajectory.sample_dt;
+        if(!std::isfinite(index_step) || index_step <= 0.0) return false;
+
+        JointVector previous_ref = ordered.front();
+        double progress = 0.0;
+        while(progress < static_cast<double>(ordered.size() - 1)) {
+            const double next_progress = std::min(
+                static_cast<double>(ordered.size() - 1), progress + index_step);
+            const std::size_t lower = static_cast<std::size_t>(std::floor(next_progress));
+            const std::size_t upper = std::min(lower + 1, ordered.size() - 1);
+            const double ratio = next_progress - static_cast<double>(lower);
+
+            JointVector ref_pos(cfg_.joint_names.size(), 0.0);
+            JointVector ref_vel(cfg_.joint_names.size(), 0.0);
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                ref_pos[i] = ordered[lower][i] * (1.0 - ratio) + ordered[upper][i] * ratio;
+                ref_vel[i] = (ref_pos[i] - previous_ref[i]) / nominal_dt;
+            }
+
+            std::uint64_t cursor = 0;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(robot_.get_state() != RobotState::ACTIVE) return false;
+                cursor = cycle_counter_;
+                const auto command = robot_.set_cmd(JointPosVelCmd{ ref_pos, ref_vel }, Robot::Clock::now());
+                if(!command) {
+                    std::cout << "摩擦标定回放命令失败：\n";
+                    print_fault(command.error());
+                    return false;
+                }
+            }
+
+            RobotCycleOutput output;
+            JointVector model_torque;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
+                    return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
+                    });
+                if(!updated || robot_.get_state() != RobotState::ACTIVE || !last_output_) return false;
+                output = *last_output_;
+
+                // Calibration must use actual q/dq/qdd FULL inverse dynamics, not tracking reference acceleration.
+                const auto dynamics_result = dynamics_.update(
+                    output.joint_state, output.joint_acc, output.joint_acc);
+                if(!dynamics_result) {
+                    std::cout << "摩擦标定 FULL inverse dynamics 计算失败: "
+                        << to_string(dynamics_result.error()) << '\n';
+                    return false;
+                }
+                model_torque = dynamics_.get_inverse_dynamics();
+            }
+
+            JointVector residual_after_bias(cfg_.joint_names.size(), 0.0);
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                residual_after_bias[i] = model_torque[i] - output.joint_state.tor[i] - torque_bias[i];
+            }
+            samples.push_back(AdmittanceFrictionSample{
+                output.joint_state.vel,
+                output.joint_acc,
+                std::move(residual_after_bias),
+                });
+
+            previous_ref = std::move(ref_pos);
+            progress = next_progress;
+        }
+        return true;
+    }
+
+    void print_friction_calibration_yaml(const FrictionResidualModelCfg& friction) const {
+        std::cout << "\n请将以下 block 写回 capability.admittance.friction_compensation：\n";
+        std::cout << "friction_compensation:\n";
+        std::cout << "  enabled: " << (friction.enabled ? "true" : "false") << '\n';
+        std::cout << "  velocity_transition: " << std::fixed << std::setprecision(6)
+            << friction.velocity_transition << '\n';
+        std::cout << "  "; print_joint_yaml_map("positive_coulomb", cfg_.joint_names, friction.positive_coulomb);
+        std::cout << "  "; print_joint_yaml_map("positive_viscous", cfg_.joint_names, friction.positive_viscous);
+        std::cout << "  "; print_joint_yaml_map("negative_coulomb", cfg_.joint_names, friction.negative_coulomb);
+        std::cout << "  "; print_joint_yaml_map("negative_viscous", cfg_.joint_names, friction.negative_viscous);
+    }
+
+    void run_admittance_friction_calibration() {
+        if(!ensure_admittance_tuning_active()) return;
+
+        const auto duration = read_double("DRAG 示教记录时长 s（建议 10，允许 3~30）: ");
+        if(!duration || *duration < 3.0 || *duration > 30.0) {
+            std::cout << "示教时长无效\n";
+            return;
+        }
+
+        JointImpedanceMode original_mode;
+        AdmittanceCapabilityCfg original_admittance;
+        bool original_suspended{ false };
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            original_mode = robot_.get_impedance_mode();
+            original_admittance = cfg_.capability.admittance;
+            original_suspended = robot_.is_admittance_suspended();
+            robot_.set_admittance_suspended(true);
+            last_output_.reset();
+        }
+        const auto restore_runtime = [this, original_suspended, original_mode]() {
+            set_tuning_impedance_mode(original_mode);
+            std::lock_guard<std::mutex> lock(mutex_);
+            robot_.set_admittance_suspended(original_suspended);
+            last_output_.reset();
+            };
+
+        if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
+            restore_runtime();
+            return;
+        }
+
+        std::cout << "\n========== 摩擦 residual 自动标定 ==========" << '\n';
+        std::cout << "阶段 A：COMPLIANT_DRAG 示教；请在常用安全工作空间内让 6 个关节都经历正/负方向运动，并包含明显的快慢变化\n";
+        std::cout << "这里只记录几何轨迹，不使用手推阶段的 torque 做摩擦拟合\n";
+        std::cout << "随后阶段 B 将以较慢速度先倒放、再正放该轨迹；回放期间严禁触碰机械臂\n";
+        std::string line;
+        if(!read_line("确认周围安全后按 Enter 开始示教，输入 q 取消: ", line) || line == "q" || line == "Q") {
+            std::cout << "摩擦标定已取消\n";
+            restore_runtime();
+            return;
+        }
+
+        auto trajectory = collect_friction_drag_trajectory(*duration);
+        if(!trajectory) {
+            std::cout << "DRAG 示教轨迹记录失败\n";
+            restore_runtime();
+            return;
+        }
+        *trajectory = smooth_friction_trajectory(*trajectory);
+        std::cout << "已记录并平滑 " << trajectory->positions.size() << " 个轨迹点\n";
+        if(!friction_trajectory_inside_safe_replay_range(*trajectory)) {
+            restore_runtime();
+            return;
+        }
+
+        const double playback_rate = friction_replay_rate(*trajectory);
+        constexpr double kMinimumPracticalReplayRate = 0.01;
+        if(!std::isfinite(playback_rate) || playback_rate < kMinimumPracticalReplayRate) {
+            std::cout << "[拒绝回放] 示教轨迹过激，按速度/加速度 35% 安全包络计算后所需倍率低于 "
+                << kMinimumPracticalReplayRate
+                << "；请重新用更平滑、更慢的 DRAG 轨迹示教\n";
+            restore_runtime();
+            return;
+        }
+        const double estimated_pass_s = trajectory->sample_dt *
+            static_cast<double>(trajectory->positions.size() - 1) / playback_rate;
+        std::cout << "回放安全策略：轨迹严格限制在示教范围内，额外保留 0.05 rad 硬限位内边距；\n";
+        std::cout << "参考速度/参考加速度分别自动限制到各轴 Safety max_vel / max_acc 的 35% 以内；实际时间倍率="
+            << std::fixed << std::setprecision(3) << playback_rate
+            << "，单程约 " << estimated_pass_s << " s\n";
+        if(!read_line("请完全离开机械臂并确认回放期间无任何外力，按 Enter 开始，输入 q 取消: ", line) ||
+            line == "q" || line == "Q") {
+            std::cout << "摩擦标定已取消\n";
+            restore_runtime();
+            return;
+        }
+
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING)) {
+            restore_runtime();
+            return;
+        }
+
+        std::vector<AdmittanceFrictionSample> replay_samples;
+        replay_samples.reserve(trajectory->positions.size() * 4);
+        std::cout << "阶段 B1：无外力倒放示教轨迹...\n";
+        if(!play_friction_calibration_pass(
+            *trajectory, true, playback_rate, original_admittance.torque_bias, replay_samples)) {
+            std::cout << "倒放失败，已中止标定\n";
+            restore_runtime();
+            return;
+        }
+        std::cout << "阶段 B2：无外力正放示教轨迹...\n";
+        if(!play_friction_calibration_pass(
+            *trajectory, false, playback_rate, original_admittance.torque_bias, replay_samples)) {
+            std::cout << "正放失败，已中止标定\n";
+            restore_runtime();
+            return;
+        }
+
+        AdmittanceFrictionCalibrationCfg calibration_cfg;
+        calibration_cfg.joints_count = cfg_.joint_names.size();
+        calibration_cfg.min_fit_velocity = 0.05;
+        calibration_cfg.max_fit_acceleration = 1.5;
+        calibration_cfg.min_speed_span = 0.03;
+        calibration_cfg.min_samples_per_direction = 30;
+        const auto result = calibrate_admittance_friction(replay_samples, calibration_cfg);
+        if(!result) {
+            std::cout << "摩擦模型拟合失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            restore_runtime();
+            return;
+        }
+
+        auto candidate = original_admittance;
+        candidate.friction.enabled = true;
+        candidate.friction.velocity_transition = 0.03;
+        const std::size_t n = cfg_.joint_names.size();
+        if(candidate.friction.positive_coulomb.size() != n) candidate.friction.positive_coulomb.assign(n, 0.0);
+        if(candidate.friction.positive_viscous.size() != n) candidate.friction.positive_viscous.assign(n, 0.0);
+        if(candidate.friction.negative_coulomb.size() != n) candidate.friction.negative_coulomb.assign(n, 0.0);
+        if(candidate.friction.negative_viscous.size() != n) candidate.friction.negative_viscous.assign(n, 0.0);
+        if(!original_admittance.friction.enabled) {
+            std::fill(candidate.friction.positive_coulomb.begin(), candidate.friction.positive_coulomb.end(), 0.0);
+            std::fill(candidate.friction.positive_viscous.begin(), candidate.friction.positive_viscous.end(), 0.0);
+            std::fill(candidate.friction.negative_coulomb.begin(), candidate.friction.negative_coulomb.end(), 0.0);
+            std::fill(candidate.friction.negative_viscous.begin(), candidate.friction.negative_viscous.end(), 0.0);
+        }
+
+        bool any_observable = false;
+        for(std::size_t i = 0; i < n; ++i) {
+            if(result->observable[i] == 0) continue;
+            any_observable = true;
+            candidate.friction.positive_coulomb[i] = result->positive_coulomb[i];
+            candidate.friction.positive_viscous[i] = result->positive_viscous[i];
+            candidate.friction.negative_coulomb[i] = result->negative_coulomb[i];
+            candidate.friction.negative_viscous[i] = result->negative_viscous[i];
+        }
+        if(!any_observable) {
+            std::cout << "没有任何关节同时获得足够的正/负方向准稳态样本与速度跨度；请重新示教，让各轴有明显双向运动和快慢变化\n";
+            restore_runtime();
+            return;
+        }
+
+        if(!apply_runtime_admittance_cfg(candidate)) {
+            restore_runtime();
+            return;
+        }
+        restore_runtime();
+
+        std::cout << "\n========== 摩擦 residual 标定结果 ==========" << '\n';
+        for(std::size_t i = 0; i < n; ++i) {
+            std::cout << cfg_.joint_names[i]
+                << (result->observable[i] ? " [FIT]" : " [KEEP]")
+                << " samples(+/-)=" << result->positive_samples[i] << '/' << result->negative_samples[i]
+                << " speed_span(+/-)=" << std::fixed << std::setprecision(3)
+                << result->positive_speed_span[i] << '/' << result->negative_speed_span[i]
+                << " C+=" << std::setprecision(6) << candidate.friction.positive_coulomb[i]
+                << " B+=" << candidate.friction.positive_viscous[i]
+                << " C-=" << candidate.friction.negative_coulomb[i]
+                << " B-=" << candidate.friction.negative_viscous[i];
+            if(result->observable[i]) {
+                std::cout << " RMS " << result->residual_rms_before[i]
+                    << " -> " << result->residual_rms_after[i]
+                    << " P99_after=" << result->residual_p99_after[i];
+            }
+            std::cout << '\n';
+        }
+        print_friction_calibration_yaml(candidate.friction);
+        std::cout << "本次运行已立即启用可观测关节的摩擦 residual 补偿；静态 gravity/bias/threshold 不会被改写\n";
+        std::cout << "接下来进入 6 -> 1 -> 4 做 M/D/K 动态手感调参；如果某轴显示 [KEEP]，先重新示教覆盖该轴双向运动\n";
+    }
+
     void print_admittance_calibration_yaml(
         const JointVector& gravity_scale,
         const JointVector& torque_bias,
@@ -1680,7 +2057,7 @@ private:
             return;
         }
 
-        std::cout << "\n========== 导纳一次性静态标定 ==========\n";
+        std::cout << "\n========== 静态 residual 标定：gravity_scale / torque_bias / torque_threshold ==========\n";
         std::cout << "目标：一次联合标定 gravity_scale + torque_bias + torque_threshold\n";
         std::cout << "标定/验证期间导纳执行完全 suspend，M/D/K/alpha/max 不参与\n";
         std::cout << "拟合：每个姿态先取 robust median，再按姿态等权联合拟合；不同采样帧数不会改变姿态权重\n";
@@ -1740,7 +2117,7 @@ private:
         calibration_cfg.threshold_max_margin = 1.05;
         const auto result = calibrate_admittance_static(poses, calibration_cfg);
         if(!result) {
-            std::cout << "静态标定计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            std::cout << "静态 residual 标定计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
             restore_gravity_scale();
             restore_runtime();
             return;
@@ -1763,6 +2140,7 @@ private:
         auto calibrated_admittance = original_admittance;
         calibrated_admittance.torque_bias = result->torque_bias;
         calibrated_admittance.torque_threshold = result->torque_threshold;
+        calibrated_admittance.friction.enabled = false;
         if(!apply_runtime_admittance_cfg(calibrated_admittance)) {
             restore_gravity_scale();
             apply_runtime_admittance_cfg(original_admittance);
@@ -1771,7 +2149,7 @@ private:
         }
         restore_runtime();
 
-        std::cout << "\n========== 静态标定结果 ==========\n";
+        std::cout << "\n========== 静态 residual 标定结果 ==========\n";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
             std::cout << cfg_.joint_names[i]
                 << " gravity_scale=" << std::fixed << std::setprecision(6) << result->gravity_scale[i]
@@ -1784,8 +2162,9 @@ private:
                 << " threshold=" << result->torque_threshold[i] << '\n';
         }
         print_admittance_calibration_yaml(result->gravity_scale, result->torque_bias, result->torque_threshold);
-        std::cout << "本次运行已立即应用上述标定值；之后调整 M/D/K/alpha/max 不需要重新标定\n";
-        std::cout << "建议接着执行 6 -> 1 -> 2 静态标定验证\n";
+        std::cout << "本次运行已立即应用上述静态 residual 标定值；若此前启用了摩擦补偿，本次已自动禁用，避免沿用旧 bias/gravity 下的摩擦模型\n";
+        std::cout << "持久化时请同步将 core.yaml 中 friction_compensation.enabled 改为 false；完成新的摩擦标定后再写回新系数并启用\n";
+        std::cout << "建议接着执行 6 -> 1 -> 2 静态 residual 验证，通过后再执行 6 -> 1 -> 3 摩擦 residual 标定\n";
     }
 
     void run_admittance_static_validation() {
@@ -1825,7 +2204,7 @@ private:
             return;
         }
 
-        std::cout << "\n========== 导纳静态标定验证 ==========\n";
+        std::cout << "\n========== 静态 residual 验证：gravity_scale / torque_bias / torque_threshold ==========\n";
         std::cout << "验证目标：只验证 gravity_scale / torque_bias / torque_threshold 的静态 residual envelope\n";
         std::cout << "标定/验证期间导纳执行完全 suspend，M/D/K/alpha/max 不参与\n";
         std::cout << "PASS：P99 不突破 torque_threshold；极少数单帧 max 最多允许再跨 1 个实测反馈量化步长\n";
@@ -1837,7 +2216,7 @@ private:
             std::cout << "\n验证姿态 " << (pose_index + 1) << "/" << kPoseCount
                 << "：当前为 COMPLIANT_DRAG，请拖到代表姿态并完全松手\n";
             if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") {
-                std::cout << "静态标定验证已取消\n";
+                std::cout << "静态 residual 验证已取消\n";
                 restore_runtime();
                 return;
             }
@@ -1876,12 +2255,12 @@ private:
         restore_runtime();
 
         if(!result) {
-            std::cout << "静态标定验证计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            std::cout << "静态 residual 验证计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
             return;
         }
 
         bool pass = true;
-        std::cout << "\n========== 静态标定验证结果 ==========\n";
+        std::cout << "\n========== 静态 residual 验证结果 ==========\n";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
             const bool joint_pass = result->pass[i] != 0;
             pass = pass && joint_pass;
@@ -1898,8 +2277,8 @@ private:
                 << (joint_pass ? " PASS" : " FAIL") << '\n';
         }
         std::cout << (pass
-            ? "静态标定验证：PASS；标定参数有效；以后修改 M/D/K/alpha/max 不需要重新标定，可进入 6 -> 1 -> 3\n"
-            : "静态标定验证：FAIL；P99 或量化保护后的单帧 max 仍突破静态 envelope，应重新执行 6 -> 1 -> 1，而不是用 M/D/K 掩盖\n");
+            ? "静态 residual 验证：PASS；gravity_scale / torque_bias / torque_threshold 有效；建议继续 6 -> 1 -> 3 摩擦 residual 标定\n"
+            : "静态 residual 验证：FAIL；P99 或量化保护后的单帧 max 仍突破静态 envelope，应重新执行 6 -> 1 -> 1，而不是用 M/D/K 掩盖\n");
     }
 
     void observe_admittance_realtime() {
@@ -1930,6 +2309,14 @@ private:
                     }
                     std::cout << "\ntau ";
                     for(double v : output->tau_ext_hat) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    if(cfg_.capability.admittance.friction.enabled &&
+                        output->friction_residual_hat.size() == cfg_.joint_names.size() &&
+                        output->friction_compensated.size() == cfg_.joint_names.size()) {
+                        std::cout << "| fric ";
+                        for(double v : output->friction_residual_hat) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                        std::cout << "| fric_comp ";
+                        for(double v : output->friction_compensated) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    }
                     std::cout << "| dq ";
                     for(double v : output->delta_q) std::cout << std::fixed << std::setprecision(3) << v << ' ';
                     std::cout << "| dqdot ";
@@ -2022,7 +2409,7 @@ private:
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return;
 
         std::cout << "\n推荐顺序：K -> M -> D -> filter_alpha -> max\n";
-        std::cout << "6 -> 1 -> 1/2 只负责一次性静态标定；本菜单只改变动态手感，不改变标定结果\n";
+        std::cout << "6 -> 1 -> 1/2 负责静态 residual 标定/验证，6 -> 1 -> 3 负责摩擦 residual 标定；本菜单只改变动态手感\n";
 
         while(true) {
             const auto& a = cfg_.capability.admittance;
@@ -2089,6 +2476,14 @@ private:
             print_vector("admittance_stiffness", cfg_.capability.admittance.stiffness);
             print_vector("admittance_torque_bias", cfg_.capability.admittance.torque_bias);
             print_vector("admittance_threshold", cfg_.capability.admittance.torque_threshold);
+            std::cout << "friction_compensation   : " << (cfg_.capability.admittance.friction.enabled ? "ENABLED" : "DISABLED") << '\n';
+            if(cfg_.capability.admittance.friction.enabled) {
+                std::cout << "friction_vel_transition: " << cfg_.capability.admittance.friction.velocity_transition << '\n';
+                print_vector("friction_C_pos", cfg_.capability.admittance.friction.positive_coulomb);
+                print_vector("friction_B_pos", cfg_.capability.admittance.friction.positive_viscous);
+                print_vector("friction_C_neg", cfg_.capability.admittance.friction.negative_coulomb);
+                print_vector("friction_B_neg", cfg_.capability.admittance.friction.negative_viscous);
+            }
             print_vector("admittance_max_delta_q", cfg_.capability.admittance.max_delta_q);
             print_vector("admittance_max_dq_dot", cfg_.capability.admittance.max_delta_q_dot);
         }

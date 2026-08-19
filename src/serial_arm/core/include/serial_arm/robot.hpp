@@ -103,6 +103,8 @@ struct RobotCycleOutput {
     JointVector residual_raw;                              ///< 当前模式 model_torque - measured_torque
     JointVector residual_filtered;                         ///< 低通后的 residual
     JointVector bias_compensated;                          ///< residual_filtered - torque_bias
+    JointVector friction_residual_hat;                      ///< 速度相关摩擦 residual 预测
+    JointVector friction_compensated;                       ///< bias 后减去摩擦 residual
     JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
     JointVector delta_q;                                   ///< 导纳位置修正
     JointVector delta_q_dot;                               ///< 导纳速度修正

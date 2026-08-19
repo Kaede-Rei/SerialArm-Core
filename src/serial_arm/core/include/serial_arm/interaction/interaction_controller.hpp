@@ -36,12 +36,15 @@ struct InteractionInput {
     JointVector max_delta_q;             ///< Safety 剩余空间给出的最大位置修正
     JointVector min_delta_q_dot;         ///< Safety 剩余空间给出的最小速度修正
     JointVector max_delta_q_dot;         ///< Safety 剩余空间给出的最大速度修正
+    JointVector measured_velocity;       ///< 当前实测关节速度；摩擦 residual 补偿使用
 };
 
 struct InteractionOutput {
     JointCtrlCmd corrected_cmd;                       ///< 修正后的关节控制命令
     TorqueResidualEstimate residual;                  ///< residual 观测结果
     JointVector bias_compensated;                     ///< residual_filtered - torque_bias
+    JointVector friction_residual_hat;                 ///< 摩擦模型预测的 residual 分量
+    JointVector friction_compensated;                  ///< bias 后再减去摩擦 residual
     JointVector tau_ext_hat;                          ///< 阈值处理后的关节侧外力矩估计
     std::vector<std::uint8_t> threshold_active;       ///< 1 表示当前处于 threshold 抑制/过渡区
     JointVector delta_q;                              ///< 导纳位置偏移
