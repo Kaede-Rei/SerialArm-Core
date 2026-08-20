@@ -434,9 +434,9 @@ feel
   comfortable torque / follow speed / response / return / limits
 ```
 
-持久化配置使用 `observer / calibration / feel` 语义，内部导纳 M / D / K 由 Core 派生。导纳只修正 nominal command 的位置和速度，并在 Safety 剩余空间内限制修正幅度；最终命令仍由 Safety 统一裁决
+持久化配置使用 `observer / calibration / feel` 语义，内部导纳 M / D / K 由 Core 派生；导纳只修正 nominal command 的位置和速度，并在 Safety 剩余空间内限制修正幅度；最终命令仍由 Safety 统一裁决
 
-`COMPLIANT_DRAG` 属于阻抗控制器的直接拖拽模式，使用当前实测位置持续重建 reference，并显式旁路导纳修正。两者属于不同交互机制，不应混用同一套参数语义
+`COMPLIANT_DRAG` 属于阻抗控制器的直接拖拽模式，使用当前实测位置持续重建 reference，并显式旁路导纳修正；两者属于不同交互机制，不应混用同一套参数语义
 
 ### 7.5. Safety
 

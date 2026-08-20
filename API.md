@@ -1411,7 +1411,7 @@ std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 
 ### `CapabilityCfg` 与关节空间导纳
 
-`capability` 保存可选高级能力。当前公开配置包含关节空间导纳：
+`capability` 保存可选高级能力；当前公开配置包含关节空间导纳：
 
 ```cpp
 struct AdmittanceObserverCfg {
@@ -1452,7 +1452,7 @@ struct CapabilityCfg {
 
 YAML 中 `capability` 可以整体省略，此时导纳默认关闭；一旦提供 `capability.admittance`，应提供完整的 `observer / calibration / feel` 配置和与 Joint 数量一致的逐关节参数
 
-公开 YAML 不直接持久化 M / D / K。Core 根据手感语义参数派生内部导纳参数：
+公开 YAML 不直接持久化 M / D / K；Core 根据手感语义参数派生内部导纳参数：
 
 ```text
 D = comfortable_torque / follow_speed
@@ -5746,7 +5746,7 @@ set_admittance_cfg(
 
 用途
 
-运行时替换当前导纳配置。配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
+运行时替换当前导纳配置；配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
 
 要求
 
@@ -6687,7 +6687,7 @@ print(cfg.joint_names)
 print(cfg.runtime.ctrl_frequency_hz)
 ```
 
-Python `RobotCfg` 当前只暴露基础配置字段，不直接暴露 `capability.admittance` 的逐项运行时编辑接口；通过 Core YAML 创建 `RobotSession` 时，YAML 中的导纳能力仍由 C++ Core 正常加载和执行。需要运行时修改导纳配置或读取完整导纳 telemetry 时使用 C++ `Robot` 或 C++ Terminal
+Python `RobotCfg` 当前只暴露基础配置字段，不直接暴露 `capability.admittance` 的逐项运行时编辑接口；通过 Core YAML 创建 `RobotSession` 时，YAML 中的导纳能力仍由 C++ Core 正常加载和执行；需要运行时修改导纳配置或读取完整导纳 telemetry 时使用 C++ `Robot` 或 C++ Terminal
 
 Python Binding 还直接暴露两种配置验证接口
 
