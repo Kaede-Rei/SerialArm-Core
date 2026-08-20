@@ -75,7 +75,7 @@ Hardware / Robot Side
 Application / Framework Side
 ```
 
-因此项目最重要的目标不是功能数量，而是降低同一控制能力在不同机器人和不同软件环境之间的迁移成本
+因此项目最重要的目标不是功能数量，而是降低同一控制能力在不同机器人和不同软件环境之间的适配成本
 
 ---
 
@@ -129,13 +129,15 @@ Joint / Actuator Mapping
       ↓
 Joint State
       ↓
-Model / Dynamics
+State Safety Check
       ↓
-Control Capability
+Controller / Nominal Command
       ↓
-Controller
+Model Feedforward / Interaction Capability
       ↓
-Safety
+Corrected Joint Command
+      ↓
+Command Safety
       ↓
 Joint / Actuator Mapping
       ↓
@@ -143,6 +145,24 @@ Write Hardware
 ```
 
 控制能力建立在统一状态和模型之上，不直接依赖厂商 SDK 或外部框架
+
+Interaction / Admittance 作为可选 Capability 插入 nominal command 与最终 command Safety 之间：
+
+```text
+Joint State + Dynamics + Measured Torque
+                 ↓
+      Interaction Observer
+                 ↓
+           Admittance
+                 ↓
+       delta_q / delta_q_dot
+                 ↓
+       Corrected Joint Command
+                 ↓
+              Safety
+```
+
+因此高级交互能力可以修改发送前的 Joint command，但不能绕过 Safety
 
 ---
 
@@ -385,7 +405,7 @@ Capability 是建立在统一 State、Reference 和 Model 上的可复用控制�
 4. 不依赖具体中间件
 5. 不依赖具体应用任务
 6. 能在 Native Runtime 中独立测试
-7. 能迁移到其他串联机械臂
+7. 能复用到其他串联机械臂
 
 典型 Capability：
 
@@ -400,6 +420,23 @@ Task-space / Joint-space Constraint
 ```
 
 Capability 可以增加，但不应为每个 Capability 创建新的 Runtime 或新的数据体系
+
+当前关节空间导纳遵循同一边界：
+
+```text
+observer
+  FULL_ID / MOMENTUM
+
+calibration
+  torque bias / threshold / friction residual
+
+feel
+  comfortable torque / follow speed / response / return / limits
+```
+
+持久化配置使用 `observer / calibration / feel` 语义，内部导纳 M / D / K 由 Core 派生。导纳只修正 nominal command 的位置和速度，并在 Safety 剩余空间内限制修正幅度；最终命令仍由 Safety 统一裁决
+
+`COMPLIANT_DRAG` 属于阻抗控制器的直接拖拽模式，使用当前实测位置持续重建 reference，并显式旁路导纳修正。两者属于不同交互机制，不应混用同一套参数语义
 
 ### 7.5. Safety
 
@@ -677,7 +714,7 @@ C++、Python、ROS 2、LeRobot、Isaac 应尽量复用同一个 Core 实现
 
 ## 11. 可移植性验收标准
 
-SerialArm-Core 的可移植性不能只通过支持列表证明，需要通过迁移成本验证
+SerialArm-Core 的可移植性不能只通过支持列表证明，需要通过适配成本验证
 
 ### 11.1. 新 Robot Variant
 
@@ -727,7 +764,7 @@ Model / Dynamics
 
 ### 11.5. 跨机器人算法复用
 
-同一 Capability 迁移到不同串联机械臂时，只允许主要变化：
+同一 Capability 复用到不同串联机械臂时，只允许主要变化：
 
 ```text
 Robot Model
@@ -765,7 +802,7 @@ Command
 
 不为了支持列表提前维护没有真实使用场景的 Adapter
 
-Core 的稳定性、接口一致性和迁移成本优先于功能数量
+Core 的稳定性、接口一致性和适配成本优先于功能数量
 
 ---
 

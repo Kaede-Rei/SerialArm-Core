@@ -49,6 +49,8 @@ SerialArm-Core 有三种主要调用层级
 | `serial_arm/core/joints_ctrller.hpp` | 五种阻抗模式控制器 |
 | `serial_arm/core/safety.hpp` | 状态与命令安全检查 |
 | `serial_arm/dynamics/dynamics.hpp` | Pinocchio Dynamics |
+| `serial_arm/interaction/interaction_controller.hpp` | External Interaction Observer 与关节空间导纳组合 |
+| `serial_arm/interaction/admittance_calibration.hpp` | 导纳静态 residual / friction 标定工具 |
 | `serial_arm/hardware/hardware_capability.hpp` | 执行器物理能力 |
 | `serial_arm/hardware/motor_bus.hpp` | Hardware Backend contract |
 | `serial_arm/hardware/hardware_loader.hpp` | Backend shared library loader |
@@ -131,7 +133,7 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 `CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
 
-`BusRegistry` 是 v0.4.0 shared physical bus ownership 的内部协调层
+`BusRegistry` 是 shared physical bus ownership 的内部协调层
 
 它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
 
@@ -256,7 +258,7 @@ Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `Can
 
 `BusRegistry` 的 raw Bus 获取接口属于 Core internal implementation，不作为扩展 Driver API
 
-v0.4.0 已移除 legacy `BusPool`，避免绕过 physical ownership registry 形成第二套 Bus 生命周期入口
+扩展 Driver 不应绕过 acquisition helper 建立第二套 physical Bus ownership 入口
 
 Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
 
@@ -324,7 +326,7 @@ options.write_timeout = std::chrono::milliseconds(100);
 
 对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可以直接使用 Shared Serial
 
-需要显式 RTS 或 `TIOCSRS485` 方向控制的 RS485 场景暂不属于 v0.4.0 范围
+需要显式 RTS 或 `TIOCSRS485` 方向控制的 RS485 场景不属于当前 Shared Serial 支持范围
 
 `SerialBusClient::diagnostics()` 提供最小运行统计：
 
@@ -347,243 +349,30 @@ Core 不会把 callback 的原始异常改写成通用协议错误
 
 最后一个 client 引用释放后，内部 `SerialBus` 通过 RAII 关闭底层 `SerialPort`
 
-## 2.2. v0.3.0 到 v0.4.0 Shared Bus 迁移
+## 2.2. Shared Bus 使用约束
 
-旧模式：
-
-```text
-Driver owns/open physical device
-```
-
-新模式：
+CAN Driver：
 
 ```text
-Driver obtains shared Bus
+Driver obtains a private CanChannel through acquire_can_channel()
+Driver does not own raw CanBus
 ```
 
-CAN Driver 迁移：
+Serial Driver：
 
 ```text
-old: Driver opens physical CAN or USB2CAN
-new: Driver obtains private CanChannel through acquire_can_channel() and does not own raw CanBus
+Driver obtains SerialBusClient through acquire_serial_bus_client()
+Driver performs a complete request-response inside one transaction
 ```
 
-Serial Driver 迁移：
-
-```text
-old: Driver stores SerialPort and performs raw read/write
-new: Driver obtains SerialBusClient through acquire_serial_bus_client() and performs complete protocol transaction in callback
-```
-
-旧配置中的 inline `serial_port / baudrate / bus` 可以继续由兼容层解析
-
-新配置应优先把 physical endpoint 放在 named `buses:` 中，Driver 只引用 `bus` name
-
-Driver 不再作为 physical resource owner
-
-Driver destruction 只释放自己的 channel、transaction user state 和 shared pointer
-
-## 2.3. Damiao USB2CAN Protocol API
-
-头文件：
-
-```cpp
-#include "serial_arm_protocol_damiao_usb2can/bus.hpp"
-```
-
-CMake：
-
-```cmake
-find_package(serial_arm_protocol_damiao_usb2can CONFIG REQUIRED)
-
-target_link_libraries(my_peripheral
-  PRIVATE
-    serial_arm_protocol_damiao_usb2can
-)
-```
-
-命名空间：
-
-```cpp
-serial_arm::protocol::damiao_usb2can
-```
-
-`Config` 只描述达妙官方 USB2CAN 模块的物理串口配置：
-
-```cpp
-serial_arm::protocol::damiao_usb2can::Config config;
-config.serial_port = "/dev/ttyACM0";
-config.baudrate = 921600;
-```
-
-主要错误类型：
-
-```text
-OPEN_FAILED       打开物理 USB2CAN 串口失败
-CONFIG_CONFLICT   相同 bus name 已存在但物理配置不同
-TYPE_MISMATCH     相同 bus name 已由其他 CanBus 实现占用
-```
-
-设备层推荐入口是 `acquire_channel()`：
-
-```cpp
-auto result =
-    serial_arm::protocol::damiao_usb2can::acquire_channel(
-        "main_can",
-        config,
-        {
-            serial_arm::transport::CanFilter{0x20, 0x7FF},
-        });
-
-if(!result) {
-    // 根据 Err 处理错误
-}
-
-auto channel = result.value();
-```
-
-`acquire_channel()` 会通过 Core `BusRegistry` 原子获取或创建同名物理 Bus；同名 Bus 的串口与波特率必须一致；获得 Channel 后设备层只使用 `send()`、`receive()` 与逻辑 `flush()`
-
-`DamiaoUsbCanBus` 仅支持 Classic CAN 标准帧，数据长度最大 8 字节；不提供扩展 CAN ID、CAN FD、RTR 或跨进程 CAN broker
-
-## 2.4. Damiao `MotorControl` API
-
-头文件：
-
-```cpp
-#include "dm_hw/damiao.hpp"
-```
-
-`MotorControl` 属于 Damiao hardware support，负责 Damiao payload 级设备识别和参数事务；它不属于通用 `CanChannel` transport 语义
-
-### `add_motor()`
-
-```cpp
-damiao::Motor motor(damiao::DM4310, 7, 0);
-damiao::MotorControl control(channel);
-control.add_motor(&motor);
-```
-
-slave ID 必须唯一；多个电机允许共享 `master_id = 0`；非零 master ID 必须保持唯一
-
-### `receive_feedback_for()`
-
-```cpp
-bool ok = control.receive_feedback_for(
-    motor,
-    std::chrono::milliseconds(20));
-```
-
-**用途**
-
-在 timeout 内持续消费当前 `CanChannel`，跳过其他电机、参数响应和管理帧，直到命中目标 motor feedback
-
-**共享 Master ID**
-
-当反馈 CAN ID 为 `0x00` 时，`MotorControl` 使用 payload 中 `data[0] & 0x0f` 恢复实际 slave ID，不把 CAN ID 0 唯一映射到某一个 Motor
-
-**阻塞语义**
-
-同步等待，最多阻塞到 timeout；同一个 `MotorControl` 的事务由调用线程串行拥有；应用需要非阻塞行为时应在应用自己的 worker 中调用
-
-### `receive_param_for()`
-
-```cpp
-bool ok = control.receive_param_for(
-    motor,
-    damiao::KP_APR,
-    std::chrono::milliseconds(250));
-```
-
-**用途**
-
-持续 drain 当前 Channel，解析参数响应 payload 中的完整 slave ID 和 RID，仅在目标 `slave + RID` 命中时更新参数缓存并返回成功
-
-参数响应的 payload 识别规则为：
-
-```text
-data[2] = 0x33  parameter read response
-data[2] = 0x55  parameter write response
-slave_id = data[0] | (data[1] << 8)
-RID = data[3]
-```
-
-`read_motor_param()`、`change_motor_param()` 和 `switch_control_mode()` 还会进一步校验响应类型，读事务只接受 `0x33`，写事务只接受 `0x55`
-
-### `refresh_motor_status()`
-
-```cpp
-bool ok = control.refresh_motor_status(
-    motor,
-    std::chrono::milliseconds(20));
-```
-
-发送一次目标 motor refresh request，然后通过 `receive_feedback_for()` 等待目标反馈；queue 头部存在其他 motor feedback 时不会提前失败
-
-### `read_motor_param()`
-
-```cpp
-float mst_id = control.read_motor_param(
-    motor,
-    damiao::MST_ID,
-    std::chrono::milliseconds(250));
-```
-
-发送一次参数读请求并等待目标 `slave + RID + read response`；函数可能阻塞至 timeout；返回值为 `0` 时可以结合 `motor.has_param(rid)` 区分合法零值和 timeout
-
-### `change_motor_param()`
-
-```cpp
-bool ok = control.change_motor_param(
-    motor,
-    damiao::KP_APR,
-    100.0f,
-    std::chrono::milliseconds(250));
-```
-
-发送一次参数写请求并等待目标 `slave + RID + write response`，随后校验返回值；事务开始前只清理当前 `MotorControl` 所属 `CanChannel` 的 pending queue，不清空 physical bus，也不影响其他 Channel
-
-### `switch_control_mode()`
-
-```cpp
-bool ok = control.switch_control_mode(
-    motor,
-    damiao::VEL_MODE,
-    std::chrono::milliseconds(250));
-```
-
-`CTRL_MODE` 使用 RID `10`，复用与 `change_motor_param()` 相同的 targeted parameter transaction，不维护独立 retry 轮询逻辑
-
-### 参数回复 CAN ID 诊断
-
-```cpp
-auto can_id = control.last_parameter_reply_can_id();
-```
-
-用于诊断最近一次成功匹配参数事务的回复 CAN ID；设备身份判断仍以 payload slave ID 和 RID 为准
-
-## 2.4. ROS 2 Python Binding 安装约束
-
-`serial_arm_core` 是 C++ / Python 混合 ament package；ROS 2 workspace 中 `serial_arm/__init__.py` 由 `ament_cmake_python` 安装，pybind11 扩展 `_serial_arm*.so` 安装到同一个 Python package 目录
-
-因此基于 `robot_profile` 的 `serial_arm_ros2_control` launch 需要：
-
-```text
-SERIAL_ARM_BUILD_PYTHON=ON
-```
-
-该选项默认开启，普通 `colcon build` 不需要额外设置
-
-验证 workspace overlay：
-
-```bash
-source install/setup.bash
-python3 -c "import serial_arm; print(serial_arm.__file__); from serial_arm import load_robot_profile_core; print('OK')"
-```
-
-如果 `serial_arm.__file__` 不来自目标 workspace 的 `install/serial_arm_core/.../site-packages/serial_arm/`，应先排查 overlay 或其他 wheel 安装造成的环境冲突，不要直接继续 ROS 2 launch
-
-Standalone Python 则继续通过 `python -m build --wheel` 与 pip 安装，两种安装路径不要混为一套流程
+使用约束：
+
+- physical endpoint 的唯一所有权由 Core acquisition helper 协调
+- logical bus name、physical resource 与 compatibility signature 必须保持一致
+- Driver 析构只释放自己的逻辑访问对象，不直接关闭 shared physical Bus
+- CAN consumer 只消费自己的 `CanChannel`
+- Serial request 与 response 必须处于同一个 transaction
+- Shared Bus 只提供同进程资源协调，不提供跨进程 broker
 
 ---
 
@@ -1585,6 +1374,7 @@ dynamics.configure(dynamics_cfg);
 struct RobotCfg {
     std::vector<std::string> joint_names;
     RuntimeCfg runtime;
+    CapabilityCfg capability;
     ShutdownCfg shutdown;
     JointCtrllerCfg ctrller;
     JointActuatorMapCfg mapper;
@@ -1618,6 +1408,74 @@ std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 ```
 
 只有测试 fixture 或配置生成工具才建议手工拼完整 `RobotCfg`
+
+### `CapabilityCfg` 与关节空间导纳
+
+`capability` 保存可选高级能力。当前公开配置包含关节空间导纳：
+
+```cpp
+struct AdmittanceObserverCfg {
+    AdmittanceObserverMode mode;
+    JointVector momentum_gain;
+    double filter_alpha;
+};
+
+struct AdmittanceCalibrationCfg {
+    JointVector torque_bias;
+    JointVector torque_threshold;
+    FrictionResidualModelCfg friction;
+};
+
+struct AdmittanceFeelCfg {
+    JointVector comfortable_torque;
+    JointVector follow_speed;
+    JointVector start_response_s;
+    JointVector q_elastic_start_speed;
+    JointVector return_time_s;
+    JointVector max_retreat;
+    JointVector max_correction_speed;
+    double q_elastic_max_resistance_ratio;
+};
+
+struct AdmittanceCapabilityCfg {
+    bool enabled;
+    std::vector<std::uint8_t> joint_enabled;
+    AdmittanceObserverCfg observer;
+    AdmittanceCalibrationCfg calibration;
+    AdmittanceFeelCfg feel;
+};
+
+struct CapabilityCfg {
+    AdmittanceCapabilityCfg admittance;
+};
+```
+
+YAML 中 `capability` 可以整体省略，此时导纳默认关闭；一旦提供 `capability.admittance`，应提供完整的 `observer / calibration / feel` 配置和与 Joint 数量一致的逐关节参数
+
+公开 YAML 不直接持久化 M / D / K。Core 根据手感语义参数派生内部导纳参数：
+
+```text
+D = comfortable_torque / follow_speed
+M = D * start_response_s / 3
+K = M * (4.74 / return_time_s)^2
+```
+
+`observer.mode` 支持：
+
+```text
+FULL_ID
+MOMENTUM
+```
+
+`FULL_ID` 使用实测关节力矩与完整逆动力学力矩的 residual；`MOMENTUM` 额外需要 gravity、coriolis 和 mass matrix
+
+运行时如需得到底层控制器配置，可以使用：
+
+```cpp
+JointAdmittanceControllerCfg
+derive_admittance_controller_cfg(
+    const AdmittanceCapabilityCfg& cfg);
+```
 
 ---
 
@@ -5397,7 +5255,11 @@ FAULT
     serial_arm::Robot robot;
     assert(robot.get_state() == serial_arm::RobotState::UNCONFIGURED);
 
-    auto result = robot.configure(cfg, std::move(bus), model_feedforward);
+    auto result = robot.configure(
+        cfg,
+        std::move(bus),
+        model_feedforward,
+        interaction_model_state);
     if(!result) {
         return 1;
     }
@@ -5419,7 +5281,8 @@ tl::expected<void, RobotFault>
 configure(
     const RobotCfg& cfg,
     std::unique_ptr<MotorBus> motor_bus,
-    ModelFeedforwardFn model_feedforward = {});
+    ModelFeedforwardFn model_feedforward = {},
+    InteractionModelStateFn interaction_model_state = {});
 ```
 
 职责
@@ -5431,19 +5294,29 @@ configure(
 - 配置 Safety
 - 接管 MotorBus 所有权
 - 保存模型前馈函数
+- 配置可选 Interaction / Admittance Capability
+- 保存可选 Interaction model state 函数
 - 进入 `INACTIVE`
 
 注意
 
-如果
+以下情况会要求模型回调：
 
 ```text
 cfg.runtime.model_feedforward_mode != NONE
+或
+cfg.capability.admittance.enabled == true
 ```
 
-但没有传 `model_feedforward`
+此时必须提供 `model_feedforward`
 
-configure 会失败
+如果启用导纳并选择：
+
+```text
+observer.mode == MOMENTUM
+```
+
+还必须提供 `interaction_model_state`，用于提供 gravity、coriolis 和 mass matrix
 
 完整示例见文档末尾的功能示例 A
 
@@ -5455,7 +5328,8 @@ configure 会失败
 
 - `cfg` 为完整 Robot 配置
 - `motor_bus` 为已被 HardwareLoader configure 的 Backend
-- `model_feedforward` 为可选模型前馈回调
+- `model_feedforward` 为模型前馈 / 导纳 FULL-ID 模型力矩回调
+- `interaction_model_state` 为 Momentum Observer 使用的模型状态回调
 
 返回值
 
@@ -5469,7 +5343,8 @@ serial_arm::Robot robot;
 auto configure_result = robot.configure(
     cfg,
     std::move(bus),
-    model_feedforward);
+    model_feedforward,
+    interaction_model_state);
 
 if(!configure_result) {
     const auto& fault = configure_result.error();
@@ -5483,7 +5358,24 @@ assert(robot.get_state() == serial_arm::RobotState::INACTIVE);
 使用注意
 
 - configure 会接管 `motor_bus`，调用后不要继续使用原 unique_ptr
-- 非 NONE 前馈模式必须同时提供有效 `model_feedforward`
+- 非 NONE 前馈模式必须提供有效 `model_feedforward`
+- 导纳启用时必须提供有效 `model_feedforward`
+- 导纳使用 `MOMENTUM` observer 时必须额外提供 `interaction_model_state`
+
+`InteractionModelStateFn` 的数据结构为：
+
+```cpp
+struct InteractionModelState {
+    JointVector gravity;
+    JointVector coriolis;
+    std::vector<JointVector> mass_matrix;
+};
+
+using InteractionModelStateFn =
+    std::function<tl::expected<InteractionModelState, ModelFeedforwardErr>(
+        const JointState&,
+        double)>;
+```
 
 ---
 
@@ -5516,6 +5408,8 @@ Mapper::to_joint_state
 Safety::check_state
     ->
 JointCtrller::initialize
+    ->
+InteractionController::reset
     ->
 Safety::reset_cmd_history
     ->
@@ -5559,6 +5453,7 @@ std::cout << "activated at q0=" << q0[0] << "\n";
 使用注意
 
 - `runtime.write_enabled=false` 时该接口明确返回 `WRITE_DISABLED`
+- activate 会清空 Interaction observer / 导纳积分状态，并解除运行时 suspended 状态
 - activate 成功后的默认控制器模式是按当前实测位置初始化的保持状态
 
 ---
@@ -5738,6 +5633,7 @@ set_impedance_mode(
 - 重置 Safety command history
 - 清除 external command 状态
 - 重置 joint reference acceleration
+- 清空 Interaction observer、`delta_q` 与 `delta_q_dot` 状态
 
 因此切换到 tracking 后应重新发送目标
 
@@ -5838,6 +5734,59 @@ robot.activate();
 
 ---
 
+## 103.1. `Robot::set_admittance_cfg()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+set_admittance_cfg(
+    const AdmittanceCapabilityCfg& cfg);
+```
+
+用途
+
+运行时替换当前导纳配置。配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
+
+要求
+
+- Robot 已 configure
+- 当前不在 `FAULT`
+- 启用导纳时 configure 阶段已经提供 `model_feedforward`
+- `MOMENTUM` observer 还要求已经提供 `interaction_model_state`
+
+---
+
+## 103.2. `Robot::get_admittance_cfg()`
+
+签名
+
+```cpp
+const AdmittanceCapabilityCfg&
+get_admittance_cfg() const noexcept;
+```
+
+返回当前 Robot 实际使用的导纳配置
+
+---
+
+## 103.3. `Robot::set_admittance_suspended()` / `Robot::is_admittance_suspended()`
+
+签名
+
+```cpp
+void set_admittance_suspended(bool suspended);
+bool is_admittance_suspended() const noexcept;
+```
+
+用途
+
+临时旁路或恢复导纳运行时修正，不改变静态配置中的 `enabled`
+
+挂起和恢复都会清空 Interaction Controller 内部状态，避免 observer 或导纳积分状态跨越任务边界
+
+---
+
 ## 104. `Robot::cycle()`
 
 签名
@@ -5870,6 +5819,8 @@ estimate reference acceleration
     ->
 model feedforward
     ->
+optional interaction observer / admittance correction
+    ->
 Safety command check
     ->
 map to ActuatorCtrlCmd
@@ -5883,7 +5834,7 @@ Robot 本身不会创建控制线程
 
 ### Doxygen 语义展开
 
-执行一帧完整控制闭环，包括读状态、映射、Safety、控制器、模型前馈和硬件写入
+执行一帧完整控制闭环，包括读状态、映射、状态 Safety、控制器、模型前馈、可选 Interaction / Admittance、命令 Safety 和硬件写入
 
 参数
 
@@ -5922,6 +5873,8 @@ while(running) {
 使用注意
 
 - Robot 不自己创建控制线程，C++ 调用者必须维护周期
+- 导纳只在 `capability.admittance.enabled=true`、未 suspended 且当前模式不是 `COMPLIANT_DRAG` 时参与命令修正
+- 导纳位置/速度修正会先根据 Safety 剩余位置与速度空间收窄，最终命令仍必须经过统一 Safety command check
 
 ---
 
@@ -5939,6 +5892,26 @@ struct RobotCycleOutput {
     JointCtrlCmd joint_cmd;
     ActuatorCtrlCmd actuator_cmd;
     double dt;
+
+    bool admittance_active;
+    JointVector residual_raw;
+    JointVector full_id_residual_raw;
+    JointVector residual_filtered;
+    JointVector bias_compensated;
+    JointVector friction_residual_hat;
+    JointVector friction_compensated;
+    JointVector tau_ext_hat;
+    JointVector contact_confidence;
+    JointVector delta_q;
+    JointVector delta_q_dot;
+    JointVector effective_damping;
+    JointVector effective_stiffness;
+    JointVector friction_feedforward;
+    std::vector<std::uint8_t> torque_threshold_active;
+    std::vector<std::uint8_t> delta_q_limited;
+    std::vector<std::uint8_t> delta_q_dot_limited;
+    std::vector<std::uint8_t> safety_position_margin_active;
+    std::vector<std::uint8_t> safety_velocity_margin_active;
 };
 ```
 
@@ -5952,6 +5925,7 @@ struct RobotCycleOutput {
 - 数据集采集
 - 控制调试
 - Safety 诊断
+- Interaction / Admittance 诊断
 - Backend 对比
 
 ### 具体使用示例
@@ -5972,6 +5946,27 @@ std::cout << "ref_acc0=" << out.joint_ref_acc[0] << "\n";
 std::cout << "feedforward0=" << out.model_feedforward[0] << "\n";
 std::cout << "safe kp0=" << out.joint_cmd.kp[0] << "\n";
 std::cout << "sent actuator kp0=" << out.actuator_cmd.kp[0] << "\n";
+
+if(out.admittance_active) {
+    std::cout << "tau_ext0=" << out.tau_ext_hat[0] << "\n";
+    std::cout << "delta_q0=" << out.delta_q[0] << "\n";
+    std::cout << "delta_q_dot0=" << out.delta_q_dot[0] << "\n";
+}
+```
+
+导纳未参与本周期时 `admittance_active=false`，导纳专用 telemetry 不应被当作有效控制结果读取
+
+如果要定位导纳链问题，建议按以下顺序同时记录：
+
+```text
+residual_raw
+residual_filtered
+bias_compensated
+friction_compensated
+tau_ext_hat
+contact_confidence
+effective_damping / effective_stiffness
+delta_q / delta_q_dot
 ```
 
 如果要定位一帧控制为何异常，应优先同时记录 `joint_state`、`joint_cmd`、`actuator_cmd` 和 `model_feedforward`
@@ -6662,7 +6657,7 @@ serial_arm.RobotCfg
 
 ### Doxygen 语义展开
 
-Python 版本先通过 HardwareLoader 获取真实 Backend capability，再调用 C++ `load_robot_cfg()`
+Python 接口先通过 HardwareLoader 获取真实 Backend capability，再调用 C++ `load_robot_cfg()`
 
 参数
 
@@ -6691,6 +6686,8 @@ except serial_arm.SerialArmError as exc:
 print(cfg.joint_names)
 print(cfg.runtime.ctrl_frequency_hz)
 ```
+
+Python `RobotCfg` 当前只暴露基础配置字段，不直接暴露 `capability.admittance` 的逐项运行时编辑接口；通过 Core YAML 创建 `RobotSession` 时，YAML 中的导纳能力仍由 C++ Core 正常加载和执行。需要运行时修改导纳配置或读取完整导纳 telemetry 时使用 C++ `Robot` 或 C++ Terminal
 
 Python Binding 还直接暴露两种配置验证接口
 
@@ -6745,7 +6742,7 @@ profile.hardware_config_path
 
 ### Doxygen 语义展开
 
-Python 版本解析 framework-neutral profile，直接返回 Python 可读写的 `RobotProfileCore`
+Python 接口解析 framework-neutral profile，直接返回 Python 可读写的 `RobotProfileCore`
 
 参数
 
@@ -8046,6 +8043,7 @@ struct RobotFault {
     JointCtrllerErr ctrller_err;
     SafetyFault safety_fault;
     ModelFeedforwardErr model_feedforward_err;
+    InteractionControllerErr interaction_err;
 };
 ```
 
@@ -8079,6 +8077,10 @@ safety_fault
 MODEL_FEEDFORWARD_FAILED
     ->
 model_feedforward_err
+
+INTERACTION_FAILED
+    ->
+interaction_err
 ```
 
 ### 具体使用示例
@@ -8104,6 +8106,12 @@ if(!cycle_result) {
                   << "\n";
         break;
 
+    case serial_arm::RobotErr::INTERACTION_FAILED:
+        std::cerr << "InteractionControllerErr="
+                  << static_cast<int>(fault.interaction_err)
+                  << "\n";
+        break;
+
     default:
         std::cerr << "RobotErr=" << static_cast<int>(fault.code) << "\n";
         break;
@@ -8122,6 +8130,8 @@ if(!cycle_result) {
 ```cpp
 #include <iostream>
 #include <memory>
+
+#include <Eigen/Core>
 
 #include "serial_arm/config/config.hpp"
 #include "serial_arm/config/robot_profile.hpp"
@@ -8196,14 +8206,6 @@ int main() {
                 JointVector,
                 ModelFeedforwardErr>
         {
-            if(mode ==
-                ModelFeedforwardMode::NONE)
-            {
-                return JointVector(
-                    n,
-                    0.0);
-            }
-
             if(auto result =
                 dynamics.update(
                     state,
@@ -8213,6 +8215,14 @@ int main() {
             {
                 return tl::make_unexpected(
                     ModelFeedforwardErr::COMPUTE_FAILED);
+            }
+
+            if(mode ==
+                ModelFeedforwardMode::NONE)
+            {
+                return JointVector(
+                    n,
+                    0.0);
             }
 
             if(mode ==
@@ -8233,13 +8243,43 @@ int main() {
                 ModelFeedforwardErr::INVALID_MODE);
         };
 
+    InteractionModelStateFn interaction_model_state =
+        [&dynamics, n](
+            const JointState&,
+            double)
+            -> tl::expected<
+                InteractionModelState,
+                ModelFeedforwardErr>
+        {
+            InteractionModelState state;
+            state.gravity = dynamics.get_gravity_compensation();
+            state.coriolis = dynamics.get_coriolis();
+
+            const auto& mass = dynamics.get_mass_matrix();
+            state.mass_matrix.assign(
+                n,
+                JointVector(n, 0.0));
+
+            for(std::size_t r = 0; r < n; ++r) {
+                for(std::size_t c = 0; c < n; ++c) {
+                    state.mass_matrix[r][c] =
+                        mass(
+                            static_cast<Eigen::Index>(r),
+                            static_cast<Eigen::Index>(c));
+                }
+            }
+
+            return state;
+        };
+
     Robot robot;
 
     auto robot_result =
         robot.configure(
             cfg,
             std::move(bus),
-            model_ff);
+            model_ff,
+            interaction_model_state);
 
     if(!robot_result) {
         return 1;
@@ -9031,6 +9071,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `SAFETY_FAILED` | Safety 检查失败 |
 | `MODEL_FEEDFORWARD_FAILED` | 模型前馈计算失败 |
 | `INVALID_MODEL_FEEDFORWARD` | 模型前馈结果非法 |
+| `INTERACTION_FAILED` | Interaction / Admittance 计算失败 |
 | `FAULT_RECOVERY_NOT_ALLOWED` | 当前条件不允许 fault recovery |
 
 ---
@@ -9075,6 +9116,38 @@ COMPLIANT_TRACKING
 set_cmd
 cycle
 ```
+
+## 想使用关节空间导纳
+
+配置
+
+```text
+capability.admittance
+  observer
+  calibration
+  feel
+```
+
+运行时接口
+
+```text
+Robot::set_admittance_cfg
+Robot::get_admittance_cfg
+Robot::set_admittance_suspended
+Robot::is_admittance_suspended
+```
+
+诊断输出
+
+```text
+RobotCycleOutput::admittance_active
+RobotCycleOutput::tau_ext_hat
+RobotCycleOutput::contact_confidence
+RobotCycleOutput::delta_q
+RobotCycleOutput::delta_q_dot
+```
+
+`COMPLIANT_DRAG` 会旁路导纳修正，不用于判断导纳 observer 是否正常工作
 
 ## 想读取关节状态
 
@@ -9177,4 +9250,5 @@ mapper_err
 ctrller_err
 safety_fault
 model_feedforward_err
+interaction_err
 ```
