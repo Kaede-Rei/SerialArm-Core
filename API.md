@@ -1,40 +1,51 @@
 # SerialArm-Core API Reference
 
-本文档面向需要编写 SerialArm-Core 应用代码的开发者
+本文档用于查询 SerialArm-Core 的公共类型、配置结构、类、函数、生命周期接口、错误模型与扩展契约
 
-每个可调用公共接口按以下顺序说明
+如果目标是第一次运行机械臂、配置 Robot Profile、调试 Dynamics / Impedance / Admittance、接入 ROS 2 / MoveIt 或新增机械臂，请先阅读 [Tutorial.md](Tutorial.md)
 
-```text
-Doxygen 语义
-参数
-返回值
-具体使用示例
-使用注意
-```
+如果目标是理解 Core、Adapter、Hardware、Transport 与 Robot Support 的模块边界，请阅读 [Architecture.md](Architecture.md)
 
-ros2_control Adapter 的公共生命周期接口也纳入本文档
-
-[]
+[toc]
 
 ---
 
-## 1. API 使用入口
+## API 导航
 
-SerialArm-Core 有三种主要调用层级
+API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile、RobotCfg 和 Robot 开始，底层扩展接口集中在后半部分
 
-| 使用目标 | 推荐入口 |
-| --- | --- |
-| C++ 真机控制闭环 | `Robot` |
-| Python 真机控制与实验 | `RobotSession` |
-| 独立运动学和动力学计算 | `Dynamics` |
-| 新 Hardware Backend | `MotorBus` + `HardwareLoader` |
-| 调试控制器内部行为 | `JointCtrller` |
-| 调试 Joint 与 Actuator 映射 | `JointActuatorMapper` |
-| 独立验证安全策略 | `Safety` |
+| 任务 | 主要接口 | 章节 |
+| --- | --- | --- |
+| C++ 控制机械臂 | `RobotProfileCore`、`RobotCfg`、`Robot` | 第 3 → 4 章 |
+| Dynamics | `Dynamics` | 第 5 章 |
+| Impedance | `JointImpedanceMode`、`JointCtrller` | 第 6 章 |
+| Admittance | `CapabilityCfg`、`Robot` Admittance API、`RobotCycleOutput` | 第 3 → 4 → 7 章 |
+| Safety / FAULT | `Safety`、`RobotFault`、Fault Recovery API | 第 8 章 |
+| Joint / Actuator 映射 | `JointActuatorMapper` | 第 9 章 |
+| Python 应用 | `RobotSession`、Python `Dynamics` | 第 10 章 |
+| ROS 2 / ros2_control | `SerialArmSystem` | 第 11 章 |
+| 新 Hardware Backend | `MotorBus`、`HardwareLoader`、`HardwareCapabilities` | 第 12 章 |
+| CAN / Serial 扩展 | Transport API | 第 12 章 |
+| 错误码 | `RobotFault` 与各模块错误枚举 | 第 14 章 |
 
-普通应用不需要手工把 `JointCtrller`、`Mapper` 和 `Safety` 串起来
+普通应用不需要直接操作 `JointCtrller`、`Safety`、`JointActuatorMapper`、`MotorBus` 或 Transport，除非需要调试对应模块或开发扩展
 
-`Robot` 已经负责这些模块的组合
+每个公共接口尽量保持以下说明顺序
+
+```text
+定义或签名
+作用
+参数
+返回值
+示例
+注意事项
+```
+
+---
+
+## 1 公共头文件与构建
+
+本章只说明公共头文件和 CMake Target，完整构建流程以 Tutorial 为准
 
 ### 公共头文件索引
 
@@ -64,7 +75,7 @@ SerialArm-Core 有三种主要调用层级
 
 ---
 
-## 2. CMake Targets
+### CMake Targets
 
 安装 `serial_arm_core` 后可以使用
 
@@ -105,280 +116,11 @@ target_link_libraries(my_dynamics_app
 )
 ```
 
-## 2.1. Transport API
-
-头文件：
-
-```cpp
-#include "serial_arm/transport/can.hpp"
-#include "serial_arm/transport/bus.hpp"
-#include "serial_arm/transport/serial_bus.hpp"
-#include "serial_arm/transport/serial_port.hpp"
-```
-
-`CanFrame` 表示经典 CAN 数据帧，仅支持 8 字节 classic CAN：
-
-```cpp
-serial_arm::transport::CanFrame frame;
-frame.id = 0x01;
-frame.size = 8;
-frame.data = {0};
-```
-
-`CanFilter` 用于 `CanChannel` 接收过滤：
-
-```cpp
-serial_arm::transport::CanFilter filter{0x01, 0x7FF};
-```
-
-`CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
-
-`BusRegistry` 是 shared physical bus ownership 的内部协调层
-
-它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
-
-`config_signature` 是必填 provider contract，必须包含 provider/backend identity 和物理通信兼容参数，空 signature 会返回 `INVALID_ARGUMENT`
-
-`BusResourceDescriptor::ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
-
-同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
-
-同名但类型不同返回 `TYPE_MISMATCH`
-
-同名同类型但 resource descriptor 不一致返回 `CONFIG_CONFLICT`
-
-不同 logical name 使用同一 ownership key 时，如果是同类同 physical id 但物理通信参数不同则返回 `CONFIG_CONFLICT`
-
-不同 logical name 使用同一 ownership key 的其他重复占用情况返回 `PHYSICAL_RESOURCE_CONFLICT`
-
-creator 返回空指针、open 失败或抛出普通运行时异常时返回 `CREATE_FAILED`
-
-Registry acquisition 内部线程安全，并通过 weak pointer 管理 physical Bus 生命周期
-
-Registry 在锁内先写入 `CREATING` reservation，再到全局 Registry mutex 外执行 creator/open；相同 logical bus 的并发 acquisition 等待同一创建结果，不同 Bus acquisition 不会被慢 creator 长时间阻塞，creator 也可以安全获取其他 Registry-managed Bus
-
-普通 Protocol / Hardware consumer 不直接调用 Registry 获取 raw Bus，而应通过 `acquire_can_channel()` 或 `acquire_serial_bus_client()` 获取受限访问对象
-
-最后一个 logical access object 释放后，下一次 acquisition 会清理已过期的 logical name 和 physical resource 占用记录
-
-错误上下文可以通过 `bus_registry_error_message()` 构造：
-
-```cpp
-std::string message =
-    serial_arm::transport::bus_registry_error_message(
-        error,
-        "main_can",
-        resource_descriptor);
-```
-
-`CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；通过 `acquire_can_channel()` 创建通道时可以显式指定上限
-
-运行统计通过 `diagnostics()` 获取：
-
-```cpp
-auto stats = channel->diagnostics();
-std::cout << stats.pending_frames << "\n";
-std::cout << stats.received_frames << "\n";
-std::cout << stats.dropped_frames << "\n";
-```
-
-有界队列只负责资源保护；设备事务的正确性仍由 hardware/protocol 层持续 drain 和 payload matching 保证
-
-`CanChannel::send()` 通过所属 `CanBus` 的 TX mutex 串行化发送
-
-`CanChannel::receive()` 通过所属 `CanBus` 的 RX mutex 串行化 physical receive 和 fan-out
-
-多个 channel 可以并发使用，但每个 Driver 仍应只消费自己的 channel
-
-正式链路：
-
-```text
-DamiaoMotorBus
-    ↓
-CanChannel
-    ↓
-CanBus interface
-    ↓
-DamiaoUsbCanBus
-    ↓
-SerialPort
-    ↓
-达妙官方 USB2CAN 模块
-```
-
-`SerialPort` 位于 `serial_arm::transport` 命名空间，提供 `Config`、独立 `read_timeout/write_timeout`、`open()`、`set_config()`、`read()`、`read_exact()`、`write()`、`flush()`、`drain()`、`available()` 和 move 语义；`read()` / `read_exact()` / `write()` 还提供显式 operation timeout 重载，这些重载不会修改持久 `Config`；它只负责 Linux tty 字节传输，不解析任何设备协议
-
-robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
-
-硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`
-
-如果使用已有 Damiao USB2CAN physical bus，推荐通过 protocol helper 获取 channel：
-
-```cpp
-serial_arm::protocol::damiao_usb2can::Config config;
-config.serial_port = "/dev/ttyACM0";
-config.baudrate = 921600;
-
-auto result =
-    serial_arm::protocol::damiao_usb2can::acquire_channel(
-        "main_can",
-        config,
-        {
-            serial_arm::transport::CanFilter{0x20, 0x7FF},
-        });
-
-if(!result) {
-    // 根据 damiao_usb2can::Err 处理错误
-}
-
-auto channel = result.value();
-```
-
-如果扩展包提供自己的 physical `CanBus` 实现，应通过 `acquire_can_channel()` 提交 resource descriptor 和 provider creator，最终只把 `CanChannel` 交给 Protocol / Hardware consumer：
-
-```cpp
-auto channel = serial_arm::transport::acquire_can_channel(
-    "main_can",
-    resource_descriptor,
-    [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
-        auto value = std::make_shared<MyCanBus>(my_config);
-        auto opened = value->open();
-        if(!opened) return nullptr;
-        return value;
-    },
-    {serial_arm::transport::CanFilter{0x20, 0x7FF}},
-    128);
-
-if(!channel) {
-    // INVALID_ARGUMENT / CREATE_FAILED / type/config/physical resource conflict
-}
-```
-
-Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `CanChannel`
-
-`BusRegistry` 的 raw Bus 获取接口属于 Core internal implementation，不作为扩展 Driver API
-
-扩展 Driver 不应绕过 acquisition helper 建立第二套 physical Bus ownership 入口
-
-Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
-
-### Shared Serial 扩展契约
-
-串行扩展协议通过 `SerialBusClient` 共享同一个 physical serial endpoint
-
-内部 `SerialBus` 唯一持有 `SerialPort`
-
-协议 Driver 不直接构造、打开、关闭或持有 `SerialBus`
-
-Driver 通过 `acquire_serial_bus_client()` 获取 transaction-only client
-
-```cpp
-auto client = serial_arm::transport::acquire_serial_bus_client(
-    "tool_serial",
-    config);
-
-if(!client) {
-    // 非法串口配置返回 INVALID_ARGUMENT，open/creator 失败返回 CREATE_FAILED
-    // 其余错误根据 type/config/physical resource conflict 处理
-    return;
-}
-
-(*client)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
-    transaction.flush(serial_arm::transport::SerialTransaction::FlushDirection::Input);
-    transaction.write(request.data(), request.size());
-    transaction.read_exact(response.data(), response.size());
-    validate_response(response);
-});
-```
-
-一个 request-response 协议交互必须放在同一个 transaction 内
-
-不要把 write request 和 read response 拆成两个 transaction，否则其他 client 可以在中间插入自己的事务
-
-`SerialBusClient` 不提供 `open()`、`close()`、`config()` 或 raw Bus 访问
-
-`SerialTransaction` 不提供 `open()`、`close()`、`set_config()` 或 `native_handle()`
-
-因此协议 Driver 既不能接管共享 Bus 生命周期，也不能接管底层 `SerialPort`
-
-Core 不判断任意串行协议是否能共线
-
-`baud rate / data bits / parity / stop bits / flow control` 属于 physical serial compatibility fingerprint
-
-`read_timeout / write_timeout` 属于 client / transaction policy，不进入 physical compatibility fingerprint
-
-每次 `acquire_serial_bus_client()` 都会把调用方配置中的 read/write timeout 保存到返回的 client，因此同一个 named SerialBus 上的不同 Driver 可以拥有不同默认 timeout
-
-单次事务还可以通过 `SerialTransactionOptions` 临时覆盖 client 默认 timeout
-
-```cpp
-serial_arm::transport::SerialTransactionOptions options;
-options.read_timeout = std::chrono::milliseconds(20);
-options.write_timeout = std::chrono::milliseconds(100);
-
-(*client)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
-    transaction.write(request.data(), request.size());
-    transaction.read_exact(response.data(), response.size());
-});
-```
-
-扩展 Driver 仍需确认 electrical layer、baud rate、data bits、parity、stop bits、flow control、duplex mode、framing、地址和主动发送行为互相兼容
-
-对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可以直接使用 Shared Serial
-
-需要显式 RTS 或 `TIOCSRS485` 方向控制的 RS485 场景不属于当前 Shared Serial 支持范围
-
-`SerialBusClient::diagnostics()` 提供最小运行统计：
-
-```cpp
-auto stats = (*client)->diagnostics();
-std::cout << stats.is_open << "\n";
-std::cout << stats.transaction_count << "\n";
-std::cout << stats.failed_transaction_count << "\n";
-std::cout << stats.resource.physical_id << "\n";
-std::cout << stats.resource.ownership_key << "\n";
-```
-
-`failed_transaction_count` 只统计 transaction callback 抛出的异常
-
-Core 不会把 callback 的原始异常改写成通用协议错误
-
-异常会原样继续抛给调用方
-
-不同 `SerialBusClient` 的 transaction 对同一个内部 `SerialBus` 串行化执行
-
-最后一个 client 引用释放后，内部 `SerialBus` 通过 RAII 关闭底层 `SerialPort`
-
-## 2.2. Shared Bus 使用约束
-
-CAN Driver：
-
-```text
-Driver obtains a private CanChannel through acquire_can_channel()
-Driver does not own raw CanBus
-```
-
-Serial Driver：
-
-```text
-Driver obtains SerialBusClient through acquire_serial_bus_client()
-Driver performs a complete request-response inside one transaction
-```
-
-使用约束：
-
-- physical endpoint 的唯一所有权由 Core acquisition helper 协调
-- logical bus name、physical resource 与 compatibility signature 必须保持一致
-- Driver 析构只释放自己的逻辑访问对象，不直接关闭 shared physical Bus
-- CAN consumer 只消费自己的 `CanChannel`
-- Serial request 与 response 必须处于同一个 transaction
-- Shared Bus 只提供同进程资源协调，不提供跨进程 broker
-
 ---
 
-# Part I 基础类型
+## 2 基础类型与命令
 
-## 3. `JointVector`
+### `JointVector`
 
 头文件
 
@@ -423,7 +165,7 @@ JointVector target{
 
 ---
 
-## 4. `ActuatorVector`
+### `ActuatorVector`
 
 定义
 
@@ -437,7 +179,7 @@ using ActuatorVector = std::vector<double>;
 
 即使底层厂商 SDK 使用编码器计数、电流或 RPM，进入 `ActuatorVector` 前也必须完成单位转换
 
-### 具体使用示例
+#### 示例
 
 Backend 内部通常先使用厂商 SDK 原始值，再转换到 `ActuatorVector`
 
@@ -458,7 +200,7 @@ for(std::size_t i = 0; i < 6; ++i) {
 
 ---
 
-## 5. `JointState`
+### `JointState`
 
 定义
 
@@ -496,7 +238,7 @@ state.tor = {0.0, 0.0, 0.0};
 
 ---
 
-## 6. `ActuatorState`
+### `ActuatorState`
 
 定义
 
@@ -527,7 +269,7 @@ struct ActuatorState {
 
 Backend 不应把厂商原始数据直接填入 `pos`、`vel` 和 `tor`
 
-### 具体使用示例
+#### 示例
 
 Backend `read()` 的典型返回结构
 
@@ -547,53 +289,7 @@ return state;
 
 ---
 
-## 7. `JointImpedanceGains`
-
-定义
-
-```cpp
-struct JointImpedanceGains {
-    JointVector kp;
-    JointVector kd;
-};
-```
-
-单位
-
-```text
-kp N*m/rad
-kd N*m*s/rad
-```
-
-用途
-
-为五种阻抗模式分别提供 Joint 侧刚度与阻尼
-
-约束
-
-- `kp` 与 `kd` 长度等于 Joint 数量
-- 所有值必须有限
-- 所有值必须非负
-
-### 具体使用示例
-
-为一个三关节测试控制器创建低刚度拖拽参数
-
-```cpp
-serial_arm::JointImpedanceGains drag_gains;
-drag_gains.kp = {0.0, 0.0, 0.0};
-drag_gains.kd = {0.10, 0.12, 0.08};
-
-serial_arm::JointCtrllerCfg cfg;
-cfg.joints_count = 3;
-cfg.compliant_drag_gains = drag_gains;
-```
-
-实际 Robot 配置通常通过 YAML 加载，不需要在业务代码里逐项手工构造
-
----
-
-## 8. `JointPosCmd`
+### `JointPosCmd`
 
 定义
 
@@ -622,7 +318,7 @@ robot.set_cmd(cmd);
 
 ---
 
-## 9. `JointPosVelCmd`
+### `JointPosVelCmd`
 
 定义
 
@@ -650,7 +346,7 @@ robot.set_cmd(cmd);
 
 ---
 
-## 10. `JointPosVelTorCmd`
+### `JointPosVelTorCmd`
 
 定义
 
@@ -690,7 +386,7 @@ extra_torque + model_feedforward
 
 ---
 
-## 11. `JointCmd`
+### `JointCmd`
 
 定义
 
@@ -706,7 +402,7 @@ using JointCmd = std::variant<
 
 直接把三种具体命令传给 `Robot::set_cmd()` 即可
 
-### 具体使用示例
+#### 示例
 
 `JointCmd` 是 variant，因此同一个变量可以承载三种 reference
 
@@ -729,7 +425,7 @@ robot.set_cmd(cmd);
 
 ---
 
-## 12. `JointCtrlCmd`
+### `JointCtrlCmd`
 
 定义
 
@@ -775,7 +471,7 @@ auto result = robot.set_full_cmd(cmd);
 
 ---
 
-## 13. `ActuatorCtrlCmd`
+### `ActuatorCtrlCmd`
 
 定义
 
@@ -795,7 +491,7 @@ struct ActuatorCtrlCmd {
 
 Backend 必须完整解释这五个字段
 
-### 具体使用示例
+#### 示例
 
 `ActuatorCtrlCmd` 最常见的消费者是 Hardware Backend
 
@@ -819,146 +515,11 @@ MyBus::write(const serial_arm::ActuatorCtrlCmd& cmd) {
 
 ---
 
-# Part II 控制模式
+## 3 Robot Profile 与配置
 
-## 14. `JointImpedanceMode`
+本章对应 Tutorial 中的 Robot Profile、Core YAML、模型与 Safety limit 配置链
 
-定义
-
-```cpp
-enum class JointImpedanceMode {
-    RIGID_HOLD,
-    RIGID_TRACKING,
-    COMPLIANT_HOLD,
-    COMPLIANT_DRAG,
-    COMPLIANT_TRACKING,
-};
-```
-
-### `RIGID_HOLD`
-
-进入模式时记录当前实测位置
-
-之后保持该位置并使用 `rigid_hold_gains`
-
-不接受 `set_cmd()`
-
-典型调用
-
-```cpp
-robot.set_impedance_mode(
-    JointImpedanceMode::RIGID_HOLD);
-```
-
-### `RIGID_TRACKING`
-
-使用上层 `set_cmd()` 目标并使用 `rigid_tracking_gains`
-
-典型调用
-
-```cpp
-robot.set_impedance_mode(
-    JointImpedanceMode::RIGID_TRACKING);
-
-robot.set_cmd(
-    JointPosCmd{target});
-```
-
-### `COMPLIANT_HOLD`
-
-进入模式时记录当前实测位置
-
-使用低刚度 `compliant_hold_gains`
-
-不接受 `set_cmd()`
-
-### `COMPLIANT_DRAG`
-
-每个控制周期都把当前实测位置作为位置参考
-
-使用 `compliant_drag_gains`
-
-不接受 `set_cmd()`
-
-典型用途
-
-- 手动拖拽
-- 示教
-- 低阻力关节移动
-
-### `COMPLIANT_TRACKING`
-
-接受 `set_cmd()`
-
-使用 `compliant_tracking_gains`
-
-适合带柔顺性的轨迹跟踪
-
-### 具体使用示例
-
-```cpp
-robot.set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD);
-robot.set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
-robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_HOLD);
-robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_DRAG);
-robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
-```
-
-只有 `RIGID_TRACKING` 和 `COMPLIANT_TRACKING` 接受外部 `set_cmd()` reference
-
----
-
-## 15. `ModelFeedforwardMode`
-
-定义
-
-```cpp
-enum class ModelFeedforwardMode {
-    NONE,
-    GRAVITY,
-    FULL_INVERSE_DYNAMICS,
-};
-```
-
-### `NONE`
-
-不加入模型前馈
-
-### `GRAVITY`
-
-使用 Dynamics 的 `gravity_compensation`
-
-### `FULL_INVERSE_DYNAMICS`
-
-使用 Dynamics 的 `inverse_dynamics`
-
-完整逆动力学依赖
-
-- 真实模型质量与惯量
-- 当前 `q`
-- 当前 `dq`
-- 参考 `ddq`
-
-模型参数没有验证时不要直接把 FULL_INVERSE_DYNAMICS 用于真机
-
-### 具体使用示例
-
-Robot configure 完成后、activate 前选择重力补偿
-
-```cpp
-robot.set_model_feedforward_mode(
-    serial_arm::ModelFeedforwardMode::GRAVITY);
-
-robot.activate();
-```
-
-离线 Dynamics 验证阶段可以先使用 `NONE`，确认真实惯性参数后再切换到 `GRAVITY` 或 `FULL_INVERSE_DYNAMICS`
-
----
-
-# Part III Robot Profile 与配置
-
-## 16. `RobotProfileCore`
+### `RobotProfileCore`
 
 头文件
 
@@ -992,7 +553,7 @@ hardware_plugin
 hardware_config_path
 ```
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 auto profile_result = serial_arm::load_robot_profile_core("dm_arm_gray");
@@ -1012,7 +573,7 @@ std::cout << profile.hardware_config_path << "\n";
 
 ---
 
-## 17. `RobotProfileLoadOptions`
+### `RobotProfileLoadOptions`
 
 定义
 
@@ -1023,19 +584,19 @@ struct RobotProfileLoadOptions {
 };
 ```
 
-### `profile_file`
+#### `profile_file`
 
 显式指定 `robot_profiles.yaml`
 
 非空时优先级最高
 
-### `resource_paths`
+#### `resource_paths`
 
 额外资源根目录
 
 适合 standalone 安装或测试目录
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::RobotProfileLoadOptions options;
@@ -1054,7 +615,7 @@ auto profile = serial_arm::load_robot_profile_core(
 
 ---
 
-## 18. `load_robot_profile_core()`
+### `load_robot_profile_core()`
 
 签名
 
@@ -1107,7 +668,7 @@ auto result =
 - `MISSING_FIELD`
 - `RESOURCE_NOT_FOUND`
 
-### Doxygen 语义展开
+#### 接口说明
 
 将一个 Robot Profile 名称解析为 Core 与 Hardware 真正需要的绝对资源路径
 
@@ -1155,7 +716,7 @@ std::cout << "hardware config: " << profile.hardware_config_path << "\n";
 
 ---
 
-## 19. `robot_profile_search_paths()`
+### `robot_profile_search_paths()`
 
 签名
 
@@ -1181,7 +742,7 @@ for(const auto& path :
 
 Profile 找不到时优先调用这个函数，而不是在代码里硬编码更多路径
 
-### Doxygen 语义展开
+#### 接口说明
 
 返回 Robot Profile resolver 使用的资源根目录，用于定位 profile 找不到的问题
 
@@ -1210,7 +771,7 @@ for(const auto& path : serial_arm::robot_profile_search_paths(options)) {
 
 ---
 
-## 20. `RuntimeCfg`
+### `RuntimeCfg`
 
 定义
 
@@ -1224,7 +785,7 @@ struct RuntimeCfg {
 };
 ```
 
-### `ctrl_frequency_hz`
+#### `ctrl_frequency_hz`
 
 Robot 目标控制频率
 
@@ -1236,27 +797,27 @@ Robot 目标控制频率
 
 作为 nominal dt
 
-### `joint_acc_filter_alpha`
+#### `joint_acc_filter_alpha`
 
 Robot 内部关节加速度估计低通系数
 
-### `write_enabled`
+#### `write_enabled`
 
 是否允许 `Robot::activate()`
 
 `false` 时 `activate()` 返回 `RobotErr::WRITE_DISABLED`
 
-### `model_feedforward_mode`
+#### `model_feedforward_mode`
 
 模型前馈策略
 
-### `tracking_impedance_mode`
+#### `tracking_impedance_mode`
 
 配置层默认 tracking mode
 
 具体 Adapter 或 Session 可以读取它作为默认策略
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::RuntimeCfg runtime;
@@ -1271,7 +832,7 @@ runtime.tracking_impedance_mode = serial_arm::JointImpedanceMode::COMPLIANT_TRAC
 
 ---
 
-## 21. `ShutdownCfg`
+### `ShutdownCfg`
 
 定义
 
@@ -1296,7 +857,7 @@ struct ShutdownCfg {
 
 其中 `velocity_tolerance` 会被 `Robot::clear_fault()` 用作低速度恢复判据
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::ShutdownCfg shutdown;
@@ -1314,7 +875,7 @@ shutdown.timeout_s = 15.0;
 
 ---
 
-## 22. `DynamicsCfg`
+### `DynamicsCfg`
 
 定义
 
@@ -1347,7 +908,7 @@ model:
   gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
 ```
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::DynamicsCfg dynamics_cfg;
@@ -1366,7 +927,7 @@ dynamics.configure(dynamics_cfg);
 
 ---
 
-## 23. `RobotCfg`
+### `RobotCfg`
 
 定义
 
@@ -1389,7 +950,7 @@ struct RobotCfg {
 
 优先通过 `load_robot_cfg()` 从 YAML 生成
 
-### 具体使用示例
+#### 示例
 
 正常使用时从 YAML 获得完整 `RobotCfg`
 
@@ -1409,9 +970,9 @@ std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 
 只有测试 fixture 或配置生成工具才建议手工拼完整 `RobotCfg`
 
-### `CapabilityCfg` 与关节空间导纳
+#### `CapabilityCfg` 与关节空间导纳
 
-`capability` 保存可选高级能力；当前公开配置包含关节空间导纳：
+`capability` 保存可选高级能力；当前公开配置包含关节空间导纳
 
 ```cpp
 struct AdmittanceObserverCfg {
@@ -1452,7 +1013,7 @@ struct CapabilityCfg {
 
 YAML 中 `capability` 可以整体省略，此时导纳默认关闭；一旦提供 `capability.admittance`，应提供完整的 `observer / calibration / feel` 配置和与 Joint 数量一致的逐关节参数
 
-公开 YAML 不直接持久化 M / D / K；Core 根据手感语义参数派生内部导纳参数：
+公开 YAML 不直接持久化 M / D / K；Core 根据手感语义参数派生内部导纳参数
 
 ```text
 D = comfortable_torque / follow_speed
@@ -1460,7 +1021,7 @@ M = D * start_response_s / 3
 K = M * (4.74 / return_time_s)^2
 ```
 
-`observer.mode` 支持：
+`observer.mode` 支持
 
 ```text
 FULL_ID
@@ -1469,7 +1030,7 @@ MOMENTUM
 
 `FULL_ID` 使用实测关节力矩与完整逆动力学力矩的 residual；`MOMENTUM` 额外需要 gravity、coriolis 和 mass matrix
 
-运行时如需得到底层控制器配置，可以使用：
+运行时如需得到底层控制器配置，可以使用
 
 ```cpp
 JointAdmittanceControllerCfg
@@ -1479,7 +1040,7 @@ derive_admittance_controller_cfg(
 
 ---
 
-## 24. `load_robot_cfg()`
+### `load_robot_cfg()`
 
 C++ 签名
 
@@ -1537,7 +1098,7 @@ RobotCfg cfg =
     cfg_result.value();
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 使用 yaml-cpp 加载完整机器人配置，并结合执行器能力生成最终 Safety 配置
 
@@ -1585,7 +1146,7 @@ std::cout << "joint count = " << cfg.joint_names.size() << "\n";
 
 ---
 
-## 25. `validate_robot_core_cfg()`
+### `validate_robot_core_cfg()`
 
 签名
 
@@ -1616,7 +1177,7 @@ if(!result) {
 }
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 验证 `Robot` 控制闭环真正依赖的通用配置一致性
 
@@ -1648,7 +1209,7 @@ if(!valid) {
 
 ---
 
-## 26. `validate_robot_cfg()`
+### `validate_robot_cfg()`
 
 签名
 
@@ -1664,9 +1225,9 @@ validate_robot_cfg(
 
 如果只想验证 Robot 闭环最小契约，可使用 `validate_robot_core_cfg()`
 
-### Doxygen 语义展开
+#### 接口说明
 
-验证完整 `RobotCfg`，用于配置工具、测试和 release 前检查
+验证完整 `RobotCfg`，用于配置工具、测试和 配置检查
 
 参数
 
@@ -1693,7 +1254,7 @@ if(!valid) {
 
 ---
 
-## 27. `compare_robot_cfg()`
+### `compare_robot_cfg()`
 
 签名
 
@@ -1724,9 +1285,9 @@ compare_robot_cfg(
 
 - gray 与 white variant 对比
 - 调参前后对比
-- release 前检查配置漂移
+- 配置检查配置漂移
 
-### Doxygen 语义展开
+#### 接口说明
 
 比较两个 YAML 解析后的最终配置，而不是比较原始文本差异
 
@@ -1763,9 +1324,7 @@ for(const auto& diff : diff_result.value()) {
 
 ---
 
-# Part IV Model 与 Safety limit 解析
-
-## 28. `ModelLoader`
+### `ModelLoader`
 
 头文件
 
@@ -1819,7 +1378,7 @@ const RobotModelInfo& model =
 - `FIXED_JOINT_CONTROLLED`
 - `INVALID_LIMIT`
 
-### Doxygen 语义展开
+#### 接口说明
 
 从 URDF 中读取指定受控 Joint 的类型和 limit 信息
 
@@ -1862,7 +1421,7 @@ for(const auto& limit : model_result->joint_limits) {
 
 ---
 
-## 29. `RobotModelInfo`
+### `RobotModelInfo`
 
 定义
 
@@ -1876,7 +1435,7 @@ struct RobotModelInfo {
 
 `joint_names` 与 `joint_limits` 保持请求顺序
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 const serial_arm::RobotModelInfo model = model_result.value();
@@ -1891,7 +1450,7 @@ for(std::size_t i = 0; i < model.joint_names.size(); ++i) {
 
 ---
 
-## 30. `ModelJointLimit`
+### `ModelJointLimit`
 
 定义
 
@@ -1910,7 +1469,7 @@ continuous joint 可以没有绝对 position limit
 
 不要人为给 continuous joint 添加 `[-pi, pi]`
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 for(const serial_arm::ModelJointLimit& limit : model.joint_limits) {
@@ -1929,7 +1488,7 @@ continuous Joint 常见 `has_position_limit == false`
 
 ---
 
-## 31. `ActuatorCapability`
+### `ActuatorCapability`
 
 头文件
 
@@ -1953,7 +1512,7 @@ struct ActuatorCapability {
 
 Backend 必须根据实际执行器型号提供这些物理能力
 
-### 具体使用示例
+#### 示例
 
 Backend 可以按执行器型号生成 capability
 
@@ -1972,7 +1531,7 @@ cap.max_kd = 5.0;
 
 ---
 
-## 32. `HardwareCapabilities`
+### `HardwareCapabilities`
 
 定义
 
@@ -1983,7 +1542,7 @@ using HardwareCapabilities =
 
 顺序必须与 Backend 管理的 Actuator 顺序一致
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::HardwareCapabilities capabilities;
@@ -1998,7 +1557,7 @@ assert(capabilities.size() == 3);
 
 ---
 
-## 33. `SafetyPolicyCfg`
+### `SafetyPolicyCfg`
 
 定义
 
@@ -2025,7 +1584,7 @@ struct SafetyPolicyCfg {
 
 `override` 和 scale 只能收窄最终限制
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::SafetyPolicyCfg policy;
@@ -2049,7 +1608,7 @@ policy.require_continuous_cmd = true;
 
 ---
 
-## 34. `ResolvedJointLimitCfg`
+### `ResolvedJointLimitCfg`
 
 定义
 
@@ -2072,7 +1631,7 @@ struct ResolvedJointLimitCfg {
 
 它适合用于打印最终生效限制，而不是作为用户直接输入配置
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 for(const auto& limit : resolved.joints) {
@@ -2089,7 +1648,7 @@ for(const auto& limit : resolved.joints) {
 
 ---
 
-## 35. `ResolvedSafetyCfg`
+### `ResolvedSafetyCfg`
 
 定义
 
@@ -2108,7 +1667,7 @@ struct ResolvedSafetyCfg {
 
 它是 `LimitResolver` 的最终输出
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 serial_arm::ResolvedSafetyCfg resolved = resolved_result.value();
@@ -2122,7 +1681,7 @@ serial_arm::SafetyCfg safety_cfg = serial_arm::to_safety_cfg(resolved);
 
 ---
 
-## 36. `LimitResolver`
+### `LimitResolver`
 
 头文件
 
@@ -2162,7 +1721,7 @@ Safety policy
 
 Safety policy 只能收窄，不能放宽底层能力
 
-### Doxygen 语义展开
+#### 接口说明
 
 把 URDF limit、Joint/Actuator 映射、硬件能力和 Safety policy 收敛成最终 Joint 侧限制
 
@@ -2208,7 +1767,7 @@ for(const auto& joint : resolved_result->joints) {
 
 ---
 
-## 37. `to_safety_cfg()`
+### `to_safety_cfg()`
 
 签名
 
@@ -2222,7 +1781,7 @@ to_safety_cfg(
 
 把 resolver 输出转换为 `Safety` 可以直接使用的配置
 
-### Doxygen 语义展开
+#### 接口说明
 
 把便于诊断展示的 `ResolvedSafetyCfg` 转成 `Safety` 真正消费的 `SafetyCfg`
 
@@ -2249,7 +1808,7 @@ if(!configured) {
 
 ---
 
-## 38. `resolve_from_safety_cfg()`
+### `resolve_from_safety_cfg()`
 
 签名
 
@@ -2264,7 +1823,7 @@ resolve_from_safety_cfg(
 
 从已经生成的 SafetyCfg 重建便于展示或诊断的 resolved 结构
 
-### Doxygen 语义展开
+#### 接口说明
 
 从已经生成的 `SafetyCfg` 重建带 Joint 名称的 resolved 结构，主要用于日志和诊断工具
 
@@ -2293,2922 +1852,11 @@ for(const auto& joint : resolved.joints) {
 
 ---
 
-# Part V JointActuatorMapper
+## 4 Robot 控制闭环
 
-## 39. `JointActuatorMapCfg`
+本章是 Native C++ 应用最主要的 API，覆盖 `configure → activate → command → cycle → deactivate` 控制生命周期
 
-头文件
-
-```cpp
-#include "serial_arm/core/joint_actuator_mapper.hpp"
-```
-
-定义
-
-```cpp
-struct JointActuatorMapCfg {
-    std::size_t joints_count;
-
-    ActuatorVector pos_ratio;
-    ActuatorVector tor_ratio;
-    std::vector<int> direction;
-
-    JointVector joint_zero_offset;
-    ActuatorVector actuator_zero_offset;
-};
-```
-
-约束
-
-- `joints_count > 0`
-- 所有数组长度等于 `joints_count`
-- `pos_ratio > 0`
-- `tor_ratio > 0`
-- `direction` 只能为 `1` 或 `-1`
-- 所有 double 必须为有限值
-
-### 具体使用示例
-
-```cpp
-serial_arm::JointActuatorMapCfg map;
-map.joints_count = 3;
-map.pos_ratio = {1.0, 6.0, 6.0};
-map.tor_ratio = {1.0, 6.0, 6.0};
-map.direction = {1, -1, 1};
-map.joint_zero_offset = {0.0, 0.0, 0.0};
-map.actuator_zero_offset = {0.0, 0.0, 0.0};
-
-serial_arm::JointActuatorMapper mapper;
-mapper.configure(map);
-```
-
-如果厂商 SDK 已经报告减速器输出端状态，`pos_ratio` 和 `tor_ratio` 通常设为 1
-
----
-
-## 40. `JointActuatorMapper::configure()`
-
-签名
-
-```cpp
-tl::expected<void, JointActuatorMapErr>
-configure(
-    const JointActuatorMapCfg& cfg);
-```
-
-必须在任何转换前调用
-
-示例
-
-```cpp
-JointActuatorMapper mapper;
-
-auto result =
-    mapper.configure(cfg.mapper);
-
-if(!result) {
-    return 1;
-}
-```
-
-### Doxygen 语义展开
-
-保存 Joint 与 Actuator 的方向、比例和零位关系，使后续双向转换具有固定语义
-
-参数
-
-- `cfg` 为 `JointActuatorMapCfg`，所有数组长度必须等于 `joints_count`
-
-返回值
-
-成功返回空 `expected`，配置非法返回 `JointActuatorMapErr`
-
-具体使用示例
-
-```cpp
-serial_arm::JointActuatorMapper mapper;
-
-auto result = mapper.configure(cfg.mapper);
-if(!result) {
-    std::cerr << "mapper configure error="
-              << static_cast<int>(result.error()) << "\n";
-    return 1;
-}
-```
-
----
-
-## 41. `JointActuatorMapper::to_joint_state()`
-
-签名
-
-```cpp
-tl::expected<
-    JointState,
-    JointActuatorMapErr
->
-to_joint_state(
-    const ActuatorState& actuator_state) const;
-```
-
-逐轴映射关系
-
-```text
-joint_pos
-=
-joint_zero_offset
-+
-direction
-*
-(actuator_pos - actuator_zero_offset)
-/
-pos_ratio
-```
-
-```text
-joint_vel
-=
-direction
-*
-actuator_vel
-/
-pos_ratio
-```
-
-```text
-joint_tor
-=
-direction
-*
-tor_ratio
-*
-actuator_tor
-```
-
-示例
-
-```cpp
-auto state_result =
-    mapper.to_joint_state(
-        actuator_state);
-
-if(!state_result) {
-    return 1;
-}
-
-JointState joint_state =
-    state_result.value();
-```
-
-### Doxygen 语义展开
-
-把 Backend 返回的统一 Actuator 状态映射到 Joint 侧状态
-
-参数
-
-- `actuator_state` 必须使用 rad、rad/s、N*m 且数量匹配
-
-返回值
-
-成功返回 `JointState`，失败返回 `JointActuatorMapErr`
-
-具体使用示例
-
-```cpp
-auto actuator_result = bus->read();
-if(!actuator_result) {
-    return 1;
-}
-
-auto joint_result = mapper.to_joint_state(actuator_result.value());
-if(!joint_result) {
-    return 1;
-}
-
-const auto& joint_state = joint_result.value();
-for(std::size_t i = 0; i < joint_state.pos.size(); ++i) {
-    std::cout << "joint " << i
-              << " q=" << joint_state.pos[i]
-              << " dq=" << joint_state.vel[i]
-              << " tau=" << joint_state.tor[i]
-              << "\n";
-}
-```
-
----
-
-## 42. `JointActuatorMapper::to_actuator_cmd()`
-
-签名
-
-```cpp
-tl::expected<
-    ActuatorCtrlCmd,
-    JointActuatorMapErr
->
-to_actuator_cmd(
-    const JointCtrlCmd& joint_cmd) const;
-```
-
-逐轴核心映射
-
-```text
-actuator_pos
-=
-actuator_zero_offset
-+
-direction
-*
-pos_ratio
-*
-(joint_pos - joint_zero_offset)
-```
-
-```text
-actuator_vel
-=
-direction
-*
-pos_ratio
-*
-joint_vel
-```
-
-```text
-actuator_tor
-=
-direction
-*
-joint_tor
-/
-tor_ratio
-```
-
-增益使用
-
-```text
-gain_ratio
-=
-pos_ratio * tor_ratio
-```
-
-```text
-actuator_kp
-=
-joint_kp / gain_ratio
-```
-
-```text
-actuator_kd
-=
-joint_kd / gain_ratio
-```
-
-### Doxygen 语义展开
-
-把 Joint 侧完整 MIT 风格命令转换为 Backend 可以发送的 Actuator 侧命令
-
-参数
-
-- `joint_cmd` 必须包含相同长度的 pos、vel、tor、kp、kd
-
-返回值
-
-成功返回 `ActuatorCtrlCmd`，失败返回 `JointActuatorMapErr`
-
-具体使用示例
-
-```cpp
-serial_arm::JointCtrlCmd joint_cmd;
-joint_cmd.pos = target_pos;
-joint_cmd.vel.assign(target_pos.size(), 0.0);
-joint_cmd.tor.assign(target_pos.size(), 0.0);
-joint_cmd.kp = cfg.ctrller.rigid_tracking_gains.kp;
-joint_cmd.kd = cfg.ctrller.rigid_tracking_gains.kd;
-
-auto actuator_cmd = mapper.to_actuator_cmd(joint_cmd);
-if(!actuator_cmd) {
-    return 1;
-}
-
-const auto& cmd = actuator_cmd.value();
-std::cout << "actuator1 target=" << cmd.pos[0]
-          << " kp=" << cmd.kp[0] << "\n";
-```
-
-使用注意
-
-- 普通业务代码不应绕过 `Robot` 手工执行这条链路
-- 该示例更适合 Mapper 单元测试或 Backend 联调
-
----
-
-## 43. `JointActuatorMapper::size()`
-
-签名
-
-```cpp
-std::size_t size() const noexcept;
-```
-
-未配置时返回 `0`
-
-配置成功后返回 `joints_count`
-
-### Doxygen 语义展开
-
-返回当前 Mapper 管理的 Joint/Actuator 数量
-
-返回值
-
-未配置返回 `0`，配置成功后返回 `joints_count`
-
-具体使用示例
-
-```cpp
-serial_arm::JointActuatorMapper mapper;
-std::cout << mapper.size() << "\n";  // 0
-
-mapper.configure(cfg.mapper);
-std::cout << mapper.size() << "\n";  // 受控关节数量
-```
-
----
-
-# Part VI JointCtrller
-
-## 44. `JointCtrller`
-
-头文件
-
-```cpp
-#include "serial_arm/core/joints_ctrller.hpp"
-```
-
-类型：`serial_arm::JointCtrller`
-
-普通应用优先使用 `Robot`
-
-只有在控制器单元测试、算法调试或不连接 Hardware 时才直接使用 `JointCtrller`
-
-### 具体使用示例
-
-直接使用控制器通常只用于离线测试
-
-```cpp
-serial_arm::JointCtrller ctrller;
-ctrller.configure(cfg.ctrller);
-ctrller.initialize(measured_state);
-ctrller.set_impedance_mode(
-    serial_arm::JointImpedanceMode::RIGID_TRACKING,
-    measured_state);
-ctrller.set_cmd(serial_arm::JointPosCmd{target});
-
-serial_arm::JointCtrllerInput input;
-input.state = measured_state;
-input.model_feedforward.assign(target.size(), 0.0);
-input.dt = 0.005;
-
-auto output = ctrller.update(input);
-```
-
-正常真机应用优先使用 `Robot`
-
----
-
-## 45. `JointCtrllerCfg`
-
-定义
-
-```cpp
-struct JointCtrllerCfg {
-    std::size_t joints_count;
-
-    JointImpedanceGains rigid_hold_gains;
-    JointImpedanceGains rigid_tracking_gains;
-    JointImpedanceGains compliant_hold_gains;
-    JointImpedanceGains compliant_drag_gains;
-    JointImpedanceGains compliant_tracking_gains;
-
-    bool allow_full_cmd;
-};
-```
-
-每套 `kp` 和 `kd` 长度必须等于 `joints_count`
-
-所有增益必须有限且非负
-
-### 具体使用示例
-
-```cpp
-serial_arm::JointCtrllerCfg controller_cfg;
-controller_cfg.joints_count = 6;
-controller_cfg.rigid_hold_gains = cfg.ctrller.rigid_hold_gains;
-controller_cfg.rigid_tracking_gains = cfg.ctrller.rigid_tracking_gains;
-controller_cfg.compliant_hold_gains = cfg.ctrller.compliant_hold_gains;
-controller_cfg.compliant_drag_gains = cfg.ctrller.compliant_drag_gains;
-controller_cfg.compliant_tracking_gains = cfg.ctrller.compliant_tracking_gains;
-controller_cfg.allow_full_cmd = false;
-```
-
-五套 gains 都必须完整提供，不能只配置当前计划使用的一种模式
-
----
-
-## 46. `JointCtrller::configure()`
-
-签名
-
-```cpp
-tl::expected<void, JointCtrllerErr>
-configure(
-    const JointCtrllerCfg& cfg);
-```
-
-成功后状态变为
-
-```text
-CONFIGURED
-```
-
-此时还不能 `update()`
-
-### Doxygen 语义展开
-
-加载五套阻抗增益和完整命令权限，完成控制器静态配置
-
-参数
-
-- `cfg` 为 `JointCtrllerCfg`
-
-返回值
-
-成功后状态变为 `CONFIGURED`，失败返回 `JointCtrllerErr`
-
-具体使用示例
-
-```cpp
-serial_arm::JointCtrller ctrller;
-
-auto result = ctrller.configure(cfg.ctrller);
-if(!result) {
-    std::cerr << "JointCtrllerErr="
-              << static_cast<int>(result.error()) << "\n";
-    return 1;
-}
-
-assert(ctrller.get_state() == serial_arm::JointCtrllerState::CONFIGURED);
-```
-
----
-
-## 47. `JointCtrller::initialize()`
-
-签名
-
-```cpp
-tl::expected<void, JointCtrllerErr>
-initialize(
-    const JointState& state);
-```
-
-用途
-
-使用真实初始关节状态初始化控制器
-
-成功后
-
-```text
-state = INITIALIZED
-mode  = RIGID_HOLD
-hold position = current measured position
-```
-
-示例
-
-```cpp
-JointCtrller ctrller;
-
-ctrller.configure(cfg.ctrller);
-
-ctrller.initialize(current_state);
-```
-
-### Doxygen 语义展开
-
-使用真实初始关节状态设置 hold reference，并进入可 update 的 `INITIALIZED` 状态
-
-参数
-
-- `state` 为当前真实 `JointState`
-
-返回值
-
-成功返回空 `expected`，失败返回 `JointCtrllerErr`
-
-具体使用示例
-
-```cpp
-auto initialized = ctrller.initialize(measured_state);
-if(!initialized) {
-    return 1;
-}
-
-assert(ctrller.get_state() == serial_arm::JointCtrllerState::INITIALIZED);
-assert(ctrller.get_impedance_mode() == serial_arm::JointImpedanceMode::RIGID_HOLD);
-```
-
-使用注意
-
-- 不要用全零假状态代替真机当前状态，否则初始保持参考可能发生跳变
-
----
-
-## 48. `JointCtrller::reset()`
-
-签名
-
-```cpp
-void reset() noexcept;
-```
-
-作用
-
-- 清除当前命令
-- 清除 hold reference
-- 回到 `CONFIGURED`
-- 不重新读取静态配置
-
-调用后必须重新 `initialize()`
-
-### Doxygen 语义展开
-
-清除运行时 reference 和 command，但保留静态控制器配置
-
-返回值
-
-无返回值，调用后状态回到 `CONFIGURED`
-
-具体使用示例
-
-```cpp
-ctrller.reset();
-
-if(ctrller.get_state() == serial_arm::JointCtrllerState::CONFIGURED) {
-    ctrller.initialize(new_measured_state);
-}
-```
-
-使用注意
-
-- reset 后不能直接 update，必须重新 initialize
-
----
-
-## 49. `JointCtrller::set_impedance_mode()`
-
-签名
-
-```cpp
-tl::expected<void, JointCtrllerErr>
-set_impedance_mode(
-    JointImpedanceMode mode,
-    const JointState& state);
-```
-
-`state` 用于把模式切换参考重新对齐到当前实测状态
-
-切换 mode 会清除已有 tracking command
-
-### Doxygen 语义展开
-
-切换五种关节阻抗模式，并用当前实测状态重新对齐 hold 或 fallback reference
-
-参数
-
-- `mode` 为目标阻抗模式
-- `state` 为切换瞬间当前实测关节状态
-
-返回值
-
-成功返回空 `expected`，失败返回 `JointCtrllerErr`
-
-具体使用示例
-
-```cpp
-auto mode_result = ctrller.set_impedance_mode(
-    serial_arm::JointImpedanceMode::COMPLIANT_TRACKING,
-    measured_state);
-
-if(!mode_result) {
-    return 1;
-}
-
-serial_arm::JointPosCmd target;
-target.pos = measured_state.pos;
-target.pos[0] += 0.05;
-
-ctrller.set_cmd(target);
-```
-
-使用注意
-
-- 模式切换会清除之前的 tracking command，切换到 tracking 后要重新 set_cmd
-
----
-
-## 50. `JointCtrller::set_cmd()`
-
-签名
-
-```cpp
-tl::expected<void, JointCtrllerErr>
-set_cmd(
-    const JointCmd& cmd);
-```
-
-前置条件
-
-- 已 configure
-- 已 initialize
-- 当前 mode 是 `RIGID_TRACKING` 或 `COMPLIANT_TRACKING`
-
-否则返回
-
-```text
-CMD_NOT_ALLOWED_IN_MODE
-```
-
-### Doxygen 语义展开
-
-设置位置、位置速度或位置速度力矩三类 tracking reference
-
-参数
-
-- `cmd` 为 `JointCmd` variant 中任意一种参考命令
-
-返回值
-
-成功返回空 `expected`，非 tracking mode 返回 `CMD_NOT_ALLOWED_IN_MODE`
-
-具体使用示例
-
-```cpp
-ctrller.set_impedance_mode(
-    serial_arm::JointImpedanceMode::RIGID_TRACKING,
-    measured_state);
-
-serial_arm::JointPosVelCmd cmd;
-cmd.pos = measured_state.pos;
-cmd.vel.assign(cmd.pos.size(), 0.0);
-cmd.pos[1] += 0.03;
-
-const auto result = ctrller.set_cmd(cmd);
-if(!result) {
-    std::cerr << static_cast<int>(result.error()) << "\n";
-}
-```
-
----
-
-## 51. `JointCtrller::set_full_cmd()`
-
-签名
-
-```cpp
-tl::expected<void, JointCtrllerErr>
-set_full_cmd(
-    const JointCtrlCmd& cmd);
-```
-
-额外前置条件
-
-```text
-allow_full_cmd = true
-```
-
-否则返回
-
-```text
-FULL_CMD_NOT_ALLOWED
-```
-
-### Doxygen 语义展开
-
-直接设置完整 Joint 侧 pos、vel、tor、kp、kd 命令
-
-参数
-
-- `cmd` 为完整 `JointCtrlCmd`
-
-返回值
-
-成功返回空 `expected`，未开启 `allow_full_cmd` 返回 `FULL_CMD_NOT_ALLOWED`
-
-具体使用示例
-
-```cpp
-serial_arm::JointCtrlCmd cmd;
-cmd.pos = measured_state.pos;
-cmd.vel.assign(n, 0.0);
-cmd.tor.assign(n, 0.0);
-cmd.kp.assign(n, 5.0);
-cmd.kd.assign(n, 0.1);
-
-const auto result = ctrller.set_full_cmd(cmd);
-if(!result) {
-    std::cerr << "set_full_cmd failed: "
-              << static_cast<int>(result.error()) << "\n";
-}
-```
-
-使用注意
-
-- 只在确实需要逐周期覆盖 kp/kd 时开启 full command
-
----
-
-## 52. `JointCtrller::update()`
-
-输入
-
-```cpp
-struct JointCtrllerInput {
-    JointState state;
-    JointVector model_feedforward;
-    double dt;
-};
-```
-
-签名
-
-```cpp
-tl::expected<
-    JointCtrllerOutput,
-    JointCtrllerErr
->
-update(
-    const JointCtrllerInput& input);
-```
-
-输出
-
-```cpp
-struct JointCtrllerOutput {
-    JointCtrlCmd cmd;
-};
-```
-
-独立控制器示例
-
-```cpp
-JointCtrllerInput input;
-
-input.state = measured_state;
-input.model_feedforward =
-    JointVector(n, 0.0);
-input.dt = 0.005;
-
-auto result =
-    ctrller.update(input);
-
-if(result) {
-    const JointCtrlCmd& cmd =
-        result->cmd;
-}
-```
-
-### Doxygen 语义展开
-
-根据当前 Joint 状态、模型前馈和 dt 生成一帧完整 Joint 控制命令
-
-参数
-
-- `input.state` 为当前关节状态
-- `input.model_feedforward` 为 Joint 侧前馈力矩
-- `input.dt` 为正有限控制周期
-
-返回值
-
-成功返回 `JointCtrllerOutput`，其中 `cmd` 是完整 `JointCtrlCmd`
-
-具体使用示例
-
-```cpp
-serial_arm::JointCtrllerInput input;
-input.state = measured_state;
-input.model_feedforward.assign(n, 0.0);
-input.dt = 0.005;
-
-auto output = ctrller.update(input);
-if(!output) {
-    return 1;
-}
-
-const serial_arm::JointCtrlCmd& joint_cmd = output->cmd;
-std::cout << "joint1 kp=" << joint_cmd.kp[0]
-          << " target=" << joint_cmd.pos[0] << "\n";
-```
-
----
-
-## 53. `JointCtrller::get_state()`
-
-```cpp
-JointCtrllerState
-get_state() const noexcept;
-```
-
-返回
-
-```text
-UNCONFIGURED
-CONFIGURED
-INITIALIZED
-```
-
-### Doxygen 语义展开
-
-读取 `JointCtrller` 当前生命周期状态
-
-返回值
-
-返回 `UNCONFIGURED`、`CONFIGURED` 或 `INITIALIZED`
-
-具体使用示例
-
-```cpp
-switch(ctrller.get_state()) {
-case serial_arm::JointCtrllerState::UNCONFIGURED:
-    std::cout << "need configure\n";
-    break;
-case serial_arm::JointCtrllerState::CONFIGURED:
-    std::cout << "need initialize\n";
-    break;
-case serial_arm::JointCtrllerState::INITIALIZED:
-    std::cout << "ready to update\n";
-    break;
-}
-```
-
----
-
-## 54. `JointCtrller::get_impedance_mode()`
-
-```cpp
-JointImpedanceMode
-get_impedance_mode() const noexcept;
-```
-
-返回当前模式
-
-### Doxygen 语义展开
-
-读取当前阻抗模式，常用于调试、状态显示和测试断言
-
-返回值
-
-返回 `JointImpedanceMode`
-
-具体使用示例
-
-```cpp
-if(ctrller.get_impedance_mode() ==
-   serial_arm::JointImpedanceMode::COMPLIANT_DRAG) {
-    std::cout << "manual drag mode\n";
-}
-```
-
----
-
-# Part VII Safety
-
-## 55. `JointLimitCfg`
-
-定义
-
-```cpp
-struct JointLimitCfg {
-    std::vector<std::uint8_t> has_position_limit;
-    JointVector min_pos;
-    JointVector max_pos;
-    JointVector max_vel;
-    JointVector max_acc;
-    JointVector max_effort;
-    JointVector max_kp;
-    JointVector max_kd;
-    JointVector pos_margin;
-};
-```
-
-这是已经解析到 Joint 侧的最终限制
-
-continuous joint 可以让 `has_position_limit[i] == 0`
-
-此时不执行绝对位置上下限检查，但速度、加速度、effort、kp、kd 和超时检查仍然有效
-
-### 具体使用示例
-
-```cpp
-const serial_arm::JointLimitCfg& limits = cfg.safety.limits;
-
-for(std::size_t i = 0; i < cfg.joint_names.size(); ++i) {
-    std::cout << cfg.joint_names[i]
-              << " max_vel=" << limits.max_vel[i]
-              << " max_acc=" << limits.max_acc[i]
-              << " max_effort=" << limits.max_effort[i]
-              << "\n";
-}
-```
-
-`has_position_limit[i] == 0` 时不要访问该 Joint 的绝对位置限制去做业务判断
-
----
-
-## 56. `FaultCompliantRecoveryCfg`
-
-定义
-
-```cpp
-struct FaultCompliantRecoveryCfg {
-    JointVector kp;
-    JointVector kd;
-    JointVector max_vel;
-    double effort_scale;
-};
-```
-
-用于 FAULT 内部受限柔性恢复
-
-`effort_scale` 用于限制恢复阶段保留的模型补偿力矩比例
-
-### 具体使用示例
-
-```cpp
-serial_arm::FaultCompliantRecoveryCfg recovery;
-recovery.kp = {8.0, 20.0, 12.0, 5.0, 3.0, 1.0};
-recovery.kd = {0.08, 0.20, 0.12, 0.05, 0.03, 0.01};
-recovery.max_vel = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
-recovery.effort_scale = 0.5;
-```
-
-这组参数只用于 FAULT 内部的受限柔性恢复，不等同于正常 `COMPLIANT_DRAG` gains
-
----
-
-## 57. `FaultRecoveryCfg`
-
-定义
-
-```cpp
-struct FaultRecoveryCfg {
-    FaultHoldMode default_mode;
-    bool allow_compliant_recovery;
-    bool require_operator_request;
-    bool gravity_model_validated;
-    double recovery_timeout_s;
-    FaultCompliantRecoveryCfg compliant_recovery;
-};
-```
-
-正常策略应保持
-
-```text
-default_mode = RIGID_HOLD
-```
-
-柔性恢复不应自动进入
-
-### 具体使用示例
-
-```cpp
-serial_arm::FaultRecoveryCfg recovery_cfg;
-recovery_cfg.default_mode = serial_arm::FaultHoldMode::RIGID_HOLD;
-recovery_cfg.allow_compliant_recovery = true;
-recovery_cfg.require_operator_request = true;
-// 只有完成真实重力模型验证后才能设置为 true
-recovery_cfg.gravity_model_validated = true;
-recovery_cfg.recovery_timeout_s = 30.0;
-recovery_cfg.compliant_recovery = recovery;
-```
-
-`default_mode` 应保持 `RIGID_HOLD`，柔性恢复必须由操作员显式请求
-
----
-
-## 58. `SafetyAction`
-
-定义
-
-```cpp
-enum class SafetyAction {
-    STOP_HOLD,
-    DISABLE,
-};
-```
-
-`STOP_HOLD` 表示状态仍可信，Robot 可以拒绝危险命令并尝试低风险保持
-
-`DISABLE` 表示状态或硬件可信度不足，应优先失能
-
-### 具体使用示例
-
-```cpp
-const auto action = safety.action_for(fault.code);
-
-switch(action) {
-case serial_arm::SafetyAction::STOP_HOLD:
-    bus->stop();
-    break;
-case serial_arm::SafetyAction::DISABLE:
-    bus->deactivate();
-    break;
-}
-```
-
----
-
-## 59. `FaultHoldMode`
-
-定义
-
-```cpp
-enum class FaultHoldMode {
-    RIGID_HOLD,
-    COMPLIANT_RECOVERY,
-};
-```
-
-它描述的是 Robot 已经进入 FAULT 后的内部保持状态
-
-不要与正常运行时的 `JointImpedanceMode` 混淆
-
-### 具体使用示例
-
-```cpp
-if(robot.get_state() == serial_arm::RobotState::FAULT) {
-    if(robot.get_fault_hold_mode() == serial_arm::FaultHoldMode::RIGID_HOLD) {
-        std::cout << "fault rigid hold\n";
-    }
-    else {
-        std::cout << "fault compliant recovery\n";
-    }
-}
-```
-
-不要用 `FaultHoldMode` 表示正常 ACTIVE 下的阻抗模式
-
----
-
-## 60. `SafetyCfg`
-
-头文件
-
-```cpp
-#include "serial_arm/core/safety.hpp"
-```
-
-主要字段
-
-```cpp
-struct SafetyCfg {
-    std::size_t joints_count;
-    JointLimitCfg limits;
-
-    double cmd_timeout_s;
-    double state_timeout_s;
-    double max_dt_s;
-    double numeric_tolerance;
-    double state_vel_fault_ratio;
-
-    bool require_all_actuators_online;
-    bool require_all_actuators_enabled;
-    bool reject_motor_error;
-    bool require_continuous_cmd;
-
-    FaultRecoveryCfg fault_recovery;
-};
-```
-
-正常应用通过 `load_robot_cfg()` 自动生成
-
-不建议业务代码直接修改 SafetyCfg 后跳过验证
-
-### 具体使用示例
-
-正常代码从 `RobotCfg` 读取最终 Safety 配置
-
-```cpp
-serial_arm::Safety safety;
-
-const serial_arm::SafetyCfg& safety_cfg = cfg.safety;
-auto result = safety.configure(safety_cfg);
-if(!result) {
-    std::cerr << "invalid Safety config\n";
-}
-```
-
-业务层不要绕过 `load_robot_cfg()` 自己放宽 `SafetyCfg`
-
----
-
-## 61. `SafetyFault`
-
-定义
-
-```cpp
-struct SafetyFault {
-    SafetyErr code;
-    std::size_t index;
-    double value;
-    double limit;
-};
-```
-
-示例
-
-如果第 2 个 Joint 超出速度限制，fault 可以表达
-
-```text
-code  = JOINT_VEL_LIMIT
-index = 1
-value = measured velocity
-limit = allowed velocity
-```
-
----
-
-## 62. `Safety::configure()`
-
-签名
-
-```cpp
-tl::expected<void, SafetyFault>
-configure(
-    const SafetyCfg& cfg);
-```
-
-必须在检查状态和命令前调用
-
-### Doxygen 语义展开
-
-加载最终 Joint/Actuator 安全限制和故障恢复策略
-
-参数
-
-- `cfg` 为已经解析完成的 `SafetyCfg`
-
-返回值
-
-成功返回空 `expected`，失败返回包含 index/value/limit 的 `SafetyFault`
-
-具体使用示例
-
-```cpp
-serial_arm::Safety safety;
-
-auto result = safety.configure(cfg.safety);
-if(!result) {
-    const auto& fault = result.error();
-    std::cerr << "SafetyErr=" << static_cast<int>(fault.code)
-              << " index=" << fault.index
-              << " value=" << fault.value
-              << " limit=" << fault.limit << "\n";
-    return 1;
-}
-```
-
----
-
-## 63. `Safety::check_state()`
-
-签名
-
-```cpp
-tl::expected<void, SafetyFault>
-check_state(
-    const JointState& joint_state,
-    const ActuatorState& actuator_state,
-    double state_age_s) const;
-```
-
-检查内容包括
-
-- JointState 维度
-- ActuatorState 维度
-- NaN 和 Inf
-- state timeout
-- Joint position
-- Joint velocity
-- actuator online
-- actuator enabled
-- actuator error
-
-示例
-
-```cpp
-auto result =
-    safety.check_state(
-        joint_state,
-        actuator_state,
-        state_age_s);
-
-if(!result) {
-    const SafetyFault fault =
-        result.error();
-}
-```
-
-### Doxygen 语义展开
-
-在 ACTIVE 控制周期中联合检查 Joint 状态与 Actuator 健康状态
-
-参数
-
-- `joint_state` 为映射后的 Joint 状态
-- `actuator_state` 为 Backend 状态
-- `state_age_s` 为距离上一帧合法状态的时间
-
-返回值
-
-合法返回空 `expected`，非法返回 `SafetyFault`
-
-具体使用示例
-
-```cpp
-const double state_age_s = 0.004;
-
-auto result = safety.check_state(
-    joint_state,
-    actuator_state,
-    state_age_s);
-
-if(!result) {
-    const auto action = safety.action_for(result.error().code);
-    if(action == serial_arm::SafetyAction::DISABLE) {
-        bus->deactivate();
-    }
-}
-```
-
----
-
-## 64. `Safety::check_cmd_age()`
-
-签名
-
-```cpp
-tl::expected<void, SafetyFault>
-check_cmd_age(
-    double cmd_age_s) const;
-```
-
-用于 tracking command timeout
-
-如果 `cmd_age_s > cmd_timeout_s`，返回 `CMD_TIMEOUT`
-
-### Doxygen 语义展开
-
-检查 tracking reference 是否已经超过允许的命令刷新时间
-
-参数
-
-- `cmd_age_s` 为当前时间距离最后一帧合法外部命令的秒数
-
-返回值
-
-合法返回空 `expected`，超时通常返回 `CMD_TIMEOUT`
-
-具体使用示例
-
-```cpp
-const double cmd_age_s = 0.12;
-const auto result = safety.check_cmd_age(cmd_age_s);
-
-if(!result && result.error().code == serial_arm::SafetyErr::CMD_TIMEOUT) {
-    std::cerr << "tracking command timeout\n";
-}
-```
-
----
-
-## 65. `Safety::check_joint_cmd()`
-
-签名
-
-```cpp
-tl::expected<
-    JointCtrlCmd,
-    SafetyFault
->
-check_joint_cmd(
-    const JointState& state,
-    const JointCtrlCmd& cmd,
-    double dt);
-```
-
-它不是只返回 true 或 false
-
-对于浮点误差级轻微越界，Safety 可以执行 clamp，并返回安全命令
-
-因此应该使用返回值继续下游流程
-
-正确
-
-```cpp
-auto safe_result =
-    safety.check_joint_cmd(
-        state,
-        cmd,
-        dt);
-
-if(!safe_result) {
-    return;
-}
-
-JointCtrlCmd safe_cmd =
-    safe_result.value();
-```
-
-不要检查通过后继续使用原来的 `cmd`
-
-### Doxygen 语义展开
-
-检查一帧 Joint 控制命令是否满足位置、速度、力矩、增益和连续性限制，并返回真正应该下发的安全命令
-
-参数
-
-- `state` 为当前 Joint 状态
-- `cmd` 为控制器输出
-- `dt` 为当前控制周期
-
-返回值
-
-成功返回可能经过浮点误差级 clamp 的 `JointCtrlCmd`，失败返回 `SafetyFault`
-
-具体使用示例
-
-```cpp
-auto safe_result = safety.check_joint_cmd(
-    joint_state,
-    controller_output.cmd,
-    dt);
-
-if(!safe_result) {
-    const auto& fault = safe_result.error();
-    std::cerr << "rejected command at joint " << fault.index << "\n";
-    return 1;
-}
-
-const serial_arm::JointCtrlCmd safe_cmd = safe_result.value();
-auto actuator_cmd = mapper.to_actuator_cmd(safe_cmd);
-```
-
-使用注意
-
-- 通过检查后要使用返回的 `safe_cmd`，不要继续下发原始 `cmd`
-
----
-
-## 66. `Safety::reset_cmd_history()`
-
-签名
-
-```cpp
-tl::expected<void, SafetyFault>
-reset_cmd_history(
-    const JointState& state);
-```
-
-作用
-
-把命令连续性历史重置到当前实测位置和零速度
-
-典型使用场景
-
-- activate
-- impedance mode 切换
-- fault recovery
-- reference reset
-
-### Doxygen 语义展开
-
-把 command continuity 历史重置到当前实测位置和零目标速度
-
-参数
-
-- `state` 为当前 Joint 状态
-
-返回值
-
-成功返回空 `expected`，失败返回 `SafetyFault`
-
-具体使用示例
-
-```cpp
-const auto reset_result = safety.reset_cmd_history(joint_state);
-if(!reset_result) {
-    return 1;
-}
-
-// 之后第一帧命令会从当前实测位置作为连续性基准
-```
-
-使用注意
-
-- activate、模式切换和 fault recovery 后都适合调用
-
----
-
-## 67. `Safety::clear_cmd_history()`
-
-```cpp
-void clear_cmd_history() noexcept;
-```
-
-完全清除命令历史
-
-典型用于 deactivate
-
-### Doxygen 语义展开
-
-完全清空命令连续性历史
-
-返回值
-
-无返回值
-
-具体使用示例
-
-```cpp
-bus->deactivate();
-safety.clear_cmd_history();
-```
-
-使用注意
-
-- 典型用于退出 ACTIVE，不等同于 reset_cmd_history
-
----
-
-## 68. `Safety::action_for()`
-
-签名
-
-```cpp
-SafetyAction
-action_for(
-    SafetyErr err) const noexcept;
-```
-
-返回
-
-```text
-STOP_HOLD
-DISABLE
-```
-
-`Robot` 使用它决定故障时是尝试安全保持还是直接失能
-
-### Doxygen 语义展开
-
-把具体 `SafetyErr` 映射为 Robot 应采取的故障动作
-
-参数
-
-- `err` 为 Safety 错误码
-
-返回值
-
-返回 `STOP_HOLD` 或 `DISABLE`
-
-具体使用示例
-
-```cpp
-const serial_arm::SafetyAction action =
-    safety.action_for(serial_arm::SafetyErr::ACTUATOR_OFFLINE);
-
-if(action == serial_arm::SafetyAction::DISABLE) {
-    bus->deactivate();
-}
-```
-
----
-
-## 69. `Safety::is_configured()`
-
-```cpp
-bool is_configured() const noexcept;
-```
-
-用于诊断和测试
-
-### Doxygen 语义展开
-
-检查 Safety 是否已经成功 configure
-
-返回值
-
-已配置返回 true
-
-具体使用示例
-
-```cpp
-if(!safety.is_configured()) {
-    std::cerr << "Safety is not ready\n";
-}
-```
-
----
-
-## 70. `Safety::clamp_count()`
-
-```cpp
-std::uint64_t clamp_count() const noexcept;
-```
-
-返回 Safety 已执行的浮点误差级 clamp 次数
-
-如果该值持续快速增加，说明命令或边界配置值得检查
-
-### Doxygen 语义展开
-
-读取 Safety 对轻微数值越界执行 clamp 的累计次数
-
-返回值
-
-返回累计计数
-
-具体使用示例
-
-```cpp
-const auto before = safety.clamp_count();
-const auto safe_result = safety.check_joint_cmd(state, cmd, dt);
-const auto after = safety.clamp_count();
-
-if(after > before) {
-    std::cout << "command was numerically clamped\n";
-}
-```
-
----
-
-# Part VIII Dynamics
-
-## 71. `Dynamics`
-
-头文件
-
-```cpp
-#include "serial_arm/dynamics/dynamics.hpp"
-```
-
-Dynamics 使用 Pinocchio 维护完整运动学和动力学缓存
-
-使用模式是
-
-```text
-configure once
-    ->
-update every state
-    ->
-read cached outputs many times
-```
-
-不要在每个周期重复 configure
-
-### Doxygen 语义展开
-
-构造并持有一套 Pinocchio 运动学动力学模型，推荐一个机器人实例对应一个长期存活的 Dynamics 对象
-
-返回值
-
-对象默认处于未配置状态，析构时释放内部模型资源
-
-具体使用示例
-
-```cpp
-serial_arm::Dynamics dynamics;
-
-if(!dynamics.is_configured()) {
-    auto result = dynamics.configure(cfg.dynamics);
-    if(!result) {
-        return 1;
-    }
-}
-
-// Dynamics 支持移动，不支持复制
-serial_arm::Dynamics moved = std::move(dynamics);
-```
-
----
-
-## 72. `Dynamics::configure()`
-
-签名
-
-```cpp
-tl::expected<void, DynamicsErr>
-configure(
-    const DynamicsCfg& cfg);
-```
-
-成功后
-
-```cpp
-dynamics.is_configured() == true
-```
-
-但此时还没有运行状态缓存
-
-```cpp
-dynamics.is_updated() == false
-```
-
-### Doxygen 语义展开
-
-根据 `DynamicsCfg` 加载 URDF、受控 Joint、base/tool frame 和重力配置
-
-参数
-
-- `cfg` 为动力学配置
-
-返回值
-
-成功返回空 `expected`，失败返回 `DynamicsErr`
-
-具体使用示例
-
-```cpp
-serial_arm::Dynamics dynamics;
-const auto result = dynamics.configure(cfg.dynamics);
-
-if(!result) {
-    std::cerr << "DynamicsErr="
-              << static_cast<int>(result.error()) << "\n";
-    return 1;
-}
-
-const auto& info = dynamics.get_info();
-std::cout << "model mass=" << info.total_mass << "\n";
-```
-
----
-
-## 73. `Dynamics::update()`
-
-签名
-
-```cpp
-tl::expected<void, DynamicsErr>
-update(
-    const JointState& state,
-    const JointVector& acc,
-    const JointVector& ref_acc);
-```
-
-输入
-
-| 参数 | 含义 |
-| --- | --- |
-| `state.pos` | 当前 q |
-| `state.vel` | 当前 dq |
-| `state.tor` | 当前反馈关节力矩 |
-| `acc` | 当前估计 ddq |
-| `ref_acc` | 参考关节加速度 |
-
-一次 update 会集中计算并缓存
-
-- gravity
-- gravity compensation
-- nonlinear term
-- coriolis
-- mass matrix
-- inverse dynamics
-- forward dynamics
-- tool pose
-- tool Jacobian
-
-示例
-
-```cpp
-auto result =
-    dynamics.update(
-        state,
-        joint_acc,
-        joint_ref_acc);
-
-if(!result) {
-    return 1;
-}
-```
-
-### Doxygen 语义展开
-
-用当前 Joint 状态和加速度信息集中刷新所有运动学动力学缓存
-
-参数
-
-- `state` 提供 q、dq 和反馈 tau
-- `acc` 为当前估计 ddq
-- `ref_acc` 为参考 ddq
-
-返回值
-
-成功返回空 `expected`，之后所有缓存 Getter 都对应这一帧
-
-具体使用示例
-
-```cpp
-const std::size_t n = cfg.joint_names.size();
-serial_arm::JointVector acc(n, 0.0);
-serial_arm::JointVector ref_acc(n, 0.0);
-
-const auto update_result = dynamics.update(
-    joint_state,
-    acc,
-    ref_acc);
-
-if(!update_result) {
-    return 1;
-}
-
-std::cout << "gravity joint2="
-          << dynamics.get_gravity()[1] << "\n";
-```
-
----
-
-## 74. `Dynamics::set_gravity_scale()`
-
-签名
-
-```cpp
-tl::expected<void, DynamicsErr>
-set_gravity_scale(
-    const JointVector& gravity_scale);
-```
-
-每个值有效范围
-
-```text
-[0, 1]
-```
-
-示例
-
-```cpp
-dynamics.set_gravity_scale({
-    1.0,
-    0.95,
-    0.85,
-    1.0,
-    1.0,
-    1.0,
-});
-```
-
-超出范围返回
-
-```text
-GRAVITY_SCALE_OUT_OF_RANGE
-```
-
-### Doxygen 语义展开
-
-在线修改各 Joint 的重力补偿比例，不改变 URDF 模型本身
-
-参数
-
-- `gravity_scale` 长度必须等于 Joint 数量，每项范围为 [0, 1]
-
-返回值
-
-成功返回空 `expected`，越界返回 `GRAVITY_SCALE_OUT_OF_RANGE`
-
-具体使用示例
-
-```cpp
-serial_arm::JointVector scale = dynamics.get_gravity_scale();
-scale[1] = 0.90;
-scale[2] = 0.85;
-
-const auto result = dynamics.set_gravity_scale(scale);
-if(!result) {
-    std::cerr << "invalid gravity scale\n";
-}
-```
-
----
-
-## 75. `Dynamics::cleanup()`
-
-```cpp
-void cleanup();
-```
-
-释放当前模型并恢复未配置状态
-
-### Doxygen 语义展开
-
-释放当前 Pinocchio 模型并恢复未配置状态
-
-返回值
-
-无返回值
-
-具体使用示例
-
-```cpp
-dynamics.cleanup();
-
-assert(!dynamics.is_configured());
-assert(!dynamics.is_updated());
-
-// 如果需要换模型，可以重新 configure
-dynamics.configure(other_cfg);
-```
-
----
-
-## 76. `Dynamics::is_configured()`
-
-```cpp
-bool is_configured() const noexcept;
-```
-
-用于确认模型是否加载成功
-
-### Doxygen 语义展开
-
-查询是否已经成功完成 Dynamics configure
-
-返回值
-
-已配置返回 true
-
-具体使用示例
-
-```cpp
-if(!dynamics.is_configured()) {
-    dynamics.configure(cfg.dynamics);
-}
-```
-
----
-
-## 77. `Dynamics::is_updated()`
-
-```cpp
-bool is_updated() const noexcept;
-```
-
-只有至少一次 `update()` 成功后才为 true
-
-### Doxygen 语义展开
-
-查询是否至少成功执行过一次 update
-
-返回值
-
-存在有效运行时缓存时返回 true
-
-具体使用示例
-
-```cpp
-if(dynamics.is_configured() && !dynamics.is_updated()) {
-    std::cout << "model ready but no state has been updated\n";
-}
-```
-
----
-
-## 78. `Dynamics::get_info()`
-
-```cpp
-const DynamicsInfo&
-get_info() const noexcept;
-```
-
-`DynamicsInfo`
-
-```cpp
-struct DynamicsInfo {
-    std::size_t joints_count;
-    int nq;
-    int nv;
-    double total_mass;
-    std::vector<std::string> joint_names;
-    std::vector<int> q_indices;
-    std::vector<int> v_indices;
-};
-```
-
-示例
-
-```cpp
-const auto& info =
-    dynamics.get_info();
-
-std::cout
-    << info.total_mass
-    << "\n";
-```
-
-### Doxygen 语义展开
-
-读取模型静态信息，包括受控 Joint、Pinocchio nq/nv 和总质量
-
-返回值
-
-返回内部 `DynamicsInfo` 只读引用
-
-具体使用示例
-
-```cpp
-const serial_arm::DynamicsInfo& info = dynamics.get_info();
-
-std::cout << "controlled joints=" << info.joints_count << "\n";
-for(std::size_t i = 0; i < info.joint_names.size(); ++i) {
-    std::cout << info.joint_names[i]
-              << " q_index=" << info.q_indices[i]
-              << " v_index=" << info.v_indices[i]
-              << "\n";
-}
-```
-
----
-
-## 79. `Dynamics::get_state()`
-
-```cpp
-const DynamicsState&
-get_state() const noexcept;
-```
-
-一次获取完整缓存
-
-适合记录日志
-
-```cpp
-const DynamicsState& s =
-    dynamics.get_state();
-```
-
-`DynamicsState` 主要字段
-
-```text
-pos
-vel
-acc
-tor
-ref_acc
-gravity
-gravity_compensation
-nonlinear
-coriolis
-inverse_dynamics
-forward_dynamics
-mass_matrix
-tool_pose
-tool_jacobian
-```
-
-这些字段都对应最近一次成功 `update()`
-
-### Doxygen 语义展开
-
-一次性读取最近一次 update 生成的完整动力学缓存
-
-返回值
-
-返回内部 `DynamicsState` 只读引用
-
-具体使用示例
-
-```cpp
-if(dynamics.is_updated()) {
-    const auto& s = dynamics.get_state();
-    std::cout << "q0=" << s.pos[0]
-              << " gravity0=" << s.gravity[0]
-              << " M=" << s.mass_matrix.rows() << "x" << s.mass_matrix.cols()
-              << " J=" << s.tool_jacobian.rows() << "x" << s.tool_jacobian.cols()
-              << "\n";
-}
-```
-
-使用注意
-
-- 返回的是只读引用，不要跨越 Dynamics 生命周期保存引用
-
----
-
-## 80. `Dynamics::get_gravity_scale()`
-
-```cpp
-const JointVector&
-get_gravity_scale() const noexcept;
-```
-
-返回当前各 Joint 重力补偿缩放值
-
-### Doxygen 语义展开
-
-读取当前生效的重力补偿缩放数组
-
-返回值
-
-返回 `JointVector` 只读引用
-
-具体使用示例
-
-```cpp
-for(const double scale : dynamics.get_gravity_scale()) {
-    std::cout << scale << " ";
-}
-std::cout << "\n";
-```
-
----
-
-## 81. `Dynamics::get_frame_pose()`
-
-签名
-
-```cpp
-tl::expected<
-    Eigen::Isometry3d,
-    DynamicsErr
->
-get_frame_pose(
-    const std::string& frame_name) const;
-```
-
-要求先成功执行 `update()`
-
-示例
-
-```cpp
-auto pose_result =
-    dynamics.get_frame_pose(
-        "tool0");
-
-if(pose_result) {
-    Eigen::Matrix4d T =
-        pose_result->matrix();
-}
-```
-
-frame 不存在返回
-
-```text
-FRAME_NOT_FOUND
-```
-
-### Doxygen 语义展开
-
-读取任意已存在 frame 相对 `base_frame` 的缓存位姿
-
-参数
-
-- `frame_name` 为 URDF/Pinocchio frame 名称
-
-返回值
-
-成功返回 `Eigen::Isometry3d`，frame 不存在或尚未 update 时返回 `DynamicsErr`
-
-具体使用示例
-
-```cpp
-auto pose_result = dynamics.get_frame_pose("tool0");
-if(!pose_result) {
-    return 1;
-}
-
-const Eigen::Vector3d p = pose_result->translation();
-std::cout << "tool xyz = "
-          << p.x() << " " << p.y() << " " << p.z() << "\n";
-```
-
----
-
-## 82. `Dynamics::get_frame_jacobian()`
-
-签名
-
-```cpp
-tl::expected<
-    Eigen::MatrixXd,
-    DynamicsErr
->
-get_frame_jacobian(
-    const std::string& frame_name) const;
-```
-
-返回 `6 x N` Jacobian
-
-示例
-
-```cpp
-auto J_result =
-    dynamics.get_frame_jacobian(
-        "tool0");
-
-if(J_result) {
-    const Eigen::MatrixXd J =
-        J_result.value();
-}
-```
-
-### Doxygen 语义展开
-
-读取任意 frame 的 LOCAL_WORLD_ALIGNED 几何 Jacobian
-
-参数
-
-- `frame_name` 为目标 frame 名称
-
-返回值
-
-成功返回 `6 x N` `Eigen::MatrixXd`，失败返回 `DynamicsErr`
-
-具体使用示例
-
-```cpp
-auto jacobian_result = dynamics.get_frame_jacobian("tool0");
-if(!jacobian_result) {
-    return 1;
-}
-
-const Eigen::MatrixXd J = jacobian_result.value();
-Eigen::VectorXd dq = Eigen::Map<const Eigen::VectorXd>(
-    joint_state.vel.data(),
-    joint_state.vel.size());
-
-const Eigen::VectorXd twist = J * dq;
-std::cout << "vx=" << twist[0] << " vy=" << twist[1] << " vz=" << twist[2] << "\n";
-```
-
----
-
-## 83. Dynamics 缓存 Getter
-
-以下接口都读取最近一次成功 `update()` 的缓存
-
-```cpp
-const JointVector&
-get_gravity() const noexcept;
-
-const JointVector&
-get_gravity_compensation() const noexcept;
-
-const JointVector&
-get_nonlinear() const noexcept;
-
-const JointVector&
-get_coriolis() const noexcept;
-
-const Eigen::MatrixXd&
-get_mass_matrix() const noexcept;
-
-const JointVector&
-get_inverse_dynamics() const noexcept;
-
-const JointVector&
-get_forward_dynamics() const noexcept;
-
-const Eigen::Isometry3d&
-get_tool_pose() const noexcept;
-
-const Eigen::MatrixXd&
-get_tool_jacobian() const noexcept;
-```
-
-典型用法
-
-```cpp
-dynamics.update(
-    state,
-    acc,
-    ref_acc);
-
-const JointVector& gravity =
-    dynamics.get_gravity();
-
-const Eigen::MatrixXd& M =
-    dynamics.get_mass_matrix();
-
-const Eigen::Isometry3d& T =
-    dynamics.get_tool_pose();
-
-const Eigen::MatrixXd& J =
-    dynamics.get_tool_jacobian();
-```
-
-### Doxygen 语义展开
-
-这些 Getter 都读取最近一次成功 `update()` 的缓存，适合在一个控制周期内重复读取而不重复计算 Pinocchio
-
-返回值
-
-每个 Getter 返回对应缓存的只读引用
-
-具体使用示例
-
-```cpp
-dynamics.update(joint_state, joint_acc, joint_ref_acc);
-
-const auto& g = dynamics.get_gravity();
-const auto& g_comp = dynamics.get_gravity_compensation();
-const auto& nle = dynamics.get_nonlinear();
-const auto& coriolis = dynamics.get_coriolis();
-const auto& M = dynamics.get_mass_matrix();
-const auto& tau_id = dynamics.get_inverse_dynamics();
-const auto& ddq_fd = dynamics.get_forward_dynamics();
-const auto& T_tool = dynamics.get_tool_pose();
-const auto& J_tool = dynamics.get_tool_jacobian();
-
-std::cout << "g0=" << g[0]
-          << " g_comp0=" << g_comp[0]
-          << " tau_id0=" << tau_id[0]
-          << "\n";
-```
-
-使用注意
-
-- 调用这些 Getter 前应保证 `is_updated()==true`
-
----
-
-# Part IX MotorBus 与 HardwareLoader
-
-## 84. `MotorBus`
-
-头文件
-
-```cpp
-#include "serial_arm/hardware/motor_bus.hpp"
-```
-
-`MotorBus` 是 Hardware Backend 必须实现的抽象接口
-
-应用层通常只持有
-
-```cpp
-std::unique_ptr<MotorBus>
-```
-
-### 具体使用示例
-
-开发新 Backend 时通过继承实现 Hardware Contract
-
-```cpp
-class MyBus final : public serial_arm::MotorBus {
-public:
-    tl::expected<void, serial_arm::MotorBusErr>
-    configure(const std::string& path) override;
-
-    tl::expected<void, serial_arm::MotorBusErr> connect() override;
-    tl::expected<serial_arm::ActuatorState, serial_arm::MotorBusErr> read() override;
-    tl::expected<void, serial_arm::MotorBusErr> activate() override;
-    tl::expected<void, serial_arm::MotorBusErr>
-    write(const serial_arm::ActuatorCtrlCmd& cmd) override;
-    tl::expected<void, serial_arm::MotorBusErr> stop() override;
-    tl::expected<void, serial_arm::MotorBusErr> deactivate() override;
-    tl::expected<void, serial_arm::MotorBusErr> recover() override;
-    const serial_arm::HardwareCapabilities& capabilities() const noexcept override;
-    void cleanup() noexcept override;
-    std::size_t size() const noexcept override;
-};
-```
-
-实现完成后再通过 `create_motor_bus()` 和 `destroy_motor_bus()` 导出给 `HardwareLoader`
-
----
-
-## 85. `MotorBus::configure()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-configure(
-    const std::string& config_path) = 0;
-```
-
-职责
-
-- 读取 Backend YAML
-- 校验 actuator 数量
-- 校验 ID、型号和通信参数
-- 建立内部配置对象
-
-不应在这里使能执行器或发送运动命令
-
-### Doxygen 语义展开
-
-Backend 读取并校验自己的 YAML，建立配置但不驱动真实执行器运动
-
-参数
-
-- `config_path` 为 Backend 专属 YAML
-
-返回值
-
-实现应返回 `tl::expected<void, MotorBusErr>`
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr>
-MyBus::configure(const std::string& config_path) {
-    if(config_path.empty()) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CFG);
-    }
-
-    cfg_ = load_my_backend_yaml(config_path);
-    capabilities_ = build_capabilities(cfg_);
-    configured_ = true;
-    return {};
-}
-```
-
-使用注意
-
-- 这里可以解析配置和准备静态 capability，但不要使能电机
-
----
-
-## 86. `MotorBus::connect()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-connect() = 0;
-```
-
-职责
-
-打开串口、CAN、EtherCAT 或其他底层设备
-
-connect 成功不等于执行器已使能
-
-### Doxygen 语义展开
-
-Backend 打开底层串口、CAN、EtherCAT 或其他设备连接
-
-返回值
-
-连接成功返回空 `expected`，打开失败返回 `OPEN_FAILED` 或更具体错误
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr> MyBus::connect() {
-    if(!configured_) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONFIGURED);
-    }
-
-    if(!transport_.open(cfg_.device)) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::OPEN_FAILED);
-    }
-
-    connected_ = true;
-    return {};
-}
-```
-
----
-
-## 87. `MotorBus::read()`
-
-```cpp
-virtual tl::expected<
-    ActuatorState,
-    MotorBusErr
->
-read() = 0;
-```
-
-返回值必须已经转换为 SerialArm 统一单位
-
-```text
-pos rad
-vel rad/s
-tor N*m
-```
-
-### Doxygen 语义展开
-
-读取执行器状态并转换成 SerialArm Hardware Contract 的统一单位
-
-返回值
-
-成功返回 `ActuatorState`，通信或状态失败返回 `MotorBusErr`
-
-具体使用示例
-
-```cpp
-tl::expected<serial_arm::ActuatorState, serial_arm::MotorBusErr>
-MyBus::read() {
-    if(!connected_) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONNECTED);
-    }
-
-    serial_arm::ActuatorState state;
-    state.pos.resize(size());
-    state.vel.resize(size());
-    state.tor.resize(size());
-    state.online.assign(size(), 1);
-    state.enabled.assign(size(), 1);
-    state.err_code.assign(size(), 0);
-
-    for(std::size_t i = 0; i < size(); ++i) {
-        const auto raw = driver_.read_motor(i);
-        state.pos[i] = raw.position_rad;
-        state.vel[i] = raw.velocity_rad_s;
-        state.tor[i] = raw.torque_nm;
-    }
-
-    return state;
-}
-```
-
-使用注意
-
-- 如果厂商只给电流，应在 Backend 内完成电流到 N*m 的换算
-
----
-
-## 88. `MotorBus::activate()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-activate() = 0;
-```
-
-典型职责
-
-- 使能执行器
-- 切换控制模式
-- 确认反馈
-- 进入可写状态
-
-### Doxygen 语义展开
-
-使 Backend 进入可写控制状态，通常在这里完成电机使能和控制模式切换
-
-返回值
-
-成功返回空 `expected`，使能或模式切换失败返回对应错误
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr> MyBus::activate() {
-    if(!connected_) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONNECTED);
-    }
-
-    for(std::size_t i = 0; i < size(); ++i) {
-        if(!driver_.enable(i)) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::ENABLE_FAILED);
-        }
-        if(!driver_.switch_to_mit(i)) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::MODE_SWITCH_FAILED);
-        }
-    }
-
-    active_ = true;
-    return {};
-}
-```
-
----
-
-## 89. `MotorBus::write()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-write(
-    const ActuatorCtrlCmd& cmd) = 0;
-```
-
-Backend 必须接受完整
-
-```text
-pos
-vel
-tor
-kp
-kd
-```
-
-如果厂商协议的数据单位不同，在这里转换
-
-### Doxygen 语义展开
-
-把 Core 给出的完整 Actuator MIT 语义转换为厂商协议并发送
-
-参数
-
-- `cmd` 包含 pos、vel、tor、kp、kd
-
-返回值
-
-成功返回空 `expected`，非法命令或通信失败返回 `MotorBusErr`
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr>
-MyBus::write(const serial_arm::ActuatorCtrlCmd& cmd) {
-    if(!active_) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_ACTIVE);
-    }
-    if(cmd.pos.size() != size()) {
-        return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CMD);
-    }
-
-    for(std::size_t i = 0; i < size(); ++i) {
-        const bool ok = driver_.send_mit(
-            i,
-            cmd.pos[i],
-            cmd.vel[i],
-            cmd.kp[i],
-            cmd.kd[i],
-            cmd.tor[i]);
-        if(!ok) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::WRITE_FAILED);
-        }
-    }
-
-    return {};
-}
-```
-
----
-
-## 90. `MotorBus::stop()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-stop() = 0;
-```
-
-用于故障处理或安全停止
-
-Backend 可以实现为
-
-- 刹停
-- 当前位置保持
-- 多次刷新低风险停止命令
-
-具体策略由 Backend 决定，但必须符合 Hardware Contract
-
-### Doxygen 语义展开
-
-请求 Backend 停止当前运动或持续刷新安全保持命令
-
-返回值
-
-成功返回空 `expected`，停止失败返回 `STOP_FAILED`
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr> MyBus::stop() {
-    for(std::size_t i = 0; i < size(); ++i) {
-        if(!driver_.hold_current(i, stop_kp_, stop_kd_)) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::STOP_FAILED);
-        }
-    }
-    return {};
-}
-```
-
-使用注意
-
-- stop 的具体物理策略由 Backend 决定，但必须是低风险行为
-
----
-
-## 91. `MotorBus::deactivate()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-deactivate() = 0;
-```
-
-退出可写状态并失能执行器
-
-### Doxygen 语义展开
-
-退出可写状态并失能执行器
-
-返回值
-
-成功返回空 `expected`，失能失败返回 `DISABLE_FAILED`
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr> MyBus::deactivate() {
-    for(std::size_t i = 0; i < size(); ++i) {
-        if(!driver_.disable(i)) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::DISABLE_FAILED);
-        }
-    }
-    active_ = false;
-    return {};
-}
-```
-
----
-
-## 92. `MotorBus::recover()`
-
-```cpp
-virtual tl::expected<void, MotorBusErr>
-recover() = 0;
-```
-
-用于尝试清理 Backend 或执行器错误状态
-
-它不等于 Robot 的 `clear_fault()`
-
-Robot fault 和 hardware fault 是两个层级
-
-### Doxygen 语义展开
-
-尝试清理硬件错误并让 Backend 恢复到可以重新使用的状态
-
-返回值
-
-成功返回空 `expected`，恢复失败返回 `RECOVER_FAILED`
-
-具体使用示例
-
-```cpp
-tl::expected<void, serial_arm::MotorBusErr> MyBus::recover() {
-    for(std::size_t i = 0; i < size(); ++i) {
-        if(!driver_.clear_fault(i)) {
-            return tl::make_unexpected(serial_arm::MotorBusErr::RECOVER_FAILED);
-        }
-    }
-    return {};
-}
-```
-
-使用注意
-
-- Hardware recover 不等于 Robot clear_fault，两层状态机必须分别满足条件
-
----
-
-## 93. `MotorBus::capabilities()`
-
-```cpp
-virtual const HardwareCapabilities&
-capabilities() const noexcept = 0;
-```
-
-必须在 Core 配置解析阶段可用
-
-因此 Backend 的 capability 信息不应依赖 Robot 已经 ACTIVE
-
-### Doxygen 语义展开
-
-返回 Core Safety 解析需要的执行器物理能力
-
-返回值
-
-返回 `HardwareCapabilities` 只读引用
-
-具体使用示例
-
-```cpp
-const serial_arm::HardwareCapabilities& MyBus::capabilities() const noexcept {
-    return capabilities_;
-}
-
-// 调用侧
-for(const auto& capability : bus->capabilities()) {
-    std::cout << capability.actuator_name
-              << " max_torque=" << capability.max_effort << "\n";
-}
-```
-
-使用注意
-
-- capabilities 必须在 Robot ACTIVE 之前就可用
-
----
-
-## 94. `MotorBus::cleanup()`
-
-```cpp
-virtual void cleanup() noexcept = 0;
-```
-
-要求
-
-- noexcept
-- 可以重复调用
-- 释放通信资源
-- 不抛异常
-
-### Doxygen 语义展开
-
-无异常释放 Backend 持有的底层资源，并允许重复调用
-
-返回值
-
-无返回值且必须 `noexcept`
-
-具体使用示例
-
-```cpp
-void MyBus::cleanup() noexcept {
-    active_ = false;
-    connected_ = false;
-    transport_.close_noexcept();
-}
-```
-
-使用注意
-
-- 析构和失败路径都可能调用 cleanup，因此必须幂等
-
----
-
-## 95. `MotorBus::size()`
-
-```cpp
-virtual std::size_t
-size() const noexcept = 0;
-```
-
-必须等于 Robot 受控 Joint 数量
-
-否则 `Robot::configure()` 返回
-
-```text
-MOTOR_BUS_SIZE_MISMATCH
-```
-
-### Doxygen 语义展开
-
-返回 Backend 管理的执行器数量
-
-返回值
-
-返回值必须与 Robot 受控 Joint 数量一致
-
-具体使用示例
-
-```cpp
-std::size_t MyBus::size() const noexcept {
-    return actuators_.size();
-}
-
-if(bus->size() != cfg.joint_names.size()) {
-    std::cerr << "joint/actuator count mismatch\n";
-}
-```
-
----
-
-## 96. `HardwareLoader`
-
-头文件
-
-```cpp
-#include "serial_arm/hardware/hardware_loader.hpp"
-```
-
-签名
-
-```cpp
-tl::expected<
-    std::unique_ptr<MotorBus>,
-    HardwareLoaderErr
->
-load(
-    const std::string& plugin,
-    const std::string& config_path);
-
-struct HardwareConfigOverrides {
-    std::optional<std::string> serial_port;
-    std::optional<int> baudrate;
-    std::optional<std::string> bus;
-};
-
-tl::expected<
-    std::unique_ptr<MotorBus>,
-    HardwareLoaderErr
->
-load(
-    const std::string& plugin,
-    const std::string& config_path,
-    const HardwareConfigOverrides& overrides);
-```
-
-作用
-
-- `dlopen()` Backend shared library
-- 查找 `create_motor_bus`
-- 查找 `destroy_motor_bus`
-- 创建 MotorBus
-- 调用 `MotorBus::configure()`
-- 把 Backend 对象生命周期与 DSO 生命周期绑定
-- 可选地为该次 `load()` 调用覆盖 `serial_port`、`baudrate`、`bus`
-
-示例
-
-```cpp
-HardwareLoader loader;
-
-auto result = loader.load(
-    "serial_arm_hardware_damiao",
-    "/path/to/hardware.yaml");
-
-if(!result) {
-    return 1;
-}
-
-std::unique_ptr<MotorBus> bus =
-    std::move(result.value());
-```
-
-运行时硬件连接参数覆盖示例：
-
-```cpp
-serial_arm::HardwareConfigOverrides overrides;
-overrides.serial_port = "/dev/ttyACM1";
-overrides.baudrate = 921600;
-
-auto result = loader.load(
-    "serial_arm_hardware_damiao",
-    "/path/to/hardware.yaml",
-    overrides);
-```
-
-未设置的 `std::optional` 字段不会覆盖 YAML；硬件连接参数优先级为：
-
-```text
-runtime override > hardware.yaml
-```
-
-Backend 默认值仅适用于 Backend 明确定义为可选的配置字段；该 API 不会把覆盖值写回 `hardware.yaml`
-
-如果 `plugin` 不包含路径分隔符，Loader 还会尝试
-
-```text
-lib<plugin>.so
-```
-
-### Doxygen 语义展开
-
-动态加载 Backend shared library，创建 MotorBus 并自动调用其 configure
-
-参数
-
-- `plugin` 为共享库路径或插件名
-- `config_path` 为 Backend YAML
-- `overrides` 为运行时可选覆盖项；空 optional 表示保留 YAML 值
-
-返回值
-
-成功返回拥有 Backend 和 DSO 生命周期的 `std::unique_ptr<MotorBus>`，失败返回 `HardwareLoaderErr`
-
-具体使用示例
-
-```cpp
-serial_arm::HardwareLoader loader;
-
-auto result = loader.load(
-    "serial_arm_hardware_damiao",
-    "/opt/serial_arm/share/dm_arm_description/config/hardware.yaml");
-
-if(!result) {
-    std::cerr << "HardwareLoaderErr="
-              << static_cast<int>(result.error()) << "\n";
-    return 1;
-}
-
-std::unique_ptr<serial_arm::MotorBus> bus =
-    std::move(result.value());
-
-std::cout << "actuator count=" << bus->size() << "\n";
-```
-
-使用注意
-
-- 返回的 `MotorBus` wrapper 自己绑定 DSO 生命周期，不需要调用者手工 dlclose
-
----
-
-# Part X Robot
-
-## 97. `Robot`
+### `Robot`
 
 头文件
 
@@ -5246,7 +1894,7 @@ INACTIVE
 FAULT
 ```
 
-### 构造与析构使用示例
+#### 构造与析构使用示例
 
 `Robot` 默认构造后处于 `UNCONFIGURED`，析构时如果仍持有 MotorBus 会尽力安全失能并调用 Backend cleanup
 
@@ -5272,7 +1920,7 @@ FAULT
 
 ---
 
-## 98. `Robot::configure()`
+### `Robot::configure()`
 
 签名
 
@@ -5300,7 +1948,7 @@ configure(
 
 注意
 
-以下情况会要求模型回调：
+以下情况会要求模型回调
 
 ```text
 cfg.runtime.model_feedforward_mode != NONE
@@ -5310,7 +1958,7 @@ cfg.capability.admittance.enabled == true
 
 此时必须提供 `model_feedforward`
 
-如果启用导纳并选择：
+如果启用导纳并选择
 
 ```text
 observer.mode == MOMENTUM
@@ -5320,7 +1968,7 @@ observer.mode == MOMENTUM
 
 完整示例见文档末尾的功能示例 A
 
-### Doxygen 语义展开
+#### 接口说明
 
 配置顶层 Robot 闭环并接管 MotorBus 所有权，不连接也不使能硬件
 
@@ -5362,7 +2010,7 @@ assert(robot.get_state() == serial_arm::RobotState::INACTIVE);
 - 导纳启用时必须提供有效 `model_feedforward`
 - 导纳使用 `MOMENTUM` observer 时必须额外提供 `interaction_model_state`
 
-`InteractionModelStateFn` 的数据结构为：
+`InteractionModelStateFn` 的数据结构为
 
 ```cpp
 struct InteractionModelState {
@@ -5379,7 +2027,7 @@ using InteractionModelStateFn =
 
 ---
 
-## 99. `Robot::activate()`
+### `Robot::activate()`
 
 签名
 
@@ -5424,7 +2072,7 @@ WRITE_DISABLED
 
 这是保护行为，不是 Backend 故障
 
-### Doxygen 语义展开
+#### 接口说明
 
 连接和使能真实 Backend，读取第一帧状态，并用真实状态初始化 Mapper、Safety command history 和 JointCtrller
 
@@ -5458,7 +2106,7 @@ std::cout << "activated at q0=" << q0[0] << "\n";
 
 ---
 
-## 100. `Robot::set_cmd()`
+### `Robot::set_cmd()`
 
 签名
 
@@ -5497,7 +2145,7 @@ while(running) {
 
 tracking command 会受 `cmd_timeout_s` 检查
 
-### Doxygen 语义展开
+#### 接口说明
 
 向 tracking 模式提交一帧上层参考命令，并记录命令时间用于 timeout 检查
 
@@ -5541,7 +2189,7 @@ while(running) {
 
 ---
 
-## 101. `Robot::set_full_cmd()`
+### `Robot::set_full_cmd()`
 
 签名
 
@@ -5572,7 +2220,7 @@ kd
 
 的高级控制器
 
-### Doxygen 语义展开
+#### 接口说明
 
 向 Robot 直接提交完整 Joint MIT 命令，使上层可以逐周期覆盖 pos、vel、tor、kp、kd
 
@@ -5610,7 +2258,7 @@ if(result) {
 
 ---
 
-## 102. `Robot::set_impedance_mode()`
+### `Robot::set_impedance_mode()`
 
 签名
 
@@ -5637,7 +2285,7 @@ set_impedance_mode(
 
 因此切换到 tracking 后应重新发送目标
 
-### Doxygen 语义展开
+#### 接口说明
 
 切换 Robot 正常运行时的阻抗模式，并自动把 reference 与 Safety history 对齐到当前实测状态
 
@@ -5675,7 +2323,7 @@ while(running) {
 
 ---
 
-## 103. `Robot::set_model_feedforward_mode()`
+### `Robot::set_model_feedforward_mode()`
 
 签名
 
@@ -5701,7 +2349,7 @@ NOT_INACTIVE
 
 如果切换到非 NONE 且没有配置 model feedforward callback，返回模型前馈配置错误
 
-### Doxygen 语义展开
+#### 接口说明
 
 修改 Robot 使用的模型前馈策略
 
@@ -5734,60 +2382,7 @@ robot.activate();
 
 ---
 
-## 103.1. `Robot::set_admittance_cfg()`
-
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-set_admittance_cfg(
-    const AdmittanceCapabilityCfg& cfg);
-```
-
-用途
-
-运行时替换当前导纳配置；配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
-
-要求
-
-- Robot 已 configure
-- 当前不在 `FAULT`
-- 启用导纳时 configure 阶段已经提供 `model_feedforward`
-- `MOMENTUM` observer 还要求已经提供 `interaction_model_state`
-
----
-
-## 103.2. `Robot::get_admittance_cfg()`
-
-签名
-
-```cpp
-const AdmittanceCapabilityCfg&
-get_admittance_cfg() const noexcept;
-```
-
-返回当前 Robot 实际使用的导纳配置
-
----
-
-## 103.3. `Robot::set_admittance_suspended()` / `Robot::is_admittance_suspended()`
-
-签名
-
-```cpp
-void set_admittance_suspended(bool suspended);
-bool is_admittance_suspended() const noexcept;
-```
-
-用途
-
-临时旁路或恢复导纳运行时修正，不改变静态配置中的 `enabled`
-
-挂起和恢复都会清空 Interaction Controller 内部状态，避免 observer 或导纳积分状态跨越任务边界
-
----
-
-## 104. `Robot::cycle()`
+### `Robot::cycle()`
 
 签名
 
@@ -5832,7 +2427,7 @@ MotorBus write
 
 Robot 本身不会创建控制线程
 
-### Doxygen 语义展开
+#### 接口说明
 
 执行一帧完整控制闭环，包括读状态、映射、状态 Safety、控制器、模型前馈、可选 Interaction / Admittance、命令 Safety 和硬件写入
 
@@ -5878,7 +2473,7 @@ while(running) {
 
 ---
 
-## 105. `RobotCycleOutput`
+### `RobotCycleOutput`
 
 定义
 
@@ -5928,7 +2523,7 @@ struct RobotCycleOutput {
 - Interaction / Admittance 诊断
 - Backend 对比
 
-### 具体使用示例
+#### 示例
 
 ```cpp
 auto cycle_result = robot.cycle();
@@ -5956,7 +2551,7 @@ if(out.admittance_active) {
 
 导纳未参与本周期时 `admittance_active=false`，导纳专用 telemetry 不应被当作有效控制结果读取
 
-如果要定位导纳链问题，建议按以下顺序同时记录：
+如果要定位导纳链问题，建议按以下顺序同时记录
 
 ```text
 residual_raw
@@ -5973,7 +2568,7 @@ delta_q / delta_q_dot
 
 ---
 
-## 106. `Robot::deactivate()`
+### `Robot::deactivate()`
 
 签名
 
@@ -5990,7 +2585,7 @@ deactivate();
 
 如果当前 FAULT，使用 `force_deactivate()` 或 fault recovery 接口
 
-### Doxygen 语义展开
+#### 接口说明
 
 正常停止 Robot，调用 Backend deactivate，清空控制器与 Safety 运行时状态并回到 INACTIVE
 
@@ -6015,7 +2610,7 @@ if(robot.get_state() == serial_arm::RobotState::ACTIVE) {
 
 ---
 
-## 107. `Robot::force_deactivate()`
+### `Robot::force_deactivate()`
 
 签名
 
@@ -6039,7 +2634,7 @@ FAULT
 - fault recovery 不适用
 - 需要优先失能硬件
 
-### Doxygen 语义展开
+#### 接口说明
 
 无条件尝试从 ACTIVE 或 FAULT 失能硬件并回到 INACTIVE
 
@@ -6064,302 +2659,79 @@ if(robot.get_state() == serial_arm::RobotState::FAULT) {
 
 ---
 
-## 108. `Robot::reset_fault()`
+### Robot Getter API
 
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-reset_fault();
-```
-
-`reset_fault()` 与 `clear_fault()` 提供等价的故障恢复入口
-
-不要把它理解成无条件清故障
-
-### Doxygen 语义展开
-
-`reset_fault()` 执行与 `clear_fault()` 相同的恢复流程
-
-返回值
-
-与 `clear_fault()` 返回相同结果
-
-具体使用示例
-
-```cpp
-if(robot.get_state() == serial_arm::RobotState::FAULT) {
-    while(robot.is_fault_holding()) {
-        robot.maintain_fault_hold();
-        if(auto result = robot.reset_fault(); result) {
-            break;
-        }
-    }
-}
-```
-
-使用注意
-
-- 新代码优先直接使用 `clear_fault()` 表达语义
-
----
-
-## 109. `Robot::enter_fault_compliant_recovery()`
-
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-enter_fault_compliant_recovery();
-```
-
-仅在 FAULT 且当前 fault hold 有效时使用
-
-还要求配置允许
-
-```text
-allow_compliant_recovery
-require_operator_request
-gravity_model_validated
-```
-
-并且当前 fault 类型允许柔性恢复
-
-不满足时返回
-
-```text
-FAULT_RECOVERY_NOT_ALLOWED
-```
-
-### Doxygen 语义展开
-
-在 Robot 已处于 FAULT 且状态仍可信时，由操作员显式请求低增益柔性恢复
-
-返回值
-
-允许恢复时返回空 `expected`，策略或故障类型不允许时返回 `FAULT_RECOVERY_NOT_ALLOWED`
-
-具体使用示例
-
-```cpp
-if(robot.get_state() == serial_arm::RobotState::FAULT &&
-   robot.is_fault_holding()) {
-    auto result = robot.enter_fault_compliant_recovery();
-    if(result) {
-        std::cout << "fault compliant recovery active\n";
-    }
-}
-```
-
-使用注意
-
-- 需要配置允许柔性恢复并且重力模型已验证
-- 该模式仍属于 FAULT，不代表恢复正常 ACTIVE
-
----
-
-## 110. `Robot::return_to_fault_rigid_hold()`
-
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-return_to_fault_rigid_hold();
-```
-
-把 FAULT 内部恢复模式重新切回刚性保持
-
-### Doxygen 语义展开
-
-从 FAULT 柔性恢复模式重新回到 FAULT 刚性保持
-
-返回值
-
-成功返回空 `expected`，非 FAULT 状态返回错误
-
-具体使用示例
-
-```cpp
-if(robot.get_fault_hold_mode() ==
-   serial_arm::FaultHoldMode::COMPLIANT_RECOVERY) {
-    robot.return_to_fault_rigid_hold();
-}
-```
-
----
-
-## 111. `Robot::clear_fault()`
-
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-clear_fault();
-```
-
-目标
-
-从 FAULT 恢复到
-
-```text
-ACTIVE + RIGID_HOLD
-```
-
-不是简单清变量
-
-恢复条件：
-
-- fault hold 有效
-- Backend 可以读到合法状态
-- Safety state check 通过
-- 所有关节速度不超过 `shutdown.velocity_tolerance`
-- 已积累至少 3 个合法恢复周期
-
-不满足时返回错误
-
-### Doxygen 语义展开
-
-在满足状态合法、低速度和连续有效周期等条件后清除 FAULT，并以当前实测位置进入 ACTIVE + RIGID_HOLD
-
-返回值
-
-成功返回空 `expected`，恢复条件不足返回 `FAULT_RECOVERY_NOT_ALLOWED` 或具体子错误
-
-具体使用示例
-
-```cpp
-if(robot.get_state() == serial_arm::RobotState::FAULT) {
-    for(int i = 0; i < 10 && robot.is_fault_holding(); ++i) {
-        robot.maintain_fault_hold();
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
-    }
-
-    auto result = robot.clear_fault();
-    if(result) {
-        std::cout << "recovered to ACTIVE + RIGID_HOLD\n";
-    }
-}
-```
-
-使用注意
-
-- clear_fault 不是无条件清错，必须先满足恢复判据
-
----
-
-## 112. `Robot::maintain_fault_hold()`
-
-签名
-
-```cpp
-tl::expected<void, RobotFault>
-maintain_fault_hold();
-```
-
-FAULT 状态下用于持续刷新 fault hold
-
-如果应用控制线程仍在运行，进入 FAULT 后应进入 fault maintenance 分支，而不是继续调用正常 `cycle()`
-
-### Doxygen 语义展开
-
-Robot 在 FAULT 且 fault hold 有效时持续刷新当前故障保持命令
-
-返回值
-
-成功返回空 `expected`，非 FAULT 或没有可用 fault hold 时返回错误
-
-具体使用示例
-
-```cpp
-while(robot.get_state() == serial_arm::RobotState::FAULT &&
-      robot.is_fault_holding()) {
-    auto result = robot.maintain_fault_hold();
-    if(!result) {
-        break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-}
-```
-
-使用注意
-
-- FAULT 保持需要持续刷新时，应按受控周期调用而不是只调用一次
-
----
-
-## 113. Robot Getter API
-
-### `get_state()`
+#### `get_state()`
 
 ```cpp
 RobotState
 get_state() const noexcept;
 ```
 
-### `get_impedance_mode()`
+#### `get_impedance_mode()`
 
 ```cpp
 JointImpedanceMode
 get_impedance_mode() const noexcept;
 ```
 
-### `get_model_feedforward_mode()`
+#### `get_model_feedforward_mode()`
 
 ```cpp
 ModelFeedforwardMode
 get_model_feedforward_mode() const noexcept;
 ```
 
-### `get_joint_state()`
+#### `get_joint_state()`
 
 ```cpp
 const JointState&
 get_joint_state() const noexcept;
 ```
 
-### `get_joint_acc()`
+#### `get_joint_acc()`
 
 ```cpp
 const JointVector&
 get_joint_acc() const noexcept;
 ```
 
-### `get_joint_ref_acc()`
+#### `get_joint_ref_acc()`
 
 ```cpp
 const JointVector&
 get_joint_ref_acc() const noexcept;
 ```
 
-### `get_model_feedforward()`
+#### `get_model_feedforward()`
 
 ```cpp
 const JointVector&
 get_model_feedforward() const noexcept;
 ```
 
-### `get_actuator_state()`
+#### `get_actuator_state()`
 
 ```cpp
 const ActuatorState&
 get_actuator_state() const noexcept;
 ```
 
-### `get_last_fault()`
+#### `get_last_fault()`
 
 ```cpp
 const tl::optional<RobotFault>&
 get_last_fault() const noexcept;
 ```
 
-### `is_fault_holding()`
+#### `is_fault_holding()`
 
 ```cpp
 bool
 is_fault_holding() const noexcept;
 ```
 
-### `get_fault_hold_mode()`
+#### `get_fault_hold_mode()`
 
 ```cpp
 FaultHoldMode
@@ -6370,7 +2742,7 @@ get_fault_hold_mode() const noexcept;
 
 不会主动访问硬件
 
-### Doxygen 语义展开
+#### 接口说明
 
 Robot Getter 用于读取最近一次合法缓存和生命周期信息，不触发额外硬件读取
 
@@ -6411,9 +2783,7 @@ if(robot.is_fault_holding()) {
 
 ---
 
-# Part XI ModelFeedforwardFn
-
-## 114. `ModelFeedforwardFn`
+### `ModelFeedforwardFn`
 
 定义
 
@@ -6495,7 +2865,7 @@ ModelFeedforwardFn feedforward =
     };
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 把外部 Dynamics 或其他模型计算器接入 Robot，使 Robot 根据当前前馈模式请求一帧 Joint 侧模型力矩
 
@@ -6555,11 +2925,2739 @@ serial_arm::ModelFeedforwardFn model_feedforward =
 
 ---
 
-# Part XII Python API
+## 5 Dynamics
+
+本章覆盖独立动力学计算以及 Robot Model Feedforward 所需接口
+
+### `ModelFeedforwardMode`
+
+定义
+
+```cpp
+enum class ModelFeedforwardMode {
+    NONE,
+    GRAVITY,
+    FULL_INVERSE_DYNAMICS,
+};
+```
+
+#### `NONE`
+
+不加入模型前馈
+
+#### `GRAVITY`
+
+使用 Dynamics 的 `gravity_compensation`
+
+#### `FULL_INVERSE_DYNAMICS`
+
+使用 Dynamics 的 `inverse_dynamics`
+
+完整逆动力学依赖
+
+- 真实模型质量与惯量
+- 当前 `q`
+- 当前 `dq`
+- 参考 `ddq`
+
+模型参数没有验证时不要直接把 FULL_INVERSE_DYNAMICS 用于真机
+
+#### 示例
+
+Robot configure 完成后、activate 前选择重力补偿
+
+```cpp
+robot.set_model_feedforward_mode(
+    serial_arm::ModelFeedforwardMode::GRAVITY);
+
+robot.activate();
+```
+
+离线 Dynamics 验证阶段可以先使用 `NONE`，确认真实惯性参数后再切换到 `GRAVITY` 或 `FULL_INVERSE_DYNAMICS`
+
+---
+
+### `Dynamics`
+
+头文件
+
+```cpp
+#include "serial_arm/dynamics/dynamics.hpp"
+```
+
+Dynamics 使用 Pinocchio 维护完整运动学和动力学缓存
+
+使用模式是
+
+```text
+configure once
+    ->
+update every state
+    ->
+read cached outputs many times
+```
+
+不要在每个周期重复 configure
+
+#### 接口说明
+
+构造并持有一套 Pinocchio 运动学动力学模型，推荐一个机器人实例对应一个长期存活的 Dynamics 对象
+
+返回值
+
+对象默认处于未配置状态，析构时释放内部模型资源
+
+具体使用示例
+
+```cpp
+serial_arm::Dynamics dynamics;
+
+if(!dynamics.is_configured()) {
+    auto result = dynamics.configure(cfg.dynamics);
+    if(!result) {
+        return 1;
+    }
+}
+
+// Dynamics 支持移动，不支持复制
+serial_arm::Dynamics moved = std::move(dynamics);
+```
+
+---
+
+### `Dynamics::configure()`
+
+签名
+
+```cpp
+tl::expected<void, DynamicsErr>
+configure(
+    const DynamicsCfg& cfg);
+```
+
+成功后
+
+```cpp
+dynamics.is_configured() == true
+```
+
+但此时还没有运行状态缓存
+
+```cpp
+dynamics.is_updated() == false
+```
+
+#### 接口说明
+
+根据 `DynamicsCfg` 加载 URDF、受控 Joint、base/tool frame 和重力配置
+
+参数
+
+- `cfg` 为动力学配置
+
+返回值
+
+成功返回空 `expected`，失败返回 `DynamicsErr`
+
+具体使用示例
+
+```cpp
+serial_arm::Dynamics dynamics;
+const auto result = dynamics.configure(cfg.dynamics);
+
+if(!result) {
+    std::cerr << "DynamicsErr="
+              << static_cast<int>(result.error()) << "\n";
+    return 1;
+}
+
+const auto& info = dynamics.get_info();
+std::cout << "model mass=" << info.total_mass << "\n";
+```
+
+---
+
+### `Dynamics::update()`
+
+签名
+
+```cpp
+tl::expected<void, DynamicsErr>
+update(
+    const JointState& state,
+    const JointVector& acc,
+    const JointVector& ref_acc);
+```
+
+输入
+
+| 参数 | 含义 |
+| --- | --- |
+| `state.pos` | 当前 q |
+| `state.vel` | 当前 dq |
+| `state.tor` | 当前反馈关节力矩 |
+| `acc` | 当前估计 ddq |
+| `ref_acc` | 参考关节加速度 |
+
+一次 update 会集中计算并缓存
+
+- gravity
+- gravity compensation
+- nonlinear term
+- coriolis
+- mass matrix
+- inverse dynamics
+- forward dynamics
+- tool pose
+- tool Jacobian
+
+示例
+
+```cpp
+auto result =
+    dynamics.update(
+        state,
+        joint_acc,
+        joint_ref_acc);
+
+if(!result) {
+    return 1;
+}
+```
+
+#### 接口说明
+
+用当前 Joint 状态和加速度信息集中刷新所有运动学动力学缓存
+
+参数
+
+- `state` 提供 q、dq 和反馈 tau
+- `acc` 为当前估计 ddq
+- `ref_acc` 为参考 ddq
+
+返回值
+
+成功返回空 `expected`，之后所有缓存 Getter 都对应这一帧
+
+具体使用示例
+
+```cpp
+const std::size_t n = cfg.joint_names.size();
+serial_arm::JointVector acc(n, 0.0);
+serial_arm::JointVector ref_acc(n, 0.0);
+
+const auto update_result = dynamics.update(
+    joint_state,
+    acc,
+    ref_acc);
+
+if(!update_result) {
+    return 1;
+}
+
+std::cout << "gravity joint2="
+          << dynamics.get_gravity()[1] << "\n";
+```
+
+---
+
+### `Dynamics::set_gravity_scale()`
+
+签名
+
+```cpp
+tl::expected<void, DynamicsErr>
+set_gravity_scale(
+    const JointVector& gravity_scale);
+```
+
+每个值有效范围
+
+```text
+[0, 1]
+```
+
+示例
+
+```cpp
+dynamics.set_gravity_scale({
+    1.0,
+    0.95,
+    0.85,
+    1.0,
+    1.0,
+    1.0,
+});
+```
+
+超出范围返回
+
+```text
+GRAVITY_SCALE_OUT_OF_RANGE
+```
+
+#### 接口说明
+
+在线修改各 Joint 的重力补偿比例，不改变 URDF 模型本身
+
+参数
+
+- `gravity_scale` 长度必须等于 Joint 数量，每项范围为 [0, 1]
+
+返回值
+
+成功返回空 `expected`，越界返回 `GRAVITY_SCALE_OUT_OF_RANGE`
+
+具体使用示例
+
+```cpp
+serial_arm::JointVector scale = dynamics.get_gravity_scale();
+scale[1] = 0.90;
+scale[2] = 0.85;
+
+const auto result = dynamics.set_gravity_scale(scale);
+if(!result) {
+    std::cerr << "invalid gravity scale\n";
+}
+```
+
+---
+
+### `Dynamics::cleanup()`
+
+```cpp
+void cleanup();
+```
+
+释放当前模型并恢复未配置状态
+
+#### 接口说明
+
+释放当前 Pinocchio 模型并恢复未配置状态
+
+返回值
+
+无返回值
+
+具体使用示例
+
+```cpp
+dynamics.cleanup();
+
+assert(!dynamics.is_configured());
+assert(!dynamics.is_updated());
+
+// 如果需要换模型，可以重新 configure
+dynamics.configure(other_cfg);
+```
+
+---
+
+### `Dynamics::is_configured()`
+
+```cpp
+bool is_configured() const noexcept;
+```
+
+用于确认模型是否加载成功
+
+#### 接口说明
+
+查询是否已经成功完成 Dynamics configure
+
+返回值
+
+已配置返回 true
+
+具体使用示例
+
+```cpp
+if(!dynamics.is_configured()) {
+    dynamics.configure(cfg.dynamics);
+}
+```
+
+---
+
+### `Dynamics::is_updated()`
+
+```cpp
+bool is_updated() const noexcept;
+```
+
+只有至少一次 `update()` 成功后才为 true
+
+#### 接口说明
+
+查询是否至少成功执行过一次 update
+
+返回值
+
+存在有效运行时缓存时返回 true
+
+具体使用示例
+
+```cpp
+if(dynamics.is_configured() && !dynamics.is_updated()) {
+    std::cout << "model ready but no state has been updated\n";
+}
+```
+
+---
+
+### `Dynamics::get_info()`
+
+```cpp
+const DynamicsInfo&
+get_info() const noexcept;
+```
+
+`DynamicsInfo`
+
+```cpp
+struct DynamicsInfo {
+    std::size_t joints_count;
+    int nq;
+    int nv;
+    double total_mass;
+    std::vector<std::string> joint_names;
+    std::vector<int> q_indices;
+    std::vector<int> v_indices;
+};
+```
+
+示例
+
+```cpp
+const auto& info =
+    dynamics.get_info();
+
+std::cout
+    << info.total_mass
+    << "\n";
+```
+
+#### 接口说明
+
+读取模型静态信息，包括受控 Joint、Pinocchio nq/nv 和总质量
+
+返回值
+
+返回内部 `DynamicsInfo` 只读引用
+
+具体使用示例
+
+```cpp
+const serial_arm::DynamicsInfo& info = dynamics.get_info();
+
+std::cout << "controlled joints=" << info.joints_count << "\n";
+for(std::size_t i = 0; i < info.joint_names.size(); ++i) {
+    std::cout << info.joint_names[i]
+              << " q_index=" << info.q_indices[i]
+              << " v_index=" << info.v_indices[i]
+              << "\n";
+}
+```
+
+---
+
+### `Dynamics::get_state()`
+
+```cpp
+const DynamicsState&
+get_state() const noexcept;
+```
+
+一次获取完整缓存
+
+适合记录日志
+
+```cpp
+const DynamicsState& s =
+    dynamics.get_state();
+```
+
+`DynamicsState` 主要字段
+
+```text
+pos
+vel
+acc
+tor
+ref_acc
+gravity
+gravity_compensation
+nonlinear
+coriolis
+inverse_dynamics
+forward_dynamics
+mass_matrix
+tool_pose
+tool_jacobian
+```
+
+这些字段都对应最近一次成功 `update()`
+
+#### 接口说明
+
+一次性读取最近一次 update 生成的完整动力学缓存
+
+返回值
+
+返回内部 `DynamicsState` 只读引用
+
+具体使用示例
+
+```cpp
+if(dynamics.is_updated()) {
+    const auto& s = dynamics.get_state();
+    std::cout << "q0=" << s.pos[0]
+              << " gravity0=" << s.gravity[0]
+              << " M=" << s.mass_matrix.rows() << "x" << s.mass_matrix.cols()
+              << " J=" << s.tool_jacobian.rows() << "x" << s.tool_jacobian.cols()
+              << "\n";
+}
+```
+
+使用注意
+
+- 返回的是只读引用，不要跨越 Dynamics 生命周期保存引用
+
+---
+
+### `Dynamics::get_gravity_scale()`
+
+```cpp
+const JointVector&
+get_gravity_scale() const noexcept;
+```
+
+返回当前各 Joint 重力补偿缩放值
+
+#### 接口说明
+
+读取当前生效的重力补偿缩放数组
+
+返回值
+
+返回 `JointVector` 只读引用
+
+具体使用示例
+
+```cpp
+for(const double scale : dynamics.get_gravity_scale()) {
+    std::cout << scale << " ";
+}
+std::cout << "\n";
+```
+
+---
+
+### `Dynamics::get_frame_pose()`
+
+签名
+
+```cpp
+tl::expected<
+    Eigen::Isometry3d,
+    DynamicsErr
+>
+get_frame_pose(
+    const std::string& frame_name) const;
+```
+
+要求先成功执行 `update()`
+
+示例
+
+```cpp
+auto pose_result =
+    dynamics.get_frame_pose(
+        "tool0");
+
+if(pose_result) {
+    Eigen::Matrix4d T =
+        pose_result->matrix();
+}
+```
+
+frame 不存在返回
+
+```text
+FRAME_NOT_FOUND
+```
+
+#### 接口说明
+
+读取任意已存在 frame 相对 `base_frame` 的缓存位姿
+
+参数
+
+- `frame_name` 为 URDF/Pinocchio frame 名称
+
+返回值
+
+成功返回 `Eigen::Isometry3d`，frame 不存在或尚未 update 时返回 `DynamicsErr`
+
+具体使用示例
+
+```cpp
+auto pose_result = dynamics.get_frame_pose("tool0");
+if(!pose_result) {
+    return 1;
+}
+
+const Eigen::Vector3d p = pose_result->translation();
+std::cout << "tool xyz = "
+          << p.x() << " " << p.y() << " " << p.z() << "\n";
+```
+
+---
+
+### `Dynamics::get_frame_jacobian()`
+
+签名
+
+```cpp
+tl::expected<
+    Eigen::MatrixXd,
+    DynamicsErr
+>
+get_frame_jacobian(
+    const std::string& frame_name) const;
+```
+
+返回 `6 x N` Jacobian
+
+示例
+
+```cpp
+auto J_result =
+    dynamics.get_frame_jacobian(
+        "tool0");
+
+if(J_result) {
+    const Eigen::MatrixXd J =
+        J_result.value();
+}
+```
+
+#### 接口说明
+
+读取任意 frame 的 LOCAL_WORLD_ALIGNED 几何 Jacobian
+
+参数
+
+- `frame_name` 为目标 frame 名称
+
+返回值
+
+成功返回 `6 x N` `Eigen::MatrixXd`，失败返回 `DynamicsErr`
+
+具体使用示例
+
+```cpp
+auto jacobian_result = dynamics.get_frame_jacobian("tool0");
+if(!jacobian_result) {
+    return 1;
+}
+
+const Eigen::MatrixXd J = jacobian_result.value();
+Eigen::VectorXd dq = Eigen::Map<const Eigen::VectorXd>(
+    joint_state.vel.data(),
+    joint_state.vel.size());
+
+const Eigen::VectorXd twist = J * dq;
+std::cout << "vx=" << twist[0] << " vy=" << twist[1] << " vz=" << twist[2] << "\n";
+```
+
+---
+
+### Dynamics 缓存 Getter
+
+以下接口都读取最近一次成功 `update()` 的缓存
+
+```cpp
+const JointVector&
+get_gravity() const noexcept;
+
+const JointVector&
+get_gravity_compensation() const noexcept;
+
+const JointVector&
+get_nonlinear() const noexcept;
+
+const JointVector&
+get_coriolis() const noexcept;
+
+const Eigen::MatrixXd&
+get_mass_matrix() const noexcept;
+
+const JointVector&
+get_inverse_dynamics() const noexcept;
+
+const JointVector&
+get_forward_dynamics() const noexcept;
+
+const Eigen::Isometry3d&
+get_tool_pose() const noexcept;
+
+const Eigen::MatrixXd&
+get_tool_jacobian() const noexcept;
+```
+
+典型用法
+
+```cpp
+dynamics.update(
+    state,
+    acc,
+    ref_acc);
+
+const JointVector& gravity =
+    dynamics.get_gravity();
+
+const Eigen::MatrixXd& M =
+    dynamics.get_mass_matrix();
+
+const Eigen::Isometry3d& T =
+    dynamics.get_tool_pose();
+
+const Eigen::MatrixXd& J =
+    dynamics.get_tool_jacobian();
+```
+
+#### 接口说明
+
+这些 Getter 都读取最近一次成功 `update()` 的缓存，适合在一个控制周期内重复读取而不重复计算 Pinocchio
+
+返回值
+
+每个 Getter 返回对应缓存的只读引用
+
+具体使用示例
+
+```cpp
+dynamics.update(joint_state, joint_acc, joint_ref_acc);
+
+const auto& g = dynamics.get_gravity();
+const auto& g_comp = dynamics.get_gravity_compensation();
+const auto& nle = dynamics.get_nonlinear();
+const auto& coriolis = dynamics.get_coriolis();
+const auto& M = dynamics.get_mass_matrix();
+const auto& tau_id = dynamics.get_inverse_dynamics();
+const auto& ddq_fd = dynamics.get_forward_dynamics();
+const auto& T_tool = dynamics.get_tool_pose();
+const auto& J_tool = dynamics.get_tool_jacobian();
+
+std::cout << "g0=" << g[0]
+          << " g_comp0=" << g_comp[0]
+          << " tau_id0=" << tau_id[0]
+          << "\n";
+```
+
+使用注意
+
+- 调用这些 Getter 前应保证 `is_updated()==true`
+
+---
+
+## 6 Impedance 与 JointCtrller
+
+本章覆盖五种阻抗模式及底层 `JointCtrller` 接口，普通应用优先通过 `Robot` 使用这些能力
+
+### `JointImpedanceGains`
+
+定义
+
+```cpp
+struct JointImpedanceGains {
+    JointVector kp;
+    JointVector kd;
+};
+```
+
+单位
+
+```text
+kp N*m/rad
+kd N*m*s/rad
+```
+
+用途
+
+为五种阻抗模式分别提供 Joint 侧刚度与阻尼
+
+约束
+
+- `kp` 与 `kd` 长度等于 Joint 数量
+- 所有值必须有限
+- 所有值必须非负
+
+#### 示例
+
+为一个三关节测试控制器创建低刚度拖拽参数
+
+```cpp
+serial_arm::JointImpedanceGains drag_gains;
+drag_gains.kp = {0.0, 0.0, 0.0};
+drag_gains.kd = {0.10, 0.12, 0.08};
+
+serial_arm::JointCtrllerCfg cfg;
+cfg.joints_count = 3;
+cfg.compliant_drag_gains = drag_gains;
+```
+
+实际 Robot 配置通常通过 YAML 加载，不需要在业务代码里逐项手工构造
+
+---
+
+### `JointImpedanceMode`
+
+定义
+
+```cpp
+enum class JointImpedanceMode {
+    RIGID_HOLD,
+    RIGID_TRACKING,
+    COMPLIANT_HOLD,
+    COMPLIANT_DRAG,
+    COMPLIANT_TRACKING,
+};
+```
+
+#### `RIGID_HOLD`
+
+进入模式时记录当前实测位置
+
+之后保持该位置并使用 `rigid_hold_gains`
+
+不接受 `set_cmd()`
+
+典型调用
+
+```cpp
+robot.set_impedance_mode(
+    JointImpedanceMode::RIGID_HOLD);
+```
+
+#### `RIGID_TRACKING`
+
+使用上层 `set_cmd()` 目标并使用 `rigid_tracking_gains`
+
+典型调用
+
+```cpp
+robot.set_impedance_mode(
+    JointImpedanceMode::RIGID_TRACKING);
+
+robot.set_cmd(
+    JointPosCmd{target});
+```
+
+#### `COMPLIANT_HOLD`
+
+进入模式时记录当前实测位置
+
+使用低刚度 `compliant_hold_gains`
+
+不接受 `set_cmd()`
+
+#### `COMPLIANT_DRAG`
+
+每个控制周期都把当前实测位置作为位置参考
+
+使用 `compliant_drag_gains`
+
+不接受 `set_cmd()`
+
+典型用途
+
+- 手动拖拽
+- 示教
+- 低阻力关节移动
+
+#### `COMPLIANT_TRACKING`
+
+接受 `set_cmd()`
+
+使用 `compliant_tracking_gains`
+
+适合带柔顺性的轨迹跟踪
+
+#### 示例
+
+```cpp
+robot.set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD);
+robot.set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
+robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_HOLD);
+robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_DRAG);
+robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
+```
+
+只有 `RIGID_TRACKING` 和 `COMPLIANT_TRACKING` 接受外部 `set_cmd()` reference
+
+---
+
+### `JointCtrller`
+
+头文件
+
+```cpp
+#include "serial_arm/core/joints_ctrller.hpp"
+```
+
+类型：`serial_arm::JointCtrller`
+
+普通应用优先使用 `Robot`
+
+只有在控制器单元测试、算法调试或不连接 Hardware 时才直接使用 `JointCtrller`
+
+#### 示例
+
+直接使用控制器通常只用于离线测试
+
+```cpp
+serial_arm::JointCtrller ctrller;
+ctrller.configure(cfg.ctrller);
+ctrller.initialize(measured_state);
+ctrller.set_impedance_mode(
+    serial_arm::JointImpedanceMode::RIGID_TRACKING,
+    measured_state);
+ctrller.set_cmd(serial_arm::JointPosCmd{target});
+
+serial_arm::JointCtrllerInput input;
+input.state = measured_state;
+input.model_feedforward.assign(target.size(), 0.0);
+input.dt = 0.005;
+
+auto output = ctrller.update(input);
+```
+
+正常真机应用优先使用 `Robot`
+
+---
+
+### `JointCtrllerCfg`
+
+定义
+
+```cpp
+struct JointCtrllerCfg {
+    std::size_t joints_count;
+
+    JointImpedanceGains rigid_hold_gains;
+    JointImpedanceGains rigid_tracking_gains;
+    JointImpedanceGains compliant_hold_gains;
+    JointImpedanceGains compliant_drag_gains;
+    JointImpedanceGains compliant_tracking_gains;
+
+    bool allow_full_cmd;
+};
+```
+
+每套 `kp` 和 `kd` 长度必须等于 `joints_count`
+
+所有增益必须有限且非负
+
+#### 示例
+
+```cpp
+serial_arm::JointCtrllerCfg controller_cfg;
+controller_cfg.joints_count = 6;
+controller_cfg.rigid_hold_gains = cfg.ctrller.rigid_hold_gains;
+controller_cfg.rigid_tracking_gains = cfg.ctrller.rigid_tracking_gains;
+controller_cfg.compliant_hold_gains = cfg.ctrller.compliant_hold_gains;
+controller_cfg.compliant_drag_gains = cfg.ctrller.compliant_drag_gains;
+controller_cfg.compliant_tracking_gains = cfg.ctrller.compliant_tracking_gains;
+controller_cfg.allow_full_cmd = false;
+```
+
+五套 gains 都必须完整提供，不能只配置当前计划使用的一种模式
+
+---
+
+### `JointCtrller::configure()`
+
+签名
+
+```cpp
+tl::expected<void, JointCtrllerErr>
+configure(
+    const JointCtrllerCfg& cfg);
+```
+
+成功后状态变为
+
+```text
+CONFIGURED
+```
+
+此时还不能 `update()`
+
+#### 接口说明
+
+加载五套阻抗增益和完整命令权限，完成控制器静态配置
+
+参数
+
+- `cfg` 为 `JointCtrllerCfg`
+
+返回值
+
+成功后状态变为 `CONFIGURED`，失败返回 `JointCtrllerErr`
+
+具体使用示例
+
+```cpp
+serial_arm::JointCtrller ctrller;
+
+auto result = ctrller.configure(cfg.ctrller);
+if(!result) {
+    std::cerr << "JointCtrllerErr="
+              << static_cast<int>(result.error()) << "\n";
+    return 1;
+}
+
+assert(ctrller.get_state() == serial_arm::JointCtrllerState::CONFIGURED);
+```
+
+---
+
+### `JointCtrller::initialize()`
+
+签名
+
+```cpp
+tl::expected<void, JointCtrllerErr>
+initialize(
+    const JointState& state);
+```
+
+用途
+
+使用真实初始关节状态初始化控制器
+
+成功后
+
+```text
+state = INITIALIZED
+mode  = RIGID_HOLD
+hold position = current measured position
+```
+
+示例
+
+```cpp
+JointCtrller ctrller;
+
+ctrller.configure(cfg.ctrller);
+
+ctrller.initialize(current_state);
+```
+
+#### 接口说明
+
+使用真实初始关节状态设置 hold reference，并进入可 update 的 `INITIALIZED` 状态
+
+参数
+
+- `state` 为当前真实 `JointState`
+
+返回值
+
+成功返回空 `expected`，失败返回 `JointCtrllerErr`
+
+具体使用示例
+
+```cpp
+auto initialized = ctrller.initialize(measured_state);
+if(!initialized) {
+    return 1;
+}
+
+assert(ctrller.get_state() == serial_arm::JointCtrllerState::INITIALIZED);
+assert(ctrller.get_impedance_mode() == serial_arm::JointImpedanceMode::RIGID_HOLD);
+```
+
+使用注意
+
+- 不要用全零假状态代替真机当前状态，否则初始保持参考可能发生跳变
+
+---
+
+### `JointCtrller::reset()`
+
+签名
+
+```cpp
+void reset() noexcept;
+```
+
+作用
+
+- 清除当前命令
+- 清除 hold reference
+- 回到 `CONFIGURED`
+- 不重新读取静态配置
+
+调用后必须重新 `initialize()`
+
+#### 接口说明
+
+清除运行时 reference 和 command，但保留静态控制器配置
+
+返回值
+
+无返回值，调用后状态回到 `CONFIGURED`
+
+具体使用示例
+
+```cpp
+ctrller.reset();
+
+if(ctrller.get_state() == serial_arm::JointCtrllerState::CONFIGURED) {
+    ctrller.initialize(new_measured_state);
+}
+```
+
+使用注意
+
+- reset 后不能直接 update，必须重新 initialize
+
+---
+
+### `JointCtrller::set_impedance_mode()`
+
+签名
+
+```cpp
+tl::expected<void, JointCtrllerErr>
+set_impedance_mode(
+    JointImpedanceMode mode,
+    const JointState& state);
+```
+
+`state` 用于把模式切换参考重新对齐到当前实测状态
+
+切换 mode 会清除已有 tracking command
+
+#### 接口说明
+
+切换五种关节阻抗模式，并用当前实测状态重新对齐 hold 或 fallback reference
+
+参数
+
+- `mode` 为目标阻抗模式
+- `state` 为切换瞬间当前实测关节状态
+
+返回值
+
+成功返回空 `expected`，失败返回 `JointCtrllerErr`
+
+具体使用示例
+
+```cpp
+auto mode_result = ctrller.set_impedance_mode(
+    serial_arm::JointImpedanceMode::COMPLIANT_TRACKING,
+    measured_state);
+
+if(!mode_result) {
+    return 1;
+}
+
+serial_arm::JointPosCmd target;
+target.pos = measured_state.pos;
+target.pos[0] += 0.05;
+
+ctrller.set_cmd(target);
+```
+
+使用注意
+
+- 模式切换会清除之前的 tracking command，切换到 tracking 后要重新 set_cmd
+
+---
+
+### `JointCtrller::set_cmd()`
+
+签名
+
+```cpp
+tl::expected<void, JointCtrllerErr>
+set_cmd(
+    const JointCmd& cmd);
+```
+
+前置条件
+
+- 已 configure
+- 已 initialize
+- 当前 mode 是 `RIGID_TRACKING` 或 `COMPLIANT_TRACKING`
+
+否则返回
+
+```text
+CMD_NOT_ALLOWED_IN_MODE
+```
+
+#### 接口说明
+
+设置位置、位置速度或位置速度力矩三类 tracking reference
+
+参数
+
+- `cmd` 为 `JointCmd` variant 中任意一种参考命令
+
+返回值
+
+成功返回空 `expected`，非 tracking mode 返回 `CMD_NOT_ALLOWED_IN_MODE`
+
+具体使用示例
+
+```cpp
+ctrller.set_impedance_mode(
+    serial_arm::JointImpedanceMode::RIGID_TRACKING,
+    measured_state);
+
+serial_arm::JointPosVelCmd cmd;
+cmd.pos = measured_state.pos;
+cmd.vel.assign(cmd.pos.size(), 0.0);
+cmd.pos[1] += 0.03;
+
+const auto result = ctrller.set_cmd(cmd);
+if(!result) {
+    std::cerr << static_cast<int>(result.error()) << "\n";
+}
+```
+
+---
+
+### `JointCtrller::set_full_cmd()`
+
+签名
+
+```cpp
+tl::expected<void, JointCtrllerErr>
+set_full_cmd(
+    const JointCtrlCmd& cmd);
+```
+
+额外前置条件
+
+```text
+allow_full_cmd = true
+```
+
+否则返回
+
+```text
+FULL_CMD_NOT_ALLOWED
+```
+
+#### 接口说明
+
+直接设置完整 Joint 侧 pos、vel、tor、kp、kd 命令
+
+参数
+
+- `cmd` 为完整 `JointCtrlCmd`
+
+返回值
+
+成功返回空 `expected`，未开启 `allow_full_cmd` 返回 `FULL_CMD_NOT_ALLOWED`
+
+具体使用示例
+
+```cpp
+serial_arm::JointCtrlCmd cmd;
+cmd.pos = measured_state.pos;
+cmd.vel.assign(n, 0.0);
+cmd.tor.assign(n, 0.0);
+cmd.kp.assign(n, 5.0);
+cmd.kd.assign(n, 0.1);
+
+const auto result = ctrller.set_full_cmd(cmd);
+if(!result) {
+    std::cerr << "set_full_cmd failed: "
+              << static_cast<int>(result.error()) << "\n";
+}
+```
+
+使用注意
+
+- 只在确实需要逐周期覆盖 kp/kd 时开启 full command
+
+---
+
+### `JointCtrller::update()`
+
+输入
+
+```cpp
+struct JointCtrllerInput {
+    JointState state;
+    JointVector model_feedforward;
+    double dt;
+};
+```
+
+签名
+
+```cpp
+tl::expected<
+    JointCtrllerOutput,
+    JointCtrllerErr
+>
+update(
+    const JointCtrllerInput& input);
+```
+
+输出
+
+```cpp
+struct JointCtrllerOutput {
+    JointCtrlCmd cmd;
+};
+```
+
+独立控制器示例
+
+```cpp
+JointCtrllerInput input;
+
+input.state = measured_state;
+input.model_feedforward =
+    JointVector(n, 0.0);
+input.dt = 0.005;
+
+auto result =
+    ctrller.update(input);
+
+if(result) {
+    const JointCtrlCmd& cmd =
+        result->cmd;
+}
+```
+
+#### 接口说明
+
+根据当前 Joint 状态、模型前馈和 dt 生成一帧完整 Joint 控制命令
+
+参数
+
+- `input.state` 为当前关节状态
+- `input.model_feedforward` 为 Joint 侧前馈力矩
+- `input.dt` 为正有限控制周期
+
+返回值
+
+成功返回 `JointCtrllerOutput`，其中 `cmd` 是完整 `JointCtrlCmd`
+
+具体使用示例
+
+```cpp
+serial_arm::JointCtrllerInput input;
+input.state = measured_state;
+input.model_feedforward.assign(n, 0.0);
+input.dt = 0.005;
+
+auto output = ctrller.update(input);
+if(!output) {
+    return 1;
+}
+
+const serial_arm::JointCtrlCmd& joint_cmd = output->cmd;
+std::cout << "joint1 kp=" << joint_cmd.kp[0]
+          << " target=" << joint_cmd.pos[0] << "\n";
+```
+
+---
+
+### `JointCtrller::get_state()`
+
+```cpp
+JointCtrllerState
+get_state() const noexcept;
+```
+
+返回
+
+```text
+UNCONFIGURED
+CONFIGURED
+INITIALIZED
+```
+
+#### 接口说明
+
+读取 `JointCtrller` 当前生命周期状态
+
+返回值
+
+返回 `UNCONFIGURED`、`CONFIGURED` 或 `INITIALIZED`
+
+具体使用示例
+
+```cpp
+switch(ctrller.get_state()) {
+case serial_arm::JointCtrllerState::UNCONFIGURED:
+    std::cout << "need configure\n";
+    break;
+case serial_arm::JointCtrllerState::CONFIGURED:
+    std::cout << "need initialize\n";
+    break;
+case serial_arm::JointCtrllerState::INITIALIZED:
+    std::cout << "ready to update\n";
+    break;
+}
+```
+
+---
+
+### `JointCtrller::get_impedance_mode()`
+
+```cpp
+JointImpedanceMode
+get_impedance_mode() const noexcept;
+```
+
+返回当前模式
+
+#### 接口说明
+
+读取当前阻抗模式，常用于调试、状态显示和测试断言
+
+返回值
+
+返回 `JointImpedanceMode`
+
+具体使用示例
+
+```cpp
+if(ctrller.get_impedance_mode() ==
+   serial_arm::JointImpedanceMode::COMPLIANT_DRAG) {
+    std::cout << "manual drag mode\n";
+}
+```
+
+---
+
+## 7 Admittance
+
+本章集中列出导纳运行时 API，静态配置结构位于第 3 章 `RobotCfg`，模型回调位于第 4 章 `Robot::configure()`，完整 telemetry 位于第 4 章 `RobotCycleOutput`
+
+| 目标 | API |
+| --- | --- |
+| 静态配置 | `RobotCfg::capability.admittance` / `AdmittanceCapabilityCfg` |
+| 内部参数派生 | `derive_admittance_controller_cfg()` |
+| Runtime 更新 | `Robot::set_admittance_cfg()` |
+| Runtime 读取 | `Robot::get_admittance_cfg()` |
+| 临时旁路 | `Robot::set_admittance_suspended()` |
+| MOMENTUM 模型状态 | `InteractionModelStateFn` |
+| 运行诊断 | `RobotCycleOutput` |
+
+### `Robot::set_admittance_cfg()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+set_admittance_cfg(
+    const AdmittanceCapabilityCfg& cfg);
+```
+
+用途
+
+运行时替换当前导纳配置；配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
+
+要求
+
+- Robot 已 configure
+- 当前不在 `FAULT`
+- 启用导纳时 configure 阶段已经提供 `model_feedforward`
+- `MOMENTUM` observer 还要求已经提供 `interaction_model_state`
+
+---
+
+### `Robot::get_admittance_cfg()`
+
+签名
+
+```cpp
+const AdmittanceCapabilityCfg&
+get_admittance_cfg() const noexcept;
+```
+
+返回当前 Robot 实际使用的导纳配置
+
+---
+
+### `Robot::set_admittance_suspended()` / `Robot::is_admittance_suspended()`
+
+签名
+
+```cpp
+void set_admittance_suspended(bool suspended);
+bool is_admittance_suspended() const noexcept;
+```
+
+用途
+
+临时旁路或恢复导纳运行时修正，不改变静态配置中的 `enabled`
+
+挂起和恢复都会清空 Interaction Controller 内部状态，避免 observer 或导纳积分状态跨越任务边界
+
+---
+
+## 8 Safety 与 FAULT
+
+本章覆盖状态检查、命令限制、故障保持与恢复接口，普通应用优先通过 `Robot` 的 FAULT API 使用这些能力
+
+### `JointLimitCfg`
+
+定义
+
+```cpp
+struct JointLimitCfg {
+    std::vector<std::uint8_t> has_position_limit;
+    JointVector min_pos;
+    JointVector max_pos;
+    JointVector max_vel;
+    JointVector max_acc;
+    JointVector max_effort;
+    JointVector max_kp;
+    JointVector max_kd;
+    JointVector pos_margin;
+};
+```
+
+这是已经解析到 Joint 侧的最终限制
+
+continuous joint 可以让 `has_position_limit[i] == 0`
+
+此时不执行绝对位置上下限检查，但速度、加速度、effort、kp、kd 和超时检查仍然有效
+
+#### 示例
+
+```cpp
+const serial_arm::JointLimitCfg& limits = cfg.safety.limits;
+
+for(std::size_t i = 0; i < cfg.joint_names.size(); ++i) {
+    std::cout << cfg.joint_names[i]
+              << " max_vel=" << limits.max_vel[i]
+              << " max_acc=" << limits.max_acc[i]
+              << " max_effort=" << limits.max_effort[i]
+              << "\n";
+}
+```
+
+`has_position_limit[i] == 0` 时不要访问该 Joint 的绝对位置限制去做业务判断
+
+---
+
+### `FaultCompliantRecoveryCfg`
+
+定义
+
+```cpp
+struct FaultCompliantRecoveryCfg {
+    JointVector kp;
+    JointVector kd;
+    JointVector max_vel;
+    double effort_scale;
+};
+```
+
+用于 FAULT 内部受限柔性恢复
+
+`effort_scale` 用于限制恢复阶段保留的模型补偿力矩比例
+
+#### 示例
+
+```cpp
+serial_arm::FaultCompliantRecoveryCfg recovery;
+recovery.kp = {8.0, 20.0, 12.0, 5.0, 3.0, 1.0};
+recovery.kd = {0.08, 0.20, 0.12, 0.05, 0.03, 0.01};
+recovery.max_vel = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+recovery.effort_scale = 0.5;
+```
+
+这组参数只用于 FAULT 内部的受限柔性恢复，不等同于正常 `COMPLIANT_DRAG` gains
+
+---
+
+### `FaultRecoveryCfg`
+
+定义
+
+```cpp
+struct FaultRecoveryCfg {
+    FaultHoldMode default_mode;
+    bool allow_compliant_recovery;
+    bool require_operator_request;
+    bool gravity_model_validated;
+    double recovery_timeout_s;
+    FaultCompliantRecoveryCfg compliant_recovery;
+};
+```
+
+正常策略应保持
+
+```text
+default_mode = RIGID_HOLD
+```
+
+柔性恢复不应自动进入
+
+#### 示例
+
+```cpp
+serial_arm::FaultRecoveryCfg recovery_cfg;
+recovery_cfg.default_mode = serial_arm::FaultHoldMode::RIGID_HOLD;
+recovery_cfg.allow_compliant_recovery = true;
+recovery_cfg.require_operator_request = true;
+// 只有完成真实重力模型验证后才能设置为 true
+recovery_cfg.gravity_model_validated = true;
+recovery_cfg.recovery_timeout_s = 30.0;
+recovery_cfg.compliant_recovery = recovery;
+```
+
+`default_mode` 应保持 `RIGID_HOLD`，柔性恢复必须由操作员显式请求
+
+---
+
+### `SafetyAction`
+
+定义
+
+```cpp
+enum class SafetyAction {
+    STOP_HOLD,
+    DISABLE,
+};
+```
+
+`STOP_HOLD` 表示状态仍可信，Robot 可以拒绝危险命令并尝试低风险保持
+
+`DISABLE` 表示状态或硬件可信度不足，应优先失能
+
+#### 示例
+
+```cpp
+const auto action = safety.action_for(fault.code);
+
+switch(action) {
+case serial_arm::SafetyAction::STOP_HOLD:
+    bus->stop();
+    break;
+case serial_arm::SafetyAction::DISABLE:
+    bus->deactivate();
+    break;
+}
+```
+
+---
+
+### `FaultHoldMode`
+
+定义
+
+```cpp
+enum class FaultHoldMode {
+    RIGID_HOLD,
+    COMPLIANT_RECOVERY,
+};
+```
+
+它描述的是 Robot 已经进入 FAULT 后的内部保持状态
+
+不要与正常运行时的 `JointImpedanceMode` 混淆
+
+#### 示例
+
+```cpp
+if(robot.get_state() == serial_arm::RobotState::FAULT) {
+    if(robot.get_fault_hold_mode() == serial_arm::FaultHoldMode::RIGID_HOLD) {
+        std::cout << "fault rigid hold\n";
+    }
+    else {
+        std::cout << "fault compliant recovery\n";
+    }
+}
+```
+
+不要用 `FaultHoldMode` 表示正常 ACTIVE 下的阻抗模式
+
+---
+
+### `SafetyCfg`
+
+头文件
+
+```cpp
+#include "serial_arm/core/safety.hpp"
+```
+
+主要字段
+
+```cpp
+struct SafetyCfg {
+    std::size_t joints_count;
+    JointLimitCfg limits;
+
+    double cmd_timeout_s;
+    double state_timeout_s;
+    double max_dt_s;
+    double numeric_tolerance;
+    double state_vel_fault_ratio;
+
+    bool require_all_actuators_online;
+    bool require_all_actuators_enabled;
+    bool reject_motor_error;
+    bool require_continuous_cmd;
+
+    FaultRecoveryCfg fault_recovery;
+};
+```
+
+正常应用通过 `load_robot_cfg()` 自动生成
+
+不建议业务代码直接修改 SafetyCfg 后跳过验证
+
+#### 示例
+
+正常代码从 `RobotCfg` 读取最终 Safety 配置
+
+```cpp
+serial_arm::Safety safety;
+
+const serial_arm::SafetyCfg& safety_cfg = cfg.safety;
+auto result = safety.configure(safety_cfg);
+if(!result) {
+    std::cerr << "invalid Safety config\n";
+}
+```
+
+业务层不要绕过 `load_robot_cfg()` 自己放宽 `SafetyCfg`
+
+---
+
+### `SafetyFault`
+
+定义
+
+```cpp
+struct SafetyFault {
+    SafetyErr code;
+    std::size_t index;
+    double value;
+    double limit;
+};
+```
+
+示例
+
+如果第 2 个 Joint 超出速度限制，fault 可以表达
+
+```text
+code  = JOINT_VEL_LIMIT
+index = 1
+value = measured velocity
+limit = allowed velocity
+```
+
+---
+
+### `Safety::configure()`
+
+签名
+
+```cpp
+tl::expected<void, SafetyFault>
+configure(
+    const SafetyCfg& cfg);
+```
+
+必须在检查状态和命令前调用
+
+#### 接口说明
+
+加载最终 Joint/Actuator 安全限制和故障恢复策略
+
+参数
+
+- `cfg` 为已经解析完成的 `SafetyCfg`
+
+返回值
+
+成功返回空 `expected`，失败返回包含 index/value/limit 的 `SafetyFault`
+
+具体使用示例
+
+```cpp
+serial_arm::Safety safety;
+
+auto result = safety.configure(cfg.safety);
+if(!result) {
+    const auto& fault = result.error();
+    std::cerr << "SafetyErr=" << static_cast<int>(fault.code)
+              << " index=" << fault.index
+              << " value=" << fault.value
+              << " limit=" << fault.limit << "\n";
+    return 1;
+}
+```
+
+---
+
+### `Safety::check_state()`
+
+签名
+
+```cpp
+tl::expected<void, SafetyFault>
+check_state(
+    const JointState& joint_state,
+    const ActuatorState& actuator_state,
+    double state_age_s) const;
+```
+
+检查内容包括
+
+- JointState 维度
+- ActuatorState 维度
+- NaN 和 Inf
+- state timeout
+- Joint position
+- Joint velocity
+- actuator online
+- actuator enabled
+- actuator error
+
+示例
+
+```cpp
+auto result =
+    safety.check_state(
+        joint_state,
+        actuator_state,
+        state_age_s);
+
+if(!result) {
+    const SafetyFault fault =
+        result.error();
+}
+```
+
+#### 接口说明
+
+在 ACTIVE 控制周期中联合检查 Joint 状态与 Actuator 健康状态
+
+参数
+
+- `joint_state` 为映射后的 Joint 状态
+- `actuator_state` 为 Backend 状态
+- `state_age_s` 为距离上一帧合法状态的时间
+
+返回值
+
+合法返回空 `expected`，非法返回 `SafetyFault`
+
+具体使用示例
+
+```cpp
+const double state_age_s = 0.004;
+
+auto result = safety.check_state(
+    joint_state,
+    actuator_state,
+    state_age_s);
+
+if(!result) {
+    const auto action = safety.action_for(result.error().code);
+    if(action == serial_arm::SafetyAction::DISABLE) {
+        bus->deactivate();
+    }
+}
+```
+
+---
+
+### `Safety::check_cmd_age()`
+
+签名
+
+```cpp
+tl::expected<void, SafetyFault>
+check_cmd_age(
+    double cmd_age_s) const;
+```
+
+用于 tracking command timeout
+
+如果 `cmd_age_s > cmd_timeout_s`，返回 `CMD_TIMEOUT`
+
+#### 接口说明
+
+检查 tracking reference 是否已经超过允许的命令刷新时间
+
+参数
+
+- `cmd_age_s` 为当前时间距离最后一帧合法外部命令的秒数
+
+返回值
+
+合法返回空 `expected`，超时通常返回 `CMD_TIMEOUT`
+
+具体使用示例
+
+```cpp
+const double cmd_age_s = 0.12;
+const auto result = safety.check_cmd_age(cmd_age_s);
+
+if(!result && result.error().code == serial_arm::SafetyErr::CMD_TIMEOUT) {
+    std::cerr << "tracking command timeout\n";
+}
+```
+
+---
+
+### `Safety::check_joint_cmd()`
+
+签名
+
+```cpp
+tl::expected<
+    JointCtrlCmd,
+    SafetyFault
+>
+check_joint_cmd(
+    const JointState& state,
+    const JointCtrlCmd& cmd,
+    double dt);
+```
+
+它不是只返回 true 或 false
+
+对于浮点误差级轻微越界，Safety 可以执行 clamp，并返回安全命令
+
+因此应该使用返回值继续下游流程
+
+正确
+
+```cpp
+auto safe_result =
+    safety.check_joint_cmd(
+        state,
+        cmd,
+        dt);
+
+if(!safe_result) {
+    return;
+}
+
+JointCtrlCmd safe_cmd =
+    safe_result.value();
+```
+
+不要检查通过后继续使用原来的 `cmd`
+
+#### 接口说明
+
+检查一帧 Joint 控制命令是否满足位置、速度、力矩、增益和连续性限制，并返回真正应该下发的安全命令
+
+参数
+
+- `state` 为当前 Joint 状态
+- `cmd` 为控制器输出
+- `dt` 为当前控制周期
+
+返回值
+
+成功返回可能经过浮点误差级 clamp 的 `JointCtrlCmd`，失败返回 `SafetyFault`
+
+具体使用示例
+
+```cpp
+auto safe_result = safety.check_joint_cmd(
+    joint_state,
+    controller_output.cmd,
+    dt);
+
+if(!safe_result) {
+    const auto& fault = safe_result.error();
+    std::cerr << "rejected command at joint " << fault.index << "\n";
+    return 1;
+}
+
+const serial_arm::JointCtrlCmd safe_cmd = safe_result.value();
+auto actuator_cmd = mapper.to_actuator_cmd(safe_cmd);
+```
+
+使用注意
+
+- 通过检查后要使用返回的 `safe_cmd`，不要继续下发原始 `cmd`
+
+---
+
+### `Safety::reset_cmd_history()`
+
+签名
+
+```cpp
+tl::expected<void, SafetyFault>
+reset_cmd_history(
+    const JointState& state);
+```
+
+作用
+
+把命令连续性历史重置到当前实测位置和零速度
+
+典型使用场景
+
+- activate
+- impedance mode 切换
+- fault recovery
+- reference reset
+
+#### 接口说明
+
+把 command continuity 历史重置到当前实测位置和零目标速度
+
+参数
+
+- `state` 为当前 Joint 状态
+
+返回值
+
+成功返回空 `expected`，失败返回 `SafetyFault`
+
+具体使用示例
+
+```cpp
+const auto reset_result = safety.reset_cmd_history(joint_state);
+if(!reset_result) {
+    return 1;
+}
+
+// 之后第一帧命令会从当前实测位置作为连续性基准
+```
+
+使用注意
+
+- activate、模式切换和 fault recovery 后都适合调用
+
+---
+
+### `Safety::clear_cmd_history()`
+
+```cpp
+void clear_cmd_history() noexcept;
+```
+
+完全清除命令历史
+
+典型用于 deactivate
+
+#### 接口说明
+
+完全清空命令连续性历史
+
+返回值
+
+无返回值
+
+具体使用示例
+
+```cpp
+bus->deactivate();
+safety.clear_cmd_history();
+```
+
+使用注意
+
+- 典型用于退出 ACTIVE，不等同于 reset_cmd_history
+
+---
+
+### `Safety::action_for()`
+
+签名
+
+```cpp
+SafetyAction
+action_for(
+    SafetyErr err) const noexcept;
+```
+
+返回
+
+```text
+STOP_HOLD
+DISABLE
+```
+
+`Robot` 使用它决定故障时是尝试安全保持还是直接失能
+
+#### 接口说明
+
+把具体 `SafetyErr` 映射为 Robot 应采取的故障动作
+
+参数
+
+- `err` 为 Safety 错误码
+
+返回值
+
+返回 `STOP_HOLD` 或 `DISABLE`
+
+具体使用示例
+
+```cpp
+const serial_arm::SafetyAction action =
+    safety.action_for(serial_arm::SafetyErr::ACTUATOR_OFFLINE);
+
+if(action == serial_arm::SafetyAction::DISABLE) {
+    bus->deactivate();
+}
+```
+
+---
+
+### `Safety::is_configured()`
+
+```cpp
+bool is_configured() const noexcept;
+```
+
+用于诊断和测试
+
+#### 接口说明
+
+检查 Safety 是否已经成功 configure
+
+返回值
+
+已配置返回 true
+
+具体使用示例
+
+```cpp
+if(!safety.is_configured()) {
+    std::cerr << "Safety is not ready\n";
+}
+```
+
+---
+
+### `Safety::clamp_count()`
+
+```cpp
+std::uint64_t clamp_count() const noexcept;
+```
+
+返回 Safety 已执行的浮点误差级 clamp 次数
+
+如果该值持续快速增加，说明命令或边界配置值得检查
+
+#### 接口说明
+
+读取 Safety 对轻微数值越界执行 clamp 的累计次数
+
+返回值
+
+返回累计计数
+
+具体使用示例
+
+```cpp
+const auto before = safety.clamp_count();
+const auto safe_result = safety.check_joint_cmd(state, cmd, dt);
+const auto after = safety.clamp_count();
+
+if(after > before) {
+    std::cout << "command was numerically clamped\n";
+}
+```
+
+---
+
+### `Robot::reset_fault()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+reset_fault();
+```
+
+`reset_fault()` 与 `clear_fault()` 提供等价的故障恢复入口
+
+不要把它理解成无条件清故障
+
+#### 接口说明
+
+`reset_fault()` 执行与 `clear_fault()` 相同的恢复流程
+
+返回值
+
+与 `clear_fault()` 返回相同结果
+
+具体使用示例
+
+```cpp
+if(robot.get_state() == serial_arm::RobotState::FAULT) {
+    while(robot.is_fault_holding()) {
+        robot.maintain_fault_hold();
+        if(auto result = robot.reset_fault(); result) {
+            break;
+        }
+    }
+}
+```
+
+使用注意
+
+- 新代码优先直接使用 `clear_fault()` 表达语义
+
+---
+
+### `Robot::enter_fault_compliant_recovery()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+enter_fault_compliant_recovery();
+```
+
+仅在 FAULT 且当前 fault hold 有效时使用
+
+还要求配置允许
+
+```text
+allow_compliant_recovery
+require_operator_request
+gravity_model_validated
+```
+
+并且当前 fault 类型允许柔性恢复
+
+不满足时返回
+
+```text
+FAULT_RECOVERY_NOT_ALLOWED
+```
+
+#### 接口说明
+
+在 Robot 已处于 FAULT 且状态仍可信时，由操作员显式请求低增益柔性恢复
+
+返回值
+
+允许恢复时返回空 `expected`，策略或故障类型不允许时返回 `FAULT_RECOVERY_NOT_ALLOWED`
+
+具体使用示例
+
+```cpp
+if(robot.get_state() == serial_arm::RobotState::FAULT &&
+   robot.is_fault_holding()) {
+    auto result = robot.enter_fault_compliant_recovery();
+    if(result) {
+        std::cout << "fault compliant recovery active\n";
+    }
+}
+```
+
+使用注意
+
+- 需要配置允许柔性恢复并且重力模型已验证
+- 该模式仍属于 FAULT，不代表恢复正常 ACTIVE
+
+---
+
+### `Robot::return_to_fault_rigid_hold()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+return_to_fault_rigid_hold();
+```
+
+把 FAULT 内部恢复模式重新切回刚性保持
+
+#### 接口说明
+
+从 FAULT 柔性恢复模式重新回到 FAULT 刚性保持
+
+返回值
+
+成功返回空 `expected`，非 FAULT 状态返回错误
+
+具体使用示例
+
+```cpp
+if(robot.get_fault_hold_mode() ==
+   serial_arm::FaultHoldMode::COMPLIANT_RECOVERY) {
+    robot.return_to_fault_rigid_hold();
+}
+```
+
+---
+
+### `Robot::clear_fault()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+clear_fault();
+```
+
+目标
+
+从 FAULT 恢复到
+
+```text
+ACTIVE + RIGID_HOLD
+```
+
+不是简单清变量
+
+恢复条件
+
+- fault hold 有效
+- Backend 可以读到合法状态
+- Safety state check 通过
+- 所有关节速度不超过 `shutdown.velocity_tolerance`
+- 已积累至少 3 个合法恢复周期
+
+不满足时返回错误
+
+#### 接口说明
+
+在满足状态合法、低速度和连续有效周期等条件后清除 FAULT，并以当前实测位置进入 ACTIVE + RIGID_HOLD
+
+返回值
+
+成功返回空 `expected`，恢复条件不足返回 `FAULT_RECOVERY_NOT_ALLOWED` 或具体子错误
+
+具体使用示例
+
+```cpp
+if(robot.get_state() == serial_arm::RobotState::FAULT) {
+    for(int i = 0; i < 10 && robot.is_fault_holding(); ++i) {
+        robot.maintain_fault_hold();
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    auto result = robot.clear_fault();
+    if(result) {
+        std::cout << "recovered to ACTIVE + RIGID_HOLD\n";
+    }
+}
+```
+
+使用注意
+
+- clear_fault 不是无条件清错，必须先满足恢复判据
+
+---
+
+### `Robot::maintain_fault_hold()`
+
+签名
+
+```cpp
+tl::expected<void, RobotFault>
+maintain_fault_hold();
+```
+
+FAULT 状态下用于持续刷新 fault hold
+
+如果应用控制线程仍在运行，进入 FAULT 后应进入 fault maintenance 分支，而不是继续调用正常 `cycle()`
+
+#### 接口说明
+
+Robot 在 FAULT 且 fault hold 有效时持续刷新当前故障保持命令
+
+返回值
+
+成功返回空 `expected`，非 FAULT 或没有可用 fault hold 时返回错误
+
+具体使用示例
+
+```cpp
+while(robot.get_state() == serial_arm::RobotState::FAULT &&
+      robot.is_fault_holding()) {
+    auto result = robot.maintain_fault_hold();
+    if(!result) {
+        break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+}
+```
+
+使用注意
+
+- FAULT 保持需要持续刷新时，应按受控周期调用而不是只调用一次
+
+---
+
+## 9 Joint / Actuator Mapping
+
+本章主要面向新机械臂接入和 Backend 调试，普通应用通常不直接调用
+
+### `JointActuatorMapCfg`
+
+头文件
+
+```cpp
+#include "serial_arm/core/joint_actuator_mapper.hpp"
+```
+
+定义
+
+```cpp
+struct JointActuatorMapCfg {
+    std::size_t joints_count;
+
+    ActuatorVector pos_ratio;
+    ActuatorVector tor_ratio;
+    std::vector<int> direction;
+
+    JointVector joint_zero_offset;
+    ActuatorVector actuator_zero_offset;
+};
+```
+
+约束
+
+- `joints_count > 0`
+- 所有数组长度等于 `joints_count`
+- `pos_ratio > 0`
+- `tor_ratio > 0`
+- `direction` 只能为 `1` 或 `-1`
+- 所有 double 必须为有限值
+
+#### 示例
+
+```cpp
+serial_arm::JointActuatorMapCfg map;
+map.joints_count = 3;
+map.pos_ratio = {1.0, 6.0, 6.0};
+map.tor_ratio = {1.0, 6.0, 6.0};
+map.direction = {1, -1, 1};
+map.joint_zero_offset = {0.0, 0.0, 0.0};
+map.actuator_zero_offset = {0.0, 0.0, 0.0};
+
+serial_arm::JointActuatorMapper mapper;
+mapper.configure(map);
+```
+
+如果厂商 SDK 已经报告减速器输出端状态，`pos_ratio` 和 `tor_ratio` 通常设为 1
+
+---
+
+### `JointActuatorMapper::configure()`
+
+签名
+
+```cpp
+tl::expected<void, JointActuatorMapErr>
+configure(
+    const JointActuatorMapCfg& cfg);
+```
+
+必须在任何转换前调用
+
+示例
+
+```cpp
+JointActuatorMapper mapper;
+
+auto result =
+    mapper.configure(cfg.mapper);
+
+if(!result) {
+    return 1;
+}
+```
+
+#### 接口说明
+
+保存 Joint 与 Actuator 的方向、比例和零位关系，使后续双向转换具有固定语义
+
+参数
+
+- `cfg` 为 `JointActuatorMapCfg`，所有数组长度必须等于 `joints_count`
+
+返回值
+
+成功返回空 `expected`，配置非法返回 `JointActuatorMapErr`
+
+具体使用示例
+
+```cpp
+serial_arm::JointActuatorMapper mapper;
+
+auto result = mapper.configure(cfg.mapper);
+if(!result) {
+    std::cerr << "mapper configure error="
+              << static_cast<int>(result.error()) << "\n";
+    return 1;
+}
+```
+
+---
+
+### `JointActuatorMapper::to_joint_state()`
+
+签名
+
+```cpp
+tl::expected<
+    JointState,
+    JointActuatorMapErr
+>
+to_joint_state(
+    const ActuatorState& actuator_state) const;
+```
+
+逐轴映射关系
+
+```text
+joint_pos
+=
+joint_zero_offset
++
+direction
+*
+(actuator_pos - actuator_zero_offset)
+/
+pos_ratio
+```
+
+```text
+joint_vel
+=
+direction
+*
+actuator_vel
+/
+pos_ratio
+```
+
+```text
+joint_tor
+=
+direction
+*
+tor_ratio
+*
+actuator_tor
+```
+
+示例
+
+```cpp
+auto state_result =
+    mapper.to_joint_state(
+        actuator_state);
+
+if(!state_result) {
+    return 1;
+}
+
+JointState joint_state =
+    state_result.value();
+```
+
+#### 接口说明
+
+把 Backend 返回的统一 Actuator 状态映射到 Joint 侧状态
+
+参数
+
+- `actuator_state` 必须使用 rad、rad/s、N*m 且数量匹配
+
+返回值
+
+成功返回 `JointState`，失败返回 `JointActuatorMapErr`
+
+具体使用示例
+
+```cpp
+auto actuator_result = bus->read();
+if(!actuator_result) {
+    return 1;
+}
+
+auto joint_result = mapper.to_joint_state(actuator_result.value());
+if(!joint_result) {
+    return 1;
+}
+
+const auto& joint_state = joint_result.value();
+for(std::size_t i = 0; i < joint_state.pos.size(); ++i) {
+    std::cout << "joint " << i
+              << " q=" << joint_state.pos[i]
+              << " dq=" << joint_state.vel[i]
+              << " tau=" << joint_state.tor[i]
+              << "\n";
+}
+```
+
+---
+
+### `JointActuatorMapper::to_actuator_cmd()`
+
+签名
+
+```cpp
+tl::expected<
+    ActuatorCtrlCmd,
+    JointActuatorMapErr
+>
+to_actuator_cmd(
+    const JointCtrlCmd& joint_cmd) const;
+```
+
+逐轴核心映射
+
+```text
+actuator_pos
+=
+actuator_zero_offset
++
+direction
+*
+pos_ratio
+*
+(joint_pos - joint_zero_offset)
+```
+
+```text
+actuator_vel
+=
+direction
+*
+pos_ratio
+*
+joint_vel
+```
+
+```text
+actuator_tor
+=
+direction
+*
+joint_tor
+/
+tor_ratio
+```
+
+增益使用
+
+```text
+gain_ratio
+=
+pos_ratio * tor_ratio
+```
+
+```text
+actuator_kp
+=
+joint_kp / gain_ratio
+```
+
+```text
+actuator_kd
+=
+joint_kd / gain_ratio
+```
+
+#### 接口说明
+
+把 Joint 侧完整 MIT 风格命令转换为 Backend 可以发送的 Actuator 侧命令
+
+参数
+
+- `joint_cmd` 必须包含相同长度的 pos、vel、tor、kp、kd
+
+返回值
+
+成功返回 `ActuatorCtrlCmd`，失败返回 `JointActuatorMapErr`
+
+具体使用示例
+
+```cpp
+serial_arm::JointCtrlCmd joint_cmd;
+joint_cmd.pos = target_pos;
+joint_cmd.vel.assign(target_pos.size(), 0.0);
+joint_cmd.tor.assign(target_pos.size(), 0.0);
+joint_cmd.kp = cfg.ctrller.rigid_tracking_gains.kp;
+joint_cmd.kd = cfg.ctrller.rigid_tracking_gains.kd;
+
+auto actuator_cmd = mapper.to_actuator_cmd(joint_cmd);
+if(!actuator_cmd) {
+    return 1;
+}
+
+const auto& cmd = actuator_cmd.value();
+std::cout << "actuator1 target=" << cmd.pos[0]
+          << " kp=" << cmd.kp[0] << "\n";
+```
+
+使用注意
+
+- 普通业务代码不应绕过 `Robot` 手工执行这条链路
+- 该示例更适合 Mapper 单元测试或 Backend 联调
+
+---
+
+### `JointActuatorMapper::size()`
+
+签名
+
+```cpp
+std::size_t size() const noexcept;
+```
+
+未配置时返回 `0`
+
+配置成功后返回 `joints_count`
+
+#### 接口说明
+
+返回当前 Mapper 管理的 Joint/Actuator 数量
+
+返回值
+
+未配置返回 `0`，配置成功后返回 `joints_count`
+
+具体使用示例
+
+```cpp
+serial_arm::JointActuatorMapper mapper;
+std::cout << mapper.size() << "\n";  // 0
+
+mapper.configure(cfg.mapper);
+std::cout << mapper.size() << "\n";  // 受控关节数量
+```
+
+---
+
+## 10 Python API
+
+Python Binding 提供配置解析、Dynamics、底层组件以及 `RobotSession` 应用接口，完整使用流程见 Tutorial
 
 ### Python Binding 安装方式
 
-Standalone 使用 wheel：
+Standalone 使用 wheel
 
 ```bash
 cd src/serial_arm/core/python
@@ -6567,7 +5665,7 @@ python -m build --wheel
 python -m pip install --force-reinstall dist/serial_arm-*.whl
 ```
 
-ROS 2 / colcon 使用 ament 安装，不需要额外 pip 安装当前 workspace：
+ROS 2 / colcon 使用 ament 安装，不需要额外 pip 安装当前 workspace
 
 ```bash
 colcon build --symlink-install
@@ -6577,7 +5675,7 @@ python3 -c "import serial_arm; print(serial_arm.__file__)"
 
 ROS 2 `robot_profile` launch 通过 Python binding 调用 C++ `load_robot_profile_core()`，因此显式关闭 `SERIAL_ARM_BUILD_PYTHON` 后这类 launch 不可用
 
-## 115. Python 错误模型
+### Python 错误模型
 
 Python Binding 把 C++ `tl::expected` 错误转换为
 
@@ -6596,7 +5694,7 @@ except serial_arm.SerialArmError as exc:
 
 NumPy 输入维度或 NaN/Inf 等 Python 侧参数错误可能抛出 `ValueError`
 
-### 具体使用示例
+#### 示例
 
 ```python
 import serial_arm
@@ -6617,7 +5715,7 @@ except ValueError as exc:
 
 ---
 
-## 116. Python `load_robot_cfg()`
+### Python `load_robot_cfg()`
 
 签名语义
 
@@ -6655,7 +5753,7 @@ cfg = serial_arm.load_robot_cfg(
 serial_arm.RobotCfg
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python 接口先通过 HardwareLoader 获取真实 Backend capability，再调用 C++ `load_robot_cfg()`
 
@@ -6709,7 +5807,7 @@ except serial_arm.SerialArmError as exc:
 
 ---
 
-## 117. Python `load_robot_profile_core()`
+### Python `load_robot_profile_core()`
 
 使用
 
@@ -6740,7 +5838,7 @@ profile.hardware_plugin
 profile.hardware_config_path
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python 接口解析 framework-neutral profile，直接返回 Python 可读写的 `RobotProfileCore`
 
@@ -6772,7 +5870,7 @@ print(profile.core_config_path)
 
 ---
 
-## 118. Python `Dynamics`
+### Python `Dynamics`
 
 创建
 
@@ -6786,7 +5884,7 @@ dynamics = serial_arm.Dynamics()
 dynamics.configure(cfg.dynamics)
 ```
 
-### `update()`
+#### `update()`
 
 Python 版 `update()` 接受五个 NumPy 数组
 
@@ -6820,7 +5918,7 @@ dynamics.update(
 )
 ```
 
-### `update_state()`
+#### `update_state()`
 
 如果已经有 `JointState`
 
@@ -6832,7 +5930,7 @@ dynamics.update_state(
 )
 ```
 
-### `set_gravity_scale()`
+#### `set_gravity_scale()`
 
 ```python
 dynamics.set_gravity_scale(
@@ -6843,7 +5941,7 @@ dynamics.set_gravity_scale(
 )
 ```
 
-### `frame_pose()`
+#### `frame_pose()`
 
 ```python
 T = dynamics.frame_pose("tool0")
@@ -6851,7 +5949,7 @@ T = dynamics.frame_pose("tool0")
 
 返回 `4 x 4` NumPy 数组
 
-### `frame_jacobian()`
+#### `frame_jacobian()`
 
 ```python
 J = dynamics.frame_jacobian("tool0")
@@ -6859,7 +5957,7 @@ J = dynamics.frame_jacobian("tool0")
 
 返回 `6 x N` NumPy 数组
 
-### Dynamics 只读属性
+#### Dynamics 只读属性
 
 ```python
 dynamics.configured
@@ -6878,7 +5976,7 @@ dynamics.tool_pose
 dynamics.tool_jacobian
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python `Dynamics` 是 C++ Dynamics 的直接计算接口，适合离线验证模型、重力、Jacobian 和逆动力学
 
@@ -6917,7 +6015,7 @@ print("tool jacobian shape", dynamics.tool_jacobian.shape)
 
 ---
 
-## 119. Python `JointCtrller`
+### Python `JointCtrller`
 
 主要用于离线控制器测试
 
@@ -6968,7 +6066,7 @@ ctrller.state
 ctrller.impedance_mode
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python `JointCtrller` 暴露 C++ 控制器用于离线单元测试，不负责 hardware、mapping 或 Safety
 
@@ -7018,7 +6116,7 @@ print(joint_cmd.kp)
 
 ---
 
-## 120. Python `JointActuatorMapper`
+### Python `JointActuatorMapper`
 
 ```python
 mapper = serial_arm.JointActuatorMapper()
@@ -7038,7 +6136,7 @@ actuator_cmd =
 print(mapper.size)
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python Mapper 用于离线验证方向、零位、减速比和力矩比例
 
@@ -7076,7 +6174,7 @@ print("mapper size", mapper.size)
 
 ---
 
-## 121. Python `Safety`
+### Python `Safety`
 
 ```python
 safety = serial_arm.Safety()
@@ -7108,7 +6206,7 @@ safety.configured
 safety.clamp_count
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python Safety 用于离线验证状态、命令和超时策略，返回的安全命令可能已经发生轻微 clamp
 
@@ -7142,7 +6240,7 @@ else:
 
 ---
 
-## 122. Python `RobotSession`
+### Python `RobotSession`
 
 创建
 
@@ -7171,7 +6269,7 @@ RobotSession 配置阶段仍会加载真实 Hardware Backend 来读取 `Hardware
 
 只有实际控制 Bus 在 `write_enabled=false` 时被替换为 mock
 
-### Doxygen 语义展开
+#### 接口说明
 
 Python `RobotSession` 把 Robot、Dynamics、HardwareLoader 和固定频率 C++ 工作线程组合成高层会话
 
@@ -7206,7 +6304,7 @@ with session:
 
 ---
 
-## 123. `RobotSession.start()`
+### `RobotSession.start()`
 
 ```python
 session.start()
@@ -7219,7 +6317,7 @@ session.start()
 
 真机前确认 `write_enabled`
 
-### Doxygen 语义展开
+#### 接口说明
 
 激活底层 Robot 并启动 C++ 固定频率控制线程
 
@@ -7241,7 +6339,7 @@ finally:
 
 ---
 
-## 124. `RobotSession.stop()`
+### `RobotSession.stop()`
 
 ```python
 session.stop()
@@ -7251,7 +6349,7 @@ session.stop()
 
 推荐始终在 `finally` 中调用，或者使用上下文管理器
 
-### Doxygen 语义展开
+#### 接口说明
 
 请求控制线程退出并在 Robot 仍 ACTIVE 时安全 deactivate
 
@@ -7273,7 +6371,7 @@ assert not session.running
 
 ---
 
-## 125. `RobotSession.set_impedance_mode()`
+### `RobotSession.set_impedance_mode()`
 
 ```python
 session.set_impedance_mode(
@@ -7283,7 +6381,7 @@ session.set_impedance_mode(
 
 请求由 C++ 工作线程串行应用
 
-### Doxygen 语义展开
+#### 接口说明
 
 向 C++ 工作线程提交阻抗模式切换请求，由工作线程在控制序列中串行应用
 
@@ -7313,7 +6411,7 @@ for _ in range(10):
 
 ---
 
-## 126. `RobotSession.set_model_feedforward_mode()`
+### `RobotSession.set_model_feedforward_mode()`
 
 ```python
 session.set_model_feedforward_mode(
@@ -7325,7 +6423,7 @@ session.set_model_feedforward_mode(
 
 因此建议在 `start()` 前设置
 
-### Doxygen 语义展开
+#### 接口说明
 
 修改底层 Robot 的模型前馈模式
 
@@ -7355,7 +6453,7 @@ session.start()
 
 ---
 
-## 127. `RobotSession.set_gravity_scale()`
+### `RobotSession.set_gravity_scale()`
 
 ```python
 session.set_gravity_scale(
@@ -7368,7 +6466,7 @@ session.set_gravity_scale(
 
 运行期间由 C++ 工作线程应用
 
-### Doxygen 语义展开
+#### 接口说明
 
 设置各 Joint 重力补偿比例，运行时请求会由 C++ worker 串行应用
 
@@ -7396,7 +6494,7 @@ print("requested gravity scale", scale)
 
 ---
 
-## 128. `RobotSession.move_to()`
+### `RobotSession.move_to()`
 
 签名
 
@@ -7426,7 +6524,7 @@ session.move_to(
 )
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 提交一个绝对 Joint 位置目标，由 C++ worker 生成连续梯形位置速度 reference
 
@@ -7466,7 +6564,7 @@ while True:
 
 ---
 
-## 129. `RobotSession.hold_current()`
+### `RobotSession.hold_current()`
 
 ```python
 session.hold_current()
@@ -7474,7 +6572,7 @@ session.hold_current()
 
 取消当前位置目标并请求当前位置刚性保持
 
-### Doxygen 语义展开
+#### 接口说明
 
 取消当前 move_to 目标并请求切换到当前位置 `RIGID_HOLD`
 
@@ -7493,9 +6591,9 @@ print("hold requested at", snap.cycle.joint_state.pos)
 
 ---
 
-## 130. RobotSession fault API
+### RobotSession fault API
 
-### `reset_fault()`
+#### `reset_fault()`
 
 ```python
 session.reset_fault()
@@ -7503,7 +6601,7 @@ session.reset_fault()
 
 与 `clear_fault()` 执行相同的故障恢复流程
 
-### `clear_fault()`
+#### `clear_fault()`
 
 ```python
 session.clear_fault()
@@ -7511,7 +6609,7 @@ session.clear_fault()
 
 尝试满足条件后恢复 ACTIVE + RIGID_HOLD
 
-### `enter_fault_compliant_recovery()`
+#### `enter_fault_compliant_recovery()`
 
 ```python
 session.enter_fault_compliant_recovery()
@@ -7519,7 +6617,7 @@ session.enter_fault_compliant_recovery()
 
 人工请求受限柔性恢复
 
-### `return_to_fault_rigid_hold()`
+#### `return_to_fault_rigid_hold()`
 
 ```python
 session.return_to_fault_rigid_hold()
@@ -7527,7 +6625,7 @@ session.return_to_fault_rigid_hold()
 
 返回 FAULT 刚性保持
 
-### Doxygen 语义展开
+#### 接口说明
 
 RobotSession 暴露与 C++ Robot 对应的 FAULT 恢复操作，并在需要时停止 worker 后执行
 
@@ -7556,9 +6654,9 @@ if session.state == serial_arm.RobotState.FAULT:
 
 ---
 
-## 131. RobotSession 属性
+### RobotSession 属性
 
-### `snapshot`
+#### `snapshot`
 
 ```python
 snapshot = session.snapshot
@@ -7574,7 +6672,7 @@ snapshot.valid
 snapshot.last_error
 ```
 
-### `state`
+#### `state`
 
 ```python
 session.state
@@ -7582,43 +6680,43 @@ session.state
 
 返回 `RobotState`
 
-### `fault_hold_mode`
+#### `fault_hold_mode`
 
 ```python
 session.fault_hold_mode
 ```
 
-### `configured`
+#### `configured`
 
 ```python
 session.configured
 ```
 
-### `running`
+#### `running`
 
 ```python
 session.running
 ```
 
-### `config`
+#### `config`
 
 ```python
 session.config
 ```
 
-### `dynamics_info`
+#### `dynamics_info`
 
 ```python
 session.dynamics_info
 ```
 
-### `actuator_info`
+#### `actuator_info`
 
 ```python
 session.actuator_info
 ```
 
-### Doxygen 语义展开
+#### 接口说明
 
 这些属性返回线程安全复制出的会话状态、配置和最近一次快照，用于上层监控和实验脚本
 
@@ -7649,16 +6747,17 @@ for actuator in session.actuator_info:
 
 ---
 
+## 11 ROS 2 / ros2_control Adapter
 
-# Part XIII ros2_control Adapter API
+本章只描述 `SerialArmSystem` 对 ros2_control 暴露的公共生命周期和数据接口，MoveIt 的启动与配置路径见 Tutorial
 
-这一部分直接对应 `src/serial_arm/bringup/ros2_control/include/serial_arm_ros2_control/serial_arm_system.hpp` 的公开 Doxygen 接口
+这一部分直接对应 `src/serial_arm/bringup/ros2_control/include/serial_arm_ros2_control/serial_arm_system.hpp` 的公共接口
 
 `SerialArmSystem` 是 ros2_control 的 `SystemInterface` 插件，正常用户不会在业务代码中手工调用其生命周期函数，而是由 `controller_manager` 按生命周期调用
 
-## R0. `SerialArmSystem` 生命周期对象
+### `SerialArmSystem` 生命周期对象
 
-Doxygen 语义
+接口语义
 
 `SerialArmSystem` 析构时会停止后台线程并尽力释放真机硬件
 
@@ -7672,9 +6771,9 @@ Doxygen 语义
 
 ---
 
-## R1. `SerialArmSystem::on_init()`
+### `SerialArmSystem::on_init()`
 
-Doxygen 语义
+接口语义
 
 初始化 ros2_control 硬件信息并校验 Core 配置一致性
 
@@ -7720,9 +6819,9 @@ SerialArmSystem::on_init(info)
 
 ---
 
-## R2. `SerialArmSystem::on_configure()`
+### `SerialArmSystem::on_configure()`
 
-Doxygen 语义
+接口语义
 
 配置 Dynamics、Hardware Backend 与 Robot，但不连接或使能真机
 
@@ -7761,9 +6860,9 @@ RobotState::INACTIVE
 
 ---
 
-## R3. `SerialArmSystem::on_activate()`
+### `SerialArmSystem::on_activate()`
 
-Doxygen 语义
+接口语义
 
 显式授权后连接真机、初始化命令缓存并启动控制线程
 
@@ -7798,9 +6897,9 @@ Robot::activate
 
 ---
 
-## R4. `SerialArmSystem::on_deactivate()`
+### `SerialArmSystem::on_deactivate()`
 
-Doxygen 语义
+接口语义
 
 停止后台线程并请求刚性保持后失能真机
 
@@ -7823,9 +6922,9 @@ ros2 control set_hardware_component_state dm_arm inactive
 
 ---
 
-## R5. `SerialArmSystem::export_state_interfaces()`
+### `SerialArmSystem::export_state_interfaces()`
 
-Doxygen 语义
+接口语义
 
 向 ros2_control 导出每个关节的 position、velocity、effort 状态接口
 
@@ -7849,9 +6948,9 @@ joint2/effort
 
 ---
 
-## R6. `SerialArmSystem::export_command_interfaces()`
+### `SerialArmSystem::export_command_interfaces()`
 
-Doxygen 语义
+接口语义
 
 向 ros2_control 导出每个关节的 position、velocity 命令接口
 
@@ -7873,9 +6972,9 @@ Adapter 不向 ros2_control 上层直接暴露 effort、kp、kd 命令接口，�
 
 ---
 
-## R7. `SerialArmSystem::read()`
+### `SerialArmSystem::read()`
 
-Doxygen 语义
+接口语义
 
 将后台控制线程最近一次合法状态复制到 ros2_control state interface
 
@@ -7910,9 +7009,9 @@ ros2 topic echo /joint_states
 
 ---
 
-## R8. `SerialArmSystem::write()`
+### `SerialArmSystem::write()`
 
-Doxygen 语义
+接口语义
 
 将 ros2_control command interface 的 position、velocity 复制到后台线程命令缓存
 
@@ -7939,9 +7038,9 @@ ros2 action send_goal \
 
 ---
 
-## R9. `CommandFrame`
+### `CommandFrame`
 
-Doxygen 语义
+接口语义
 
 ros2_control Adapter 内部使用的命令帧结构体
 
@@ -7958,9 +7057,9 @@ frame.sequence = ++command_sequence;
 
 ---
 
-## R10. `StateFrame`
+### `StateFrame`
 
-Doxygen 语义
+接口语义
 
 ros2_control Adapter 内部使用的状态帧结构体
 
@@ -7981,151 +7080,950 @@ if(frame.valid) {
 
 ---
 
-# Part XIV 错误处理
+## 12 Hardware Backend 与 Transport
 
-## 132. C++ `tl::expected`
+本章主要面向新 Backend、Protocol 和共享物理总线扩展，普通机械臂应用可以跳过
 
-SerialArm-Core 不依赖异常完成 C++ 正常错误传播
+### `MotorBus`
 
-典型形式
+头文件
 
 ```cpp
-auto result = robot.activate();
-
-if(!result) {
-    const RobotFault& fault =
-        result.error();
-
-    std::cerr
-        << "RobotErr="
-        << static_cast<int>(fault.code)
-        << "\n";
-
-    return 1;
-}
+#include "serial_arm/hardware/motor_bus.hpp"
 ```
 
-不要直接写
+`MotorBus` 是 Hardware Backend 必须实现的抽象接口
+
+应用层通常只持有
 
 ```cpp
-robot.activate().value();
+std::unique_ptr<MotorBus>
 ```
 
-除非当前程序明确允许错误直接终止
+#### 示例
 
-### 具体使用示例
-
-```cpp
-auto result = robot.activate();
-
-if(!result) {
-    const serial_arm::RobotFault& fault = result.error();
-    std::cerr << "RobotErr=" << static_cast<int>(fault.code) << "\n";
-    return 1;
-}
-
-// 只有 result 为 true 时才读取 value
-```
-
-不要在没有先判断 `result` 的情况下直接调用 `value()`
-
----
-
-## 133. `RobotFault`
-
-定义
+开发新 Backend 时通过继承实现 Hardware Contract
 
 ```cpp
-struct RobotFault {
-    RobotErr code;
-    MotorBusErr motor_bus_err;
-    JointActuatorMapErr mapper_err;
-    JointCtrllerErr ctrller_err;
-    SafetyFault safety_fault;
-    ModelFeedforwardErr model_feedforward_err;
-    InteractionControllerErr interaction_err;
+class MyBus final : public serial_arm::MotorBus {
+public:
+    tl::expected<void, serial_arm::MotorBusErr>
+    configure(const std::string& path) override;
+
+    tl::expected<void, serial_arm::MotorBusErr> connect() override;
+    tl::expected<serial_arm::ActuatorState, serial_arm::MotorBusErr> read() override;
+    tl::expected<void, serial_arm::MotorBusErr> activate() override;
+    tl::expected<void, serial_arm::MotorBusErr>
+    write(const serial_arm::ActuatorCtrlCmd& cmd) override;
+    tl::expected<void, serial_arm::MotorBusErr> stop() override;
+    tl::expected<void, serial_arm::MotorBusErr> deactivate() override;
+    tl::expected<void, serial_arm::MotorBusErr> recover() override;
+    const serial_arm::HardwareCapabilities& capabilities() const noexcept override;
+    void cleanup() noexcept override;
+    std::size_t size() const noexcept override;
 };
 ```
 
-先读
-
-```cpp
-fault.code
-```
-
-再根据顶层错误决定查看哪个子字段
-
-例如
-
-```text
-MOTOR_BUS_READ_FAILED
-    ->
-motor_bus_err
-
-MAPPER_FAILED
-    ->
-mapper_err
-
-CTRLLER_FAILED
-    ->
-ctrller_err
-
-SAFETY_FAILED
-    ->
-safety_fault
-
-MODEL_FEEDFORWARD_FAILED
-    ->
-model_feedforward_err
-
-INTERACTION_FAILED
-    ->
-interaction_err
-```
-
-### 具体使用示例
-
-```cpp
-auto cycle_result = robot.cycle();
-if(!cycle_result) {
-    const serial_arm::RobotFault& fault = cycle_result.error();
-
-    switch(fault.code) {
-    case serial_arm::RobotErr::MOTOR_BUS_READ_FAILED:
-    case serial_arm::RobotErr::MOTOR_BUS_WRITE_FAILED:
-        std::cerr << "MotorBusErr="
-                  << static_cast<int>(fault.motor_bus_err) << "\n";
-        break;
-
-    case serial_arm::RobotErr::SAFETY_FAILED:
-        std::cerr << "SafetyErr="
-                  << static_cast<int>(fault.safety_fault.code)
-                  << " joint=" << fault.safety_fault.index
-                  << " value=" << fault.safety_fault.value
-                  << " limit=" << fault.safety_fault.limit
-                  << "\n";
-        break;
-
-    case serial_arm::RobotErr::INTERACTION_FAILED:
-        std::cerr << "InteractionControllerErr="
-                  << static_cast<int>(fault.interaction_err)
-                  << "\n";
-        break;
-
-    default:
-        std::cerr << "RobotErr=" << static_cast<int>(fault.code) << "\n";
-        break;
-    }
-}
-```
-
-先看顶层 `code`，再读取对应的子错误字段
+实现完成后再通过 `create_motor_bus()` 和 `destroy_motor_bus()` 导出给 `HardwareLoader`
 
 ---
 
-# Part XV 功能参考示例
+### `MotorBus::configure()`
 
-## 134. 功能 A：通过 Robot Profile 创建一个 Robot
+```cpp
+virtual tl::expected<void, MotorBusErr>
+configure(
+    const std::string& config_path) = 0;
+```
+
+职责
+
+- 读取 Backend YAML
+- 校验 actuator 数量
+- 校验 ID、型号和通信参数
+- 建立内部配置对象
+
+不应在这里使能执行器或发送运动命令
+
+#### 接口说明
+
+Backend 读取并校验自己的 YAML，建立配置但不驱动真实执行器运动
+
+参数
+
+- `config_path` 为 Backend 专属 YAML
+
+返回值
+
+实现应返回 `tl::expected<void, MotorBusErr>`
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr>
+MyBus::configure(const std::string& config_path) {
+    if(config_path.empty()) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CFG);
+    }
+
+    cfg_ = load_my_backend_yaml(config_path);
+    capabilities_ = build_capabilities(cfg_);
+    configured_ = true;
+    return {};
+}
+```
+
+使用注意
+
+- 这里可以解析配置和准备静态 capability，但不要使能电机
+
+---
+
+### `MotorBus::connect()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+connect() = 0;
+```
+
+职责
+
+打开串口、CAN、EtherCAT 或其他底层设备
+
+connect 成功不等于执行器已使能
+
+#### 接口说明
+
+Backend 打开底层串口、CAN、EtherCAT 或其他设备连接
+
+返回值
+
+连接成功返回空 `expected`，打开失败返回 `OPEN_FAILED` 或更具体错误
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr> MyBus::connect() {
+    if(!configured_) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONFIGURED);
+    }
+
+    if(!transport_.open(cfg_.device)) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::OPEN_FAILED);
+    }
+
+    connected_ = true;
+    return {};
+}
+```
+
+---
+
+### `MotorBus::read()`
+
+```cpp
+virtual tl::expected<
+    ActuatorState,
+    MotorBusErr
+>
+read() = 0;
+```
+
+返回值必须已经转换为 SerialArm 统一单位
+
+```text
+pos rad
+vel rad/s
+tor N*m
+```
+
+#### 接口说明
+
+读取执行器状态并转换成 SerialArm Hardware Contract 的统一单位
+
+返回值
+
+成功返回 `ActuatorState`，通信或状态失败返回 `MotorBusErr`
+
+具体使用示例
+
+```cpp
+tl::expected<serial_arm::ActuatorState, serial_arm::MotorBusErr>
+MyBus::read() {
+    if(!connected_) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONNECTED);
+    }
+
+    serial_arm::ActuatorState state;
+    state.pos.resize(size());
+    state.vel.resize(size());
+    state.tor.resize(size());
+    state.online.assign(size(), 1);
+    state.enabled.assign(size(), 1);
+    state.err_code.assign(size(), 0);
+
+    for(std::size_t i = 0; i < size(); ++i) {
+        const auto raw = driver_.read_motor(i);
+        state.pos[i] = raw.position_rad;
+        state.vel[i] = raw.velocity_rad_s;
+        state.tor[i] = raw.torque_nm;
+    }
+
+    return state;
+}
+```
+
+使用注意
+
+- 如果厂商只给电流，应在 Backend 内完成电流到 N*m 的换算
+
+---
+
+### `MotorBus::activate()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+activate() = 0;
+```
+
+典型职责
+
+- 使能执行器
+- 切换控制模式
+- 确认反馈
+- 进入可写状态
+
+#### 接口说明
+
+使 Backend 进入可写控制状态，通常在这里完成电机使能和控制模式切换
+
+返回值
+
+成功返回空 `expected`，使能或模式切换失败返回对应错误
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr> MyBus::activate() {
+    if(!connected_) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONNECTED);
+    }
+
+    for(std::size_t i = 0; i < size(); ++i) {
+        if(!driver_.enable(i)) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::ENABLE_FAILED);
+        }
+        if(!driver_.switch_to_mit(i)) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::MODE_SWITCH_FAILED);
+        }
+    }
+
+    active_ = true;
+    return {};
+}
+```
+
+---
+
+### `MotorBus::write()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+write(
+    const ActuatorCtrlCmd& cmd) = 0;
+```
+
+Backend 必须接受完整
+
+```text
+pos
+vel
+tor
+kp
+kd
+```
+
+如果厂商协议的数据单位不同，在这里转换
+
+#### 接口说明
+
+把 Core 给出的完整 Actuator MIT 语义转换为厂商协议并发送
+
+参数
+
+- `cmd` 包含 pos、vel、tor、kp、kd
+
+返回值
+
+成功返回空 `expected`，非法命令或通信失败返回 `MotorBusErr`
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr>
+MyBus::write(const serial_arm::ActuatorCtrlCmd& cmd) {
+    if(!active_) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::NOT_ACTIVE);
+    }
+    if(cmd.pos.size() != size()) {
+        return tl::make_unexpected(serial_arm::MotorBusErr::INVALID_CMD);
+    }
+
+    for(std::size_t i = 0; i < size(); ++i) {
+        const bool ok = driver_.send_mit(
+            i,
+            cmd.pos[i],
+            cmd.vel[i],
+            cmd.kp[i],
+            cmd.kd[i],
+            cmd.tor[i]);
+        if(!ok) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::WRITE_FAILED);
+        }
+    }
+
+    return {};
+}
+```
+
+---
+
+### `MotorBus::stop()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+stop() = 0;
+```
+
+用于故障处理或安全停止
+
+Backend 可以实现为
+
+- 刹停
+- 当前位置保持
+- 多次刷新低风险停止命令
+
+具体策略由 Backend 决定，但必须符合 Hardware Contract
+
+#### 接口说明
+
+请求 Backend 停止当前运动或持续刷新安全保持命令
+
+返回值
+
+成功返回空 `expected`，停止失败返回 `STOP_FAILED`
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr> MyBus::stop() {
+    for(std::size_t i = 0; i < size(); ++i) {
+        if(!driver_.hold_current(i, stop_kp_, stop_kd_)) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::STOP_FAILED);
+        }
+    }
+    return {};
+}
+```
+
+使用注意
+
+- stop 的具体物理策略由 Backend 决定，但必须是低风险行为
+
+---
+
+### `MotorBus::deactivate()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+deactivate() = 0;
+```
+
+退出可写状态并失能执行器
+
+#### 接口说明
+
+退出可写状态并失能执行器
+
+返回值
+
+成功返回空 `expected`，失能失败返回 `DISABLE_FAILED`
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr> MyBus::deactivate() {
+    for(std::size_t i = 0; i < size(); ++i) {
+        if(!driver_.disable(i)) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::DISABLE_FAILED);
+        }
+    }
+    active_ = false;
+    return {};
+}
+```
+
+---
+
+### `MotorBus::recover()`
+
+```cpp
+virtual tl::expected<void, MotorBusErr>
+recover() = 0;
+```
+
+用于尝试清理 Backend 或执行器错误状态
+
+它不等于 Robot 的 `clear_fault()`
+
+Robot fault 和 hardware fault 是两个层级
+
+#### 接口说明
+
+尝试清理硬件错误并让 Backend 恢复到可以重新使用的状态
+
+返回值
+
+成功返回空 `expected`，恢复失败返回 `RECOVER_FAILED`
+
+具体使用示例
+
+```cpp
+tl::expected<void, serial_arm::MotorBusErr> MyBus::recover() {
+    for(std::size_t i = 0; i < size(); ++i) {
+        if(!driver_.clear_fault(i)) {
+            return tl::make_unexpected(serial_arm::MotorBusErr::RECOVER_FAILED);
+        }
+    }
+    return {};
+}
+```
+
+使用注意
+
+- Hardware recover 不等于 Robot clear_fault，两层状态机必须分别满足条件
+
+---
+
+### `MotorBus::capabilities()`
+
+```cpp
+virtual const HardwareCapabilities&
+capabilities() const noexcept = 0;
+```
+
+必须在 Core 配置解析阶段可用
+
+因此 Backend 的 capability 信息不应依赖 Robot 已经 ACTIVE
+
+#### 接口说明
+
+返回 Core Safety 解析需要的执行器物理能力
+
+返回值
+
+返回 `HardwareCapabilities` 只读引用
+
+具体使用示例
+
+```cpp
+const serial_arm::HardwareCapabilities& MyBus::capabilities() const noexcept {
+    return capabilities_;
+}
+
+// 调用侧
+for(const auto& capability : bus->capabilities()) {
+    std::cout << capability.actuator_name
+              << " max_torque=" << capability.max_effort << "\n";
+}
+```
+
+使用注意
+
+- capabilities 必须在 Robot ACTIVE 之前就可用
+
+---
+
+### `MotorBus::cleanup()`
+
+```cpp
+virtual void cleanup() noexcept = 0;
+```
+
+要求
+
+- noexcept
+- 可以重复调用
+- 释放通信资源
+- 不抛异常
+
+#### 接口说明
+
+无异常释放 Backend 持有的底层资源，并允许重复调用
+
+返回值
+
+无返回值且必须 `noexcept`
+
+具体使用示例
+
+```cpp
+void MyBus::cleanup() noexcept {
+    active_ = false;
+    connected_ = false;
+    transport_.close_noexcept();
+}
+```
+
+使用注意
+
+- 析构和失败路径都可能调用 cleanup，因此必须幂等
+
+---
+
+### `MotorBus::size()`
+
+```cpp
+virtual std::size_t
+size() const noexcept = 0;
+```
+
+必须等于 Robot 受控 Joint 数量
+
+否则 `Robot::configure()` 返回
+
+```text
+MOTOR_BUS_SIZE_MISMATCH
+```
+
+#### 接口说明
+
+返回 Backend 管理的执行器数量
+
+返回值
+
+返回值必须与 Robot 受控 Joint 数量一致
+
+具体使用示例
+
+```cpp
+std::size_t MyBus::size() const noexcept {
+    return actuators_.size();
+}
+
+if(bus->size() != cfg.joint_names.size()) {
+    std::cerr << "joint/actuator count mismatch\n";
+}
+```
+
+---
+
+### `HardwareLoader`
+
+头文件
+
+```cpp
+#include "serial_arm/hardware/hardware_loader.hpp"
+```
+
+签名
+
+```cpp
+tl::expected<
+    std::unique_ptr<MotorBus>,
+    HardwareLoaderErr
+>
+load(
+    const std::string& plugin,
+    const std::string& config_path);
+
+struct HardwareConfigOverrides {
+    std::optional<std::string> serial_port;
+    std::optional<int> baudrate;
+    std::optional<std::string> bus;
+};
+
+tl::expected<
+    std::unique_ptr<MotorBus>,
+    HardwareLoaderErr
+>
+load(
+    const std::string& plugin,
+    const std::string& config_path,
+    const HardwareConfigOverrides& overrides);
+```
+
+作用
+
+- `dlopen()` Backend shared library
+- 查找 `create_motor_bus`
+- 查找 `destroy_motor_bus`
+- 创建 MotorBus
+- 调用 `MotorBus::configure()`
+- 把 Backend 对象生命周期与 DSO 生命周期绑定
+- 可选地为该次 `load()` 调用覆盖 `serial_port`、`baudrate`、`bus`
+
+示例
+
+```cpp
+HardwareLoader loader;
+
+auto result = loader.load(
+    "serial_arm_hardware_damiao",
+    "/path/to/hardware.yaml");
+
+if(!result) {
+    return 1;
+}
+
+std::unique_ptr<MotorBus> bus =
+    std::move(result.value());
+```
+
+运行时硬件连接参数覆盖示例
+
+```cpp
+serial_arm::HardwareConfigOverrides overrides;
+overrides.serial_port = "/dev/ttyACM1";
+overrides.baudrate = 921600;
+
+auto result = loader.load(
+    "serial_arm_hardware_damiao",
+    "/path/to/hardware.yaml",
+    overrides);
+```
+
+未设置的 `std::optional` 字段不会覆盖 YAML；硬件连接参数优先级为
+
+```text
+runtime override > hardware.yaml
+```
+
+Backend 默认值仅适用于 Backend 明确定义为可选的配置字段；该 API 不会把覆盖值写回 `hardware.yaml`
+
+如果 `plugin` 不包含路径分隔符，Loader 还会尝试
+
+```text
+lib<plugin>.so
+```
+
+#### 接口说明
+
+动态加载 Backend shared library，创建 MotorBus 并自动调用其 configure
+
+参数
+
+- `plugin` 为共享库路径或插件名
+- `config_path` 为 Backend YAML
+- `overrides` 为运行时可选覆盖项；空 optional 表示保留 YAML 值
+
+返回值
+
+成功返回拥有 Backend 和 DSO 生命周期的 `std::unique_ptr<MotorBus>`，失败返回 `HardwareLoaderErr`
+
+具体使用示例
+
+```cpp
+serial_arm::HardwareLoader loader;
+
+auto result = loader.load(
+    "serial_arm_hardware_damiao",
+    "/opt/serial_arm/share/dm_arm_description/config/hardware.yaml");
+
+if(!result) {
+    std::cerr << "HardwareLoaderErr="
+              << static_cast<int>(result.error()) << "\n";
+    return 1;
+}
+
+std::unique_ptr<serial_arm::MotorBus> bus =
+    std::move(result.value());
+
+std::cout << "actuator count=" << bus->size() << "\n";
+```
+
+使用注意
+
+- 返回的 `MotorBus` wrapper 自己绑定 DSO 生命周期，不需要调用者手工 dlclose
+
+---
+
+### Transport API
+
+头文件
+
+```cpp
+#include "serial_arm/transport/can.hpp"
+#include "serial_arm/transport/bus.hpp"
+#include "serial_arm/transport/serial_bus.hpp"
+#include "serial_arm/transport/serial_port.hpp"
+```
+
+`CanFrame` 表示经典 CAN 数据帧，仅支持 8 字节 classic CAN
+
+```cpp
+serial_arm::transport::CanFrame frame;
+frame.id = 0x01;
+frame.size = 8;
+frame.data = {0};
+```
+
+`CanFilter` 用于 `CanChannel` 接收过滤
+
+```cpp
+serial_arm::transport::CanFilter filter{0x01, 0x7FF};
+```
+
+`CanBus` 定义通用 CAN 总线抽象，具体 `CanBus` 实现负责持有物理通信资源；`CanChannel` 是逻辑端点；一个物理 frame 只由具体 bus 实现读取一次，然后复制到所有匹配 filter 的 channel pending queue；`CanChannel::flush()` 只清理本 channel pending queue，不清空物理总线
+
+`BusRegistry` 是 shared physical bus ownership 的内部协调层
+
+它使用 logical bus name 标识共享资源，用 `BusResourceDescriptor` 描述 physical resource 和配置签名
+
+`config_signature` 是必填 provider contract，必须包含 provider/backend identity 和物理通信兼容参数，空 signature 会返回 `INVALID_ARGUMENT`
+
+`BusResourceDescriptor::ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
+
+同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
+
+同名但类型不同返回 `TYPE_MISMATCH`
+
+同名同类型但 resource descriptor 不一致返回 `CONFIG_CONFLICT`
+
+不同 logical name 使用同一 ownership key 时，如果是同类同 physical id 但物理通信参数不同则返回 `CONFIG_CONFLICT`
+
+不同 logical name 使用同一 ownership key 的其他重复占用情况返回 `PHYSICAL_RESOURCE_CONFLICT`
+
+creator 返回空指针、open 失败或抛出普通运行时异常时返回 `CREATE_FAILED`
+
+Registry acquisition 内部线程安全，并通过 weak pointer 管理 physical Bus 生命周期
+
+Registry 在锁内先写入 `CREATING` reservation，再到全局 Registry mutex 外执行 creator/open；相同 logical bus 的并发 acquisition 等待同一创建结果，不同 Bus acquisition 不会被慢 creator 长时间阻塞，creator 也可以安全获取其他 Registry-managed Bus
+
+普通 Protocol / Hardware consumer 不直接调用 Registry 获取 raw Bus，而应通过 `acquire_can_channel()` 或 `acquire_serial_bus_client()` 获取受限访问对象
+
+最后一个 logical access object 释放后，下一次 acquisition 会清理已过期的 logical name 和 physical resource 占用记录
+
+错误上下文可以通过 `bus_registry_error_message()` 构造
+
+```cpp
+std::string message =
+    serial_arm::transport::bus_registry_error_message(
+        error,
+        "main_can",
+        resource_descriptor);
+```
+
+`CanChannel` 默认最多保留 `256` 个 pending frame；达到上限时丢弃最旧帧，避免低频设备在共享高流量 CAN 总线时无限增长；通过 `acquire_can_channel()` 创建通道时可以显式指定上限
+
+运行统计通过 `diagnostics()` 获取
+
+```cpp
+auto stats = channel->diagnostics();
+std::cout << stats.pending_frames << "\n";
+std::cout << stats.received_frames << "\n";
+std::cout << stats.dropped_frames << "\n";
+```
+
+有界队列只负责资源保护；设备事务的正确性仍由 hardware/protocol 层持续 drain 和 payload matching 保证
+
+`CanChannel::send()` 通过所属 `CanBus` 的 TX mutex 串行化发送
+
+`CanChannel::receive()` 通过所属 `CanBus` 的 RX mutex 串行化 physical receive 和 fan-out
+
+多个 channel 可以并发使用，但每个 Driver 仍应只消费自己的 channel
+
+正式链路
+
+```text
+DamiaoMotorBus
+    ↓
+CanChannel
+    ↓
+CanBus interface
+    ↓
+DamiaoUsbCanBus
+    ↓
+SerialPort
+    ↓
+达妙官方 USB2CAN 模块
+```
+
+`SerialPort` 位于 `serial_arm::transport` 命名空间，提供 `Config`、独立 `read_timeout/write_timeout`、`open()`、`set_config()`、`read()`、`read_exact()`、`write()`、`flush()`、`drain()`、`available()` 和 move 语义；`read()` / `read_exact()` / `write()` 还提供显式 operation timeout 重载，这些重载不会修改持久 `Config`；它只负责 Linux tty 字节传输，不解析任何设备协议
+
+robot_supports 提供 `serial_arm_protocol_damiao_usb2can`，其中 `DamiaoUsbCanBus` 适配达妙官方 USB2CAN 模块的私有串口通信协议；该实现不是通用 USB2CAN 协议适配器
+
+硬件 backend 或独立 CAN 外设应优先获取 `CanChannel`
+
+如果使用已有 Damiao USB2CAN physical bus，推荐通过 protocol helper 获取 channel
+
+```cpp
+serial_arm::protocol::damiao_usb2can::Config config;
+config.serial_port = "/dev/ttyACM0";
+config.baudrate = 921600;
+
+auto result =
+    serial_arm::protocol::damiao_usb2can::acquire_channel(
+        "main_can",
+        config,
+        {
+            serial_arm::transport::CanFilter{0x20, 0x7FF},
+        });
+
+if(!result) {
+    // 根据 damiao_usb2can::Err 处理错误
+}
+
+auto channel = result.value();
+```
+
+如果扩展包提供自己的 physical `CanBus` 实现，应通过 `acquire_can_channel()` 提交 resource descriptor 和 provider creator，最终只把 `CanChannel` 交给 Protocol / Hardware consumer
+
+```cpp
+auto channel = serial_arm::transport::acquire_can_channel(
+    "main_can",
+    resource_descriptor,
+    [&]() -> std::shared_ptr<serial_arm::transport::CanBus> {
+        auto value = std::make_shared<MyCanBus>(my_config);
+        auto opened = value->open();
+        if(!opened) return nullptr;
+        return value;
+    },
+    {serial_arm::transport::CanFilter{0x20, 0x7FF}},
+    128);
+
+if(!channel) {
+    // INVALID_ARGUMENT / CREATE_FAILED / type/config/physical resource conflict
+}
+```
+
+Driver 不拥有 physical CAN resource；Driver 析构时只释放自己的 `CanChannel`
+
+`BusRegistry` 的 raw Bus 获取接口属于 Core internal implementation，不作为扩展 Driver API
+
+扩展 Driver 不应绕过 acquisition helper 建立第二套 physical Bus ownership 入口
+
+Transport 的共享语义为同进程级别，不提供跨进程 CAN broker；`serial_arm_core` 在 ROS 2 构建中以 shared library 形式承载共享 BusRegistry 状态
+
+#### Shared Serial 扩展契约
+
+串行扩展协议通过 `SerialBusClient` 共享同一个 physical serial endpoint
+
+内部 `SerialBus` 唯一持有 `SerialPort`
+
+协议 Driver 不直接构造、打开、关闭或持有 `SerialBus`
+
+Driver 通过 `acquire_serial_bus_client()` 获取 transaction-only client
+
+```cpp
+auto client = serial_arm::transport::acquire_serial_bus_client(
+    "tool_serial",
+    config);
+
+if(!client) {
+    // 非法串口配置返回 INVALID_ARGUMENT，open/creator 失败返回 CREATE_FAILED
+    // 其余错误根据 type/config/physical resource conflict 处理
+    return;
+}
+
+(*client)->transaction([&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.flush(serial_arm::transport::SerialTransaction::FlushDirection::Input);
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
+    validate_response(response);
+});
+```
+
+一个 request-response 协议交互必须放在同一个 transaction 内
+
+不要把 write request 和 read response 拆成两个 transaction，否则其他 client 可以在中间插入自己的事务
+
+`SerialBusClient` 不提供 `open()`、`close()`、`config()` 或 raw Bus 访问
+
+`SerialTransaction` 不提供 `open()`、`close()`、`set_config()` 或 `native_handle()`
+
+因此协议 Driver 既不能接管共享 Bus 生命周期，也不能接管底层 `SerialPort`
+
+Core 不判断任意串行协议是否能共线
+
+`baud rate / data bits / parity / stop bits / flow control` 属于 physical serial compatibility fingerprint
+
+`read_timeout / write_timeout` 属于 client / transaction policy，不进入 physical compatibility fingerprint
+
+每次 `acquire_serial_bus_client()` 都会把调用方配置中的 read/write timeout 保存到返回的 client，因此同一个 named SerialBus 上的不同 Driver 可以拥有不同默认 timeout
+
+单次事务还可以通过 `SerialTransactionOptions` 临时覆盖 client 默认 timeout
+
+```cpp
+serial_arm::transport::SerialTransactionOptions options;
+options.read_timeout = std::chrono::milliseconds(20);
+options.write_timeout = std::chrono::milliseconds(100);
+
+(*client)->transaction(options, [&](serial_arm::transport::SerialTransaction& transaction) {
+    transaction.write(request.data(), request.size());
+    transaction.read_exact(response.data(), response.size());
+});
+```
+
+扩展 Driver 仍需确认 electrical layer、baud rate、data bits、parity、stop bits、flow control、duplex mode、framing、地址和主动发送行为互相兼容
+
+对于表现为普通 POSIX tty 且转换器自动处理收发方向的 RS485 设备可以直接使用 Shared Serial
+
+需要显式 RTS 或 `TIOCSRS485` 方向控制的 RS485 场景不属于当前 Shared Serial 支持范围
+
+`SerialBusClient::diagnostics()` 提供最小运行统计
+
+```cpp
+auto stats = (*client)->diagnostics();
+std::cout << stats.is_open << "\n";
+std::cout << stats.transaction_count << "\n";
+std::cout << stats.failed_transaction_count << "\n";
+std::cout << stats.resource.physical_id << "\n";
+std::cout << stats.resource.ownership_key << "\n";
+```
+
+`failed_transaction_count` 只统计 transaction callback 抛出的异常
+
+Core 不会把 callback 的原始异常改写成通用协议错误
+
+异常会原样继续抛给调用方
+
+不同 `SerialBusClient` 的 transaction 对同一个内部 `SerialBus` 串行化执行
+
+最后一个 client 引用释放后，内部 `SerialBus` 通过 RAII 关闭底层 `SerialPort`
+
+### Shared Bus 使用约束
+
+CAN Driver
+
+```text
+Driver obtains a private CanChannel through acquire_can_channel()
+Driver does not own raw CanBus
+```
+
+Serial Driver
+
+```text
+Driver obtains SerialBusClient through acquire_serial_bus_client()
+Driver performs a complete request-response inside one transaction
+```
+
+使用约束
+
+- physical endpoint 的唯一所有权由 Core acquisition helper 协调
+- logical bus name、physical resource 与 compatibility signature 必须保持一致
+- Driver 析构只释放自己的逻辑访问对象，不直接关闭 shared physical Bus
+- CAN consumer 只消费自己的 `CanChannel`
+- Serial request 与 response 必须处于同一个 transaction
+- Shared Bus 只提供同进程资源协调，不提供跨进程 broker
+
+---
+
+## 13 完整调用示例
+
+本章保留组合多个 API 的完整示例，逐项配置和真机调试流程以 Tutorial 为准
+
+### 通过 Robot Profile 创建一个 Robot
 
 ```cpp
 #include <iostream>
@@ -8294,7 +8192,7 @@ int main() {
 
 ---
 
-## 135. 功能 B：实现刚性位置跟踪
+### 实现刚性位置跟踪
 
 前提
 
@@ -8349,7 +8247,7 @@ while(running) {
 
 ---
 
-## 136. 功能 C：实现柔性位置跟踪
+### 实现柔性位置跟踪
 
 只需要切换 gains 所属 mode
 
@@ -8386,7 +8284,7 @@ compliant_tracking:
 
 ---
 
-## 137. 功能 D：实现手动拖拽
+### 实现手动拖拽
 
 ```cpp
 auto result =
@@ -8413,7 +8311,7 @@ while(running) {
 
 ---
 
-## 138. 功能 E：实现重力补偿拖拽
+### 实现重力补偿拖拽
 
 配置 Robot 前提供 Dynamics callback
 
@@ -8459,7 +8357,7 @@ dynamics.get_gravity_compensation();
 
 ---
 
-## 139. 功能 F：读取末端位姿和 Jacobian
+### 读取末端位姿和 Jacobian
 
 ```cpp
 Dynamics dynamics;
@@ -8501,7 +8399,7 @@ auto camera_jacobian =
 
 ---
 
-## 140. 功能 G：计算笛卡尔末端速度
+### 计算笛卡尔末端速度
 
 已知
 
@@ -8531,7 +8429,7 @@ Eigen::VectorXd twist =
 
 ---
 
-## 141. 功能 H：记录一个完整控制周期
+### 记录一个完整控制周期
 
 ```cpp
 auto result =
@@ -8579,7 +8477,7 @@ Safety 后 Joint command
 
 ---
 
-## 142. 功能 I：处理 Robot FAULT
+### 处理 Robot FAULT
 
 ```cpp
 auto cycle_result =
@@ -8642,7 +8540,7 @@ robot.force_deactivate();
 
 ---
 
-## 143. 功能 J：Python 完成一次位置移动
+### Python 完成一次位置移动
 
 ```python
 from pathlib import Path
@@ -8694,7 +8592,7 @@ with serial_arm.RobotSession(
 
 ---
 
-## 144. 功能 K：Python 独立计算 Dynamics
+### Python 独立计算 Dynamics
 
 ```python
 import numpy as np
@@ -8747,7 +8645,7 @@ print(
 
 ---
 
-## 145. 功能 L：新增 Backend 的最小骨架
+### 新增 Backend 的最小骨架
 
 ```cpp
 #include "serial_arm/hardware/motor_bus.hpp"
@@ -8870,7 +8768,9 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 
 ---
 
-# Part XVI 错误码索引
+## 14 错误处理与错误码
+
+本章先说明 C++ 错误传播和 `RobotFault`，再按模块给出错误码索引
 
 错误码用于定位失败发生在哪一层
 
@@ -8878,7 +8778,147 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 
 日志中应同时记录错误类型名、顶层错误和有意义的子错误
 
-## `ConfigErr`
+### C++ `tl::expected`
+
+SerialArm-Core 不依赖异常完成 C++ 正常错误传播
+
+典型形式
+
+```cpp
+auto result = robot.activate();
+
+if(!result) {
+    const RobotFault& fault =
+        result.error();
+
+    std::cerr
+        << "RobotErr="
+        << static_cast<int>(fault.code)
+        << "\n";
+
+    return 1;
+}
+```
+
+不要直接写
+
+```cpp
+robot.activate().value();
+```
+
+除非当前程序明确允许错误直接终止
+
+#### 示例
+
+```cpp
+auto result = robot.activate();
+
+if(!result) {
+    const serial_arm::RobotFault& fault = result.error();
+    std::cerr << "RobotErr=" << static_cast<int>(fault.code) << "\n";
+    return 1;
+}
+
+// 只有 result 为 true 时才读取 value
+```
+
+不要在没有先判断 `result` 的情况下直接调用 `value()`
+
+---
+
+### `RobotFault`
+
+定义
+
+```cpp
+struct RobotFault {
+    RobotErr code;
+    MotorBusErr motor_bus_err;
+    JointActuatorMapErr mapper_err;
+    JointCtrllerErr ctrller_err;
+    SafetyFault safety_fault;
+    ModelFeedforwardErr model_feedforward_err;
+    InteractionControllerErr interaction_err;
+};
+```
+
+先读
+
+```cpp
+fault.code
+```
+
+再根据顶层错误决定查看哪个子字段
+
+例如
+
+```text
+MOTOR_BUS_READ_FAILED
+    ->
+motor_bus_err
+
+MAPPER_FAILED
+    ->
+mapper_err
+
+CTRLLER_FAILED
+    ->
+ctrller_err
+
+SAFETY_FAILED
+    ->
+safety_fault
+
+MODEL_FEEDFORWARD_FAILED
+    ->
+model_feedforward_err
+
+INTERACTION_FAILED
+    ->
+interaction_err
+```
+
+#### 示例
+
+```cpp
+auto cycle_result = robot.cycle();
+if(!cycle_result) {
+    const serial_arm::RobotFault& fault = cycle_result.error();
+
+    switch(fault.code) {
+    case serial_arm::RobotErr::MOTOR_BUS_READ_FAILED:
+    case serial_arm::RobotErr::MOTOR_BUS_WRITE_FAILED:
+        std::cerr << "MotorBusErr="
+                  << static_cast<int>(fault.motor_bus_err) << "\n";
+        break;
+
+    case serial_arm::RobotErr::SAFETY_FAILED:
+        std::cerr << "SafetyErr="
+                  << static_cast<int>(fault.safety_fault.code)
+                  << " joint=" << fault.safety_fault.index
+                  << " value=" << fault.safety_fault.value
+                  << " limit=" << fault.safety_fault.limit
+                  << "\n";
+        break;
+
+    case serial_arm::RobotErr::INTERACTION_FAILED:
+        std::cerr << "InteractionControllerErr="
+                  << static_cast<int>(fault.interaction_err)
+                  << "\n";
+        break;
+
+    default:
+        std::cerr << "RobotErr=" << static_cast<int>(fault.code) << "\n";
+        break;
+    }
+}
+```
+
+先看顶层 `code`，再读取对应的子错误字段
+
+---
+
+### `ConfigErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8893,7 +8933,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 
 优先把 `message` 直接写入日志
 
-## `RobotProfileErr`
+### `RobotProfileErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8905,7 +8945,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 
 `RobotProfileErrInfo` 同样提供明确 `message`
 
-## `ModelErr`
+### `ModelErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8916,7 +8956,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `FIXED_JOINT_CONTROLLED` | fixed Joint 被错误加入控制列表 |
 | `INVALID_LIMIT` | URDF limit 无效 |
 
-## `LimitResolverErr`
+### `LimitResolverErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8924,7 +8964,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `MISSING_ACTUATOR` | 缺少对应 Actuator capability |
 | `POLICY_WIDENS_LIMIT` | Safety policy 尝试放宽底层限制 |
 
-## `JointActuatorMapErr`
+### `JointActuatorMapErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8937,7 +8977,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `INVALID_ACTUATOR_CMD` | ActuatorCtrlCmd 无效 |
 | `INVALID_CONVERSION_VALUE` | 映射结果出现非法数值 |
 
-## `JointCtrllerErr`
+### `JointCtrllerErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8956,7 +8996,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `CMD_NOT_ALLOWED_IN_MODE` | 当前不是 tracking mode |
 | `FULL_CMD_NOT_ALLOWED` | `allow_full_cmd=false` |
 
-## `SafetyErr`
+### `SafetyErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -8986,7 +9026,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `CMD_POS_STEP_LIMIT` | 相邻命令位置跳变过大 |
 | `CMD_VEL_STEP_LIMIT` | 相邻命令速度跳变过大 |
 
-## `DynamicsErr`
+### `DynamicsErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -9004,7 +9044,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `GRAVITY_SCALE_OUT_OF_RANGE` | gravity scale 超出 `[0, 1]` |
 | `COMPUTE_FAILED` | 底层动力学计算失败 |
 
-## `MotorBusErr`
+### `MotorBusErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -9026,7 +9066,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `DISABLE_FAILED` | 失能失败 |
 | `RECOVER_FAILED` | 恢复失败 |
 
-## `HardwareLoaderErr`
+### `HardwareLoaderErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -9035,7 +9075,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `CREATE_FAILED` | Backend 实例创建失败 |
 | `CONFIGURE_FAILED` | `MotorBus::configure()` 失败 |
 
-## `ModelFeedforwardErr`
+### `ModelFeedforwardErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -9044,7 +9084,7 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `INVALID_MODE` | 模式无效 |
 | `COMPUTE_FAILED` | Dynamics 或自定义前馈计算失败 |
 
-## `RobotErr`
+### `RobotErr`
 
 | 错误 | 含义 |
 | --- | --- |
@@ -9073,182 +9113,3 @@ Backend shared library还需要按 HardwareLoader contract 导出创建和销毁
 | `INVALID_MODEL_FEEDFORWARD` | 模型前馈结果非法 |
 | `INTERACTION_FAILED` | Interaction / Admittance 计算失败 |
 | `FAULT_RECOVERY_NOT_ALLOWED` | 当前条件不允许 fault recovery |
-
----
-
-# Part XVII 快速索引
-
-## 想控制机械臂位置
-
-使用
-
-```text
-Robot
-set_impedance_mode(RIGID_TRACKING)
-set_cmd(JointPosCmd)
-cycle
-```
-
-Python 使用
-
-```text
-RobotSession
-set_impedance_mode
-move_to
-```
-
-## 想做阻抗拖拽
-
-使用
-
-```text
-COMPLIANT_DRAG
-Dynamics gravity compensation
-cycle
-```
-
-## 想做柔性轨迹跟踪
-
-使用
-
-```text
-COMPLIANT_TRACKING
-set_cmd
-cycle
-```
-
-## 想使用关节空间导纳
-
-配置
-
-```text
-capability.admittance
-  observer
-  calibration
-  feel
-```
-
-运行时接口
-
-```text
-Robot::set_admittance_cfg
-Robot::get_admittance_cfg
-Robot::set_admittance_suspended
-Robot::is_admittance_suspended
-```
-
-诊断输出
-
-```text
-RobotCycleOutput::admittance_active
-RobotCycleOutput::tau_ext_hat
-RobotCycleOutput::contact_confidence
-RobotCycleOutput::delta_q
-RobotCycleOutput::delta_q_dot
-```
-
-`COMPLIANT_DRAG` 会旁路导纳修正，不用于判断导纳 observer 是否正常工作
-
-## 想读取关节状态
-
-使用
-
-```text
-RobotCycleOutput::joint_state
-Robot::get_joint_state
-RobotSessionSnapshot::cycle
-```
-
-## 想读取执行器原始统一状态
-
-使用
-
-```text
-RobotCycleOutput::actuator_state
-Robot::get_actuator_state
-```
-
-这里的状态仍然已经被 Backend 转换为 SerialArm 单位，不是厂商原始字节
-
-## 想计算重力补偿
-
-使用
-
-```text
-Dynamics::update
-Dynamics::get_gravity_compensation
-```
-
-## 想计算末端位姿
-
-使用
-
-```text
-Dynamics::update
-Dynamics::get_tool_pose
-```
-
-## 想计算任意 frame 位姿
-
-使用
-
-```text
-Dynamics::get_frame_pose
-```
-
-## 想计算 Jacobian
-
-使用
-
-```text
-Dynamics::get_tool_jacobian
-Dynamics::get_frame_jacobian
-```
-
-## 想开发新电机驱动
-
-实现
-
-```text
-MotorBus
-HardwareCapabilities
-HardwareLoader plugin contract
-```
-
-## 想排查方向和减速比
-
-使用
-
-```text
-JointActuatorMapCfg
-JointActuatorMapper
-```
-
-## 想排查限位
-
-使用
-
-```text
-ModelLoader
-LimitResolver
-Safety
-```
-
-## 想排查控制故障
-
-先看
-
-```text
-RobotFault::code
-```
-
-再看对应子错误
-
-```text
-motor_bus_err
-mapper_err
-ctrller_err
-safety_fault
-model_feedforward_err
-interaction_err
-```
