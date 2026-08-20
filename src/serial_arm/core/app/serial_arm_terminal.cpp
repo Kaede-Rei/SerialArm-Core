@@ -3,7 +3,9 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/interaction/admittance_calibration.hpp"
+#include "serial_arm/interaction/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/torque_residual_observer.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -657,7 +659,32 @@ public:
             return tl::expected<JointVector, ModelFeedforwardErr>(tl::make_unexpected(ModelFeedforwardErr::INVALID_MODE));
             };
 
-        const auto robot_result = robot_.configure(robot_cfg, std::move(motor_bus), std::move(model_feedforward));
+        InteractionModelStateFn interaction_model_state = [this](const JointState& state, double) -> tl::expected<InteractionModelState, ModelFeedforwardErr> {
+            if(!dynamics_.is_updated() || dynamics_.get_state().pos != state.pos) {
+                return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
+            }
+            InteractionModelState snapshot;
+            snapshot.gravity = dynamics_.get_gravity_compensation();
+            snapshot.coriolis = dynamics_.get_coriolis();
+            const auto& mass = dynamics_.get_mass_matrix();
+            if(mass.rows() != static_cast<Eigen::Index>(state.pos.size()) ||
+                mass.cols() != static_cast<Eigen::Index>(state.pos.size())) {
+                return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
+            }
+            snapshot.mass_matrix.assign(state.pos.size(), JointVector(state.pos.size(), 0.0));
+            for(std::size_t i = 0; i < state.pos.size(); ++i) {
+                for(std::size_t j = 0; j < state.pos.size(); ++j) {
+                    snapshot.mass_matrix[i][j] = mass(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+                }
+            }
+            return snapshot;
+            };
+
+        const auto robot_result = robot_.configure(
+            robot_cfg,
+            std::move(motor_bus),
+            std::move(model_feedforward),
+            std::move(interaction_model_state));
         if(!robot_result) {
             std::ostringstream message;
             message << "Robot configure() 失败: " << to_string(robot_result.error().code);
@@ -950,19 +977,17 @@ private:
 
     void handle_admittance_tuning_menu() {
         while(true) {
-            std::cout << "\n------------ 导纳控制：标定与调参 ------------\n";
-            std::cout << " 1. 静态残差标定（gravity_scale / torque_bias / torque_threshold）\n";
-            std::cout << " 2. 静态残差验证（gravity_scale / torque_bias / torque_threshold）\n";
-            std::cout << " 3. 摩擦残差标定（DRAG 示教 + 无外力双向回放）\n";
-            std::cout << " 4. 导纳动态调参（M / D / K / alpha / max）\n";
+            std::cout << "\n------------ 导纳控制 ------------\n";
+            std::cout << " 1. 导纳参数标定\n";
+            std::cout << " 2. 手感设置\n";
+            std::cout << " 3. 状态与诊断\n";
             std::cout << " 0. 返回\n";
             const auto selection = read_int("请选择: ");
             if(!selection || *selection == 0) return;
             switch(*selection) {
-                case 1: run_admittance_static_calibration(); break;
-                case 2: run_admittance_static_validation(); break;
-                case 3: run_admittance_friction_calibration(); break;
-                case 4: run_admittance_live_tuning(); break;
+                case 1: run_admittance_parameter_calibration(); break;
+                case 2: run_admittance_feel_menu(); break;
+                case 3: run_admittance_diagnostics_menu(); break;
                 default: std::cout << "未知菜单编号\n"; break;
             }
         }
@@ -1744,9 +1769,32 @@ private:
         const FrictionCalibrationTrajectory& trajectory,
         bool reverse,
         double playback_rate,
-        const JointVector& torque_bias,
-        std::vector<AdmittanceFrictionSample>& samples) {
+        const AdmittanceCapabilityCfg& admittance_cfg,
+        std::vector<AdmittanceFrictionSample>& selected_samples,
+        std::vector<AdmittanceFrictionSample>* full_id_samples = nullptr) {
         if(trajectory.positions.size() < 2 || trajectory.sample_dt <= 0.0) return false;
+
+        GeneralizedMomentumObserver momentum_observer;
+        TorqueResidualObserver momentum_filter;
+        TorqueResidualObserver full_id_filter;
+        TorqueResidualObserverCfg full_id_filter_cfg;
+        full_id_filter_cfg.joints_count = cfg_.joint_names.size();
+        full_id_filter_cfg.filter_alpha = admittance_cfg.observer.filter_alpha;
+        full_id_filter_cfg.initial_filtered_residual = admittance_cfg.calibration.torque_bias;
+        if(!full_id_filter.configure(full_id_filter_cfg)) return false;
+        if(admittance_cfg.observer.mode == AdmittanceObserverMode::MOMENTUM) {
+            GeneralizedMomentumObserverCfg momentum_cfg;
+            momentum_cfg.joints_count = cfg_.joint_names.size();
+            momentum_cfg.gain = admittance_cfg.observer.momentum_gain;
+            momentum_cfg.initial_residual = admittance_cfg.calibration.torque_bias;
+            if(!momentum_observer.configure(momentum_cfg)) return false;
+
+            TorqueResidualObserverCfg filter_cfg;
+            filter_cfg.joints_count = cfg_.joint_names.size();
+            filter_cfg.filter_alpha = admittance_cfg.observer.filter_alpha;
+            filter_cfg.initial_filtered_residual = admittance_cfg.calibration.torque_bias;
+            if(!momentum_filter.configure(filter_cfg)) return false;
+        }
 
         std::vector<JointVector> ordered = trajectory.positions;
         if(reverse) std::reverse(ordered.begin(), ordered.end());
@@ -1778,7 +1826,7 @@ private:
                 cursor = cycle_counter_;
                 const auto command = robot_.set_cmd(JointPosVelCmd{ ref_pos, ref_vel }, Robot::Clock::now());
                 if(!command) {
-                    std::cout << "摩擦标定回放命令失败：\n";
+                    std::cout << "回放命令失败：\n";
                     print_fault(command.error());
                     return false;
                 }
@@ -1786,6 +1834,9 @@ private:
 
             RobotCycleOutput output;
             JointVector model_torque;
+            JointVector gravity;
+            JointVector coriolis;
+            std::vector<JointVector> mass_matrix;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
@@ -1794,26 +1845,72 @@ private:
                 if(!updated || robot_.get_state() != RobotState::ACTIVE || !last_output_) return false;
                 output = *last_output_;
 
-                // Calibration must use actual q/dq/qdd FULL inverse dynamics, not tracking reference acceleration.
+                // Replay calibration always uses actual state. FULL-ID is retained only as
+                // a diagnostic reference; when MOMENTUM is selected the fitted friction
+                // residual must come from the same observer family used at runtime.
                 const auto dynamics_result = dynamics_.update(
                     output.joint_state, output.joint_acc, output.joint_acc);
                 if(!dynamics_result) {
-                    std::cout << "摩擦标定 FULL inverse dynamics 计算失败: "
-                        << to_string(dynamics_result.error()) << '\n';
+                    std::cout << "回放动力学计算失败: " << to_string(dynamics_result.error()) << '\n';
                     return false;
                 }
                 model_torque = dynamics_.get_inverse_dynamics();
+                gravity = dynamics_.get_gravity_compensation();
+                coriolis = dynamics_.get_coriolis();
+                const auto& mass = dynamics_.get_mass_matrix();
+                const std::size_t n = cfg_.joint_names.size();
+                if(mass.rows() != static_cast<Eigen::Index>(n) ||
+                    mass.cols() != static_cast<Eigen::Index>(n)) return false;
+                mass_matrix.assign(n, JointVector(n, 0.0));
+                for(std::size_t i = 0; i < n; ++i) {
+                    for(std::size_t j = 0; j < n; ++j) {
+                        mass_matrix[i][j] = mass(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+                    }
+                }
             }
 
-            JointVector residual_after_bias(cfg_.joint_names.size(), 0.0);
-            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-                residual_after_bias[i] = model_torque[i] - output.joint_state.tor[i] - torque_bias[i];
+            const std::size_t n = cfg_.joint_names.size();
+            const auto full_id_filtered = full_id_filter.update(output.joint_state.tor, model_torque);
+            if(!full_id_filtered) return false;
+            JointVector full_id_after_bias(n, 0.0);
+            for(std::size_t i = 0; i < n; ++i) {
+                full_id_after_bias[i] = full_id_filtered->residual_filtered[i] -
+                    admittance_cfg.calibration.torque_bias[i];
             }
-            samples.push_back(AdmittanceFrictionSample{
+
+            JointVector selected_after_bias = full_id_after_bias;
+            if(admittance_cfg.observer.mode == AdmittanceObserverMode::MOMENTUM) {
+                GeneralizedMomentumInput momentum_input;
+                momentum_input.measured_torque = output.joint_state.tor;
+                momentum_input.gravity = std::move(gravity);
+                momentum_input.coriolis = std::move(coriolis);
+                momentum_input.mass_matrix = std::move(mass_matrix);
+                momentum_input.velocity = output.joint_state.vel;
+                momentum_input.dt = output.dt > 0.0 ? output.dt : nominal_dt;
+                const auto momentum = momentum_observer.update(momentum_input);
+                if(!momentum) return false;
+                const auto filtered = momentum_filter.update(
+                    JointVector(n, 0.0), momentum->tau_ext_hat);
+                if(!filtered) return false;
+                selected_after_bias.resize(n);
+                for(std::size_t i = 0; i < n; ++i) {
+                    selected_after_bias[i] = filtered->residual_filtered[i] -
+                        admittance_cfg.calibration.torque_bias[i];
+                }
+            }
+
+            selected_samples.push_back(AdmittanceFrictionSample{
                 output.joint_state.vel,
                 output.joint_acc,
-                std::move(residual_after_bias),
+                std::move(selected_after_bias),
                 });
+            if(full_id_samples) {
+                full_id_samples->push_back(AdmittanceFrictionSample{
+                    output.joint_state.vel,
+                    output.joint_acc,
+                    std::move(full_id_after_bias),
+                    });
+            }
 
             previous_ref = std::move(ref_pos);
             progress = next_progress;
@@ -1822,25 +1919,21 @@ private:
     }
 
     void print_friction_calibration_yaml(const FrictionResidualModelCfg& friction) const {
-        std::cout << "\n请将以下 block 写回 capability.admittance.friction_compensation：\n";
-        std::cout << "friction_compensation:\n";
-        std::cout << "  enabled: " << (friction.enabled ? "true" : "false") << '\n';
-        std::cout << "  velocity_transition: " << std::fixed << std::setprecision(6)
+        std::cout << "  friction:\n";
+        std::cout << "    enabled: " << (friction.enabled ? "true" : "false") << '\n';
+        std::cout << "    velocity_transition: " << std::fixed << std::setprecision(6)
             << friction.velocity_transition << '\n';
-        std::cout << "  "; print_joint_yaml_map("positive_coulomb", cfg_.joint_names, friction.positive_coulomb);
-        std::cout << "  "; print_joint_yaml_map("positive_viscous", cfg_.joint_names, friction.positive_viscous);
-        std::cout << "  "; print_joint_yaml_map("negative_coulomb", cfg_.joint_names, friction.negative_coulomb);
-        std::cout << "  "; print_joint_yaml_map("negative_viscous", cfg_.joint_names, friction.negative_viscous);
+        std::cout << "    zero_velocity_adaptation_s: " << friction.zero_velocity_adaptation_s << '\n';
+        std::cout << "    kinetic_feedforward_scale: " << friction.kinetic_feedforward_scale << '\n';
+        std::cout << "    "; print_joint_yaml_map("positive_coulomb", cfg_.joint_names, friction.positive_coulomb);
+        std::cout << "    "; print_joint_yaml_map("positive_viscous", cfg_.joint_names, friction.positive_viscous);
+        std::cout << "    "; print_joint_yaml_map("negative_coulomb", cfg_.joint_names, friction.negative_coulomb);
+        std::cout << "    "; print_joint_yaml_map("negative_viscous", cfg_.joint_names, friction.negative_viscous);
     }
 
-    void run_admittance_friction_calibration() {
-        if(!ensure_admittance_tuning_active()) return;
-
-        const auto duration = read_double("DRAG 示教记录时长 s（建议 10，允许 3~30）: ");
-        if(!duration || *duration < 3.0 || *duration > 30.0) {
-            std::cout << "示教时长无效\n";
-            return;
-        }
+    bool run_admittance_friction_calibration() {
+        if(!ensure_admittance_tuning_active()) return false;
+        constexpr double kTeachDurationS = 10.0;
 
         JointImpedanceMode original_mode;
         AdmittanceCapabilityCfg original_admittance;
@@ -1862,75 +1955,83 @@ private:
 
         if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
             restore_runtime();
-            return;
+            return false;
         }
 
-        std::cout << "\n========== 摩擦 residual 自动标定 ==========" << '\n';
-        std::cout << "阶段 A：COMPLIANT_DRAG 示教；请在常用安全工作空间内让 6 个关节都经历正/负方向运动，并包含明显的快慢变化\n";
-        std::cout << "这里只记录几何轨迹，不使用手推阶段的 torque 做摩擦拟合\n";
-        std::cout << "随后阶段 B 将以较慢速度先倒放、再正放该轨迹；回放期间严禁触碰机械臂\n";
+        std::cout << "[3/3] 摩擦参数标定：用 DRAG 在 10 s 内让各关节都有双向、快慢变化\n";
         std::string line;
-        if(!read_line("确认周围安全后按 Enter 开始示教，输入 q 取消: ", line) || line == "q" || line == "Q") {
-            std::cout << "摩擦标定已取消\n";
+        if(!read_line("准备好按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") {
+            std::cout << "已取消\n";
             restore_runtime();
-            return;
+            return false;
         }
 
-        auto trajectory = collect_friction_drag_trajectory(*duration);
+        auto trajectory = collect_friction_drag_trajectory(kTeachDurationS);
         if(!trajectory) {
-            std::cout << "DRAG 示教轨迹记录失败\n";
+            std::cout << "摩擦参数标定：FAIL（示教轨迹记录失败）\n";
             restore_runtime();
-            return;
+            return false;
         }
         *trajectory = smooth_friction_trajectory(*trajectory);
-        std::cout << "已记录并平滑 " << trajectory->positions.size() << " 个轨迹点\n";
         if(!friction_trajectory_inside_safe_replay_range(*trajectory)) {
             restore_runtime();
-            return;
+            return false;
         }
 
         const double playback_rate = friction_replay_rate(*trajectory);
         constexpr double kMinimumPracticalReplayRate = 0.01;
         if(!std::isfinite(playback_rate) || playback_rate < kMinimumPracticalReplayRate) {
-            std::cout << "[拒绝回放] 示教轨迹过激，按速度/加速度 35% 安全包络计算后所需倍率低于 "
-                << kMinimumPracticalReplayRate
-                << "；请重新用更平滑、更慢的 DRAG 轨迹示教\n";
+            std::cout << "摩擦参数标定：FAIL（示教过快，请用更平滑的轨迹重试）\n";
             restore_runtime();
-            return;
+            return false;
         }
+
         const double estimated_pass_s = trajectory->sample_dt *
             static_cast<double>(trajectory->positions.size() - 1) / playback_rate;
-        std::cout << "回放安全策略：轨迹严格限制在示教范围内，额外保留 0.05 rad 硬限位内边距；\n";
-        std::cout << "参考速度/参考加速度分别自动限制到各轴 Safety max_vel / max_acc 的 35% 以内；实际时间倍率="
-            << std::fixed << std::setprecision(3) << playback_rate
-            << "，单程约 " << estimated_pass_s << " s\n";
-        if(!read_line("请完全离开机械臂并确认回放期间无任何外力，按 Enter 开始，输入 q 取消: ", line) ||
-            line == "q" || line == "Q") {
-            std::cout << "摩擦标定已取消\n";
+        std::cout << "请完全松手；机器人将先倒放再正放，单程约 "
+            << std::fixed << std::setprecision(1) << estimated_pass_s << " s\n";
+        if(!read_line("确认无外力后按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") {
+            std::cout << "已取消\n";
             restore_runtime();
-            return;
+            return false;
         }
 
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING)) {
             restore_runtime();
-            return;
+            return false;
         }
 
-        std::vector<AdmittanceFrictionSample> replay_samples;
-        replay_samples.reserve(trajectory->positions.size() * 4);
-        std::cout << "阶段 B1：无外力倒放示教轨迹...\n";
+        std::vector<AdmittanceFrictionSample> reverse_samples;
+        std::vector<AdmittanceFrictionSample> forward_samples;
+        std::vector<AdmittanceFrictionSample> full_id_reverse_samples;
+        std::vector<AdmittanceFrictionSample> full_id_forward_samples;
+        reverse_samples.reserve(trajectory->positions.size() * 2);
+        forward_samples.reserve(trajectory->positions.size() * 2);
+        const bool compare_full_id = original_admittance.observer.mode == AdmittanceObserverMode::MOMENTUM;
+
+        std::cout << "回放 1/2：倒放...\n";
         if(!play_friction_calibration_pass(
-            *trajectory, true, playback_rate, original_admittance.torque_bias, replay_samples)) {
-            std::cout << "倒放失败，已中止标定\n";
+            *trajectory,
+            true,
+            playback_rate,
+            original_admittance,
+            reverse_samples,
+            compare_full_id ? &full_id_reverse_samples : nullptr)) {
+            std::cout << "摩擦参数标定：FAIL（倒放中止）\n";
             restore_runtime();
-            return;
+            return false;
         }
-        std::cout << "阶段 B2：无外力正放示教轨迹...\n";
+        std::cout << "回放 2/2：正放...\n";
         if(!play_friction_calibration_pass(
-            *trajectory, false, playback_rate, original_admittance.torque_bias, replay_samples)) {
-            std::cout << "正放失败，已中止标定\n";
+            *trajectory,
+            false,
+            playback_rate,
+            original_admittance,
+            forward_samples,
+            compare_full_id ? &full_id_forward_samples : nullptr)) {
+            std::cout << "摩擦参数标定：FAIL（正放中止）\n";
             restore_runtime();
-            return;
+            return false;
         }
 
         AdmittanceFrictionCalibrationCfg calibration_cfg;
@@ -1939,84 +2040,56 @@ private:
         calibration_cfg.max_fit_acceleration = 1.5;
         calibration_cfg.min_speed_span = 0.03;
         calibration_cfg.min_samples_per_direction = 30;
-        const auto result = calibrate_admittance_friction(replay_samples, calibration_cfg);
+        calibration_cfg.cross_validation_max_rms_ratio = 0.8;
+
+        const auto result = calibrate_admittance_friction_cross_validated(
+            reverse_samples, forward_samples, calibration_cfg);
         if(!result) {
-            std::cout << "摩擦模型拟合失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            std::cout << "摩擦参数标定：FAIL（拟合失败）\n";
             restore_runtime();
-            return;
+            return false;
+        }
+        last_friction_calibration_result_ = result.value();
+
+        if(compare_full_id) {
+            const auto full_id_result = calibrate_admittance_friction_cross_validated(
+                full_id_reverse_samples, full_id_forward_samples, calibration_cfg);
+            if(full_id_result) last_full_id_friction_calibration_result_ = full_id_result.value();
+            else last_full_id_friction_calibration_result_.reset();
+        }
+        else {
+            last_full_id_friction_calibration_result_ = result.value();
+        }
+
+        const std::size_t n = cfg_.joint_names.size();
+        bool all_valid = result->observable.size() == n && result->validation_pass.size() == n;
+        for(std::size_t i = 0; i < n && all_valid; ++i) {
+            all_valid = result->observable[i] != 0 && result->validation_pass[i] != 0;
+        }
+        if(!all_valid) {
+            std::cout << "摩擦参数标定：FAIL（有轴未通过；详情见“状态与诊断”后重新示教）\n";
+            restore_runtime();
+            return false;
         }
 
         auto candidate = original_admittance;
-        candidate.friction.enabled = true;
-        candidate.friction.velocity_transition = 0.03;
-        const std::size_t n = cfg_.joint_names.size();
-        if(candidate.friction.positive_coulomb.size() != n) candidate.friction.positive_coulomb.assign(n, 0.0);
-        if(candidate.friction.positive_viscous.size() != n) candidate.friction.positive_viscous.assign(n, 0.0);
-        if(candidate.friction.negative_coulomb.size() != n) candidate.friction.negative_coulomb.assign(n, 0.0);
-        if(candidate.friction.negative_viscous.size() != n) candidate.friction.negative_viscous.assign(n, 0.0);
-        if(!original_admittance.friction.enabled) {
-            std::fill(candidate.friction.positive_coulomb.begin(), candidate.friction.positive_coulomb.end(), 0.0);
-            std::fill(candidate.friction.positive_viscous.begin(), candidate.friction.positive_viscous.end(), 0.0);
-            std::fill(candidate.friction.negative_coulomb.begin(), candidate.friction.negative_coulomb.end(), 0.0);
-            std::fill(candidate.friction.negative_viscous.begin(), candidate.friction.negative_viscous.end(), 0.0);
-        }
-
-        bool any_observable = false;
-        for(std::size_t i = 0; i < n; ++i) {
-            if(result->observable[i] == 0) continue;
-            any_observable = true;
-            candidate.friction.positive_coulomb[i] = result->positive_coulomb[i];
-            candidate.friction.positive_viscous[i] = result->positive_viscous[i];
-            candidate.friction.negative_coulomb[i] = result->negative_coulomb[i];
-            candidate.friction.negative_viscous[i] = result->negative_viscous[i];
-        }
-        if(!any_observable) {
-            std::cout << "没有任何关节同时获得足够的正/负方向准稳态样本与速度跨度；请重新示教，让各轴有明显双向运动和快慢变化\n";
-            restore_runtime();
-            return;
-        }
-
+        candidate.calibration.friction.enabled = true;
+        candidate.calibration.friction.velocity_transition = 0.03;
+        candidate.calibration.friction.positive_coulomb = result->positive_coulomb;
+        candidate.calibration.friction.positive_viscous = result->positive_viscous;
+        candidate.calibration.friction.negative_coulomb = result->negative_coulomb;
+        candidate.calibration.friction.negative_viscous = result->negative_viscous;
         if(!apply_runtime_admittance_cfg(candidate)) {
             restore_runtime();
-            return;
+            return false;
         }
         restore_runtime();
-
-        std::cout << "\n========== 摩擦 residual 标定结果 ==========" << '\n';
-        for(std::size_t i = 0; i < n; ++i) {
-            std::cout << cfg_.joint_names[i]
-                << (result->observable[i] ? " [FIT]" : " [KEEP]")
-                << " samples(+/-)=" << result->positive_samples[i] << '/' << result->negative_samples[i]
-                << " speed_span(+/-)=" << std::fixed << std::setprecision(3)
-                << result->positive_speed_span[i] << '/' << result->negative_speed_span[i]
-                << " C+=" << std::setprecision(6) << candidate.friction.positive_coulomb[i]
-                << " B+=" << candidate.friction.positive_viscous[i]
-                << " C-=" << candidate.friction.negative_coulomb[i]
-                << " B-=" << candidate.friction.negative_viscous[i];
-            if(result->observable[i]) {
-                std::cout << " RMS " << result->residual_rms_before[i]
-                    << " -> " << result->residual_rms_after[i]
-                    << " P99_after=" << result->residual_p99_after[i];
-            }
-            std::cout << '\n';
-        }
-        print_friction_calibration_yaml(candidate.friction);
-        std::cout << "本次运行已立即启用可观测关节的摩擦 residual 补偿；静态 gravity/bias/threshold 不会被改写\n";
-        std::cout << "接下来进入 6 -> 1 -> 4 做 M/D/K 动态手感调参；如果某轴显示 [KEEP]，先重新示教覆盖该轴双向运动\n";
+        std::cout << "摩擦参数标定：PASS\n";
+        return true;
     }
 
-    void print_admittance_calibration_yaml(
-        const JointVector& gravity_scale,
-        const JointVector& torque_bias,
-        const JointVector& torque_threshold) const {
-        std::cout << "\n请将以下 3 行写回该机械臂的 core.yaml，之后正常使用无需重复标定：\n";
-        print_joint_yaml_map("gravity_scale", cfg_.joint_names, gravity_scale);
-        print_joint_yaml_map("torque_bias", cfg_.joint_names, torque_bias);
-        print_joint_yaml_map("torque_threshold", cfg_.joint_names, torque_threshold);
-    }
-
-    void run_admittance_static_calibration() {
-        if(!ensure_admittance_tuning_active()) return;
+    bool run_admittance_static_calibration() {
+        if(!ensure_admittance_tuning_active()) return false;
         constexpr int kPoseCount = 8;
         constexpr double kStaticHoldS = 0.30;
         constexpr double kStaticTimeoutS = 5.0;
@@ -2040,11 +2113,9 @@ private:
 
         const auto restore_runtime = [this, original_suspended, original_mode]() {
             set_tuning_impedance_mode(original_mode);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                robot_.set_admittance_suspended(original_suspended);
-                last_output_.reset();
-            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            robot_.set_admittance_suspended(original_suspended);
+            last_output_.reset();
             };
         const auto restore_gravity_scale = [this, &original_gravity_scale]() {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -2054,58 +2125,42 @@ private:
 
         if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
             restore_runtime();
-            return;
+            return false;
         }
 
-        std::cout << "\n========== 静态 residual 标定：gravity_scale / torque_bias / torque_threshold ==========\n";
-        std::cout << "目标：一次联合标定 gravity_scale + torque_bias + torque_threshold\n";
-        std::cout << "标定/验证期间导纳执行完全 suspend，M/D/K/alpha/max 不参与\n";
-        std::cout << "拟合：每个姿态先取 robust median，再按姿态等权联合拟合；不同采样帧数不会改变姿态权重\n";
-        std::cout << "threshold：LOPO/单姿态噪声 envelope 与“已观测最大 residual + 1 个重复反馈量化步长”取更保守值\n";
-        std::cout << "静态判据：|dq| <= " << kStaticMaxVel << " rad/s 且 |ddq| <= " << kStaticMaxAcc
-            << " rad/s^2，连续 " << kStaticHoldS << " s 后才采样\n";
-        std::cout << "请覆盖常用工作空间的伸展、弯曲、中间及边缘代表姿态；每次采样前必须完全松手\n";
-
+        std::cout << "[1/3] 静态残差标定：依次摆 8 个代表姿态；每次完全松手后按 Enter\n";
         std::vector<AdmittanceStaticPoseSamples> poses;
         poses.reserve(kPoseCount);
         for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
             std::string line;
-            std::cout << "\n姿态 " << (pose_index + 1) << "/" << kPoseCount
-                << "：当前为 COMPLIANT_DRAG，请拖到代表姿态并完全松手\n";
-            if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") {
-                std::cout << "标定已取消\n";
+            std::ostringstream prompt;
+            prompt << "姿态 " << (pose_index + 1) << "/" << kPoseCount
+                << "，摆好并松手后按 Enter，输入 q 取消: ";
+            if(!read_line(prompt.str(), line) || line == "q" || line == "Q") {
+                std::cout << "已取消\n";
                 restore_gravity_scale();
                 restore_runtime();
-                return;
+                return false;
             }
-
-            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) {
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD) ||
+                !wait_for_static_tuning_pose(kStaticHoldS, kStaticTimeoutS, kStaticMaxVel, kStaticMaxAcc)) {
+                std::cout << "静态残差标定：FAIL（未稳定，请重新执行标定）\n";
                 restore_gravity_scale();
                 restore_runtime();
-                return;
+                return false;
             }
-            std::cout << "等待机械臂真正静止...\n";
-            if(!wait_for_static_tuning_pose(kStaticHoldS, kStaticTimeoutS, kStaticMaxVel, kStaticMaxAcc)) {
-                std::cout << "静态判据超时：本次姿态不满足无运动标定条件，请重新摆放后重试标定\n";
-                restore_gravity_scale();
-                restore_runtime();
-                return;
-            }
-
-            std::cout << "静态判据满足，保持不碰并采样 " << kSampleS << " s...\n";
             auto samples = collect_static_pose_samples(0.0, kSampleS);
             if(!samples) {
-                std::cout << "采样失败，Robot 可能已退出 ACTIVE\n";
+                std::cout << "静态残差标定：FAIL（采样中止）\n";
                 restore_gravity_scale();
                 restore_runtime();
-                return;
+                return false;
             }
-            std::cout << "已采 " << samples->samples.size() << " 帧\n";
             poses.push_back(std::move(*samples));
             if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
                 restore_gravity_scale();
                 restore_runtime();
-                return;
+                return false;
             }
         }
 
@@ -2117,58 +2172,46 @@ private:
         calibration_cfg.threshold_max_margin = 1.05;
         const auto result = calibrate_admittance_static(poses, calibration_cfg);
         if(!result) {
-            std::cout << "静态 residual 标定计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            std::cout << "静态残差标定：FAIL（计算失败）\n";
             restore_gravity_scale();
             restore_runtime();
-            return;
+            return false;
         }
 
-        std::optional<DynamicsErr> scale_error;
+        bool scale_applied = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto scale_result = dynamics_.set_gravity_scale(result->gravity_scale);
-            if(!scale_result) scale_error = scale_result.error();
-            else cfg_.dynamics.gravity_scale = result->gravity_scale;
+            if(scale_result) {
+                cfg_.dynamics.gravity_scale = result->gravity_scale;
+                scale_applied = true;
+            }
         }
-        if(scale_error) {
-            std::cout << "应用 gravity_scale 失败: " << to_string(*scale_error) << '\n';
+        if(!scale_applied) {
+            std::cout << "静态残差标定：FAIL（gravity_scale 应用失败）\n";
             restore_gravity_scale();
             restore_runtime();
-            return;
+            return false;
         }
 
         auto calibrated_admittance = original_admittance;
-        calibrated_admittance.torque_bias = result->torque_bias;
-        calibrated_admittance.torque_threshold = result->torque_threshold;
-        calibrated_admittance.friction.enabled = false;
+        calibrated_admittance.calibration.torque_bias = result->torque_bias;
+        calibrated_admittance.calibration.torque_threshold = result->torque_threshold;
+        calibrated_admittance.calibration.friction.enabled = false;
         if(!apply_runtime_admittance_cfg(calibrated_admittance)) {
             restore_gravity_scale();
             apply_runtime_admittance_cfg(original_admittance);
             restore_runtime();
-            return;
+            return false;
         }
+        last_static_calibration_result_ = result.value();
         restore_runtime();
-
-        std::cout << "\n========== 静态 residual 标定结果 ==========\n";
-        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            std::cout << cfg_.joint_names[i]
-                << " gravity_scale=" << std::fixed << std::setprecision(6) << result->gravity_scale[i]
-                << (result->gravity_scale_observable[i] ? " [FIT]" : " [KEEP]")
-                << " bias=" << result->torque_bias[i]
-                << " noise_P99=" << result->within_pose_residual_p99[i]
-                << " noise_max=" << result->within_pose_residual_max[i]
-                << " LOPO_P99=" << result->lopo_residual_p99[i]
-                << " LOPO_max=" << result->lopo_residual_max[i]
-                << " threshold=" << result->torque_threshold[i] << '\n';
-        }
-        print_admittance_calibration_yaml(result->gravity_scale, result->torque_bias, result->torque_threshold);
-        std::cout << "本次运行已立即应用上述静态 residual 标定值；若此前启用了摩擦补偿，本次已自动禁用，避免沿用旧 bias/gravity 下的摩擦模型\n";
-        std::cout << "持久化时请同步将 core.yaml 中 friction_compensation.enabled 改为 false；完成新的摩擦标定后再写回新系数并启用\n";
-        std::cout << "建议接着执行 6 -> 1 -> 2 静态 residual 验证，通过后再执行 6 -> 1 -> 3 摩擦 residual 标定\n";
+        std::cout << "静态残差标定：PASS\n";
+        return true;
     }
 
-    void run_admittance_static_validation() {
-        if(!ensure_admittance_tuning_active()) return;
+    bool run_admittance_static_validation() {
+        if(!ensure_admittance_tuning_active()) return false;
         constexpr int kPoseCount = 5;
         constexpr double kStaticHoldS = 0.30;
         constexpr double kStaticTimeoutS = 5.0;
@@ -2189,96 +2232,309 @@ private:
             robot_.set_admittance_suspended(true);
             last_output_.reset();
         }
-
         const auto restore_runtime = [this, original_suspended, original_mode]() {
             set_tuning_impedance_mode(original_mode);
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                robot_.set_admittance_suspended(original_suspended);
-                last_output_.reset();
-            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            robot_.set_admittance_suspended(original_suspended);
+            last_output_.reset();
             };
 
         if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
             restore_runtime();
-            return;
+            return false;
         }
 
-        std::cout << "\n========== 静态 residual 验证：gravity_scale / torque_bias / torque_threshold ==========\n";
-        std::cout << "验证目标：只验证 gravity_scale / torque_bias / torque_threshold 的静态 residual envelope\n";
-        std::cout << "标定/验证期间导纳执行完全 suspend，M/D/K/alpha/max 不参与\n";
-        std::cout << "PASS：P99 不突破 torque_threshold；极少数单帧 max 最多允许再跨 1 个实测反馈量化步长\n";
-
+        std::cout << "[2/3] 静态残差验证：再摆 5 个不同姿态；每次完全松手后按 Enter\n";
         std::vector<AdmittanceStaticPoseSamples> poses;
         poses.reserve(kPoseCount);
         for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
             std::string line;
-            std::cout << "\n验证姿态 " << (pose_index + 1) << "/" << kPoseCount
-                << "：当前为 COMPLIANT_DRAG，请拖到代表姿态并完全松手\n";
-            if(!read_line("准备好后按 Enter，输入 q 取消: ", line) || line == "q" || line == "Q") {
-                std::cout << "静态 residual 验证已取消\n";
+            std::ostringstream prompt;
+            prompt << "验证 " << (pose_index + 1) << "/" << kPoseCount
+                << "，摆好并松手后按 Enter，输入 q 取消: ";
+            if(!read_line(prompt.str(), line) || line == "q" || line == "Q") {
+                std::cout << "已取消\n";
                 restore_runtime();
-                return;
+                return false;
             }
-
-            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) {
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD) ||
+                !wait_for_static_tuning_pose(kStaticHoldS, kStaticTimeoutS, kStaticMaxVel, kStaticMaxAcc)) {
+                std::cout << "静态残差验证：FAIL（未稳定）\n";
                 restore_runtime();
-                return;
-            }
-            std::cout << "等待机械臂真正静止...\n";
-            if(!wait_for_static_tuning_pose(kStaticHoldS, kStaticTimeoutS, kStaticMaxVel, kStaticMaxAcc)) {
-                std::cout << "静态判据超时：该姿态不能用于验证\n";
-                restore_runtime();
-                return;
+                return false;
             }
             auto samples = collect_static_pose_samples(0.0, kSampleS);
             if(!samples) {
-                std::cout << "验证采样失败，Robot 可能已退出 ACTIVE\n";
+                std::cout << "静态残差验证：FAIL（采样中止）\n";
                 restore_runtime();
-                return;
+                return false;
             }
-            std::cout << "已采 " << samples->samples.size() << " 帧\n";
             poses.push_back(std::move(*samples));
-
             if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
                 restore_runtime();
-                return;
+                return false;
             }
         }
 
         AdmittanceStaticValidationCfg validation_cfg;
         validation_cfg.joints_count = cfg_.joint_names.size();
         validation_cfg.gravity_scale = gravity_scale;
-        validation_cfg.torque_bias = original_admittance.torque_bias;
-        validation_cfg.torque_threshold = original_admittance.torque_threshold;
+        validation_cfg.torque_bias = original_admittance.calibration.torque_bias;
+        validation_cfg.torque_threshold = original_admittance.calibration.torque_threshold;
         const auto result = evaluate_admittance_static_validation(poses, validation_cfg);
         restore_runtime();
-
         if(!result) {
-            std::cout << "静态 residual 验证计算失败，错误码=" << static_cast<int>(result.error()) << '\n';
+            std::cout << "静态残差验证：FAIL（计算失败）\n";
+            return false;
+        }
+        last_static_validation_result_ = result.value();
+        const bool pass = std::all_of(result->pass.begin(), result->pass.end(), [](std::uint8_t value) {
+            return value != 0;
+            });
+        std::cout << (pass ? "静态残差验证：PASS\n" : "静态残差验证：FAIL（请重新执行导纳参数标定）\n");
+        return pass;
+    }
+
+    void print_admittance_persistence_block() const {
+        std::cout << "model.gravity_scale:\n  ";
+        print_joint_yaml_map("gravity_scale", cfg_.joint_names, cfg_.dynamics.gravity_scale);
+        std::cout << "capability.admittance.calibration:\n";
+        std::cout << "  ";
+        print_joint_yaml_map("torque_bias", cfg_.joint_names, cfg_.capability.admittance.calibration.torque_bias);
+        std::cout << "  ";
+        print_joint_yaml_map("torque_threshold", cfg_.joint_names, cfg_.capability.admittance.calibration.torque_threshold);
+        print_friction_calibration_yaml(cfg_.capability.admittance.calibration.friction);
+    }
+
+    void run_admittance_parameter_calibration() {
+        if(!ensure_admittance_tuning_active()) return;
+        std::cout << "\n========== 导纳参数标定 ==========\n";
+        std::cout << "按提示完成静态姿态与一次 DRAG 示教；回放阶段不要触碰机械臂\n";
+        std::string line;
+        if(!read_line("按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") return;
+
+        last_static_calibration_result_.reset();
+        last_static_validation_result_.reset();
+        last_friction_calibration_result_.reset();
+        last_full_id_friction_calibration_result_.reset();
+
+        if(!run_admittance_static_calibration() ||
+            !run_admittance_static_validation() ||
+            !run_admittance_friction_calibration()) {
+            std::cout << "导纳参数标定：FAIL；修正提示后重新执行即可\n";
             return;
         }
+        std::cout << "导纳参数标定：PASS，参数已应用到当前进程\n";
+        std::cout << "写回 core.yaml 的参数可在‘状态与诊断 -> 标定与 Observer 详情’查看\n";
+    }
 
-        bool pass = true;
-        std::cout << "\n========== 静态 residual 验证结果 ==========\n";
-        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            const bool joint_pass = result->pass[i] != 0;
-            pass = pass && joint_pass;
-            std::cout << cfg_.joint_names[i]
-                << " gravity_span=" << std::fixed << std::setprecision(6) << result->gravity_span[i]
-                << " rms=" << result->residual_rms[i]
-                << " P99=" << result->residual_p99[i]
-                << " max=" << result->residual_max[i]
-                << " threshold=" << original_admittance.torque_threshold[i]
-                << " quant_step=" << result->feedback_quantization_step[i]
-                << " guarded_max_limit=" << result->guarded_max_limit[i]
-                << " P99_utilization=" << result->threshold_utilization[i]
-                << " max_guard_utilization=" << result->guarded_max_utilization[i]
-                << (joint_pass ? " PASS" : " FAIL") << '\n';
+    bool select_admittance_joints(std::vector<std::size_t>& indices) const {
+        const auto joint = read_int("关节 1~6，输入 0 表示全部: ");
+        if(!joint || *joint < 0 || static_cast<std::size_t>(*joint) > cfg_.joint_names.size()) {
+            std::cout << "关节编号无效\n";
+            return false;
         }
-        std::cout << (pass
-            ? "静态 residual 验证：PASS；gravity_scale / torque_bias / torque_threshold 有效；建议继续 6 -> 1 -> 3 摩擦 residual 标定\n"
-            : "静态 residual 验证：FAIL；P99 或量化保护后的单帧 max 仍突破静态 envelope，应重新执行 6 -> 1 -> 1，而不是用 M/D/K 掩盖\n");
+        indices.clear();
+        if(*joint == 0) {
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) indices.push_back(i);
+        }
+        else {
+            indices.push_back(static_cast<std::size_t>(*joint - 1));
+        }
+        return true;
+    }
+
+    void set_follow_resistance() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto torque = read_double("舒适推力矩 Nm: ");
+        const auto speed = read_double("该力矩对应的跟随速度 rad/s: ");
+        if(!torque || !speed || *torque <= 0.0 || *speed <= 0.0) {
+            std::cout << "输入无效\n";
+            return;
+        }
+        auto candidate = cfg_.capability.admittance;
+        for(const auto i : indices) {
+            candidate.feel.comfortable_torque[i] = *torque;
+            candidate.feel.follow_speed[i] = *speed;
+        }
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "跟手阻力已应用\n";
+    }
+
+    void set_start_response() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto t95 = read_double("起步达到约 95% 跟随速度的时间 s: ");
+        if(!t95 || *t95 <= 0.02 || *t95 > 3.0) {
+            std::cout << "建议范围 (0.02, 3.0] s\n";
+            return;
+        }
+        auto candidate = cfg_.capability.admittance;
+        for(const auto i : indices) candidate.feel.start_response_s[i] = *t95;
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "起步响应已应用\n";
+    }
+
+    void set_soft_velocity() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto speed = read_double("Q弹开始速度 rad/s: ");
+        if(!speed || *speed <= 0.0) {
+            std::cout << "输入无效\n";
+            return;
+        }
+        auto candidate = cfg_.capability.admittance;
+        for(const auto i : indices) {
+            if(*speed >= candidate.feel.max_correction_speed[i]) {
+                std::cout << "Q弹开始速度必须小于最大导纳修正速度\n";
+                return;
+            }
+            candidate.feel.q_elastic_start_speed[i] = *speed;
+        }
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "Q弹起始速度已应用\n";
+    }
+
+    void set_return_response() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto t95 = read_double("松手后约 95% 回中的时间 s: ");
+        if(!t95 || *t95 <= 0.05 || *t95 > 5.0) {
+            std::cout << "建议范围 (0.05, 5.0] s\n";
+            return;
+        }
+        auto candidate = cfg_.capability.admittance;
+        for(const auto i : indices) candidate.feel.return_time_s[i] = *t95;
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "回中速度已应用\n";
+    }
+
+    void set_max_retreat() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto value = read_double("最大退让 rad: ");
+        if(!value || *value <= 0.0) {
+            std::cout << "输入无效\n";
+            return;
+        }
+        auto candidate = cfg_.capability.admittance;
+        for(const auto i : indices) candidate.feel.max_retreat[i] = *value;
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "最大退让已应用\n";
+    }
+
+    void run_admittance_feel_menu() {
+        if(!ensure_admittance_tuning_active()) return;
+        if(!cfg_.capability.admittance.enabled) {
+            std::cout << "请先在 core.yaml 开启 admittance.enabled\n";
+            return;
+        }
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return;
+        while(true) {
+            std::cout << "\n------------ 手感设置 ------------\n";
+            std::cout << " 1. 跟手阻力\n";
+            std::cout << " 2. 起步响应\n";
+            std::cout << " 3. Q弹起始速度\n";
+            std::cout << " 4. 回中速度\n";
+            std::cout << " 5. 最大退让\n";
+            std::cout << " 6. 高级参数\n";
+            std::cout << " 0. 返回\n";
+            const auto selection = read_int("请选择: ");
+            if(!selection || *selection == 0) return;
+            switch(*selection) {
+                case 1: set_follow_resistance(); break;
+                case 2: set_start_response(); break;
+                case 3: set_soft_velocity(); break;
+                case 4: set_return_response(); break;
+                case 5: set_max_retreat(); break;
+                case 6: run_admittance_live_tuning(); break;
+                default: std::cout << "未知菜单编号\n"; break;
+            }
+        }
+    }
+
+    static const char* observer_mode_name(AdmittanceObserverMode mode) {
+        return mode == AdmittanceObserverMode::MOMENTUM ? "MOMENTUM" : "FULL_ID";
+    }
+
+    void print_admittance_status_summary() const {
+        const auto& a = cfg_.capability.admittance;
+        const auto derived = derive_admittance_controller_cfg(a);
+        std::cout << "\n导纳状态\n";
+        std::cout << "  Observer       : " << observer_mode_name(a.observer.mode) << '\n';
+        std::cout << "  摩擦补偿       : " << (a.calibration.friction.enabled ? "ON" : "OFF") << '\n';
+        std::cout << "  摩擦主动助力   : " << std::fixed << std::setprecision(2)
+            << a.calibration.friction.kinetic_feedforward_scale << '\n';
+        std::cout << "  连续可变导纳   : ON\n";
+        print_vector("derived_M", derived.mass);
+        print_vector("derived_D_follow", derived.damping);
+        print_vector("derived_K_return", derived.stiffness);
+        if(last_static_validation_result_) {
+            const bool pass = std::all_of(
+                last_static_validation_result_->pass.begin(),
+                last_static_validation_result_->pass.end(),
+                [](std::uint8_t value) { return value != 0; });
+            std::cout << "  本次静态验证   : " << (pass ? "PASS" : "FAIL") << '\n';
+        }
+        if(last_friction_calibration_result_) {
+            const bool pass = std::all_of(
+                last_friction_calibration_result_->validation_pass.begin(),
+                last_friction_calibration_result_->validation_pass.end(),
+                [](std::uint8_t value) { return value != 0; });
+            std::cout << "  本次摩擦交叉验证: " << (pass ? "PASS" : "FAIL") << '\n';
+        }
+    }
+
+    void print_admittance_calibration_details() const {
+        const auto& a = cfg_.capability.admittance;
+        std::cout << "\n========== 标定详情 ==========\n";
+        print_vector("gravity_scale", cfg_.dynamics.gravity_scale);
+        print_vector("torque_bias", a.calibration.torque_bias);
+        print_vector("torque_threshold", a.calibration.torque_threshold);
+        std::cout << "Observer: " << observer_mode_name(a.observer.mode) << '\n';
+        print_vector("momentum_gain", a.observer.momentum_gain);
+        if(a.calibration.friction.enabled) {
+            print_vector("friction_C+", a.calibration.friction.positive_coulomb);
+            print_vector("friction_B+", a.calibration.friction.positive_viscous);
+            print_vector("friction_C-", a.calibration.friction.negative_coulomb);
+            print_vector("friction_B-", a.calibration.friction.negative_viscous);
+        }
+        if(last_friction_calibration_result_) {
+            std::cout << "\n摩擦交叉验证（当前 Observer）\n";
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                std::cout << "  " << cfg_.joint_names[i]
+                    << " RMS " << std::fixed << std::setprecision(3)
+                    << last_friction_calibration_result_->cross_residual_rms_before[i]
+                    << " -> " << last_friction_calibration_result_->cross_residual_rms_after[i]
+                    << " P99=" << last_friction_calibration_result_->cross_residual_p99_after[i]
+                    << (last_friction_calibration_result_->validation_pass[i] ? " PASS" : " FAIL") << '\n';
+            }
+        }
+        if(a.observer.mode == AdmittanceObserverMode::MOMENTUM &&
+            last_friction_calibration_result_ && last_full_id_friction_calibration_result_) {
+            std::cout << "\nObserver A/B：MOMENTUM vs FULL_ID（交叉验证 P99）\n";
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+                std::cout << "  " << cfg_.joint_names[i] << ' '
+                    << last_friction_calibration_result_->cross_residual_p99_after[i] << " / "
+                    << last_full_id_friction_calibration_result_->cross_residual_p99_after[i] << '\n';
+            }
+        }
+        std::cout << "\ncore.yaml 写回参数\n";
+        print_admittance_persistence_block();
+    }
+
+    void run_admittance_diagnostics_menu() {
+        while(true) {
+            std::cout << "\n------------ 状态与诊断 ------------\n";
+            std::cout << " 1. 状态摘要\n";
+            std::cout << " 2. 实时观测\n";
+            std::cout << " 3. 标定与 Observer 详情\n";
+            std::cout << " 0. 返回\n";
+            const auto selection = read_int("请选择: ");
+            if(!selection || *selection == 0) return;
+            switch(*selection) {
+                case 1: print_admittance_status_summary(); break;
+                case 2: observe_admittance_realtime(); break;
+                case 3: print_admittance_calibration_details(); break;
+                default: std::cout << "未知菜单编号\n"; break;
+            }
+        }
     }
 
     void observe_admittance_realtime() {
@@ -2309,7 +2565,15 @@ private:
                     }
                     std::cout << "\ntau ";
                     for(double v : output->tau_ext_hat) std::cout << std::fixed << std::setprecision(3) << v << ' ';
-                    if(cfg_.capability.admittance.friction.enabled &&
+                    if(output->full_id_residual_raw.size() == cfg_.joint_names.size()) {
+                        std::cout << "| full_id ";
+                        for(double v : output->full_id_residual_raw) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    }
+                    if(output->contact_confidence.size() == cfg_.joint_names.size()) {
+                        std::cout << "| conf ";
+                        for(double v : output->contact_confidence) std::cout << std::fixed << std::setprecision(2) << v << ' ';
+                    }
+                    if(cfg_.capability.admittance.calibration.friction.enabled &&
                         output->friction_residual_hat.size() == cfg_.joint_names.size() &&
                         output->friction_compensated.size() == cfg_.joint_names.size()) {
                         std::cout << "| fric ";
@@ -2321,6 +2585,18 @@ private:
                     for(double v : output->delta_q) std::cout << std::fixed << std::setprecision(3) << v << ' ';
                     std::cout << "| dqdot ";
                     for(double v : output->delta_q_dot) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    if(output->effective_damping.size() == cfg_.joint_names.size()) {
+                        std::cout << "| D_eff ";
+                        for(double v : output->effective_damping) std::cout << std::fixed << std::setprecision(2) << v << ' ';
+                    }
+                    if(output->effective_stiffness.size() == cfg_.joint_names.size()) {
+                        std::cout << "| K_eff ";
+                        for(double v : output->effective_stiffness) std::cout << std::fixed << std::setprecision(2) << v << ' ';
+                    }
+                    if(output->friction_feedforward.size() == cfg_.joint_names.size()) {
+                        std::cout << "| fric_ff ";
+                        for(double v : output->friction_feedforward) std::cout << std::fixed << std::setprecision(3) << v << ' ';
+                    }
                     if(!first_flag) std::cout << "| " << flags.str();
                     std::cout << std::flush;
                 }
@@ -2334,129 +2610,121 @@ private:
         std::cout << '\n';
     }
 
-    void edit_admittance_joint_parameter(const std::string& name, JointVector AdmittanceCapabilityCfg::* member, bool allow_zero) {
-        const auto joint = read_int("关节编号 1~6，输入 0 表示全部关节: ");
-        if(!joint || *joint < 0 || static_cast<std::size_t>(*joint) > cfg_.joint_names.size()) {
-            std::cout << "关节编号无效\n";
-            return;
+    void print_derived_admittance_parameters() const {
+        const auto derived = derive_admittance_controller_cfg(cfg_.capability.admittance);
+        std::cout << "\n派生控制参数（只读）\n";
+        print_vector("derived_M", derived.mass);
+        print_vector("derived_D_follow", derived.damping);
+        print_vector("derived_K_return", derived.stiffness);
+        JointVector return_damping(derived.joints_count, 0.0);
+        for(std::size_t i = 0; i < derived.joints_count; ++i) {
+            return_damping[i] = 2.0 * std::sqrt(derived.mass[i] * derived.stiffness[i]);
         }
-        const auto value = read_double((name + " 新值: ").c_str());
-        if(!value || (allow_zero ? *value < 0.0 : *value <= 0.0)) {
-            std::cout << "参数值无效\n";
-            return;
-        }
+        print_vector("derived_D_return", return_damping);
+    }
 
+    void set_max_correction_speed_advanced() {
+        std::vector<std::size_t> indices;
+        if(!select_admittance_joints(indices)) return;
+        const auto value = read_double("最大导纳修正速度 rad/s: ");
+        if(!value || *value <= 0.0) {
+            std::cout << "输入无效\n";
+            return;
+        }
         auto candidate = cfg_.capability.admittance;
-        JointVector& values = candidate.*member;
-        if(*joint == 0) std::fill(values.begin(), values.end(), *value);
-        else values[static_cast<std::size_t>(*joint - 1)] = *value;
-        if(apply_runtime_admittance_cfg(candidate)) {
-            std::cout << name << " 已更新当前进程，并自动 reset delta_q / delta_q_dot\n";
-        }
-    }
-
-    void print_admittance_tuning_guide() const {
-        std::cout << "\n导纳规范调参顺序：K -> M -> D -> filter_alpha -> max\n";
-        std::cout << "  1) K 定柔顺：K = tau_target / delta_q_target；同样持续外力下 K 越小，稳态退让越大\n";
-        std::cout << "  2) M 定响应：wn = sqrt(K / M)；近临界阻尼时 T95 ~= 4.74 / wn，故 M ~= K * (T95 / 4.74)^2\n";
-        std::cout << "  3) D 定回零阻尼：D = 2 * zeta * sqrt(M * K)，建议先取 zeta = 0.95~1.05\n";
-        std::cout << "  4) filter_alpha 定 observer 带宽：增大更快但更易引入高频力矩噪声；静态标定不依赖 alpha\n";
-        std::cout << "  5) max_delta_q / max_delta_q_dot 最后只作为安全/运动边界，不用于塑造正常手感\n";
-        std::cout << "公式摘要：K = tau_target / delta_q_target；M = K * (T95 / 4.74)^2；D = 2 * zeta * sqrt(M * K)\n";
-    }
-
-    void print_admittance_damping_metrics(const AdmittanceCapabilityCfg& a) const {
-        std::cout << "动态指标（zeta<0.95 欠阻尼，0.95~1.05 近临界，>1.05 过阻尼）\n";
-        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            if(i >= a.mass.size() || i >= a.damping.size() || i >= a.stiffness.size()) continue;
-            const auto metrics = compute_admittance_damping_metrics(a.mass[i], a.damping[i], a.stiffness[i]);
-            std::cout << "  " << cfg_.joint_names[i] << ": ";
-            if(!metrics) {
-                std::cout << "zeta=N/A Dcrit=N/A wn=N/A T95=N/A（M、K 必须 > 0）\n";
-                continue;
+        for(const auto i : indices) {
+            if(*value <= candidate.feel.q_elastic_start_speed[i]) {
+                std::cout << "最大导纳修正速度必须大于 Q弹开始速度\n";
+                return;
             }
-
-            const char* regime = "NEAR_CRITICAL";
-            if(metrics->damping_ratio < 0.95) regime = "UNDERDAMPED";
-            else if(metrics->damping_ratio > 1.05) regime = "OVERDAMPED";
-            std::cout << std::fixed << std::setprecision(3)
-                << "zeta=" << metrics->damping_ratio
-                << " Dcrit=" << metrics->critical_damping
-                << " D=" << a.damping[i]
-                << " wn=" << metrics->natural_frequency << " rad/s"
-                << " T95~" << metrics->settling_time_95_critical << " s"
-                << ' ' << regime << '\n';
+            candidate.feel.max_correction_speed[i] = *value;
         }
+        if(apply_runtime_admittance_cfg(candidate)) std::cout << "最大导纳修正速度已应用\n";
     }
 
     void print_live_tuning_yaml() const {
         const auto& a = cfg_.capability.admittance;
-        std::cout << "\n当前实时调参结果（如需永久保存，请写回 core.yaml）：\n";
-        std::cout << "filter_alpha: " << std::fixed << std::setprecision(6) << a.filter_alpha << '\n';
-        print_joint_yaml_map("mass", cfg_.joint_names, a.mass);
-        print_joint_yaml_map("damping", cfg_.joint_names, a.damping);
-        print_joint_yaml_map("stiffness", cfg_.joint_names, a.stiffness);
-        print_joint_yaml_map("max_delta_q", cfg_.joint_names, a.max_delta_q);
-        print_joint_yaml_map("max_delta_q_dot", cfg_.joint_names, a.max_delta_q_dot);
+        std::cout << "\n可写回 core.yaml 的手感/高级项：\n";
+        std::cout << "observer:\n";
+        std::cout << "  filter_alpha: " << std::fixed << std::setprecision(6) << a.observer.filter_alpha << '\n';
+        std::cout << "feel:\n";
+        std::cout << "  "; print_joint_yaml_map("comfortable_torque", cfg_.joint_names, a.feel.comfortable_torque);
+        std::cout << "  "; print_joint_yaml_map("follow_speed", cfg_.joint_names, a.feel.follow_speed);
+        std::cout << "  "; print_joint_yaml_map("start_response_s", cfg_.joint_names, a.feel.start_response_s);
+        std::cout << "  "; print_joint_yaml_map("q_elastic_start_speed", cfg_.joint_names, a.feel.q_elastic_start_speed);
+        std::cout << "  "; print_joint_yaml_map("return_time_s", cfg_.joint_names, a.feel.return_time_s);
+        std::cout << "  "; print_joint_yaml_map("max_retreat", cfg_.joint_names, a.feel.max_retreat);
+        std::cout << "  "; print_joint_yaml_map("max_correction_speed", cfg_.joint_names, a.feel.max_correction_speed);
+        std::cout << "  q_elastic_max_resistance_ratio: " << a.feel.q_elastic_max_resistance_ratio << '\n';
+        std::cout << "calibration.friction.kinetic_feedforward_scale: "
+            << a.calibration.friction.kinetic_feedforward_scale << '\n';
     }
 
     void run_admittance_live_tuning() {
         if(!ensure_admittance_tuning_active()) return;
         if(!cfg_.capability.admittance.enabled) {
-            std::cout << "capability.admittance.enabled=false，请先在 core.yaml 开启能力\n";
+            std::cout << "请先在 core.yaml 开启 admittance.enabled\n";
             return;
         }
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return;
 
-        std::cout << "\n推荐顺序：K -> M -> D -> filter_alpha -> max\n";
-        std::cout << "6 -> 1 -> 1/2 负责静态 residual 标定/验证，6 -> 1 -> 3 负责摩擦 residual 标定；本菜单只改变动态手感\n";
-
         while(true) {
-            const auto& a = cfg_.capability.admittance;
-            std::cout << "\n========== 导纳实时调参（RIGID_HOLD） ==========\n";
-            std::cout << "filter_alpha=" << a.filter_alpha << '\n';
-            print_vector("stiffness(K)", a.stiffness);
-            print_vector("mass(M)", a.mass);
-            print_vector("damping(D)", a.damping);
-            print_vector("max_delta_q", a.max_delta_q);
-            print_vector("max_delta_q_dot", a.max_delta_q_dot);
-            print_admittance_damping_metrics(a);
-            std::cout << " 1. 查看调参方法与公式\n";
-            std::cout << " 2. 实时观测\n";
-            std::cout << " 3. 修改 stiffness (K，先定柔顺程度)\n";
-            std::cout << " 4. 修改 mass (M，再定响应速度)\n";
-            std::cout << " 5. 修改 damping (D，按 zeta≈1 配置)\n";
-            std::cout << " 6. 修改 filter_alpha\n";
-            std::cout << " 7. 修改 max_delta_q\n";
-            std::cout << " 8. 修改 max_delta_q_dot\n";
-            std::cout << " 0. 返回并打印当前调参结果\n";
+            std::cout << "\n------------ 高级参数 ------------\n";
+            std::cout << " 1. 查看派生 M / D / K（只读）\n";
+            std::cout << " 2. Observer filter_alpha\n";
+            std::cout << " 3. 最大导纳修正速度\n";
+            std::cout << " 4. Q弹最大阻力倍率\n";
+            std::cout << " 5. 摩擦主动助力比例\n";
+            std::cout << " 6. 打印当前可写回参数\n";
+            std::cout << " 0. 返回\n";
             const auto selection = read_int("请选择: ");
-            if(!selection || *selection == 0) {
-                print_live_tuning_yaml();
-                return;
-            }
+            if(!selection || *selection == 0) return;
             switch(*selection) {
-                case 1: print_admittance_tuning_guide(); break;
-                case 2: observe_admittance_realtime(); break;
-                case 3: edit_admittance_joint_parameter("stiffness", &AdmittanceCapabilityCfg::stiffness, false); break;
-                case 4: edit_admittance_joint_parameter("mass", &AdmittanceCapabilityCfg::mass, false); break;
-                case 5: edit_admittance_joint_parameter("damping", &AdmittanceCapabilityCfg::damping, true); break;
-                case 6: {
-                    const auto value = read_double("filter_alpha 新值 (0, 1]: ");
+                case 1:
+                    print_derived_admittance_parameters();
+                    break;
+                case 2: {
+                    const auto value = read_double("filter_alpha (0,1]: ");
                     if(!value || *value <= 0.0 || *value > 1.0) {
-                        std::cout << "filter_alpha 必须位于 (0, 1]\n";
+                        std::cout << "输入无效\n";
                         break;
                     }
                     auto candidate = cfg_.capability.admittance;
-                    candidate.filter_alpha = *value;
-                    if(apply_runtime_admittance_cfg(candidate)) {
-                        std::cout << "filter_alpha 已更新当前进程，并自动 reset observer / delta_q\n";
-                    }
+                    candidate.observer.filter_alpha = *value;
+                    if(apply_runtime_admittance_cfg(candidate)) std::cout << "已应用\n";
                     break;
                 }
-                case 7: edit_admittance_joint_parameter("max_delta_q", &AdmittanceCapabilityCfg::max_delta_q, false); break;
-                case 8: edit_admittance_joint_parameter("max_delta_q_dot", &AdmittanceCapabilityCfg::max_delta_q_dot, false); break;
-                default: std::cout << "未知菜单编号\n"; break;
+                case 3:
+                    set_max_correction_speed_advanced();
+                    break;
+                case 4: {
+                    const auto value = read_double("Q弹最大阻力倍率 [1,10]: ");
+                    if(!value || *value < 1.0 || *value > 10.0) {
+                        std::cout << "输入无效\n";
+                        break;
+                    }
+                    auto candidate = cfg_.capability.admittance;
+                    candidate.feel.q_elastic_max_resistance_ratio = *value;
+                    if(apply_runtime_admittance_cfg(candidate)) std::cout << "已应用\n";
+                    break;
+                }
+                case 5: {
+                    const auto value = read_double("摩擦主动助力比例 [0,0.7]，0=关闭: ");
+                    if(!value || *value < 0.0 || *value > 0.7) {
+                        std::cout << "输入无效\n";
+                        break;
+                    }
+                    auto candidate = cfg_.capability.admittance;
+                    candidate.calibration.friction.kinetic_feedforward_scale = *value;
+                    if(apply_runtime_admittance_cfg(candidate)) std::cout << "已应用\n";
+                    break;
+                }
+                case 6:
+                    print_live_tuning_yaml();
+                    break;
+                default:
+                    std::cout << "未知菜单编号\n";
+                    break;
             }
         }
     }
@@ -2469,23 +2737,34 @@ private:
         std::cout << "model_feedforward_mode  : " << to_string(robot_.get_model_feedforward_mode()) << '\n';
         std::cout << "tracking_mode           : " << to_string(cfg_.runtime.tracking_impedance_mode) << '\n';
         std::cout << "admittance_enabled      : " << std::boolalpha << cfg_.capability.admittance.enabled << '\n';
-        if(cfg_.capability.admittance.enabled || !cfg_.capability.admittance.mass.empty()) {
-            std::cout << "admittance_filter_alpha : " << cfg_.capability.admittance.filter_alpha << '\n';
-            print_vector("admittance_mass", cfg_.capability.admittance.mass);
-            print_vector("admittance_damping", cfg_.capability.admittance.damping);
-            print_vector("admittance_stiffness", cfg_.capability.admittance.stiffness);
-            print_vector("admittance_torque_bias", cfg_.capability.admittance.torque_bias);
-            print_vector("admittance_threshold", cfg_.capability.admittance.torque_threshold);
-            std::cout << "friction_compensation   : " << (cfg_.capability.admittance.friction.enabled ? "ENABLED" : "DISABLED") << '\n';
-            if(cfg_.capability.admittance.friction.enabled) {
-                std::cout << "friction_vel_transition: " << cfg_.capability.admittance.friction.velocity_transition << '\n';
-                print_vector("friction_C_pos", cfg_.capability.admittance.friction.positive_coulomb);
-                print_vector("friction_B_pos", cfg_.capability.admittance.friction.positive_viscous);
-                print_vector("friction_C_neg", cfg_.capability.admittance.friction.negative_coulomb);
-                print_vector("friction_B_neg", cfg_.capability.admittance.friction.negative_viscous);
+        if(cfg_.capability.admittance.enabled || !cfg_.capability.admittance.joint_enabled.empty()) {
+            const auto& a = cfg_.capability.admittance;
+            const auto derived = derive_admittance_controller_cfg(a);
+            std::cout << "admittance_observer     : " << observer_mode_name(a.observer.mode) << '\n';
+            std::cout << "admittance_filter_alpha : " << a.observer.filter_alpha << '\n';
+            print_vector("momentum_gain", a.observer.momentum_gain);
+            print_vector("comfortable_torque", a.feel.comfortable_torque);
+            print_vector("follow_speed", a.feel.follow_speed);
+            print_vector("start_response_s", a.feel.start_response_s);
+            print_vector("q_elastic_start_speed", a.feel.q_elastic_start_speed);
+            print_vector("return_time_s", a.feel.return_time_s);
+            print_vector("max_retreat", a.feel.max_retreat);
+            print_vector("max_correction_speed", a.feel.max_correction_speed);
+            print_vector("derived_M", derived.mass);
+            print_vector("derived_D_follow", derived.damping);
+            print_vector("derived_K_return", derived.stiffness);
+            print_vector("admittance_torque_bias", a.calibration.torque_bias);
+            print_vector("admittance_threshold", a.calibration.torque_threshold);
+            std::cout << "friction_compensation   : " << (a.calibration.friction.enabled ? "ENABLED" : "DISABLED") << '\n';
+            if(a.calibration.friction.enabled) {
+                std::cout << "friction_vel_transition: " << a.calibration.friction.velocity_transition << '\n';
+                std::cout << "friction_zero_adapt_s  : " << a.calibration.friction.zero_velocity_adaptation_s << '\n';
+                std::cout << "friction_ff_scale      : " << a.calibration.friction.kinetic_feedforward_scale << '\n';
+                print_vector("friction_C_pos", a.calibration.friction.positive_coulomb);
+                print_vector("friction_B_pos", a.calibration.friction.positive_viscous);
+                print_vector("friction_C_neg", a.calibration.friction.negative_coulomb);
+                print_vector("friction_B_neg", a.calibration.friction.negative_viscous);
             }
-            print_vector("admittance_max_delta_q", cfg_.capability.admittance.max_delta_q);
-            print_vector("admittance_max_dq_dot", cfg_.capability.admittance.max_delta_q_dot);
         }
         std::cout << "park_before_disable     : " << std::boolalpha << cfg_.shutdown.park_before_disable << '\n';
         print_vector("park_pos", cfg_.shutdown.park_pos);
@@ -2584,6 +2863,10 @@ private:
 
     StreamState stream_;
     std::optional<RobotCycleOutput> last_output_;
+    std::optional<AdmittanceStaticCalibrationResult> last_static_calibration_result_;
+    std::optional<AdmittanceStaticValidationResult> last_static_validation_result_;
+    std::optional<AdmittanceFrictionCalibrationResult> last_friction_calibration_result_;
+    std::optional<AdmittanceFrictionCalibrationResult> last_full_id_friction_calibration_result_;
     std::uint64_t cycle_counter_{ 0 };
     bool background_fault_reported_{ false };
     std::optional<DynamicsErr> last_dynamics_err_;

@@ -97,6 +97,7 @@ struct AdmittanceFrictionCalibrationCfg {
     double max_fit_acceleration{ 1.5 };    ///< 高于该加速度不参与拟合，降低惯性/qdd 误差污染
     double min_speed_span{ 0.03 };         ///< 每个方向至少覆盖的 |dq| 速度跨度 rad/s，保证 Coulomb/viscous 可分辨
     std::size_t min_samples_per_direction{ 30 }; ///< 每轴每个方向至少需要的有效样本
+    double cross_validation_max_rms_ratio{ 0.8 }; ///< 双向交叉验证后 RMS_after / RMS_before 最大允许比例
 };
 
 /**
@@ -115,6 +116,10 @@ struct AdmittanceFrictionCalibrationResult {
     JointVector positive_speed_span;
     JointVector negative_speed_span;
     std::vector<std::uint8_t> observable;
+    JointVector cross_residual_rms_before;
+    JointVector cross_residual_rms_after;
+    JointVector cross_residual_p99_after;
+    std::vector<std::uint8_t> validation_pass; ///< 1 表示倒放/正放互验通过
 };
 
 enum class AdmittanceStaticCalibrationErr {
@@ -143,6 +148,16 @@ calibrate_admittance_static(
 tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
 calibrate_admittance_friction(
     const std::vector<AdmittanceFrictionSample>& samples,
+    const AdmittanceFrictionCalibrationCfg& cfg);
+
+
+/**
+ * @brief 使用倒放和正放两组独立样本互相拟合/验证，最终系数仍由全部样本拟合
+ */
+tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
+calibrate_admittance_friction_cross_validated(
+    const std::vector<AdmittanceFrictionSample>& reverse_samples,
+    const std::vector<AdmittanceFrictionSample>& forward_samples,
     const AdmittanceFrictionCalibrationCfg& cfg);
 
 /**

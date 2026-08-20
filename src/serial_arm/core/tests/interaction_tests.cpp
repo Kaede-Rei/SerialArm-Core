@@ -2,6 +2,7 @@
 
 #include "serial_arm/interaction/admittance_calibration.hpp"
 #include "serial_arm/interaction/external_torque_observer.hpp"
+#include "serial_arm/interaction/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/interaction_controller.hpp"
 #include "serial_arm/interaction/joint_admittance_controller.hpp"
 #include "serial_arm/interaction/torque_residual_observer.hpp"
@@ -43,7 +44,7 @@ InteractionControllerCfg enabled_cfg() {
 
 TEST(TorqueResidualObserverTests, FiltersModelTorqueMinusMeasuredTorque) {
     TorqueResidualObserver observer;
-    ASSERT_TRUE(observer.configure(TorqueResidualObserverCfg{ 1, 0.5 }));
+    ASSERT_TRUE(observer.configure(TorqueResidualObserverCfg{ 1, 0.5, {} }));
 
     auto first = observer.update(JointVector{ 2.0 }, JointVector{ 1.0 });
     ASSERT_TRUE(first);
@@ -90,7 +91,7 @@ TEST(InteractionControllerTests, UsesTorqueBiasAsResidualFilterResetBaseline) {
         JointVector{ 0.5 },
         cmd,
         0.01,
-        {}, {}, {}, {}, {},
+        {}, {}, {}, {}, {}, {},
     });
     ASSERT_TRUE(output);
     ASSERT_EQ(output->residual.residual_filtered.size(), 1u);
@@ -438,7 +439,7 @@ TEST(InteractionControllerTests, DisabledCapabilityPassesNominalCommandThroughWi
     ASSERT_TRUE(controller.configure(cfg));
 
     const auto nominal = nominal_cmd();
-    InteractionInput input{ JointVector{}, JointVector{}, nominal, 0.005, {}, {}, {}, {}, {} };
+    InteractionInput input{ JointVector{}, JointVector{}, nominal, 0.005, {}, {}, {}, {}, {}, {} };
     auto output = controller.update(input);
     ASSERT_TRUE(output);
     EXPECT_EQ(output->corrected_cmd.pos, nominal.pos);
@@ -453,7 +454,7 @@ TEST(InteractionControllerTests, EnabledCapabilityAppliesThresholdedExternalTorq
     ASSERT_TRUE(controller.configure(enabled_cfg()));
 
     const auto nominal = nominal_cmd(0.0);
-    InteractionInput input{ JointVector{ 0.8 }, JointVector{ 0.0 }, nominal, 0.1, {}, {}, {}, {}, {} };
+    InteractionInput input{ JointVector{ 0.8 }, JointVector{ 0.0 }, nominal, 0.1, {}, {}, {}, {}, {}, {} };
     auto output = controller.update(input);
     ASSERT_TRUE(output);
     // residual = gravity - measured = -0.8; bias -0.2 => -1.0, above threshold and preserved.
@@ -577,6 +578,302 @@ TEST(ExternalTorqueObserverTests, RetainsLastMotionDirectionNearZeroWithoutOverS
     stopped.residual_filtered = { -0.35 };
     const auto with_external = observer.update(stopped, JointVector{ 0.0 });
     ASSERT_TRUE(with_external);
-    EXPECT_NEAR(with_external->friction_residual_hat[0], -0.20, 1e-12);
-    EXPECT_NEAR(with_external->friction_compensated[0], -0.15, 1e-12);
+    // Zero-speed memory decays continuously, so the second stopped sample is
+    // slightly smaller than the full Coulomb value instead of persisting forever.
+    EXPECT_GT(with_external->friction_residual_hat[0], -0.20);
+    EXPECT_LT(with_external->friction_residual_hat[0], -0.19);
+    EXPECT_GT(std::abs(with_external->friction_compensated[0]), 0.15);
+    EXPECT_LT(std::abs(with_external->friction_compensated[0]), 0.16);
+}
+
+
+TEST(GeneralizedMomentumObserverTests, ConvergesToConstantExternalTorqueWithoutAccelerationInput) {
+    GeneralizedMomentumObserver observer;
+    GeneralizedMomentumObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gain = { 25.0 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    // M=1, C=0, g=0. A constant +1 Nm external torque produces dq=t.
+    GeneralizedMomentumInput input;
+    input.measured_torque = { 0.0 };
+    input.gravity = { 0.0 };
+    input.coriolis = { 0.0 };
+    input.mass_matrix = { JointVector{ 1.0 } };
+    input.dt = 0.001;
+
+    double velocity = 0.0;
+    for(int k = 0; k < 2000; ++k) {
+        velocity += input.dt;
+        input.velocity = { velocity };
+        ASSERT_TRUE(observer.update(input));
+    }
+    const auto output = observer.update(input);
+    ASSERT_TRUE(output);
+    EXPECT_NEAR(output->tau_ext_hat[0], 1.0, 0.03);
+}
+
+TEST(GeneralizedMomentumObserverTests, BiasPrimedInitializationDoesNotCreateStaticTransient) {
+    GeneralizedMomentumObserver observer;
+    GeneralizedMomentumObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gain = { 25.0 };
+    cfg.initial_residual = { 0.20 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    GeneralizedMomentumInput input;
+    input.measured_torque = { 0.0 };
+    input.gravity = { 0.20 };
+    input.coriolis = { 0.0 };
+    input.mass_matrix = { JointVector{ 1.0 } };
+    input.velocity = { 0.0 };
+    input.dt = 0.005;
+
+    for(int k = 0; k < 20; ++k) {
+        const auto output = observer.update(input);
+        ASSERT_TRUE(output);
+        EXPECT_NEAR(output->tau_ext_hat[0], 0.20, 1e-12);
+    }
+}
+
+TEST(GeneralizedMomentumObserverTests, RejectsNoExternalTorqueDuringChangingMassWithoutQdd) {
+    GeneralizedMomentumObserver observer;
+    GeneralizedMomentumObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gain = { 30.0 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    GeneralizedMomentumInput input;
+    input.measured_torque = { 0.0 };
+    input.gravity = { 0.0 };
+    input.coriolis = { 0.0 };
+    input.velocity = { 0.0 };
+    input.mass_matrix = { JointVector{ 1.0 } };
+    input.dt = 0.005;
+    ASSERT_TRUE(observer.update(input));
+
+    for(int k = 0; k < 200; ++k) {
+        input.mass_matrix[0][0] = 1.0 + 0.001 * static_cast<double>(k);
+        input.velocity[0] = 0.0;
+        const auto output = observer.update(input);
+        ASSERT_TRUE(output);
+        EXPECT_NEAR(output->tau_ext_hat[0], 0.0, 1e-9);
+    }
+}
+
+TEST(AdmittanceFrictionCalibrationTests, CrossValidationRejectsReplaySpecificModel) {
+    std::vector<AdmittanceFrictionSample> reverse;
+    std::vector<AdmittanceFrictionSample> forward;
+    for(int k = 0; k < 80; ++k) {
+        const double speed = 0.08 + 0.004 * static_cast<double>(k);
+        reverse.push_back({ { speed }, { 0.1 }, { -0.20 - 0.10 * speed } });
+        reverse.push_back({ { -speed }, { -0.1 }, { 0.20 + 0.10 * speed } });
+        // Deliberately different replay-specific offset: a model fit on one pass must not validate on the other.
+        forward.push_back({ { speed }, { 0.1 }, { -0.55 - 0.10 * speed } });
+        forward.push_back({ { -speed }, { -0.1 }, { 0.55 + 0.10 * speed } });
+    }
+    AdmittanceFrictionCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.min_fit_velocity = 0.05;
+    cfg.max_fit_acceleration = 1.0;
+    cfg.min_speed_span = 0.03;
+    cfg.min_samples_per_direction = 20;
+    cfg.cross_validation_max_rms_ratio = 0.8;
+
+    const auto result = calibrate_admittance_friction_cross_validated(reverse, forward, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->observable[0], 1);
+    EXPECT_EQ(result->validation_pass[0], 0);
+    EXPECT_GT(result->cross_residual_rms_after[0], 0.8 * result->cross_residual_rms_before[0]);
+}
+
+TEST(ExternalTorqueObserverTests, ZeroSpeedStaticBaselinePersistsAndExposesNewExternalChange) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.05 };
+    cfg.friction.enabled = true;
+    cfg.friction.velocity_transition = 0.03;
+    cfg.friction.zero_velocity_adaptation_s = 0.10;
+    cfg.friction.positive_coulomb = { -0.20 };
+    cfg.friction.positive_viscous = { 0.0 };
+    cfg.friction.negative_coulomb = { 0.20 };
+    cfg.friction.negative_viscous = { 0.0 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    TorqueResidualEstimate residual;
+    residual.residual = { -0.20 };
+    residual.residual_filtered = { -0.20 };
+    ASSERT_TRUE(observer.update(residual, JointVector{ 0.2 }, 0.01));
+
+    // The post-motion static residual is stiction/hysteresis. Latch it as a baseline and
+    // keep cancelling it instead of letting a time decay recreate steady-state error.
+    residual.residual = { -0.15 };
+    residual.residual_filtered = { -0.15 };
+    auto stopped = observer.update(residual, JointVector{ 0.0 }, 0.01);
+    ASSERT_TRUE(stopped);
+    for(int k = 0; k < 200; ++k) {
+        stopped = observer.update(residual, JointVector{ 0.0 }, 0.01);
+        ASSERT_TRUE(stopped);
+    }
+    EXPECT_NEAR(stopped->friction_residual_hat[0], -0.15, 0.01);
+    EXPECT_NEAR(stopped->friction_compensated[0], 0.0, 0.01);
+
+    // A new residual step larger than the calibrated no-contact envelope must not be
+    // absorbed by the adaptive baseline; the excess remains visible as external torque.
+    residual.residual = { -0.30 };
+    residual.residual_filtered = { -0.30 };
+    stopped = observer.update(residual, JointVector{ 0.0 }, 0.01);
+    ASSERT_TRUE(stopped);
+    EXPECT_NEAR(stopped->friction_residual_hat[0], -0.15, 0.01);
+    EXPECT_LT(stopped->friction_compensated[0], -0.10);
+    EXPECT_LT(stopped->tau_ext_hat[0], -0.10);
+}
+
+TEST(ExternalTorqueObserverTests, StaticBaselineNeverManufacturesOppositeTorque) {
+    ExternalTorqueObserver observer;
+    ExternalTorqueObserverCfg cfg;
+    cfg.joints_count = 1;
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.02 };
+    cfg.friction.enabled = true;
+    cfg.friction.velocity_transition = 0.03;
+    cfg.friction.zero_velocity_adaptation_s = 0.10;
+    cfg.friction.positive_coulomb = { -0.20 };
+    cfg.friction.positive_viscous = { 0.0 };
+    cfg.friction.negative_coulomb = { 0.20 };
+    cfg.friction.negative_viscous = { 0.0 };
+    ASSERT_TRUE(observer.configure(cfg));
+
+    TorqueResidualEstimate residual;
+    residual.residual = { -0.20 };
+    residual.residual_filtered = { -0.20 };
+    ASSERT_TRUE(observer.update(residual, JointVector{ 0.2 }, 0.01));
+    residual.residual = { -0.15 };
+    residual.residual_filtered = { -0.15 };
+    ASSERT_TRUE(observer.update(residual, JointVector{ 0.0 }, 0.01));
+
+    // If an opposite external torque cancels the stored friction baseline, compensation
+    // is bounded by the currently observed residual and may never create a false opposite torque.
+    residual.residual = { 0.0 };
+    residual.residual_filtered = { 0.0 };
+    const auto cancelled = observer.update(residual, JointVector{ 0.0 }, 0.01);
+    ASSERT_TRUE(cancelled);
+    EXPECT_NEAR(cancelled->friction_residual_hat[0], 0.0, 1e-12);
+    EXPECT_NEAR(cancelled->friction_compensated[0], 0.0, 1e-12);
+}
+
+TEST(JointAdmittanceControllerTests, VariableModeUsesMDWhileContactAndRestoresSpringOnRelease) {
+    JointAdmittanceController controller;
+    JointAdmittanceControllerCfg cfg;
+    cfg.joints_count = 1;
+    cfg.enabled = { 1 };
+    cfg.mass = { 0.5 };
+    cfg.damping = { 1.0 };      // follow damping
+    cfg.stiffness = { 8.0 };    // return stiffness
+    cfg.max_delta_q = { 1.0 };
+    cfg.max_delta_q_dot = { 2.0 };
+    cfg.variable.enabled = true;
+    cfg.variable.engage_time_s = 0.02;
+    cfg.variable.release_time_s = 0.08;
+    cfg.variable.soft_velocity_ratio = 0.7;
+    cfg.variable.max_damping_multiplier = 4.0;
+    ASSERT_TRUE(controller.configure(cfg));
+
+    JointAdmittanceInput input;
+    input.tau_ext_hat = { 0.6 };
+    input.contact_confidence = { 1.0 };
+    input.dt = 0.005;
+    JointAdmittanceOutput out;
+    for(int k = 0; k < 200; ++k) {
+        auto step = controller.update(input);
+        ASSERT_TRUE(step);
+        out = *step;
+    }
+    EXPECT_GT(out.contact_blend[0], 0.95);
+    EXPECT_LT(out.effective_stiffness[0], 0.5);
+    const double displaced = out.delta_q[0];
+    EXPECT_GT(displaced, 0.1);
+
+    input.tau_ext_hat = { 0.0 };
+    input.contact_confidence = { 0.0 };
+    for(int k = 0; k < 300; ++k) {
+        auto step = controller.update(input);
+        ASSERT_TRUE(step);
+        out = *step;
+    }
+    EXPECT_LT(out.contact_blend[0], 0.05);
+    EXPECT_GT(out.effective_stiffness[0], 7.5);
+    EXPECT_LT(std::abs(out.delta_q[0]), 0.02);
+}
+
+TEST(JointAdmittanceControllerTests, VariableModeBuildsSoftVelocityWallBeforeHardLimit) {
+    JointAdmittanceController controller;
+    JointAdmittanceControllerCfg cfg;
+    cfg.joints_count = 1;
+    cfg.enabled = { 1 };
+    cfg.mass = { 0.2 };
+    cfg.damping = { 0.4 };
+    cfg.stiffness = { 5.0 };
+    cfg.max_delta_q = { 2.0 };
+    cfg.max_delta_q_dot = { 1.0 };
+    cfg.variable.enabled = true;
+    cfg.variable.engage_time_s = 0.001;
+    cfg.variable.release_time_s = 0.1;
+    cfg.variable.soft_velocity_ratio = 0.5;
+    cfg.variable.max_damping_multiplier = 5.0;
+    ASSERT_TRUE(controller.configure(cfg));
+
+    JointAdmittanceInput input;
+    input.tau_ext_hat = { 2.0 };
+    input.contact_confidence = { 1.0 };
+    input.dt = 0.002;
+    JointAdmittanceOutput out;
+    for(int k = 0; k < 500; ++k) {
+        auto step = controller.update(input);
+        ASSERT_TRUE(step);
+        out = *step;
+        if(std::abs(out.delta_q_dot[0]) > 0.55) break;
+    }
+    EXPECT_GT(out.effective_damping[0], cfg.damping[0]);
+    EXPECT_LT(std::abs(out.delta_q_dot[0]), cfg.max_delta_q_dot[0]);
+}
+
+
+TEST(JointAdmittanceControllerTests, PerJointSoftVelocityOverridesLegacyRatio) {
+    JointAdmittanceController controller;
+    JointAdmittanceControllerCfg cfg;
+    cfg.joints_count = 1;
+    cfg.enabled = { 1 };
+    cfg.mass = { 0.2 };
+    cfg.damping = { 0.4 };
+    cfg.stiffness = { 5.0 };
+    cfg.max_delta_q = { 2.0 };
+    cfg.max_delta_q_dot = { 1.0 };
+    cfg.variable.enabled = true;
+    cfg.variable.engage_time_s = 0.001;
+    cfg.variable.release_time_s = 0.1;
+    cfg.variable.soft_velocity = { 0.2 };
+    cfg.variable.soft_velocity_ratio = 0.9; // would start much later if used
+    cfg.variable.max_damping_multiplier = 5.0;
+    ASSERT_TRUE(controller.configure(cfg));
+
+    JointAdmittanceInput input;
+    input.tau_ext_hat = { 2.0 };
+    input.contact_confidence = { 1.0 };
+    input.dt = 0.002;
+    JointAdmittanceOutput out;
+    bool wall_seen = false;
+    for(int k = 0; k < 500; ++k) {
+        auto step = controller.update(input);
+        ASSERT_TRUE(step);
+        out = *step;
+        if(std::abs(out.delta_q_dot[0]) > 0.25 && out.effective_damping[0] > cfg.damping[0]) {
+            wall_seen = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(wall_seen);
+    EXPECT_LT(std::abs(out.delta_q_dot[0]), cfg.max_delta_q_dot[0]);
 }

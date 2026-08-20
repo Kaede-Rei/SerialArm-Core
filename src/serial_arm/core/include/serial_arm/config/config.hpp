@@ -7,6 +7,8 @@
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/hardware/hardware_capability.hpp"
 #include "serial_arm/interaction/friction_residual_model.hpp"
+#include "serial_arm/interaction/admittance_observer_mode.hpp"
+#include "serial_arm/interaction/joint_admittance_controller.hpp"
 
 #include <array>
 #include <cstddef>
@@ -34,20 +36,48 @@ struct RuntimeCfg {
 };
 
 /**
- * @brief 关节空间导纳能力配置
+ * @brief 导纳外力估计配置
  */
-struct AdmittanceCapabilityCfg {
-    bool enabled{ false };                       ///< 导纳能力总开关
-    double filter_alpha{ 0.1 };                 ///< 外力矩估计一阶低通滤波系数
-    std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
-    JointVector mass;                           ///< 虚拟质量：决定同样外力矩下的 delta_q_ddot 响应速度
-    JointVector damping;                        ///< 虚拟阻尼：抑制 delta_q_dot 与振荡
-    JointVector stiffness;                      ///< 虚拟刚度：虚拟弹簧将 delta_q 拉回 0
+struct AdmittanceObserverCfg {
+    AdmittanceObserverMode mode{ AdmittanceObserverMode::FULL_ID }; ///< 正式外力 observer
+    JointVector momentum_gain;                  ///< momentum observer 一阶增益 rad/s
+    double filter_alpha{ 0.1 };                 ///< observer residual 一阶低通滤波系数
+};
+
+/**
+ * @brief 与具体机器人绑定的导纳标定结果
+ */
+struct AdmittanceCalibrationCfg {
     JointVector torque_bias;                    ///< residual 固定零偏 Nm
     JointVector torque_threshold;               ///< bias + friction 补偿后的小力矩忽略阈值 Nm
     FrictionResidualModelCfg friction;           ///< 速度相关摩擦 residual 模型
-    JointVector max_delta_q;                    ///< 最大导纳位置修正 rad
-    JointVector max_delta_q_dot;                ///< 最大导纳修正速度 rad/s
+};
+
+/**
+ * @brief 用户可理解的导纳手感配置
+ *
+ * M/D/K 不属于持久化配置；运行时由这些语义参数统一派生
+ */
+struct AdmittanceFeelCfg {
+    JointVector comfortable_torque;             ///< 舒适推力矩 Nm
+    JointVector follow_speed;                   ///< 舒适推力矩对应的跟随速度 rad/s
+    JointVector start_response_s;               ///< 达到约 95% 跟随速度的目标时间 s
+    JointVector q_elastic_start_speed;          ///< 开始增加阻尼形成 Q 弹的速度 rad/s
+    JointVector return_time_s;                  ///< 松手后约 95% 回中的目标时间 s
+    JointVector max_retreat;                    ///< 最大导纳位置修正 rad
+    JointVector max_correction_speed;           ///< 最大导纳修正速度 rad/s
+    double q_elastic_max_resistance_ratio{ 4.0 }; ///< Q 弹区最大阻尼倍率 >= 1
+};
+
+/**
+ * @brief 关节空间导纳能力的公开配置
+ */
+struct AdmittanceCapabilityCfg {
+    bool enabled{ false };                       ///< 导纳能力总开关
+    std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
+    AdmittanceObserverCfg observer;              ///< 外力估计
+    AdmittanceCalibrationCfg calibration;        ///< 本机标定结果
+    AdmittanceFeelCfg feel;                      ///< 用户手感目标
 };
 
 /**
@@ -140,6 +170,12 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg);
  * @brief 验证完整配置
  */
 tl::expected<void, ConfigErrInfo> validate_robot_cfg(const RobotCfg& cfg);
+
+/**
+ * @brief 将用户语义手感配置统一派生为控制器内部 M/D/K 配置
+ * @note 调用前应先通过 validate_robot_core_cfg()
+ */
+JointAdmittanceControllerCfg derive_admittance_controller_cfg(const AdmittanceCapabilityCfg& cfg);
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

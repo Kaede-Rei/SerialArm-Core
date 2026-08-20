@@ -186,6 +186,7 @@ private:
      * @brief 连接 Dynamics 与 Robot 的模型前馈回调
      */
     ModelFeedforwardFn make_model_feedforward();
+    InteractionModelStateFn make_interaction_model_state();
 
 private:
     RobotCfg cfg_;                                      ///< 完整静态配置

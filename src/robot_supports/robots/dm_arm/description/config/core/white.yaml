@@ -107,23 +107,54 @@ shutdown:
 
 # 06 capability
 capability:
-  # 导纳控制能力：tau_ext_hat = (mass * delta_q_ddot) + (damping * delta_q_dot) + (stiffness * delta_q)
   admittance:
-    enabled: true                                   # 导纳能力总开关；false 时整条导纳链完全旁路
-    filter_alpha: 0.10                              # 外力矩 residual 一阶低通系数；越小越平滑但响应更慢，越大越灵敏但噪声更多
-    # 各关节是否参与导纳
+    enabled: true
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
-    # 虚拟质量 mass(M)：同样 tau_ext_hat 下决定 delta_q_ddot；越小起步越快/越敏感，越大越迟缓
-    mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
-    # 虚拟阻尼 damping(D)：抑制 delta_q_dot 与振荡；越大越稳但手感更“黏”，越小越灵活但更易摆动
-    damping: {joint1: 6.0, joint2: 6.0, joint3: 6.0, joint4: 6.0, joint5: 6.0, joint6: 6.0}
-    # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
-    stiffness: {joint1: 20.0, joint2: 20.0, joint3: 20.0, joint4: 20.0, joint5: 20.0, joint6: 20.0}
-    # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动
-    torque_bias: {joint1: 0.037, joint2: 0.116, joint3: 1.857, joint4: 0.428, joint5: 0.017, joint6: 0.007}
-    # bias 后的小力矩忽略阈值 Nm；0 表示关闭，增大可抑制噪声但会牺牲小外力灵敏度
-    torque_threshold: {joint1: 0.03, joint2: 0.02, joint3: 0.03, joint4: 0.02, joint5: 0.01, joint6: 0.01}
-    # 最大导纳位置修正 rad；决定最多主动退让多少角度
-    max_delta_q: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
-    # 最大导纳修正速度 rad/s；决定退让/回位的最快速度，过小会感觉“有力但不动”
-    max_delta_q_dot: {joint1: 0.30, joint2: 0.30, joint3: 0.30, joint4: 0.30, joint5: 0.30, joint6: 0.30}
+
+    observer:
+      mode: FULL_ID
+      momentum_gain: {joint1: 25.0, joint2: 25.0, joint3: 25.0, joint4: 25.0, joint5: 25.0, joint6: 25.0}
+      filter_alpha: 0.10
+
+    calibration:
+      torque_bias: {joint1: 0.037, joint2: 0.116, joint3: 1.857, joint4: 0.428, joint5: 0.017, joint6: 0.007}
+      torque_threshold: {joint1: 0.03, joint2: 0.02, joint3: 0.03, joint4: 0.02, joint5: 0.01, joint6: 0.01}
+      friction:
+        enabled: false
+        velocity_transition: 0.03
+        zero_velocity_adaptation_s: 0.60
+        kinetic_feedforward_scale: 0.0
+        positive_coulomb: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
+        positive_viscous: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
+        negative_coulomb: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
+        negative_viscous: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
+
+    # 用户手感目标；M/D/K 由 Core 运行时派生，不在 YAML 中直接配置
+    # 派生关系：
+    #   D = comfortable_torque / follow_speed
+    #   M = D * start_response_s / 3
+    #   K = M * (4.74 / return_time_s)^2
+    feel:
+      # Nm；舒适推力矩，表示用户可舒适持续施加的外力矩目标
+      # 该值越大，同样速度下派生阻尼 D 越大，推动会更“沉”
+      comfortable_torque: {joint1: 3.0, joint2: 3.0, joint3: 3.0, joint4: 3.0, joint5: 3.0, joint6: 3.0}
+      # rad/s；舒适推力矩对应的期望跟随速度
+      # 该值越大，同样推力矩下派生阻尼 D 越小，手感会更“轻”
+      follow_speed: {joint1: 0.5, joint2: 0.5, joint3: 0.5, joint4: 0.5, joint5: 0.5, joint6: 0.5}
+      # s；从开始受力到达到约 95% 跟随速度的目标响应时间
+      # 该值越小，派生质量 M 越小，启动响应越快
+      start_response_s: {joint1: 0.5, joint2: 0.5, joint3: 0.5, joint4: 0.5, joint5: 0.5, joint6: 0.5}
+      # rad/s；导纳修正速度超过该值后开始增加阻尼，形成 Q 弹阻力
+      # 必须小于 max_correction_speed
+      q_elastic_start_speed: {joint1: 0.21, joint2: 0.21, joint3: 0.21, joint4: 0.21, joint5: 0.21, joint6: 0.21}
+      # s；松手后回到中位约 95% 位移的目标时间
+      # 该值越小，派生刚度 K 越大，回中越快
+      return_time_s: {joint1: 1.059896, joint2: 1.059896, joint3: 1.059896, joint4: 1.059896, joint5: 1.059896, joint6: 1.059896}
+      # rad；最大导纳位置偏移，限制允许退让/修正的角度幅度
+      max_retreat: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
+      # rad/s；最大导纳修正速度，限制导纳输出变化速度
+      # 必须大于 q_elastic_start_speed
+      max_correction_speed: {joint1: 0.30, joint2: 0.30, joint3: 0.30, joint4: 0.30, joint5: 0.30, joint6: 0.30}
+      # 无量纲；Q 弹区最大阻尼倍率，>= 1
+      # 速度越接近上限，阻尼最高可增至 D 的该倍率
+      q_elastic_max_resistance_ratio: 4.0

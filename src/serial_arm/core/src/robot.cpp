@@ -29,24 +29,27 @@ bool finite_vector(const JointVector& values) {
         });
 }
 
+double smoothstep01(double x) {
+    x = std::clamp(x, 0.0, 1.0);
+    return x * x * (3.0 - 2.0 * x);
+}
+
 InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count) {
     InteractionControllerCfg interaction_cfg;
     interaction_cfg.enabled = admittance.enabled;
     if(!interaction_cfg.enabled) return interaction_cfg;
 
+    interaction_cfg.observer_mode = admittance.observer.mode;
     interaction_cfg.residual.joints_count = joints_count;
-    interaction_cfg.residual.filter_alpha = admittance.filter_alpha;
+    interaction_cfg.residual.filter_alpha = admittance.observer.filter_alpha;
+    interaction_cfg.momentum.joints_count = joints_count;
+    interaction_cfg.momentum.gain = admittance.observer.momentum_gain;
+    interaction_cfg.momentum.initial_residual = admittance.calibration.torque_bias;
     interaction_cfg.external_torque.joints_count = joints_count;
-    interaction_cfg.external_torque.torque_bias = admittance.torque_bias;
-    interaction_cfg.external_torque.torque_threshold = admittance.torque_threshold;
-    interaction_cfg.external_torque.friction = admittance.friction;
-    interaction_cfg.admittance.joints_count = joints_count;
-    interaction_cfg.admittance.enabled = admittance.joint_enabled;
-    interaction_cfg.admittance.mass = admittance.mass;
-    interaction_cfg.admittance.damping = admittance.damping;
-    interaction_cfg.admittance.stiffness = admittance.stiffness;
-    interaction_cfg.admittance.max_delta_q = admittance.max_delta_q;
-    interaction_cfg.admittance.max_delta_q_dot = admittance.max_delta_q_dot;
+    interaction_cfg.external_torque.torque_bias = admittance.calibration.torque_bias;
+    interaction_cfg.external_torque.torque_threshold = admittance.calibration.torque_threshold;
+    interaction_cfg.external_torque.friction = admittance.calibration.friction;
+    interaction_cfg.admittance = derive_admittance_controller_cfg(admittance);
     return interaction_cfg;
 }
 
@@ -71,7 +74,11 @@ Robot::~Robot() {
  * @param model_feedforward 可选模型前馈函数
  * @return 配置成功返回空 expected，失败返回 RobotFault
  */
-tl::expected<void, RobotFault> Robot::configure(const RobotCfg& cfg, std::unique_ptr<MotorBus> motor_bus, ModelFeedforwardFn model_feedforward) {
+tl::expected<void, RobotFault> Robot::configure(
+    const RobotCfg& cfg,
+    std::unique_ptr<MotorBus> motor_bus,
+    ModelFeedforwardFn model_feedforward,
+    InteractionModelStateFn interaction_model_state) {
     if(state_ != RobotState::UNCONFIGURED) {
         return tl::make_unexpected(make_fault(RobotErr::ALREADY_CONFIGURED));
     }
@@ -87,6 +94,13 @@ tl::expected<void, RobotFault> Robot::configure(const RobotCfg& cfg, std::unique
         return tl::make_unexpected(make_fault(RobotErr::MOTOR_BUS_SIZE_MISMATCH));
     }
     if((cfg.runtime.model_feedforward_mode != ModelFeedforwardMode::NONE || cfg.capability.admittance.enabled) && !model_feedforward) {
+        RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
+        fault.code = RobotErr::INVALID_CFG;
+        return tl::make_unexpected(fault);
+    }
+    if(cfg.capability.admittance.enabled &&
+        cfg.capability.admittance.observer.mode == AdmittanceObserverMode::MOMENTUM &&
+        !interaction_model_state) {
         RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
         fault.code = RobotErr::INVALID_CFG;
         return tl::make_unexpected(fault);
@@ -114,6 +128,7 @@ tl::expected<void, RobotFault> Robot::configure(const RobotCfg& cfg, std::unique
     cfg_ = cfg;
     motor_bus_ = std::move(motor_bus);
     model_feedforward_ = std::move(model_feedforward);
+    interaction_model_state_ = std::move(interaction_model_state);
     last_fault_.reset();
     clear_runtime_state();
     state_ = RobotState::INACTIVE;
@@ -318,6 +333,12 @@ tl::expected<void, RobotFault> Robot::set_admittance_cfg(const AdmittanceCapabil
         fault.code = RobotErr::INVALID_CFG;
         return tl::make_unexpected(fault);
     }
+    if(admittance_cfg.enabled && admittance_cfg.observer.mode == AdmittanceObserverMode::MOMENTUM &&
+        !interaction_model_state_) {
+        RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
+        fault.code = RobotErr::INVALID_CFG;
+        return tl::make_unexpected(fault);
+    }
 
     RobotCfg candidate = cfg_;
     candidate.capability.admittance = admittance_cfg;
@@ -433,6 +454,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         !admittance_suspended_ &&
         ctrller_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG;
     InteractionOutput interaction_telemetry;
+    JointVector friction_feedforward(cfg_.joint_names.size(), 0.0);
     std::vector<std::uint8_t> safety_position_margin_active;
     std::vector<std::uint8_t> safety_velocity_margin_active;
     if(admittance_active) {
@@ -453,10 +475,10 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         const auto& limits = cfg_.safety.limits;
 
         for(std::size_t i = 0; i < joints_count; ++i) {
-            min_delta_q[i] = -admittance_cfg.max_delta_q[i];
-            max_delta_q[i] = admittance_cfg.max_delta_q[i];
-            min_delta_q_dot[i] = -admittance_cfg.max_delta_q_dot[i];
-            max_delta_q_dot[i] = admittance_cfg.max_delta_q_dot[i];
+            min_delta_q[i] = -admittance_cfg.feel.max_retreat[i];
+            max_delta_q[i] = admittance_cfg.feel.max_retreat[i];
+            min_delta_q_dot[i] = -admittance_cfg.feel.max_correction_speed[i];
+            max_delta_q_dot[i] = admittance_cfg.feel.max_correction_speed[i];
 
             if(limits.has_position_limit[i] != 0) {
                 const double cmd_min_pos = limits.min_pos[i] + limits.pos_margin[i];
@@ -481,12 +503,33 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
                 max_delta_q_dot[i] = std::min(max_delta_q_dot[i], max_cmd_vel - joint_cmd.vel[i]);
             }
 
-            if(min_delta_q[i] > -admittance_cfg.max_delta_q[i] || max_delta_q[i] < admittance_cfg.max_delta_q[i]) {
+            if(min_delta_q[i] > -admittance_cfg.feel.max_retreat[i] || max_delta_q[i] < admittance_cfg.feel.max_retreat[i]) {
                 safety_position_margin_active[i] = 1;
             }
-            if(min_delta_q_dot[i] > -admittance_cfg.max_delta_q_dot[i] || max_delta_q_dot[i] < admittance_cfg.max_delta_q_dot[i]) {
+            if(min_delta_q_dot[i] > -admittance_cfg.feel.max_correction_speed[i] || max_delta_q_dot[i] < admittance_cfg.feel.max_correction_speed[i]) {
                 safety_velocity_margin_active[i] = 1;
             }
+        }
+
+        GeneralizedMomentumInput momentum_input;
+        if(admittance_cfg.observer.mode == AdmittanceObserverMode::MOMENTUM) {
+            if(!interaction_model_state_) {
+                const RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
+                enter_fault(fault, SafetyAction::STOP_HOLD);
+                return tl::make_unexpected(fault);
+            }
+            const auto model_state = interaction_model_state_(joint_state.value(), dt);
+            if(!model_state) {
+                const RobotFault fault = make_model_fault(model_state.error());
+                enter_fault(fault, SafetyAction::STOP_HOLD);
+                return tl::make_unexpected(fault);
+            }
+            momentum_input.measured_torque = joint_state->tor;
+            momentum_input.gravity = model_state->gravity;
+            momentum_input.coriolis = model_state->coriolis;
+            momentum_input.mass_matrix = model_state->mass_matrix;
+            momentum_input.velocity = joint_state->vel;
+            momentum_input.dt = dt;
         }
 
         const auto interaction = interaction_controller_.update(InteractionInput{
@@ -499,6 +542,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             std::move(min_delta_q_dot),
             std::move(max_delta_q_dot),
             joint_state->vel,
+            std::move(momentum_input),
             });
         if(!interaction) {
             const RobotFault fault = make_interaction_fault(interaction.error());
@@ -507,6 +551,18 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         }
         interaction_telemetry = interaction.value();
         joint_cmd = interaction->corrected_cmd;
+
+        const auto& friction = admittance_cfg.calibration.friction;
+        if(friction.enabled && friction.kinetic_feedforward_scale > 0.0 &&
+            interaction->friction_residual_hat.size() == joints_count) {
+            for(std::size_t i = 0; i < joints_count; ++i) {
+                const double motion_ratio = smoothstep01(
+                    std::abs(joint_state->vel[i]) / friction.velocity_transition);
+                friction_feedforward[i] = -friction.kinetic_feedforward_scale *
+                    motion_ratio * interaction->friction_residual_hat[i];
+                joint_cmd.tor[i] += friction_feedforward[i];
+            }
+        }
     }
 
     const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, dt);
@@ -554,13 +610,18 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     output.admittance_active = admittance_active;
     if(admittance_active) {
         output.residual_raw = interaction_telemetry.residual.residual;
+        output.full_id_residual_raw = interaction_telemetry.full_id_residual_raw;
         output.residual_filtered = interaction_telemetry.residual.residual_filtered;
         output.bias_compensated = interaction_telemetry.bias_compensated;
         output.friction_residual_hat = interaction_telemetry.friction_residual_hat;
         output.friction_compensated = interaction_telemetry.friction_compensated;
         output.tau_ext_hat = interaction_telemetry.tau_ext_hat;
+        output.contact_confidence = interaction_telemetry.contact_confidence;
         output.delta_q = interaction_telemetry.delta_q;
         output.delta_q_dot = interaction_telemetry.delta_q_dot;
+        output.effective_damping = interaction_telemetry.effective_damping;
+        output.effective_stiffness = interaction_telemetry.effective_stiffness;
+        output.friction_feedforward = friction_feedforward;
         output.torque_threshold_active = interaction_telemetry.threshold_active;
         output.delta_q_limited = interaction_telemetry.delta_q_limited;
         output.delta_q_dot_limited = interaction_telemetry.delta_q_dot_limited;

@@ -100,14 +100,19 @@ struct RobotCycleOutput {
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
-    JointVector residual_raw;                              ///< 当前模式 model_torque - measured_torque
+    JointVector residual_raw;                              ///< 正式 observer 的 raw residual
+    JointVector full_id_residual_raw;                      ///< FULL-ID 对照 residual，仅诊断
     JointVector residual_filtered;                         ///< 低通后的 residual
     JointVector bias_compensated;                          ///< residual_filtered - torque_bias
     JointVector friction_residual_hat;                      ///< 速度相关摩擦 residual 预测
     JointVector friction_compensated;                       ///< bias 后减去摩擦 residual
     JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
+    JointVector contact_confidence;                        ///< 连续外力交互置信度 [0,1]
     JointVector delta_q;                                   ///< 导纳位置修正
     JointVector delta_q_dot;                               ///< 导纳速度修正
+    JointVector effective_damping;                         ///< variable admittance 本周期实际 D
+    JointVector effective_stiffness;                       ///< variable admittance 本周期实际 K
+    JointVector friction_feedforward;                      ///< 本周期执行器滑动摩擦助力 Nm
     std::vector<std::uint8_t> torque_threshold_active;     ///< threshold 抑制/过渡标志
     std::vector<std::uint8_t> delta_q_limited;             ///< 导纳位置限幅标志
     std::vector<std::uint8_t> delta_q_dot_limited;         ///< 导纳速度限幅标志
@@ -119,6 +124,14 @@ struct RobotCycleOutput {
  * @brief 接入 Robot 的模型前馈函数
  */
 using ModelFeedforwardFn = std::function<tl::expected<JointVector, ModelFeedforwardErr>(ModelFeedforwardMode, const JointState&, const JointVector&, const JointVector&, double)>;
+
+struct InteractionModelState {
+    JointVector gravity;
+    JointVector coriolis;
+    std::vector<JointVector> mass_matrix;
+};
+
+using InteractionModelStateFn = std::function<tl::expected<InteractionModelState, ModelFeedforwardErr>(const JointState&, double)>;
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
 
@@ -148,7 +161,11 @@ public:
      * @param model_feedforward 可选模型前馈函数
      * @return 配置成功返回空 expected，失败返回 RobotFault
      */
-    tl::expected<void, RobotFault> configure(const RobotCfg& cfg, std::unique_ptr<MotorBus> motor_bus, ModelFeedforwardFn model_feedforward = {});
+    tl::expected<void, RobotFault> configure(
+        const RobotCfg& cfg,
+        std::unique_ptr<MotorBus> motor_bus,
+        ModelFeedforwardFn model_feedforward = {},
+        InteractionModelStateFn interaction_model_state = {});
     /**
      * @brief 连接、使能并用真实状态初始化控制器
      * @return 成功返回空 expected，失败返回 RobotFault
@@ -449,6 +466,7 @@ private:
     InteractionController interaction_controller_; ///< 可选导纳能力
     std::unique_ptr<MotorBus> motor_bus_;           ///< 执行器后端
     ModelFeedforwardFn model_feedforward_;          ///< 动力学前馈入口
+    InteractionModelStateFn interaction_model_state_; ///< momentum observer 动力学状态入口
 
     RobotState state_{ RobotState::UNCONFIGURED };  ///< Robot 生命周期状态
     JointState joint_state_;                        ///< 最近一次合法 JointState

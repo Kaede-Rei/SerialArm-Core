@@ -212,6 +212,7 @@ list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_dynamics)
 
 add_library(serial_arm_interaction
     src/interaction/torque_residual_observer.cpp
+    src/interaction/generalized_momentum_observer.cpp
     src/interaction/interaction_controller.cpp
     src/interaction/external_torque_observer.cpp
     src/interaction/joint_admittance_controller.cpp

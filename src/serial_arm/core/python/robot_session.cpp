@@ -189,7 +189,8 @@ void PyRobotSession::configure(
     actuator_info_ = std::move(actuator_info);
 
     auto robot = std::make_unique<Robot>();
-    const auto robot_result = robot->configure(robot_cfg, std::move(bus), make_model_feedforward());
+    const auto robot_result = robot->configure(
+        robot_cfg, std::move(bus), make_model_feedforward(), make_interaction_model_state());
     if(!robot_result) {
         dynamics_.reset();
         actuator_info_.clear();
@@ -660,6 +661,29 @@ ModelFeedforwardFn PyRobotSession::make_model_feedforward() {
         }
         return JointVector(cfg_.joint_names.size(), 0.0);
         };
+}
+
+InteractionModelStateFn PyRobotSession::make_interaction_model_state() {
+    return [this](const JointState& state, double) -> tl::expected<InteractionModelState, ModelFeedforwardErr> {
+        if(!dynamics_->is_updated() || dynamics_->get_state().pos != state.pos) {
+            return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
+        }
+        InteractionModelState snapshot;
+        snapshot.gravity = dynamics_->get_gravity_compensation();
+        snapshot.coriolis = dynamics_->get_coriolis();
+        const auto& mass = dynamics_->get_mass_matrix();
+        if(mass.rows() != static_cast<Eigen::Index>(state.pos.size()) ||
+            mass.cols() != static_cast<Eigen::Index>(state.pos.size())) {
+            return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
+        }
+        snapshot.mass_matrix.assign(state.pos.size(), JointVector(state.pos.size(), 0.0));
+        for(std::size_t i = 0; i < state.pos.size(); ++i) {
+            for(std::size_t j = 0; j < state.pos.size(); ++j) {
+                snapshot.mass_matrix[i][j] = mass(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j));
+            }
+        }
+        return snapshot;
+    };
 }
 
 } // namespace serial_arm

@@ -107,32 +107,47 @@ shutdown:
 
 # 06 capability
 capability:
-  # 导纳控制能力：tau_ext_hat = (mass * delta_q_ddot) + (damping * delta_q_dot) + (stiffness * delta_q)
+  # 导纳控制能力配置
   admittance:
-    enabled: true                                   # 导纳能力总开关；false 时整条导纳链完全旁路
-    filter_alpha: 0.95                              # 外力矩 residual 一阶低通系数；越小越平滑但响应更慢，越大越灵敏但噪声更多
-    # 各关节是否参与导纳
+    enabled: true                                   # 能力总开关；false 时整条导纳链完全旁路
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
-    # 虚拟质量 mass(M)：同样 tau_ext_hat 下决定 delta_q_ddot；越小起步越快/越敏感，越大越迟缓
-    mass: {joint1: 0.4, joint2: 0.4, joint3: 0.4, joint4: 0.4, joint5: 0.4, joint6: 0.4}
-    # 虚拟阻尼 damping(D)：抑制 delta_q_dot 与振荡；越大越稳但手感更“黏”，越小越灵活但更易摆动
-    damping: {joint1: 3.6, joint2: 3.6, joint3: 3.6, joint4: 3.6, joint5: 3.6, joint6: 3.6}
-    # 虚拟刚度 stiffness(K)：把 delta_q 拉回 0；稳态近似 delta_q=tau_ext_hat/stiffness，越小同样外力下退让越大，松手后由该项驱动回参考位置
-    stiffness: {joint1: 8.0, joint2: 8.0, joint3: 8.0, joint4: 8.0, joint5: 8.0, joint6: 8.0}
-    # residual 固定零偏 Nm；用于避免无接触时导纳被自身偏置驱动
-    torque_bias: {joint1: 0.034187, joint2: 0.047860, joint3: 0.043822, joint4: 0.017832, joint5: 0.012495, joint6: 0.007863}
-    # bias 后的小力矩忽略阈值 Nm；0 表示关闭，增大可抑制噪声但会牺牲小外力灵敏度
-    torque_threshold: {joint1: 0.054701, joint2: 0.079284, joint3: 0.067435, joint4: 0.023650, joint5: 0.016142, joint6: 0.011323}
-    # 速度相关摩擦 residual 补偿；先执行 6 -> 1 -> 3 自动标定，再将输出写回此处
-    friction_compensation:
-      enabled: false                                  # 未完成本机无外力双向回放标定前保持 false
-      velocity_transition: 0.03                       # rad/s；低于该速度时使用最近可靠运动方向处理静摩擦
-      # 以下 C/B 直接拟合“模型 residual 中的摩擦分量”，带方向符号，不是必须为正的摩擦绝对值
-      positive_coulomb: {joint1: -0.455411, joint2: -0.595958, joint3: -1.069792, joint4: -0.178879, joint5: -0.240333, joint6: -0.098355}
-      positive_viscous: {joint1: -0.410761, joint2: -1.334751, joint3: 0.093685, joint4: 0.207873, joint5: 0.104405, joint6: 0.022306}
-      negative_coulomb: {joint1: 0.412010, joint2: 0.264695, joint3: 1.462916, joint4: 0.232794, joint5: 0.093390, joint6: 0.181499}
-      negative_viscous: {joint1: 0.409533, joint2: 0.122555, joint3: -0.161903, joint4: -0.000483, joint5: 0.000436, joint6: -0.007653}
-    # 最大导纳位置修正 rad；决定最多主动退让多少角度
-    max_delta_q: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
-    # 最大导纳修正速度 rad/s；决定退让/回位的最快速度，过小会感觉“有力但不动”
-    max_delta_q_dot: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+    # 外力估计：正式使用 MOMENTUM；FULL_ID 仅保留诊断/兼容
+    observer:
+      mode: MOMENTUM
+      momentum_gain: {joint1: 25.0, joint2: 25.0, joint3: 25.0, joint4: 25.0, joint5: 25.0, joint6: 25.0}
+      filter_alpha: 0.95                            # residual 一阶低通系数，越大响应越快
+    # 本机导纳标定结果：静态 residual + 速度相关摩擦
+    calibration:
+      torque_bias: {joint1: 0.034187, joint2: 0.047860, joint3: 0.043822, joint4: 0.017832, joint5: 0.012495, joint6: 0.007863}
+      torque_threshold: {joint1: 0.054701, joint2: 0.079284, joint3: 0.067435, joint4: 0.023650, joint5: 0.016142, joint6: 0.011323}
+      friction:
+        enabled: false                              # 是否启用摩擦补偿；false 时整条摩擦链完全旁路
+        velocity_transition: 0.03                   # rad/s；高于该速度认为运动方向可靠
+        zero_velocity_adaptation_s: 0.60            # s；零速静摩擦 baseline 自适应时间
+        kinetic_feedforward_scale: 0.0              # [0,0.7]；滑动摩擦主动助力，默认关闭
+        positive_coulomb: {joint1: -0.455411, joint2: -0.595958, joint3: -1.069792, joint4: -0.178879, joint5: -0.240333, joint6: -0.098355}
+        positive_viscous: {joint1: -0.410761, joint2: -1.334751, joint3: 0.093685, joint4: 0.207873, joint5: 0.104405, joint6: 0.022306}
+        negative_coulomb: {joint1: 0.412010, joint2: 0.264695, joint3: 1.462916, joint4: 0.232794, joint5: 0.093390, joint6: 0.181499}
+        negative_viscous: {joint1: 0.409533, joint2: 0.122555, joint3: -0.161903, joint4: -0.000483, joint5: 0.000436, joint6: -0.007653}
+    # 用户手感目标；M/D/K 由 Core 运行时派生，不在 YAML 中直接配置
+    # 派生关系：
+    #   D = comfortable_torque / follow_speed
+    #   M = D * start_response_s / 3
+    #   K = M * (4.74 / return_time_s)^2
+    feel:
+      # Nm；舒适推力矩，表示用户可舒适持续施加的外力矩目标；该值越大，同样速度下派生阻尼 D 越大，推动会更“沉”
+      comfortable_torque: {joint1: 1.8, joint2: 1.8, joint3: 1.8, joint4: 1.8, joint5: 1.8, joint6: 1.8}
+      # rad/s；舒适推力矩对应的期望跟随速度；该值越大，同样推力矩下派生阻尼 D 越小，手感会更“轻”
+      follow_speed: {joint1: 0.5, joint2: 0.5, joint3: 0.5, joint4: 0.5, joint5: 0.5, joint6: 0.5}
+      # s；从开始受力到达到约 95% 跟随速度的目标响应时间；该值越小，派生质量 M 越小，启动响应越快
+      start_response_s: {joint1: 0.333333, joint2: 0.333333, joint3: 0.333333, joint4: 0.333333, joint5: 0.333333, joint6: 0.333333}
+      # rad/s；导纳修正速度超过该值后开始增加阻尼，形成 Q 弹阻力；必须小于 max_correction_speed
+      q_elastic_start_speed: {joint1: 0.70, joint2: 0.70, joint3: 0.70, joint4: 0.70, joint5: 0.70, joint6: 0.70}
+      # s；松手后回到中位约 95% 位移的目标时间；该值越小，派生刚度 K 越大，回中越快
+      return_time_s: {joint1: 1.059896, joint2: 1.059896, joint3: 1.059896, joint4: 1.059896, joint5: 1.059896, joint6: 1.059896}
+      # rad；最大导纳位置偏移，限制允许退让/修正的角度幅度
+      max_retreat: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+      # rad/s；最大导纳修正速度，限制导纳输出变化速度；必须大于 q_elastic_start_speed
+      max_correction_speed: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+      # 无量纲；Q 弹区最大阻尼倍率，>= 1；速度越接近上限，阻尼最高可增至 D 的该倍率
+      q_elastic_max_resistance_ratio: 4.0

@@ -352,6 +352,8 @@ calibrate_admittance_friction(
         !std::isfinite(cfg.min_fit_velocity) || cfg.min_fit_velocity <= 0.0 ||
         !std::isfinite(cfg.max_fit_acceleration) || cfg.max_fit_acceleration <= 0.0 ||
         !std::isfinite(cfg.min_speed_span) || cfg.min_speed_span < 0.0 ||
+        !std::isfinite(cfg.cross_validation_max_rms_ratio) || cfg.cross_validation_max_rms_ratio <= 0.0 ||
+        cfg.cross_validation_max_rms_ratio >= 1.0 ||
         cfg.min_samples_per_direction < 2) {
         return tl::make_unexpected(AdmittanceStaticCalibrationErr::INVALID_CFG);
     }
@@ -381,6 +383,10 @@ calibrate_admittance_friction(
     result.positive_speed_span.assign(cfg.joints_count, 0.0);
     result.negative_speed_span.assign(cfg.joints_count, 0.0);
     result.observable.assign(cfg.joints_count, 0);
+    result.cross_residual_rms_before.assign(cfg.joints_count, 0.0);
+    result.cross_residual_rms_after.assign(cfg.joints_count, 0.0);
+    result.cross_residual_p99_after.assign(cfg.joints_count, 0.0);
+    result.validation_pass.assign(cfg.joints_count, 0);
 
     for(std::size_t joint = 0; joint < cfg.joints_count; ++joint) {
         std::vector<double> pos_x;
@@ -457,6 +463,105 @@ calibrate_admittance_friction(
     }
 
     return result;
+}
+
+namespace {
+
+struct FrictionEvalStats {
+    double sum_before_sq{ 0.0 };
+    double sum_after_sq{ 0.0 };
+    std::size_t count{ 0 };
+    std::vector<double> abs_after;
+};
+
+void accumulate_friction_eval(
+    const std::vector<AdmittanceFrictionSample>& samples,
+    std::size_t joint,
+    const AdmittanceFrictionCalibrationCfg& cfg,
+    double c_pos,
+    double b_pos,
+    double c_neg,
+    double b_neg,
+    FrictionEvalStats& stats) {
+    for(const auto& sample : samples) {
+        const double velocity = sample.velocity[joint];
+        if(std::abs(velocity) < cfg.min_fit_velocity ||
+            std::abs(sample.acceleration[joint]) > cfg.max_fit_acceleration) {
+            continue;
+        }
+        const double abs_velocity = std::abs(velocity);
+        const double model = velocity > 0.0 ?
+            c_pos + b_pos * abs_velocity : c_neg + b_neg * abs_velocity;
+        const double before = sample.residual_after_bias[joint];
+        const double after = before - model;
+        stats.sum_before_sq += before * before;
+        stats.sum_after_sq += after * after;
+        stats.abs_after.push_back(std::abs(after));
+        ++stats.count;
+    }
+}
+
+} // namespace
+
+tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
+calibrate_admittance_friction_cross_validated(
+    const std::vector<AdmittanceFrictionSample>& reverse_samples,
+    const std::vector<AdmittanceFrictionSample>& forward_samples,
+    const AdmittanceFrictionCalibrationCfg& cfg) {
+    if(reverse_samples.empty() || forward_samples.empty()) {
+        return tl::make_unexpected(AdmittanceStaticCalibrationErr::EMPTY_SAMPLES);
+    }
+
+    std::vector<AdmittanceFrictionSample> all_samples;
+    all_samples.reserve(reverse_samples.size() + forward_samples.size());
+    all_samples.insert(all_samples.end(), reverse_samples.begin(), reverse_samples.end());
+    all_samples.insert(all_samples.end(), forward_samples.begin(), forward_samples.end());
+
+    auto final_fit = calibrate_admittance_friction(all_samples, cfg);
+    if(!final_fit) return tl::make_unexpected(final_fit.error());
+    const auto reverse_fit = calibrate_admittance_friction(reverse_samples, cfg);
+    if(!reverse_fit) return tl::make_unexpected(reverse_fit.error());
+    const auto forward_fit = calibrate_admittance_friction(forward_samples, cfg);
+    if(!forward_fit) return tl::make_unexpected(forward_fit.error());
+
+    for(std::size_t joint = 0; joint < cfg.joints_count; ++joint) {
+        if(final_fit->observable[joint] == 0 || reverse_fit->observable[joint] == 0 ||
+            forward_fit->observable[joint] == 0) {
+            continue;
+        }
+
+        FrictionEvalStats stats;
+        accumulate_friction_eval(
+            forward_samples,
+            joint,
+            cfg,
+            reverse_fit->positive_coulomb[joint],
+            reverse_fit->positive_viscous[joint],
+            reverse_fit->negative_coulomb[joint],
+            reverse_fit->negative_viscous[joint],
+            stats);
+        accumulate_friction_eval(
+            reverse_samples,
+            joint,
+            cfg,
+            forward_fit->positive_coulomb[joint],
+            forward_fit->positive_viscous[joint],
+            forward_fit->negative_coulomb[joint],
+            forward_fit->negative_viscous[joint],
+            stats);
+
+        if(stats.count == 0) continue;
+        final_fit->cross_residual_rms_before[joint] =
+            std::sqrt(stats.sum_before_sq / static_cast<double>(stats.count));
+        final_fit->cross_residual_rms_after[joint] =
+            std::sqrt(stats.sum_after_sq / static_cast<double>(stats.count));
+        final_fit->cross_residual_p99_after[joint] = percentile(stats.abs_after, 0.99);
+        final_fit->validation_pass[joint] =
+            final_fit->cross_residual_rms_after[joint] <=
+                cfg.cross_validation_max_rms_ratio * final_fit->cross_residual_rms_before[joint] ? 1 : 0;
+    }
+
+    return final_fit;
 }
 
 tl::expected<AdmittanceStaticValidationResult, AdmittanceStaticCalibrationErr>
