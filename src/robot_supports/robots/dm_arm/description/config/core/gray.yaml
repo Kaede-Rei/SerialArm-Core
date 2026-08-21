@@ -16,7 +16,7 @@ model:
   tool_frame: tool0                                                           # 动力学末端坐标系
   gravity: [0.0, 0.0, -9.81]                                                  # 世界坐标系重力加速度 m/s^2\
   # 各关节重力补偿比例；1.0 表示使用完整模型重力
-  gravity_scale: {joint1: 1.000000, joint2: 1.000000, joint3: 1.000000, joint4: 0.994403, joint5: 0.994043, joint6: 1.000000}
+  gravity_scale: {joint1: 1.000000, joint2: 0.999049, joint3: 0.997853, joint4: 0.998281, joint5: 0.928293, joint6: 1.000000}
 
 # 02 calibration
 calibration:
@@ -118,17 +118,17 @@ capability:
       filter_alpha: 0.95                            # residual 一阶低通系数，越大响应越快
     # 本机导纳标定结果：静态 residual + 速度相关摩擦
     calibration:
-      torque_bias: {joint1: 0.034187, joint2: 0.047860, joint3: 0.043822, joint4: 0.017832, joint5: 0.012495, joint6: 0.007863}
-      torque_threshold: {joint1: 0.054701, joint2: 0.079284, joint3: 0.067435, joint4: 0.023650, joint5: 0.016142, joint6: 0.011323}
+      torque_bias: {joint1: 0.034187, joint2: 0.068325, joint3: 0.037540, joint4: 0.021996, joint5: 0.015250, joint6: 0.007902}
+      torque_threshold: {joint1: 0.068375, joint2: 0.058956, joint3: 0.067435, joint4: 0.033621, joint5: 0.021880, joint6: 0.013700}
       friction:
-        enabled: false                              # 是否启用摩擦补偿；false 时整条摩擦链完全旁路
+        enabled: true                              # 是否启用摩擦补偿；false 时整条摩擦链完全旁路
         velocity_transition: 0.03                   # rad/s；高于该速度认为运动方向可靠
         zero_velocity_adaptation_s: 0.60            # s；零速静摩擦 baseline 自适应时间
         kinetic_feedforward_scale: 0.0              # [0,0.7]；滑动摩擦主动助力，默认关闭
-        positive_coulomb: {joint1: -0.455411, joint2: -0.595958, joint3: -1.069792, joint4: -0.178879, joint5: -0.240333, joint6: -0.098355}
-        positive_viscous: {joint1: -0.410761, joint2: -1.334751, joint3: 0.093685, joint4: 0.207873, joint5: 0.104405, joint6: 0.022306}
-        negative_coulomb: {joint1: 0.412010, joint2: 0.264695, joint3: 1.462916, joint4: 0.232794, joint5: 0.093390, joint6: 0.181499}
-        negative_viscous: {joint1: 0.409533, joint2: 0.122555, joint3: -0.161903, joint4: -0.000483, joint5: 0.000436, joint6: -0.007653}
+        positive_coulomb: {joint1: -0.506788, joint2: -0.605009, joint3: -1.269661, joint4: -0.113960, joint5: -0.170218, joint6: -0.131371}
+        positive_viscous: {joint1: -0.407554, joint2: -1.351812, joint3: 0.413608, joint4: -0.019285, joint5: 0.012476, joint6: 0.017835}
+        negative_coulomb: {joint1: 0.408699, joint2: 0.320128, joint3: 1.515112, joint4: 0.145545, joint5: 0.130780, joint6: 0.124491}
+        negative_viscous: {joint1: 0.606151, joint2: -0.193955, joint3: -0.744752, joint4: 0.011566, joint5: -0.042592, joint6: 0.022526}
     # 用户手感目标；M/D/K 由 Core 运行时派生，不在 YAML 中直接配置
     # 派生关系：
     #   D = comfortable_torque / follow_speed

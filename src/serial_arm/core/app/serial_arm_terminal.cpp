@@ -985,7 +985,7 @@ private:
             const auto selection = read_int("请选择: ");
             if(!selection || *selection == 0) return;
             switch(*selection) {
-                case 1: run_admittance_parameter_calibration(); break;
+                case 1: run_admittance_calibration_menu(); break;
                 case 2: run_admittance_feel_menu(); break;
                 case 3: run_admittance_diagnostics_menu(); break;
                 default: std::cout << "未知菜单编号\n"; break;
@@ -1661,13 +1661,12 @@ private:
     }
 
 
-    std::optional<FrictionCalibrationTrajectory> collect_friction_drag_trajectory(double duration_s) {
+    std::optional<FrictionCalibrationTrajectory> collect_friction_drag_trajectory_until_stop(
+        const std::atomic<bool>& stop_recording) {
         constexpr std::size_t kRecordStride = 4; // 200 Hz control -> about 50 Hz recorded path
         FrictionCalibrationTrajectory trajectory;
         trajectory.sample_dt = static_cast<double>(kRecordStride) / cfg_.runtime.ctrl_frequency_hz;
 
-        const auto deadline = Robot::Clock::now() +
-            std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(duration_s));
         std::uint64_t cursor = 0;
         std::size_t received_cycles = 0;
         {
@@ -1675,12 +1674,13 @@ private:
             cursor = cycle_counter_;
         }
 
-        while(Robot::Clock::now() < deadline) {
+        while(!stop_recording.load()) {
             std::unique_lock<std::mutex> lock(mutex_);
             const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
-                return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
+                return stop_recording.load() || cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
                 });
             if(robot_.get_state() != RobotState::ACTIVE) return std::nullopt;
+            if(stop_recording.load()) break;
             if(!updated || cycle_counter_ <= cursor || !last_output_) continue;
             cursor = cycle_counter_;
             if((received_cycles++ % kRecordStride) == 0) {
@@ -1931,9 +1931,8 @@ private:
         std::cout << "    "; print_joint_yaml_map("negative_viscous", cfg_.joint_names, friction.negative_viscous);
     }
 
-    bool run_admittance_friction_calibration() {
+    bool run_admittance_friction_calibration(bool print_yaml = true) {
         if(!ensure_admittance_tuning_active()) return false;
-        constexpr double kTeachDurationS = 10.0;
 
         JointImpedanceMode original_mode;
         AdmittanceCapabilityCfg original_admittance;
@@ -1958,7 +1957,9 @@ private:
             return false;
         }
 
-        std::cout << "[3/3] 摩擦参数标定：用 DRAG 在 10 s 内让各关节都有双向、快慢变化\n";
+        std::cout << "摩擦参数标定：进入 COMPLIANT_DRAG 后记录示教轨迹\n";
+        std::cout << "建议用约 20 s 完成示教，每个轴都要包含双向运动轨迹，并尽量包含快慢变化\n";
+        std::cout << "当轨迹覆盖充分后先完全松手，再按 Enter 结束示教\n";
         std::string line;
         if(!read_line("准备好按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") {
             std::cout << "已取消\n";
@@ -1966,12 +1967,35 @@ private:
             return false;
         }
 
-        auto trajectory = collect_friction_drag_trajectory(kTeachDurationS);
-        if(!trajectory) {
-            std::cout << "摩擦参数标定：FAIL（示教轨迹记录失败）\n";
+        std::atomic<bool> stop_recording{ false };
+        std::optional<FrictionCalibrationTrajectory> trajectory;
+        std::thread recorder([&]() {
+            trajectory = collect_friction_drag_trajectory_until_stop(stop_recording);
+            });
+        const bool input_ok = read_line(
+            "示教中；每个轴完成双向快慢运动并完全松手后按 Enter 结束示教，输入 q 取消: ",
+            line);
+        stop_recording.store(true);
+        cycle_cv_.notify_all();
+        recorder.join();
+
+        if(!input_ok || line == "q" || line == "Q") {
+            std::cout << "已取消\n";
             restore_runtime();
             return false;
         }
+        if(!trajectory) {
+            std::cout << "摩擦参数标定：FAIL（示教轨迹记录失败或轨迹过短）\n";
+            restore_runtime();
+            return false;
+        }
+
+        // 用户按 Enter 前已经确认完全松手，此时先冻结当前位置，再准备安全回放
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) {
+            restore_runtime();
+            return false;
+        }
+
         *trajectory = smooth_friction_trajectory(*trajectory);
         if(!friction_trajectory_inside_safe_replay_range(*trajectory)) {
             restore_runtime();
@@ -1988,9 +2012,9 @@ private:
 
         const double estimated_pass_s = trajectory->sample_dt *
             static_cast<double>(trajectory->positions.size() - 1) / playback_rate;
-        std::cout << "请完全松手；机器人将先倒放再正放，单程约 "
+        std::cout << "示教已结束并进入 RIGID_HOLD；机器人将先倒放再正放，单程约 "
             << std::fixed << std::setprecision(1) << estimated_pass_s << " s\n";
-        if(!read_line("确认无外力后按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") {
+        if(!read_line("确认机器人已完全松手且回放环境安全后按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") {
             std::cout << "已取消\n";
             restore_runtime();
             return false;
@@ -2085,10 +2109,14 @@ private:
         }
         restore_runtime();
         std::cout << "摩擦参数标定：PASS\n";
+        if(print_yaml) {
+            std::cout << "\n当前可写回 core.yaml 参数\n";
+            print_admittance_persistence_block();
+        }
         return true;
     }
 
-    bool run_admittance_static_calibration() {
+    bool run_admittance_static_calibration(bool print_yaml = true) {
         if(!ensure_admittance_tuning_active()) return false;
         constexpr int kPoseCount = 8;
         constexpr double kStaticHoldS = 0.30;
@@ -2128,7 +2156,7 @@ private:
             return false;
         }
 
-        std::cout << "[1/3] 静态残差标定：依次摆 8 个代表姿态；每次完全松手后按 Enter\n";
+        std::cout << "静态残差标定：依次摆 8 个代表姿态；每次完全松手后按 Enter\n";
         std::vector<AdmittanceStaticPoseSamples> poses;
         poses.reserve(kPoseCount);
         for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
@@ -2207,6 +2235,10 @@ private:
         last_static_calibration_result_ = result.value();
         restore_runtime();
         std::cout << "静态残差标定：PASS\n";
+        if(print_yaml) {
+            std::cout << "\n当前可写回 core.yaml 参数\n";
+            print_admittance_persistence_block();
+        }
         return true;
     }
 
@@ -2244,7 +2276,7 @@ private:
             return false;
         }
 
-        std::cout << "[2/3] 静态残差验证：再摆 5 个不同姿态；每次完全松手后按 Enter\n";
+        std::cout << "静态残差验证：再摆 5 个不同姿态；每次完全松手后按 Enter\n";
         std::vector<AdmittanceStaticPoseSamples> poses;
         poses.reserve(kPoseCount);
         for(int pose_index = 0; pose_index < kPoseCount; ++pose_index) {
@@ -2308,8 +2340,8 @@ private:
 
     void run_admittance_parameter_calibration() {
         if(!ensure_admittance_tuning_active()) return;
-        std::cout << "\n========== 导纳参数标定 ==========\n";
-        std::cout << "按提示完成静态姿态与一次 DRAG 示教；回放阶段不要触碰机械臂\n";
+        std::cout << "\n========== 导纳参数一次性标定 ==========\n";
+        std::cout << "按顺序完成静态残差标定、静态残差验证和摩擦参数标定\n";
         std::string line;
         if(!read_line("按 Enter 开始，输入 q 取消: ", line) || line == "q" || line == "Q") return;
 
@@ -2318,14 +2350,45 @@ private:
         last_friction_calibration_result_.reset();
         last_full_id_friction_calibration_result_.reset();
 
-        if(!run_admittance_static_calibration() ||
-            !run_admittance_static_validation() ||
-            !run_admittance_friction_calibration()) {
+        std::cout << "\n[1/3] 静态残差标定\n";
+        if(!run_admittance_static_calibration(false)) {
             std::cout << "导纳参数标定：FAIL；修正提示后重新执行即可\n";
             return;
         }
+        std::cout << "\n[2/3] 静态残差验证\n";
+        if(!run_admittance_static_validation()) {
+            std::cout << "导纳参数标定：FAIL；修正提示后重新执行即可\n";
+            return;
+        }
+        std::cout << "\n[3/3] 摩擦参数标定\n";
+        if(!run_admittance_friction_calibration(false)) {
+            std::cout << "导纳参数标定：FAIL；修正提示后重新执行即可\n";
+            return;
+        }
+
         std::cout << "导纳参数标定：PASS，参数已应用到当前进程\n";
-        std::cout << "写回 core.yaml 的参数可在‘状态与诊断 -> 标定与 Observer 详情’查看\n";
+        std::cout << "\n可直接复制到 core.yaml 的当前标定参数\n";
+        print_admittance_persistence_block();
+    }
+
+    void run_admittance_calibration_menu() {
+        while(true) {
+            std::cout << "\n------------ 导纳参数标定 ------------\n";
+            std::cout << " 1. 一次性标定\n";
+            std::cout << " 2. 静态残差标定\n";
+            std::cout << " 3. 静态残差验证\n";
+            std::cout << " 4. 摩擦参数标定\n";
+            std::cout << " 0. 返回\n";
+            const auto selection = read_int("请选择: ");
+            if(!selection || *selection == 0) return;
+            switch(*selection) {
+                case 1: run_admittance_parameter_calibration(); break;
+                case 2: run_admittance_static_calibration(); break;
+                case 3: run_admittance_static_validation(); break;
+                case 4: run_admittance_friction_calibration(); break;
+                default: std::cout << "未知菜单编号\n"; break;
+            }
+        }
     }
 
     bool select_admittance_joints(std::vector<std::size_t>& indices) const {
