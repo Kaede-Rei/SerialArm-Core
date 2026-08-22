@@ -60,7 +60,12 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | `serial_arm/core/joints_ctrller.hpp` | 五种阻抗模式控制器 |
 | `serial_arm/core/safety.hpp` | 状态与命令安全检查 |
 | `serial_arm/dynamics/dynamics.hpp` | Pinocchio Dynamics |
-| `serial_arm/interaction/interaction_controller.hpp` | External Interaction Observer 与关节空间导纳组合 |
+| `serial_arm/interaction/admittance_observer_mode.hpp` | `FULL_ID / MOMENTUM` Observer 模式 |
+| `serial_arm/interaction/torque_residual_observer.hpp` | FULL_ID residual 计算 |
+| `serial_arm/interaction/generalized_momentum_observer.hpp` | Generalized Momentum Observer |
+| `serial_arm/interaction/external_torque_observer.hpp` | bias / friction / deadband 外力矩估计 |
+| `serial_arm/interaction/joint_admittance_controller.hpp` | 固定 M / D / K 关节空间导纳 |
+| `serial_arm/interaction/interaction_controller.hpp` | Observer 与关节空间导纳组合 |
 | `serial_arm/interaction/admittance_calibration.hpp` | 导纳静态 residual / friction 标定工具 |
 | `serial_arm/hardware/hardware_capability.hpp` | 执行器物理能力 |
 | `serial_arm/hardware/motor_bus.hpp` | Hardware Backend contract |
@@ -799,7 +804,7 @@ Robot 目标控制频率
 
 #### `joint_acc_filter_alpha`
 
-Robot 内部关节加速度估计低通系数
+Robot 内部关节加速度估计低通系数，FULL_ID 外力估计显式使用 qdd，MOMENTUM 不显式使用 qdd
 
 #### `write_enabled`
 
@@ -855,7 +860,25 @@ struct ShutdownCfg {
 
 `Robot::deactivate()` 直接调用 Backend deactivate，不在 `Robot` 内部自动执行 park trajectory
 
-其中 `velocity_tolerance` 会被 `Robot::clear_fault()` 用作低速度恢复判据
+当前 C++ Terminal 和 ros2_control Adapter 使用两阶段停放
+
+```text
+前 75% timeout
+  COMPLIANT_TRACKING
+
+超过 75% 仍未严格就位
+  RIGID_TRACKING
+
+严格满足 position / velocity / settle 判据
+  RIGID_HOLD
+  deactivate
+```
+
+如果完整 `timeout_s` 用完仍未严格就位，会保持 `ACTIVE + RIGID_HOLD` 并取消失能
+
+`relaxed_tolerance_ratio` 保留在公共配置结构中用于兼容现有上层，当前 C++ Terminal 和 ros2_control 不使用宽松判据替代最终严格就位
+
+其中 `velocity_tolerance` 也会被 `Robot::clear_fault()` 用作低速度恢复判据
 
 #### 示例
 
@@ -872,8 +895,6 @@ shutdown.timeout_s = 15.0;
 ```
 
 这组参数主要由 Session、Terminal 或 Adapter 用于停放流程
-
----
 
 ### `DynamicsCfg`
 
@@ -895,17 +916,11 @@ struct DynamicsCfg {
 ```yaml
 model:
   urdf_path: ../../model/gray/urdf/dm_arm_no_gripper.urdf
-  joint_names:
-    - joint1
-    - joint2
-    - joint3
-    - joint4
-    - joint5
-    - joint6
+  joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]
   base_frame: base_link
   tool_frame: tool0
   gravity: [0.0, 0.0, -9.81]
-  gravity_scale: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+  gravity_scale: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
 ```
 
 #### 示例
@@ -972,13 +987,12 @@ std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 
 #### `CapabilityCfg` 与关节空间导纳
 
-`capability` 保存可选高级能力；当前公开配置包含关节空间导纳
+`capability` 保存可选高级能力；当前公开配置包含固定 M / D / K 关节空间导纳
 
 ```cpp
 struct AdmittanceObserverCfg {
     AdmittanceObserverMode mode;
     JointVector momentum_gain;
-    double filter_alpha;
 };
 
 struct AdmittanceCalibrationCfg {
@@ -987,15 +1001,12 @@ struct AdmittanceCalibrationCfg {
     FrictionResidualModelCfg friction;
 };
 
-struct AdmittanceFeelCfg {
-    JointVector comfortable_torque;
-    JointVector follow_speed;
-    JointVector start_response_s;
-    JointVector q_elastic_start_speed;
-    JointVector return_time_s;
-    JointVector max_retreat;
-    JointVector max_correction_speed;
-    double q_elastic_max_resistance_ratio;
+struct AdmittanceControllerCfg {
+    JointVector mass;
+    JointVector damping;
+    JointVector stiffness;
+    JointVector max_delta_q;
+    JointVector max_delta_q_dot;
 };
 
 struct AdmittanceCapabilityCfg {
@@ -1003,7 +1014,7 @@ struct AdmittanceCapabilityCfg {
     std::vector<std::uint8_t> joint_enabled;
     AdmittanceObserverCfg observer;
     AdmittanceCalibrationCfg calibration;
-    AdmittanceFeelCfg feel;
+    AdmittanceControllerCfg controller;
 };
 
 struct CapabilityCfg {
@@ -1011,14 +1022,22 @@ struct CapabilityCfg {
 };
 ```
 
-YAML 中 `capability` 可以整体省略，此时导纳默认关闭；一旦提供 `capability.admittance`，应提供完整的 `observer / calibration / feel` 配置和与 Joint 数量一致的逐关节参数
+YAML 中 `capability` 可以整体省略，此时导纳默认关闭
 
-公开 YAML 不直接持久化 M / D / K；Core 根据手感语义参数派生内部导纳参数
+一旦提供 `capability.admittance`，完整配置使用
 
 ```text
-D = comfortable_torque / follow_speed
-M = D * start_response_s / 3
-K = M * (4.74 / return_time_s)^2
+observer
+calibration
+controller
+```
+
+每个逐 Joint 参数必须与 `joint_names` 等长
+
+公开 YAML 直接持久化 M / D / K
+
+```text
+M * delta_q_ddot + D * delta_q_dot + K * delta_q = tau_ext_hat
 ```
 
 `observer.mode` 支持
@@ -1028,16 +1047,23 @@ FULL_ID
 MOMENTUM
 ```
 
-`FULL_ID` 使用实测关节力矩与完整逆动力学力矩的 residual；`MOMENTUM` 额外需要 gravity、coriolis 和 mass matrix
+FULL_ID 使用完整逆动力学 residual
 
-运行时如需得到底层控制器配置，可以使用
+MOMENTUM 使用 generalized momentum observer，不显式使用实测 qdd
 
-```cpp
-JointAdmittanceControllerCfg
-derive_admittance_controller_cfg(
-    const AdmittanceCapabilityCfg& cfg);
+当前公开配置要求
+
+```text
+momentum_gain > 0
+torque_threshold >= 0
+mass > 0
+damping > 0
+stiffness > 0
+max_delta_q > 0
+max_delta_q_dot > 0
 ```
 
+`friction.enabled=true` 时还要求完整双向 Coulomb + viscous 参数和 `velocity_transition > 0`
 ---
 
 ### `load_robot_cfg()`
@@ -2496,12 +2522,8 @@ struct RobotCycleOutput {
     JointVector friction_residual_hat;
     JointVector friction_compensated;
     JointVector tau_ext_hat;
-    JointVector contact_confidence;
     JointVector delta_q;
     JointVector delta_q_dot;
-    JointVector effective_damping;
-    JointVector effective_stiffness;
-    JointVector friction_feedforward;
     std::vector<std::uint8_t> torque_threshold_active;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
@@ -2523,6 +2545,8 @@ struct RobotCycleOutput {
 - Interaction / Admittance 诊断
 - Backend 对比
 
+`residual_filtered` 当前只作为兼容字段保留，与 `residual_raw` 相同
+
 #### 示例
 
 ```cpp
@@ -2535,14 +2559,10 @@ const serial_arm::RobotCycleOutput& out = cycle_result.value();
 
 std::cout << "dt=" << out.dt << "\n";
 std::cout << "q0=" << out.joint_state.pos[0] << "\n";
-std::cout << "actuator0=" << out.actuator_state.pos[0] << "\n";
-std::cout << "joint_acc0=" << out.joint_acc[0] << "\n";
-std::cout << "ref_acc0=" << out.joint_ref_acc[0] << "\n";
 std::cout << "feedforward0=" << out.model_feedforward[0] << "\n";
-std::cout << "safe kp0=" << out.joint_cmd.kp[0] << "\n";
-std::cout << "sent actuator kp0=" << out.actuator_cmd.kp[0] << "\n";
 
 if(out.admittance_active) {
+    std::cout << "residual0=" << out.residual_raw[0] << "\n";
     std::cout << "tau_ext0=" << out.tau_ext_hat[0] << "\n";
     std::cout << "delta_q0=" << out.delta_q[0] << "\n";
     std::cout << "delta_q_dot0=" << out.delta_q_dot[0] << "\n";
@@ -2551,21 +2571,20 @@ if(out.admittance_active) {
 
 导纳未参与本周期时 `admittance_active=false`，导纳专用 telemetry 不应被当作有效控制结果读取
 
-如果要定位导纳链问题，建议按以下顺序同时记录
+如果要定位导纳链问题，建议按以下顺序记录
 
 ```text
 residual_raw
-residual_filtered
 bias_compensated
+friction_residual_hat
 friction_compensated
 tau_ext_hat
-contact_confidence
-effective_damping / effective_stiffness
 delta_q / delta_q_dot
 ```
 
-如果要定位一帧控制为何异常，应优先同时记录 `joint_state`、`joint_cmd`、`actuator_cmd` 和 `model_feedforward`
+如果当前正式模式为 MOMENTUM，可以同时记录 `full_id_residual_raw` 做 A/B 对照
 
+如果要定位一帧控制为何异常，应优先同时记录 `joint_state`、`joint_cmd`、`actuator_cmd` 和 `model_feedforward`
 ---
 
 ### `Robot::deactivate()`
@@ -3174,8 +3193,10 @@ set_gravity_scale(
 每个值有效范围
 
 ```text
-[0, 1]
+[0, 2]
 ```
+
+`1.0` 表示 URDF 原始重力模型比例，`>1.0` 表示使用比 URDF 模型更高的逐 Joint 重力补偿比例
 
 示例
 
@@ -3202,7 +3223,7 @@ GRAVITY_SCALE_OUT_OF_RANGE
 
 参数
 
-- `gravity_scale` 长度必须等于 Joint 数量，每项范围为 [0, 1]
+- `gravity_scale` 长度必须等于 Joint 数量，每项范围为 [0, 2]
 
 返回值
 
@@ -4345,17 +4366,276 @@ if(ctrller.get_impedance_mode() ==
 
 ## 7 Admittance
 
-本章集中列出导纳运行时 API，静态配置结构位于第 3 章 `RobotCfg`，模型回调位于第 4 章 `Robot::configure()`，完整 telemetry 位于第 4 章 `RobotCycleOutput`
+本章集中列出固定 M / D / K 关节空间导纳相关公共接口
+
+静态配置结构位于第 3 章 `RobotCfg`，模型回调位于第 4 章 `Robot::configure()`，完整 telemetry 位于第 4 章 `RobotCycleOutput`
 
 | 目标 | API |
 | --- | --- |
-| 静态配置 | `RobotCfg::capability.admittance` / `AdmittanceCapabilityCfg` |
-| 内部参数派生 | `derive_admittance_controller_cfg()` |
+| 静态配置 | `AdmittanceCapabilityCfg` |
+| Observer 模式 | `AdmittanceObserverMode` |
+| 固定 M / D / K | `AdmittanceControllerCfg` / `JointAdmittanceControllerCfg` |
+| 二阶指标 | `compute_admittance_damping_metrics()` |
 | Runtime 更新 | `Robot::set_admittance_cfg()` |
 | Runtime 读取 | `Robot::get_admittance_cfg()` |
 | 临时旁路 | `Robot::set_admittance_suspended()` |
 | MOMENTUM 模型状态 | `InteractionModelStateFn` |
 | 运行诊断 | `RobotCycleOutput` |
+
+### `AdmittanceObserverMode`
+
+定义
+
+```cpp
+enum class AdmittanceObserverMode {
+    FULL_ID,
+    MOMENTUM,
+};
+```
+
+用途
+
+选择正式外力 residual 估计方式
+
+```text
+FULL_ID
+  使用完整逆动力学 model - measured residual
+  显式依赖实测 qdd
+
+MOMENTUM
+  使用 generalized momentum observer
+  不显式使用实测 qdd
+```
+
+---
+
+### `AdmittanceObserverCfg`
+
+定义
+
+```cpp
+struct AdmittanceObserverCfg {
+    AdmittanceObserverMode mode;
+    JointVector momentum_gain;
+};
+```
+
+`momentum_gain` 单位 rad/s，只参与 MOMENTUM Observer
+
+公开 RobotCfg 要求每项大于 0 且长度与 Joint 数量一致
+
+---
+
+### `AdmittanceCalibrationCfg`
+
+定义
+
+```cpp
+struct AdmittanceCalibrationCfg {
+    JointVector torque_bias;
+    JointVector torque_threshold;
+    FrictionResidualModelCfg friction;
+};
+```
+
+用途
+
+保存与当前真实机械臂绑定的外力估计标定结果
+
+```text
+torque_bias
+  无外力 residual 固定零偏 Nm
+
+torque_threshold
+  bias / friction 补偿后的连续 deadband Nm
+
+friction
+  双向 Coulomb + viscous signed residual 模型
+```
+
+这些参数不属于通用手感参数，不应跨机械臂直接复制
+
+---
+
+### `AdmittanceControllerCfg`
+
+定义
+
+```cpp
+struct AdmittanceControllerCfg {
+    JointVector mass;
+    JointVector damping;
+    JointVector stiffness;
+    JointVector max_delta_q;
+    JointVector max_delta_q_dot;
+};
+```
+
+对应每 Joint 固定导纳方程
+
+```text
+M * delta_q_ddot + D * delta_q_dot + K * delta_q = tau_ext_hat
+```
+
+公开 RobotCfg 中五组数组都必须与 `joint_names` 等长且每项大于 0
+
+---
+
+### `AdmittanceCapabilityCfg`
+
+定义
+
+```cpp
+struct AdmittanceCapabilityCfg {
+    bool enabled;
+    std::vector<std::uint8_t> joint_enabled;
+    AdmittanceObserverCfg observer;
+    AdmittanceCalibrationCfg calibration;
+    AdmittanceControllerCfg controller;
+};
+```
+
+用途
+
+保存 Robot 实际使用的完整关节空间导纳配置
+
+`joint_enabled[i]=0` 时对应 Joint 的 `delta_q / delta_q_dot` 会保持为 0
+
+---
+
+### `JointAdmittanceControllerCfg`
+
+定义
+
+```cpp
+struct JointAdmittanceControllerCfg {
+    std::size_t joints_count;
+    std::vector<std::uint8_t> enabled;
+    JointVector mass;
+    JointVector damping;
+    JointVector stiffness;
+    JointVector max_delta_q;
+    JointVector max_delta_q_dot;
+};
+```
+
+用途
+
+直接配置底层固定参数关节空间导纳积分器
+
+这个类型是 Interaction 内部使用的控制器级配置
+
+普通 Robot 应用优先使用 `AdmittanceCapabilityCfg::controller`
+
+---
+
+### `JointAdmittanceInput`
+
+定义
+
+```cpp
+struct JointAdmittanceInput {
+    JointVector tau_ext_hat;
+    double dt;
+    JointVector min_delta_q;
+    JointVector max_delta_q;
+    JointVector min_delta_q_dot;
+    JointVector max_delta_q_dot;
+};
+```
+
+用途
+
+输入当前外力矩估计、时间步和由 Safety 剩余空间导出的动态位置 / 速度边界
+
+如果四组动态边界均为空，只使用 Controller 自身 `max_delta_q / max_delta_q_dot`
+
+---
+
+### `JointAdmittanceOutput`
+
+定义
+
+```cpp
+struct JointAdmittanceOutput {
+    JointVector delta_q;
+    JointVector delta_q_dot;
+    std::vector<std::uint8_t> delta_q_limited;
+    std::vector<std::uint8_t> delta_q_dot_limited;
+};
+```
+
+用途
+
+返回外层位置 / 速度修正和对应限幅标志
+
+---
+
+### `AdmittanceDampingMetrics`
+
+定义
+
+```cpp
+struct AdmittanceDampingMetrics {
+    double critical_damping;
+    double damping_ratio;
+    double natural_frequency;
+    double settling_time_95_critical;
+};
+```
+
+当前计算关系
+
+```text
+Dcrit = 2*sqrt(M*K)
+ζ = D / Dcrit
+ωn = sqrt(K/M)
+settling_time_95_critical = 4.74 / ωn
+```
+
+`settling_time_95_critical` 是基于临界阻尼二阶模型的参考时间指标，不代表任意 `ζ` 下的精确实际 settling time
+
+---
+
+### `compute_admittance_damping_metrics()`
+
+签名
+
+```cpp
+tl::expected<
+    AdmittanceDampingMetrics,
+    JointAdmittanceControllerErr
+>
+compute_admittance_damping_metrics(
+    double mass,
+    double damping,
+    double stiffness);
+```
+
+要求
+
+```text
+mass > 0
+damping >= 0
+stiffness > 0
+```
+
+#### 示例
+
+```cpp
+const auto metrics = serial_arm::compute_admittance_damping_metrics(
+    0.4,
+    2.4,
+    8.0);
+
+if(metrics) {
+    std::cout << "zeta=" << metrics->damping_ratio << "\n";
+    std::cout << "wn=" << metrics->natural_frequency << "\n";
+    std::cout << "dcrit=" << metrics->critical_damping << "\n";
+}
+```
+
+---
 
 ### `Robot::set_admittance_cfg()`
 
@@ -6472,7 +6752,7 @@ session.set_gravity_scale(
 
 参数
 
-- `gravity_scale` 为一维 float64 数组，每项范围 [0, 1]
+- `gravity_scale` 为一维 float64 数组，每项范围 [0, 2]
 
 返回值
 
@@ -9041,7 +9321,7 @@ if(!cycle_result) {
 | `FRAME_NOT_FOUND` | 请求 frame 不存在 |
 | `INVALID_INPUT_SIZE` | 输入向量长度错误 |
 | `NON_FINITE_INPUT` | 输入含 NaN 或 Inf |
-| `GRAVITY_SCALE_OUT_OF_RANGE` | gravity scale 超出 `[0, 1]` |
+| `GRAVITY_SCALE_OUT_OF_RANGE` | gravity scale 超出 `[0, 2]` |
 | `COMPUTE_FAILED` | 底层动力学计算失败 |
 
 ### `MotorBusErr`

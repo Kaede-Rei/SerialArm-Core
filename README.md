@@ -31,7 +31,7 @@ SerialArm-Core 是面向自研串联机械臂的通用控制能力库，将机�
 | Safety | 位置、速度、加速度、状态超时、命令超时与故障恢复 | `safety_policy` |
 | Dynamics | FK、Jacobian、Gravity、Coriolis、Mass Matrix、Inverse Dynamics | `Dynamics` |
 | Impedance | 五种关节阻抗工作模式 | `JointImpedanceMode` |
-| Admittance | 无力传感器外力估计与关节空间连续可变导纳 | `capability.admittance` |
+| Admittance | 无力传感器外力估计与固定 M / D / K 关节空间导纳 | `capability.admittance` |
 | Hardware Abstraction | 统一 `position / velocity / torque / kp / kd` 执行器语义 | `MotorBus` |
 | Shared Transport | CAN channel fan-out 与 Serial transaction arbitration | `CanChannel` / `SerialBusClient` |
 | Python | Python 控制会话与 Dynamics 调用 | `RobotSession` / `Dynamics` |
@@ -285,7 +285,7 @@ serial_arm_terminal \
 | `模式与补偿` | 五种阻抗模式、模型前馈模式和 gravity scale |
 | `运动与命令` | 绝对位置移动、相对移动、取消运动并保持当前位置 |
 | `动力学与配置` | 动力学向量、Mass Matrix、Jacobian、Frame 状态和配置摘要 |
-| `调参与测试` | 导纳参数标定、手感设置、实时状态与 Observer 诊断 |
+| `调参与测试` | 导纳一次性 / 分步标定、M / D / K 调参、实时状态与 Observer 诊断 |
 | `安全退出` | 按 shutdown 配置回到 park pose 后失能退出 |
 
 第一次连接机械臂时优先使用 `状态查看`、`动力学与配置` 和离线配置检查，确认方向、零位、限位和执行器型号后再允许真机写入

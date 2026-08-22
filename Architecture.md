@@ -428,15 +428,46 @@ observer
   FULL_ID / MOMENTUM
 
 calibration
-  torque bias / threshold / friction residual
+  torque bias / threshold / bidirectional friction residual
 
-feel
-  comfortable torque / follow speed / response / return / limits
+controller
+  fixed M / D / K / delta limits
 ```
 
-持久化配置使用 `observer / calibration / feel` 语义，内部导纳 M / D / K 由 Core 派生；导纳只修正 nominal command 的位置和速度，并在 Safety 剩余空间内限制修正幅度；最终命令仍由 Safety 统一裁决
+运行数据流为
 
-`COMPLIANT_DRAG` 属于阻抗控制器的直接拖拽模式，使用当前实测位置持续重建 reference，并显式旁路导纳修正；两者属于不同交互机制，不应混用同一套参数语义
+```text
+Measured Torque + Dynamics
+            ↓
+External Interaction Observer
+            ↓
+tau_ext_hat
+            ↓
+Fixed Joint-space Admittance
+            ↓
+delta_q / delta_q_dot
+            ↓
+Nominal JointCtrlCmd.pos / vel Correction
+            ↓
+Safety
+```
+
+持久化配置直接使用 `observer / calibration / controller` 三组语义，不再通过额外手感语义参数派生 M / D / K
+
+Admittance 只生成 nominal reference 的位置与速度修正：
+
+```text
+q_ref  = q_nominal  + delta_q
+dq_ref = dq_nominal + delta_q_dot
+```
+
+当前实现先由 `JointCtrller` 生成 nominal `JointCtrlCmd`，Interaction 只叠加 `pos / vel` 修正，不改变当前阻抗模式已经确定的 `kp / kd / tor` 语义
+
+这种设计保证 RIGID 与 COMPLIANT 可以共享同一个 Admittance 修正层，而不需要维护两套柔顺控制架构
+
+导纳位置和速度修正必须限制在 Safety 剩余空间内，最终命令仍由 Safety 统一裁决
+
+`COMPLIANT_DRAG` 属于阻抗控制器的直接拖拽模式，使用当前实测位置持续重建 reference，并显式旁路导纳修正；它同时作为当前摩擦标定的示教模式，两者不混用同一套运行时修正
 
 ### 7.5. Safety
 

@@ -500,6 +500,8 @@ profiles:
 
 Native C++、Python、Terminal 和 ROS 2 都可以使用这个 Profile 名称寻找对应资源
 
+`dm_arm_gray` 当前 Core YAML 已包含本机 gravity / residual / friction 标定和关节空间导纳调参结果，这些数值只属于对应 Gray 机械臂，不应直接复制到其他实例
+
 ### 2.8 第一次检查硬件连接
 
 DM-Arm Hardware Config 默认使用 `/dev/ttyACM0`
@@ -647,13 +649,7 @@ model:
   base_frame: base_link
   tool_frame: tool0
   gravity: [0.0, 0.0, -9.81]
-  gravity_scale:
-    joint1: 1.0
-    joint2: 1.0
-    joint3: 1.0
-    joint4: 1.0
-    joint5: 1.0
-    joint6: 1.0
+  gravity_scale: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
 ```
 
 需要确认
@@ -665,6 +661,7 @@ model:
 - Joint axis 和 origin 正确
 - position / velocity / effort limit 合理
 - Dynamics 所需 inertial 参数合法
+- `gravity_scale` 每项范围为 `[0,2]`，`1.0` 表示 URDF 原模型比例
 
 如果 inertial 仍是 placeholder，可以先检查 FK 和 Jacobian 结构，但不能把 Gravity、Mass Matrix 和 Inverse Dynamics 当作真实动力学结果
 
@@ -841,9 +838,7 @@ safety_policy:
 ```yaml
 shutdown:
   park_before_disable: true
-  park_pos:
-    joint1: 0.0
-    joint2: 0.0
+  park_pos: {joint1: 0.0, joint2: 0.0}
   speed_scale: 0.10
   position_tolerance: 0.05
   velocity_tolerance: 0.05
@@ -854,11 +849,37 @@ shutdown:
 
 `park_pos` 必须覆盖全部受控 Joint
 
+当前 C++ Terminal 和 ros2_control Adapter 的正常停放流程为
+
+```text
+暂停 Admittance
+  ↓
+COMPLIANT_TRACKING
+  ↓
+前 75% timeout 内优先低刚度回到 park_pos
+  ↓
+若仍未满足严格停放判据
+  ↓
+RIGID_TRACKING
+  ↓
+完成最终就位
+  ↓
+RIGID_HOLD
+  ↓
+deactivate
+```
+
+最终失能必须满足 `position_tolerance / velocity_tolerance / settle_time_s` 的严格判据
+
+如果完整 `timeout_s` 用完仍未严格就位，流程会保持 `ACTIVE + RIGID_HOLD` 并取消失能
+
+`relaxed_tolerance_ratio` 继续保留在配置结构中用于兼容现有上层，但当前 C++ Terminal 和 ros2_control 停放流程不会用宽松判据替代最终严格就位
+
 不要默认全零位一定是安全停放姿态
 
 ### 3.10 capability.admittance
 
-Admittance 是可选能力
+Admittance 是建立在现有关节阻抗控制器外层的可选关节空间柔顺能力
 
 如果不需要使用，可以省略该能力或设置
 
@@ -874,64 +895,70 @@ capability:
 capability:
   admittance:
     enabled: true
-
-    joint_enabled:
-      joint1: true
-      joint2: true
+    joint_enabled: {joint1: true, joint2: true}
 
     observer:
       mode: MOMENTUM
-      momentum_gain:
-        joint1: 25.0
-        joint2: 25.0
-      filter_alpha: 0.95
+      momentum_gain: {joint1: 25.0, joint2: 25.0}
 
     calibration:
-      torque_bias:
-        joint1: 0.0
-        joint2: 0.0
-      torque_threshold:
-        joint1: 0.1
-        joint2: 0.1
-
+      torque_bias: {joint1: 0.0, joint2: 0.0}
+      torque_threshold: {joint1: 0.1, joint2: 0.1}
       friction:
         enabled: false
         velocity_transition: 0.03
-        zero_velocity_adaptation_s: 0.60
-        kinetic_feedforward_scale: 0.0
         positive_coulomb: {joint1: 0.0, joint2: 0.0}
         positive_viscous: {joint1: 0.0, joint2: 0.0}
         negative_coulomb: {joint1: 0.0, joint2: 0.0}
         negative_viscous: {joint1: 0.0, joint2: 0.0}
 
-    feel:
-      comfortable_torque: {joint1: 1.0, joint2: 1.0}
-      follow_speed: {joint1: 0.4, joint2: 0.4}
-      start_response_s: {joint1: 0.3, joint2: 0.3}
-      q_elastic_start_speed: {joint1: 0.6, joint2: 0.6}
-      return_time_s: {joint1: 1.0, joint2: 1.0}
-      max_retreat: {joint1: 0.5, joint2: 0.5}
-      max_correction_speed: {joint1: 0.8, joint2: 0.8}
-      q_elastic_max_resistance_ratio: 4.0
+    controller:
+      mass: {joint1: 1.0, joint2: 1.0}
+      damping: {joint1: 6.0, joint2: 6.0}
+      stiffness: {joint1: 20.0, joint2: 20.0}
+      max_delta_q: {joint1: 0.5, joint2: 0.5}
+      max_delta_q_dot: {joint1: 1.0, joint2: 1.0}
 ```
 
-`observer` 负责外力 residual 的估计方式
-
-`calibration` 负责本机 bias、threshold 和可选 friction residual 参数
-
-`feel` 负责用户可理解的推力、跟随速度、响应时间、回中时间和修正边界
-
-公开 YAML 不直接填写 M / D / K
-
-Core 根据手感参数派生
+配置分为三组
 
 ```text
-D = comfortable_torque / follow_speed
-M = D * start_response_s / 3
-K = M * (4.74 / return_time_s)^2
+observer
+  FULL_ID / MOMENTUM 外力 residual 估计方式
+
+calibration
+  本机 gravity / bias / threshold / friction 标定结果
+
+controller
+  固定 M / D / K 与导纳位置、速度修正边界
 ```
 
-详细工作原理和调试方法见第 7 节
+公开 YAML 直接持久化每个 Joint 的 M / D / K
+
+核心导纳方程为
+
+```text
+M * Δq_ddot + D * Δq_dot + K * Δq = tau_ext_hat
+```
+
+导纳只生成 `delta_q / delta_q_dot`
+
+最终参考仍然由原有关节控制器执行
+
+```text
+q_ref  = q_nominal  + delta_q
+dq_ref = dq_nominal + delta_q_dot
+```
+
+Gray 六轴配置继续使用单行 named map，例如
+
+```yaml
+momentum_gain: {joint1: 25.0, joint2: 25.0, joint3: 25.0, joint4: 25.0, joint5: 25.0, joint6: 25.0}
+```
+
+当前 `dm_arm_gray` 的 gravity、bias、threshold、双向摩擦参数和 M / D / K 属于本机标定与调参结果，不应直接复制到另一台机械臂
+
+详细工作原理、公式和调试方法见第 7 节
 
 ### 3.11 Hardware YAML
 
@@ -1351,7 +1378,7 @@ model:
     joint2: 1.0
 ```
 
-`gravity_scale` 用于逐 Joint 缩放 Gravity Compensation
+`gravity_scale` 用于逐 Joint 缩放 Gravity Compensation，有效范围为 `[0,2]`，其中 `1.0` 表示 URDF 原模型比例
 
 运行时可以通过 Dynamics 修改
 
@@ -1589,95 +1616,132 @@ COMPLIANT_TRACKING
 
 ### 7.1 功能定位
 
-当前 Admittance 是关节空间导纳能力
+当前 Admittance 是固定 M / D / K 的关节空间导纳能力
 
-它根据无力传感器的外力矩估计生成 `delta_q` 和 `delta_q_dot`，再修正 nominal joint command
+它不会替换现有 Joint Impedance Controller，而是根据无力传感器外力矩估计生成 `delta_q / delta_q_dot`，再修正 nominal joint reference
 
 控制链如下
 
 ```text
 Measured Joint Torque
         ↓
-Dynamics Residual
+FULL_ID / MOMENTUM Observer
         ↓
-Observer
+Observer Residual
         ↓
 Bias Compensation
         ↓
-Friction Compensation
+Dynamic Friction Residual Compensation
         ↓
-Threshold
+Continuous Deadband
         ↓
-External Torque Estimate
+tau_ext_hat
         ↓
-Contact Confidence
-        ↓
-Variable Admittance
+Fixed M / D / K Admittance
         ↓
 delta_q / delta_q_dot
         ↓
-Nominal Joint Command
+Nominal JointCtrlCmd.pos / vel + delta
+        ↓
+Preserve current kp / kd / torque semantics
         ↓
 Safety
         ↓
 MotorBus
 ```
 
-### 7.2 前置条件
+这样 RIGID 和 COMPLIANT 仍然使用同一套阻抗模式语义，Admittance 只提供统一的外层关节退让
 
-启用 Admittance 前应确认
+### 7.2 动力学与外力 residual 约定
+
+刚体关节动力学可以写成
 
 ```text
-Joint torque feedback 语义可信
-Joint direction 正确
-Torque direction 正确
-URDF Dynamics 可用
-Gravity 方向正确
-Safety limit 正确
-Observer 所需模型回调可用
+M(q) * qdd + C(q,dq) * dq + g(q) + tau_f = tau_motor + tau_ext
 ```
 
-如果基础动力学和力矩语义错误，不要直接通过 threshold 或 feel 参数补偿
+当前 Core 的 FULL_ID residual 符号约定为
+
+```text
+tau_residual = tau_model - tau_measured
+```
+
+经过本机 bias 和 friction residual 校正后得到
+
+```text
+tau_ext_hat = deadband(tau_residual - torque_bias - tau_friction_hat)
+```
+
+当前实现中正 `tau_ext_hat` 会驱动正 `delta_q`
+
+Pinocchio 的刚体 Dynamics 提供 Mass Matrix、Coriolis、Gravity 和 Inverse Dynamics
+
+真实减速器 / 关节摩擦不由 Pinocchio 自动代表当前实机摩擦，因此 friction residual 由 SerialArm 独立标定
 
 ### 7.3 FULL_ID Observer
 
-FULL_ID 使用测量力矩和完整逆动力学模型力矩形成 residual
-
-概念上可以写成
+FULL_ID 使用实测关节状态和完整逆动力学模型力矩形成 residual
 
 ```text
-tau_ext ≈ tau_measured - tau_model
+actual q / dq / qdd
+        ↓
+Inverse Dynamics
+        ↓
+tau_model
+        ↓
+tau_model - tau_measured
+        ↓
+raw residual
 ```
 
-模型误差、摩擦和 bias 会进入 residual，因此需要 calibration 和 threshold
+FULL_ID 的优点是物理意义直接
 
-FULL_ID 依赖 `ModelFeedforwardFn` 能够计算 `FULL_INVERSE_DYNAMICS`
+主要限制是显式依赖 `qdd`
+
+`runtime.joint_acc_filter_alpha` 用于 Robot 内部的实测关节加速度低通，FULL_ID 对这个参数更敏感
+
+FULL_ID 需要 `ModelFeedforwardFn` 能够提供完整逆动力学模型力矩
 
 ### 7.4 MOMENTUM Observer
 
-MOMENTUM Observer 使用 generalized momentum 形式估计外力
-
-它额外需要
+MOMENTUM 使用 generalized momentum
 
 ```text
+p = M(q) * dq
+```
+
+并利用
+
+```text
+p_dot = tau_motor + tau_ext - g + C(q,dq)^T * dq
+```
+
+构造积分 observer
+
+它需要
+
+```text
+Measured Torque
+Joint Velocity
 Gravity
 Coriolis
 Mass Matrix
-Joint Velocity
-Measured Torque
 ```
 
-因此 Native C++ 使用 MOMENTUM 时必须给 `Robot::configure()` 提供 `InteractionModelStateFn`
+主要优点是不显式对实测速度再次差分得到 `qdd`
+
+`momentum_gain` 是一阶 observer 收敛增益，单位 rad/s
+
+增益越大响应越快，同时对模型误差和测量波动更敏感
+
+Native C++ 和 C++ Terminal 使用 MOMENTUM 时必须给 `Robot::configure()` 提供 `InteractionModelStateFn`
 
 ### 7.5 observer 配置
 
 ```yaml
 observer:
   mode: MOMENTUM
-  momentum_gain:
-    joint1: 25.0
-    joint2: 25.0
-  filter_alpha: 0.95
+  momentum_gain: {joint1: 25.0, joint2: 25.0}
 ```
 
 `mode` 可使用
@@ -1687,26 +1751,37 @@ FULL_ID
 MOMENTUM
 ```
 
-`momentum_gain` 只对 MOMENTUM Observer 生效
+`momentum_gain` 只参与 MOMENTUM Observer，但当前完整 Admittance YAML 仍要求该 JointVector 与 `joint_names` 等长
 
-`filter_alpha` 控制 residual 一阶滤波响应
+当前 Admittance 不再提供额外 residual `filter_alpha`
+
+MOMENTUM 使用自身 observer 动态
+
+FULL_ID 的主要动态噪声入口由 `runtime.joint_acc_filter_alpha` 处理
 
 ### 7.6 calibration
 
 ```yaml
 calibration:
-  torque_bias:
-    joint1: 0.0
-    joint2: 0.0
-
-  torque_threshold:
-    joint1: 0.1
-    joint2: 0.1
+  torque_bias: {joint1: 0.0, joint2: 0.0}
+  torque_threshold: {joint1: 0.1, joint2: 0.1}
 ```
 
-`torque_bias` 用于补偿无接触 residual baseline
+`torque_bias` 是无外力时 observer residual 的固定零偏
 
-`torque_threshold` 用于抑制无接触噪声和小 residual
+`torque_threshold` 是 bias 和 friction 补偿后的连续 deadband 宽度
+
+当前 deadband 逻辑为
+
+```text
+|residual| <= threshold
+  tau_ext_hat = 0
+
+|residual| > threshold
+  tau_ext_hat = sign(residual) * (|residual| - threshold)
+```
+
+因此 threshold 边界没有输出跳变
 
 这两组参数必须针对当前机械臂本机标定
 
@@ -1714,101 +1789,243 @@ calibration:
 
 ### 7.7 friction
 
-可选摩擦 residual 模型
+当前摩擦项只用于外力 residual 分离，不向电机额外发送主动摩擦助力
+
+配置
 
 ```yaml
 friction:
-  enabled: false
+  enabled: true
   velocity_transition: 0.03
-  zero_velocity_adaptation_s: 0.60
-  kinetic_feedforward_scale: 0.0
-  positive_coulomb: {...}
-  positive_viscous: {...}
-  negative_coulomb: {...}
-  negative_viscous: {...}
+  positive_coulomb: {joint1: 0.0, joint2: 0.0}
+  positive_viscous: {joint1: 0.0, joint2: 0.0}
+  negative_coulomb: {joint1: 0.0, joint2: 0.0}
+  negative_viscous: {joint1: 0.0, joint2: 0.0}
 ```
 
-`enabled=false` 时整条摩擦补偿链旁路
+正负方向分别使用 signed Coulomb + viscous residual
 
-`kinetic_feedforward_scale` 用于滑动摩擦主动助力，默认可以保持 `0`
+```text
+dq > 0:
+  tau_f_dynamic = C+ + B+ * |dq|
 
-### 7.8 feel
+dq < 0:
+  tau_f_dynamic = C- + B- * |dq|
+```
 
-公开配置使用语义化手感参数
+为了避免零速附近硬切换，当前实现使用 smoothstep 从零连续渐入
 
-| 参数 | 含义 |
+```text
+x = clamp(|dq| / velocity_transition, 0, 1)
+blend = x^2 * (3 - 2*x)
+tau_friction_hat = blend * tau_f_dynamic
+```
+
+所以
+
+```text
+dq = 0
+  friction residual = 0
+
+|dq| 增加
+  friction residual 连续增加
+
+|dq| >= velocity_transition
+  完整使用动态摩擦模型
+```
+
+### 7.8 固定 M / D / K 导纳
+
+每个 Joint 独立执行
+
+```text
+M * Δq_ddot + D * Δq_dot + K * Δq = tau_ext_hat
+```
+
+配置
+
+```yaml
+controller:
+  mass: {joint1: 1.0, joint2: 1.0}
+  damping: {joint1: 6.0, joint2: 6.0}
+  stiffness: {joint1: 20.0, joint2: 20.0}
+  max_delta_q: {joint1: 0.5, joint2: 0.5}
+  max_delta_q_dot: {joint1: 1.0, joint2: 1.0}
+```
+
+参数含义
+
+| 参数 | 单位 | 含义 |
+| --- | --- | --- |
+| `mass` | Nm*s^2/rad | 虚拟质量 M，决定启动惯性 |
+| `damping` | Nm*s/rad | 虚拟阻尼 D，决定阻尼比与运动黏滞感 |
+| `stiffness` | Nm/rad | 虚拟刚度 K，决定恒力稳态退让和回中能力 |
+| `max_delta_q` | rad | 最大导纳位置修正绝对值 |
+| `max_delta_q_dot` | rad/s | 最大导纳速度修正绝对值 |
+
+RobotCfg 公开配置要求 M / D / K 和两个限幅都大于 0
+
+`max_delta_q / max_delta_q_dot` 是安全边界，不改变理想 M / D / K 二阶关系
+
+### 7.9 M / D / K 关系与调参原则
+
+虚拟机械阻抗
+
+```text
+Z(s) = M*s^2 + D*s + K
+```
+
+对应导纳
+
+```text
+G(s) = 1 / Z(s)
+```
+
+当 `K > 0` 时
+
+```text
+自然频率
+ωn = sqrt(K/M)
+
+频率
+fn = ωn / (2*pi)
+
+临界阻尼
+Dcrit = 2*sqrt(M*K)
+
+阻尼比
+ζ = D / Dcrit = D / (2*sqrt(M*K))
+```
+
+恒定外力稳态退让
+
+```text
+Δq_ss = tau_ext_hat / K
+```
+
+刚开始推动且 `Δq=0 / Δq_dot=0` 时
+
+```text
+Δq_ddot(0) = tau_ext_hat / M
+```
+
+调参建议按照下面顺序
+
+```text
+1 K 先定退让距离
+2 M 再定启动惯性和整体动态速度
+3 D 最后按目标阻尼比计算
+```
+
+D 推荐由目标阻尼比反算
+
+```text
+D = 2 * ζ * sqrt(M*K)
+```
+
+阻尼比可以这样理解
+
+| 阻尼比 | 典型表现 |
 | --- | --- |
-| `comfortable_torque` | 用户可舒适持续施加的外力矩目标 |
-| `follow_speed` | 该力矩对应的期望跟随速度 |
-| `start_response_s` | 起步达到约 95% 跟随速度的目标时间 |
-| `q_elastic_start_speed` | 开始增加阻尼形成 Q 弹阻力的修正速度 |
-| `return_time_s` | 松手后约 95% 回中的目标时间 |
-| `max_retreat` | 最大导纳位置偏移 |
-| `max_correction_speed` | 最大导纳修正速度 |
-| `q_elastic_max_resistance_ratio` | 高速区最大阻尼倍率 |
+| `ζ < 1` | 欠阻尼，更灵活、更有弹性感，同时存在超调风险 |
+| `ζ ≈ 1` | 临界阻尼，理论上最快无超调回中 |
+| `ζ > 1` | 过阻尼，更稳定，但手感更黏、回中更拖 |
 
-派生关系
+对 sensorless 关节导纳，`ζ=0.6~0.8` 可以作为柔顺调参起点，不是所有机械臂的固定推荐值
+
+常用组合规律
 
 ```text
-D_follow = comfortable_torque / follow_speed
-M = D_follow * start_response_s / 3
-K_return = M * (4.74 / return_time_s)^2
+M / D / K 同倍率缩放
+  ωn 不变
+  ζ 不变
+  整体缩小后同样外力产生更大退让和更大初始加速度
+
+固定 K
+降低 M
+按目标 ζ 重新计算 D
+  稳态退让不变
+  启动和回中更快
+
+固定 M / K
+只降低 D
+  ζ 下降
+  更灵活 / 更 Q 弹
+  同时振荡风险增加
 ```
 
-接触时系统逐渐降低有效回中刚度
+### 7.10 参数约束
 
-松手后系统逐渐恢复回中刚度和临界阻尼
-
-因此当前行为不是固定 M / D / K 的单一二阶系统
-
-### 7.9 参数约束
-
-至少满足
+公开 RobotCfg 至少满足
 
 ```text
-comfortable_torque > 0
-follow_speed > 0
-start_response_s > 0
-return_time_s > 0
-max_retreat > 0
-max_correction_speed > 0
-q_elastic_start_speed < max_correction_speed
-q_elastic_max_resistance_ratio >= 1
+momentum_gain > 0
+torque_threshold >= 0
+velocity_transition > 0
+M > 0
+D > 0
+K > 0
+max_delta_q > 0
+max_delta_q_dot > 0
 ```
 
-### 7.10 Admittance 与 Impedance 的关系
+所有逐 Joint 数组长度必须与 `joint_names` 一致
 
-Admittance 修正发生在 nominal command 之后、Safety 之前
+`joint_enabled` 只允许 true / false
+
+### 7.11 Admittance 与 Impedance 的关系
+
+当前实现固定使用外层 `delta_q` 结构
 
 ```text
-Impedance / Tracking
-        ↓
-Nominal Command
-        ↓
-Admittance Correction
-        ↓
+Planner / Hold
+      ↓
+JointCtrller
+      ↓
+Nominal JointCtrlCmd
+  pos / vel / kp / kd / tor
+      ↓
+InteractionController
+  pos += delta_q
+  vel += delta_q_dot
+      ↓
 Safety
+      ↓
+Hardware
 ```
+
+也就是
+
+```text
+q_ref  = q_nominal  + delta_q
+dq_ref = dq_nominal + delta_q_dot
+```
+
+Admittance 不直接替换 Joint Impedance Controller
+
+当前实现先由 `JointCtrller` 生成 nominal `JointCtrlCmd`，再由 `InteractionController` 只修改其中的 `pos / vel`，当前模式对应的 `kp / kd / tor` 语义保持不变
+
+因此 `RIGID_HOLD / RIGID_TRACKING / COMPLIANT_HOLD / COMPLIANT_TRACKING` 可以共用同一套 Admittance 修正逻辑
 
 `COMPLIANT_DRAG` 是例外
 
-进入 `COMPLIANT_DRAG` 时 Robot 显式旁路 Admittance 修正
+进入 `COMPLIANT_DRAG` 时 Robot 显式旁路 Admittance 修正，用于直接拖拽和标定示教
 
-不要用 `COMPLIANT_DRAG` 的手感判断 Admittance 是否工作
+### 7.12 Runtime 配置
 
-### 7.11 Runtime 配置
-
-C++ 可以读取和更新 Admittance Config
+C++ 可以读取和更新当前 Admittance Config
 
 ```cpp
 const auto& cfg = robot.get_admittance_cfg();
 ```
 
-更新当前运行时配置
+更新 M / D / K
 
 ```cpp
 auto candidate = robot.get_admittance_cfg();
-candidate.feel.follow_speed[0] = 0.5;
+candidate.controller.mass[0] = 0.4;
+candidate.controller.damping[0] = 2.4;
+candidate.controller.stiffness[0] = 8.0;
 
 robot.set_admittance_cfg(candidate);
 ```
@@ -1835,25 +2052,21 @@ Runtime 修改只作用于当前进程
 
 是否持久化到 YAML 由上层明确处理
 
-### 7.12 RobotCycleOutput Telemetry
+### 7.13 RobotCycleOutput Telemetry
 
 Admittance 参与周期时可以读取
 
 ```text
 admittance_active
+residual_raw
 full_id_residual_raw
-observer_residual_raw
-observer_residual_filtered
+residual_filtered
 bias_compensated
 friction_residual_hat
 friction_compensated
 tau_ext_hat
-contact_confidence
 delta_q
 delta_q_dot
-effective_damping
-effective_stiffness
-friction_feedforward
 torque_threshold_active
 delta_q_limited
 delta_q_dot_limited
@@ -1861,29 +2074,29 @@ safety_position_margin_active
 safety_velocity_margin_active
 ```
 
+其中 `residual_filtered` 当前仅作为兼容字段保留，与 `residual_raw` 相同
+
 调试时推荐按下面顺序观察
 
 ```text
 residual_raw
   ↓
-residual_filtered
-  ↓
 bias_compensated
+  ↓
+friction_residual_hat
   ↓
 friction_compensated
   ↓
 tau_ext_hat
-  ↓
-contact_confidence
-  ↓
-D_eff / K_eff
   ↓
 delta_q / delta_q_dot
   ↓
 Safety flags
 ```
 
-### 7.13 Terminal 标定
+如果使用 MOMENTUM，`full_id_residual_raw` 可以作为 FULL_ID A/B 对照诊断
+
+### 7.14 Terminal 标定
 
 进入
 
@@ -1893,45 +2106,121 @@ Safety flags
      -> 导纳参数标定
 ```
 
-标定流程会引导完成静态 residual 和 DRAG 相关数据采集
+当前支持
 
-标定完成后参数先应用到当前进程
+```text
+1 一次性标定
+2 静态残差标定
+3 静态残差验证
+4 摩擦参数标定
+```
 
-需要写回的参数可以在诊断菜单查看
+一次性标定按顺序执行
 
-### 7.14 Terminal 手感设置
+```text
+静态残差标定
+  ↓
+静态残差验证
+  ↓
+摩擦参数标定
+```
+
+静态残差标定使用 8 个代表姿态，并同时更新
+
+```text
+gravity_scale
+torque_bias
+torque_threshold
+```
+
+重新执行静态残差标定会关闭当前 friction residual，因为 gravity / bias / threshold 基线已经变化，摩擦参数需要重新完成交叉验证后再启用
+
+`gravity_scale` 当前标定范围为 `[0,2]`
+
+`1.0` 表示使用 URDF 原始重力模型比例
+
+大于 `1.0` 表示标定认为 URDF 模型低估了该 Joint 的实际重力负载
+
+静态验证再使用 5 个不同姿态
+
+当前判据为
+
+```text
+P99 超过 torque_threshold
+  P99_HARD_FAIL
+  整体验证 FAIL
+
+P99 通过但单帧 MAX 超过保护上限
+  MAX_WARN
+  不阻断标定流程
+```
+
+Terminal 会逐 Joint 打印 RMS、P99、MAX、阈值利用率和最终状态
+
+摩擦参数标定流程为
+
+```text
+COMPLIANT_DRAG
+  ↓
+建议约 20 s 双向快慢示教
+  ↓
+用户完成后完全松手并按 Enter
+  ↓
+RIGID_HOLD
+  ↓
+RIGID_TRACKING 倒放
+  ↓
+RIGID_TRACKING 正放
+  ↓
+RIGID_HOLD
+  ↓
+双向摩擦拟合与交叉验证
+```
+
+20 s 是建议示教时长，不是自动截止时间
+
+每个轴都应包含双向运动和一定速度跨度，否则该轴可能被判定为 `UNOBSERVABLE`
+
+标定完成后 Terminal 会打印可直接复制到 `core.yaml` 的 named map YAML
+
+### 7.15 Terminal M / D / K 设置
 
 进入
 
 ```text
 调参与测试
   -> 导纳控制
-     -> 手感设置
+     -> M / D / K 设置
 ```
 
-当前菜单提供
+当前菜单
 
 ```text
-跟手阻力
-起步响应
-Q弹起始速度
-回中速度
-最大退让
-高级参数
+1 虚拟质量 M
+2 虚拟阻尼 D
+3 虚拟刚度 K
+4 最大位置修正 max_delta_q
+5 最大速度修正 max_delta_q_dot
+6 MOMENTUM momentum_gain
+7 参数关系与调参说明
+8 打印当前可写回参数
 ```
 
-高级参数可以查看和修改
+`参数关系与调参说明` 会直接根据当前每个 Joint 的 M / D / K 计算
 
 ```text
-派生 M / D / K
-Observer filter_alpha
-最大导纳修正速度
-Q弹最大阻力倍率
-摩擦主动助力比例
-当前可写回参数
+ζ
+ωn
+fn
+Dcrit
+1 Nm 稳态退让
 ```
 
-### 7.15 Terminal 状态与诊断
+运行时修改成功后只作用于当前进程
+
+使用 `打印当前可写回参数` 获得可以直接替换 YAML 的配置块
+
+### 7.16 Terminal 状态与诊断
 
 进入
 
@@ -1941,43 +2230,68 @@ Q弹最大阻力倍率
      -> 状态与诊断
 ```
 
-可使用
+当前提供
 
 ```text
-状态摘要
-实时观测
-标定与 Observer 详情
+1 状态摘要
+2 实时观测
+3 标定与 Observer 详情
 ```
 
-实时观测会输出外力估计、接触置信度、导纳位移、导纳速度、有效阻尼、有效刚度和限幅标志
+实时观测输出链路
 
-### 7.16 Admittance 推荐调试顺序
+```text
+raw
+→ bias
+→ fric
+→ ext_pre_db
+→ tau_ext
+→ full_id
+→ dq
+→ dqdot
+```
+
+标志
+
+```text
+TH   deadband 正在抑制小 residual
+DQ   delta_q 被限幅
+DQV  delta_q_dot 被限幅
+SP   Safety 位置剩余空间正在收窄导纳修正
+SV   Safety 速度剩余空间正在收窄导纳修正
+```
+
+### 7.17 Admittance 推荐调试顺序
 
 ```text
 1 Joint torque direction
-2 Dynamics gravity
+2 Dynamics gravity / gravity_scale
 3 FULL_ID residual
-4 Observer residual
+4 MOMENTUM residual 或 FULL_ID 正式模式
 5 torque_bias
 6 torque_threshold
-7 contact_confidence
-8 单 Joint max_retreat
-9 单 Joint follow feel
-10 return feel
-11 q_elastic
-12 多 Joint
-13 Safety boundary
-14 deactivate / activate
-15 suspend / resume
+7 friction residual
+8 无接触 tau_ext_hat
+9 单 Joint K 与稳态退让
+10 单 Joint M 与启动响应
+11 按目标 ζ 设置 D
+12 max_delta_q / max_delta_q_dot
+13 多 Joint
+14 RIGID / COMPLIANT 模式一致性
+15 Safety boundary
+16 deactivate / activate
+17 suspend / resume
 ```
 
-如果无接触时 `tau_ext_hat` 长期不为零，先检查 bias 和模型误差
+如果无接触时 `tau_ext_hat` 长期不为零，先检查 gravity、bias、threshold 和 friction，不要先调 M / D / K
 
-如果接触很迟钝，先检查 residual、threshold 和 filter，再调 feel
+如果推动迟钝且 `tau_ext_hat` 已经正确，优先检查 K / M / D 的绝对尺度
 
-如果一推动就长期顶到 `max_retreat`，先确认无接触 residual 是否已经清零，再检查 follow feel
+如果回中慢但稳态退让距离已经满意，保持 K，降低 M，并按目标 `ζ` 重新计算 D
 
-如果位置边界触发，应同时观察 `delta_q_limited` 和 `delta_q_dot_limited`
+如果一推动就长期顶到 `max_delta_q`，先确认无接触 residual 已清零，再判断 K 是否过小
+
+如果位置或速度边界触发，同时观察 `delta_q_limited / delta_q_dot_limited / SP / SV`
 
 ---
 
@@ -2111,9 +2425,11 @@ Tool Jacobian
 
 ```text
 导纳参数标定
-手感设置
+M / D / K 设置
 状态与诊断
 ```
+
+导纳参数标定支持一次性执行，也支持静态残差标定、静态残差验证和摩擦参数标定分别执行
 
 ### 8.10 推荐 Terminal 真机顺序
 
@@ -3180,72 +3496,70 @@ COMPLIANT_TRACKING 可以持续刷新轨迹
 capability:
   admittance:
     enabled: true
-    joint_enabled:
-      joint1: true
-      joint2: true
+    joint_enabled: {joint1: true, joint2: true}
 
     observer:
       mode: FULL_ID
-      momentum_gain:
-        joint1: 25.0
-        joint2: 25.0
-      filter_alpha: 0.1
+      momentum_gain: {joint1: 25.0, joint2: 25.0}
 
     calibration:
-      torque_bias:
-        joint1: 0.0
-        joint2: 0.0
-      torque_threshold:
-        joint1: 0.1
-        joint2: 0.1
+      torque_bias: {joint1: 0.0, joint2: 0.0}
+      torque_threshold: {joint1: 0.1, joint2: 0.1}
       friction:
         enabled: false
         velocity_transition: 0.03
-        zero_velocity_adaptation_s: 0.60
-        kinetic_feedforward_scale: 0.0
         positive_coulomb: {joint1: 0.0, joint2: 0.0}
         positive_viscous: {joint1: 0.0, joint2: 0.0}
         negative_coulomb: {joint1: 0.0, joint2: 0.0}
         negative_viscous: {joint1: 0.0, joint2: 0.0}
 
-    feel:
-      comfortable_torque: {joint1: 1.0, joint2: 1.0}
-      follow_speed: {joint1: 0.3, joint2: 0.3}
-      start_response_s: {joint1: 0.4, joint2: 0.4}
-      q_elastic_start_speed: {joint1: 0.5, joint2: 0.5}
-      return_time_s: {joint1: 1.2, joint2: 1.2}
-      max_retreat: {joint1: 0.2, joint2: 0.2}
-      max_correction_speed: {joint1: 0.7, joint2: 0.7}
-      q_elastic_max_resistance_ratio: 4.0
+    controller:
+      mass: {joint1: 1.0, joint2: 1.0}
+      damping: {joint1: 6.0, joint2: 6.0}
+      stiffness: {joint1: 20.0, joint2: 20.0}
+      max_delta_q: {joint1: 0.2, joint2: 0.2}
+      max_delta_q_dot: {joint1: 0.7, joint2: 0.7}
 ```
 
-上面的数值只用于提供保守结构示例
+上面的数值只用于提供结构示例
 
-实际使用必须通过本机标定和手感调试确定
+实际使用必须完成本机静态 residual / friction 标定，并根据 M / D / K 二阶关系调参
+
+六轴机械臂继续使用 named map 单行格式
+
+```yaml
+mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
+```
 
 ### 10.16 选择 Admittance Observer
 
 新机械臂可以先用 FULL_ID 检查 residual
 
 ```text
-measured torque
+actual q / dq / qdd
   ↓
 full inverse dynamics
   ↓
 full_id_residual_raw
 ```
 
-如果需要 MOMENTUM，再确认 Adapter 可以提供
+FULL_ID 对实测 `qdd` 敏感
+
+`control.runtime.joint_acc_filter_alpha` 是对应的关节加速度低通入口
+
+如果需要 MOMENTUM，再确认运行环境可以提供
 
 ```text
 Gravity
 Coriolis
 Mass Matrix
+Joint Velocity
+Measured Torque
 ```
 
 Native C++ 和 C++ Terminal 可以提供完整 MOMENTUM 模型链
 
-自定义 Adapter 也必须显式实现该回调
+自定义 Adapter 也必须显式实现 `InteractionModelStateFn`
 
 ### 10.17 Admittance 标定
 
@@ -3264,52 +3578,70 @@ serial_arm_terminal \
      -> 导纳参数标定
 ```
 
+可以选择
+
+```text
+一次性标定
+静态残差标定
+静态残差验证
+摩擦参数标定
+```
+
+推荐新机械臂第一次使用完整的一次性标定
+
 标定完成后重点检查
 
 ```text
+gravity_scale
 torque_bias
 torque_threshold
-Observer residual
+静态验证 P99 / MAX
 摩擦交叉验证结果
 ```
 
-不要先调 feel 再处理无接触 residual
+先保证无接触 `tau_ext_hat` 接近零，再进入 M / D / K 手感调试
 
-### 10.18 Admittance 手感调试
+### 10.18 Admittance M / D / K 调试
 
 先单 Joint
 
 推荐顺序
 
 ```text
-comfortable_torque
+K
   ↓
-follow_speed
+M
   ↓
-start_response_s
+D / ζ
   ↓
-return_time_s
+max_delta_q
   ↓
-max_retreat
-  ↓
-q_elastic_start_speed
-  ↓
-max_correction_speed
-  ↓
-q_elastic_max_resistance_ratio
+max_delta_q_dot
+```
+
+关系
+
+```text
+Δq_ss = tau_ext_hat / K
+Δq_ddot(0) = tau_ext_hat / M
+ωn = sqrt(K/M)
+Dcrit = 2*sqrt(M*K)
+ζ = D / Dcrit
+D = 2*ζ*sqrt(M*K)
 ```
 
 实时观察
 
 ```text
 tau_ext_hat
-contact_confidence
 delta_q
 delta_q_dot
-D_eff
-K_eff
 limit flags
 ```
+
+先用 K 确定同样外力需要退让多远，再用 M 确定启动惯性，最后根据目标阻尼比计算 D
+
+不要同时随机修改 M / D / K
 
 ### 10.19 Stage G 增加 ros2_control
 
@@ -3512,13 +3844,17 @@ Admittance
 
 ```text
 [ ] Torque feedback 语义可信
-[ ] Observer residual 可解释
+[ ] FULL_ID / MOMENTUM residual 可解释
+[ ] gravity_scale 已本机标定并通过静态验证
 [ ] torque_bias 已本机标定
 [ ] torque_threshold 已本机标定
+[ ] friction residual 交叉验证通过
 [ ] 无接触 tau_ext_hat 接近零
-[ ] 单 Joint follow feel 通过
-[ ] return feel 通过
-[ ] max_retreat / max_correction_speed 通过
+[ ] 单 Joint K / 稳态退让通过
+[ ] 单 Joint M / 启动响应通过
+[ ] D / 阻尼比 ζ 通过
+[ ] max_delta_q / max_delta_q_dot 通过
+[ ] RIGID / COMPLIANT 导纳手感符合预期
 [ ] Safety boundary 通过
 [ ] deactivate / activate 状态清理通过
 [ ] suspend / resume 通过
@@ -3833,44 +4169,64 @@ Gravity Compensation
 
 ```text
 full_id_residual_raw
-observer_residual_raw
-observer_residual_filtered
+residual_raw
 bias_compensated
+friction_residual_hat
 friction_compensated
 tau_ext_hat
-contact_confidence
+delta_q
 ```
 
-如果 residual baseline 没有清零，先处理模型、bias 和摩擦问题
+如果 `tau_ext_hat` 无接触时仍长期不为零，先处理 gravity / gravity_scale、bias、threshold 和 friction
 
-### 12.11 Admittance 推动迟钝
+不要通过增大 M / D / K 掩盖外力估计零偏
 
-先检查
+### 12.11 Admittance 推动迟钝或很黏
+
+先确认
 
 ```text
-Torque signal
-Observer response
-filter_alpha
-torque_threshold
-contact_confidence
+tau_ext_hat 符号正确
+tau_ext_hat 随外力连续变化
+deadband 没有长期吞掉真实外力
 ```
 
-确认外力检测正常后再调 `comfortable_torque / follow_speed / start_response_s`
+外力估计正常后再看 M / D / K
+
+```text
+K 过大
+  同样外力退让距离小
+
+M 过大
+  启动惯性明显
+
+D 或 ζ 过大
+  运动更黏、回中更拖
+```
+
+使用 Terminal 的 `参数关系与调参说明` 查看当前每轴 `ζ / ωn / Dcrit / 1Nm退让`
 
 ### 12.12 Admittance 很容易打到最大退让
 
-先确认无接触 `tau_ext_hat` 是否接近零
+先确认无接触 `tau_ext_hat` 接近零
 
 再检查
 
 ```text
-max_retreat
-follow_speed
-comfortable_torque
-return_time_s
+K 是否过小
+max_delta_q 是否过小
+持续外力是否本来就很大
 ```
 
-不要只放大 `max_retreat`
+恒力稳态满足
+
+```text
+Δq_ss = tau_ext_hat / K
+```
+
+不要只放大 `max_delta_q`
+
+如果理论 `Δq_ss` 本来就大于限幅，应优先重新确定 K 与目标柔顺范围
 
 ### 12.13 ROS 2 launch 无法 import serial_arm
 
