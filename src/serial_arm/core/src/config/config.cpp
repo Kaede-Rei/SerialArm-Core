@@ -317,14 +317,12 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 
     const YAML::Node observer = require_map(admittance, "observer", "capability.admittance");
     reject_unknown_keys(observer, "capability.admittance.observer", {
-        "mode", "momentum_gain", "filter_alpha"
+        "mode", "momentum_gain"
     });
     cfg.observer.mode = load_admittance_observer_mode(observer);
     cfg.observer.momentum_gain = load_named_joint_vector(
         require_map(observer, "momentum_gain", "capability.admittance.observer"),
         joint_names, "capability.admittance.observer.momentum_gain");
-    cfg.observer.filter_alpha = require_as<double>(
-        observer, "filter_alpha", "capability.admittance.observer");
 
     const YAML::Node calibration = require_map(admittance, "calibration", "capability.admittance");
     reject_unknown_keys(calibration, "capability.admittance.calibration", {
@@ -738,9 +736,6 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         !controller.damping.empty() || !controller.stiffness.empty() ||
         !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
     if(admittance.enabled || has_admittance_parameters) {
-        if(!std::isfinite(observer.filter_alpha) || observer.filter_alpha <= 0.0 || observer.filter_alpha > 1.0) {
-            return fail(ConfigErr::INVALID_VALUE, "capability.admittance.observer.filter_alpha must be in (0, 1]");
-        }
         if(admittance.joint_enabled.size() != n || observer.momentum_gain.size() != n ||
             calibration.torque_bias.size() != n || calibration.torque_threshold.size() != n ||
             controller.mass.size() != n || controller.damping.size() != n ||
@@ -863,8 +858,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         }
     }
     for(const double value : cfg.dynamics.gravity_scale) {
-        if(!std::isfinite(value) || value < 0.0 || value > 1.0) {
-            return fail(ConfigErr::INVALID_VALUE, "dynamics.gravity_scale values must be in [0, 1]");
+        if(!std::isfinite(value) || value < 0.0 || value > 2.0) {
+            return fail(ConfigErr::INVALID_VALUE, "dynamics.gravity_scale values must be in [0, 2]");
         }
     }
 
@@ -928,7 +923,6 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs_adm.enabled != rhs_adm.enabled || lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
         lhs_adm.observer.mode != rhs_adm.observer.mode ||
         lhs_adm.observer.momentum_gain != rhs_adm.observer.momentum_gain ||
-        lhs_adm.observer.filter_alpha != rhs_adm.observer.filter_alpha ||
         lhs_adm.calibration.torque_bias != rhs_adm.calibration.torque_bias ||
         lhs_adm.calibration.torque_threshold != rhs_adm.calibration.torque_threshold ||
         lhs_adm.calibration.friction.enabled != rhs_adm.calibration.friction.enabled ||

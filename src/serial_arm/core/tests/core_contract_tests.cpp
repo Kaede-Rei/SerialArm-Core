@@ -142,8 +142,7 @@ void configure_test_admittance(
     double stiffness = 1.0,
     double max_delta_q = 1.0,
     double max_delta_q_dot = 1.0,
-    double torque_threshold = 0.0,
-    double filter_alpha = 1.0) {
+    double torque_threshold = 0.0) {
     constexpr double kMinDynamicTerm = 1.0e-6;
     const double d = std::max(damping, kMinDynamicTerm);
     const double k = std::max(stiffness, kMinDynamicTerm);
@@ -152,7 +151,6 @@ void configure_test_admittance(
     admittance.joint_enabled = { 1 };
     admittance.observer.mode = AdmittanceObserverMode::FULL_ID;
     admittance.observer.momentum_gain = { 25.0 };
-    admittance.observer.filter_alpha = filter_alpha;
     admittance.calibration.torque_bias = { 0.0 };
     admittance.calibration.torque_threshold = { torque_threshold };
     admittance.calibration.friction.enabled = false;
@@ -784,7 +782,7 @@ TEST(AdmittanceCapabilityValidation, DisabledCapabilityDoesNotRequireJointParame
 
 TEST(AdmittanceControllerConfig, DirectMDKIsPreservedWithoutSemanticDerivation) {
     AdmittanceCapabilityCfg cfg;
-    configure_test_admittance(cfg, 0.4, 3.6, 8.0, 1.0, 1.0, 0.0, 0.95);
+    configure_test_admittance(cfg, 0.4, 3.6, 8.0, 1.0, 1.0, 0.0);
 
     ASSERT_EQ(cfg.controller.mass.size(), 1u);
     EXPECT_NEAR(cfg.controller.mass[0], 0.4, 1e-12);
@@ -797,7 +795,7 @@ TEST(AdmittanceControllerConfig, DirectMDKIsPreservedWithoutSemanticDerivation) 
 TEST(AdmittanceCapabilityValidation, EnabledCapabilityRequiresValidPerJointParameters) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 5.0, 8.0, 20.0, 0.005, 0.01, 0.0, 0.1);
+    configure_test_admittance(admittance, 5.0, 8.0, 20.0, 0.005, 0.01, 0.0);
     EXPECT_TRUE(validate_robot_core_cfg(cfg));
 
     admittance.controller.mass[0] = 0.0;
@@ -815,7 +813,7 @@ TEST(AdmittanceCapabilityValidation, EnabledCapabilityRequiresValidPerJointParam
 TEST(RobotAdmittanceCapability, EnabledCapabilityRequiresGravityModelCallback) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 5.0, 8.0, 20.0, 0.005, 0.01, 0.0, 0.1);
+    configure_test_admittance(admittance, 5.0, 8.0, 20.0, 0.005, 0.01, 0.0);
 
     Robot robot;
     auto result = robot.configure(cfg, std::make_unique<FakeMotorBus>());
@@ -836,7 +834,7 @@ TEST(RobotAdmittanceCapability, EnabledCapabilityCorrectsNominalCommandBeforeSaf
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 0.1, 0.1, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 0.1, 0.1, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -862,7 +860,7 @@ TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -892,7 +890,7 @@ TEST(RobotAdmittanceCapability, HoldUsesDynamicModelTorqueForResidual) {
     cfg.runtime.write_enabled = true;
     cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -931,7 +929,7 @@ TEST(RobotAdmittanceCapability, TrackingUsesDynamicModelTorqueForResidual) {
     cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
     cfg.safety.require_continuous_cmd = false;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -978,7 +976,7 @@ TEST(RobotAdmittanceCapability, RuntimeSuspensionBypassesAndResetsAdmittance) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -1008,7 +1006,7 @@ TEST(RobotAdmittanceCapability, RuntimeConfigUpdateResetsStateAndExposesTelemetr
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 0.1, 0.1, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 0.1, 0.1, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
@@ -1052,7 +1050,7 @@ TEST(RobotAdmittanceCapability, DynamicAdmittanceLimitUsesRemainingSafetyPositio
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;
     auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0);
+    configure_test_admittance(admittance, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();

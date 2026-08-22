@@ -682,13 +682,13 @@ class Terminal:
 
     def set_gravity_scale(self) -> None:
         values = read_vector(
-            f"输入 {len(self.joint_names)} 个比例 [0, 1]: ", len(self.joint_names)
+            f"输入 {len(self.joint_names)} 个比例 [0, 2]（1.0=URDF 原模型，>1.0=补偿模型低估）: ", len(self.joint_names)
         )
         if (
             values is None
             or values.size != len(self.joint_names)
             or np.any(values < 0.0)
-            or np.any(values > 1.0)
+            or np.any(values > 2.0)
         ):
             print("输入无效")
             return

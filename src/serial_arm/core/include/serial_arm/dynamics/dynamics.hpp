@@ -29,7 +29,7 @@ enum class DynamicsErr {
     FRAME_NOT_FOUND,                ///< 请求的坐标系在模型中不存在
     INVALID_INPUT_SIZE,             ///< 输入关节向量长度与配置的关节数量不一致
     NON_FINITE_INPUT,               ///< 输入包含 NaN 或无穷值
-    GRAVITY_SCALE_OUT_OF_RANGE,     ///< 重力补偿缩放系数超出 [0, 1]
+    GRAVITY_SCALE_OUT_OF_RANGE,     ///< 重力补偿缩放系数超出 [0, 2]
     COMPUTE_FAILED,                 ///< 底层运动学或动力学计算失败
 };
 

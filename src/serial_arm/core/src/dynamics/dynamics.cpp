@@ -102,7 +102,7 @@ tl::expected<void, DynamicsErr> validate_gravity_scale(const JointVector& gravit
     if(!finite) return tl::make_unexpected(DynamicsErr::NON_FINITE_INPUT);
 
     const bool in_range = std::all_of(gravity_scale.begin(), gravity_scale.end(), [](double value) {
-        return value >= 0.0 && value <= 1.0;
+        return value >= 0.0 && value <= 2.0;
         });
     if(!in_range) return tl::make_unexpected(DynamicsErr::GRAVITY_SCALE_OUT_OF_RANGE);
 

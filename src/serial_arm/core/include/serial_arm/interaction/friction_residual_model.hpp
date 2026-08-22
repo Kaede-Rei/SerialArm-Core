@@ -16,7 +16,7 @@ namespace serial_arm {
  */
 struct FrictionResidualModelCfg {
     bool enabled{ false };                 ///< 是否启用动态摩擦 residual 补偿
-    double velocity_transition{ 0.03 };    ///< rad/s；达到该速度后才使用动态摩擦模型
+    double velocity_transition{ 0.03 };    ///< rad/s；从零速连续渐入，并在达到该速度时完整使用动态摩擦模型
     JointVector positive_coulomb;          ///< dq>0 时 signed Coulomb residual Nm
     JointVector positive_viscous;          ///< dq>0 时 signed viscous residual Nm/(rad/s)
     JointVector negative_coulomb;          ///< dq<0 时 signed Coulomb residual Nm

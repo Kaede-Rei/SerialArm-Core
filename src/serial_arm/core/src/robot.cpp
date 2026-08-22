@@ -36,7 +36,6 @@ InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& adm
 
     interaction_cfg.observer_mode = admittance.observer.mode;
     interaction_cfg.residual.joints_count = joints_count;
-    interaction_cfg.residual.filter_alpha = admittance.observer.filter_alpha;
     interaction_cfg.momentum.joints_count = joints_count;
     interaction_cfg.momentum.gain = admittance.observer.momentum_gain;
     interaction_cfg.momentum.initial_residual = admittance.calibration.torque_bias;

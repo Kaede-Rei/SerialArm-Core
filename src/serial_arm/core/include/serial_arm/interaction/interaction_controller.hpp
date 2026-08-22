@@ -45,7 +45,7 @@ struct InteractionInput {
 
 struct InteractionOutput {
     JointCtrlCmd corrected_cmd;
-    TorqueResidualEstimate residual;                  ///< 当前 observer 的 raw + filtered residual
+    TorqueResidualEstimate residual;                  ///< 当前 observer residual；兼容字段 residual_filtered 与 raw 相同
     JointVector full_id_residual_raw;                ///< FULL_ID model - measured 对照 residual
     JointVector bias_compensated;
     JointVector friction_residual_hat;

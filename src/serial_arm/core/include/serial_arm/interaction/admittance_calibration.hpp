@@ -72,10 +72,10 @@ struct AdmittanceStaticValidationResult {
     JointVector residual_p99;             ///< 未滤波、bias 后静态 |residual| P99 Nm
     JointVector residual_max;             ///< 未滤波、bias 后静态 |residual| 最大值 Nm
     JointVector feedback_quantization_step; ///< 验证样本中识别出的重复反馈量化步长 Nm；未识别时为 0
-    JointVector guarded_max_limit;        ///< 允许的单帧最大 residual：threshold + 1 个量化步长 Nm
+    JointVector guarded_max_limit;        ///< 单帧 MAX 诊断保护上限：threshold + 1 个量化步长 Nm
     JointVector threshold_utilization;    ///< residual_P99 / torque_threshold；越小静态裕量越大
-    JointVector guarded_max_utilization;  ///< residual_max / guarded_max_limit；越小单帧量化裕量越大
-    std::vector<std::uint8_t> pass;       ///< 1 表示 P99 在 threshold 内且 max 未超过一个额外量化步长
+    JointVector guarded_max_utilization;  ///< residual_max / guarded_max_limit；>1 表示存在单帧 MAX WARN
+    std::vector<std::uint8_t> pass;       ///< 1 表示 P99 是否落在 torque_threshold 内；MAX 仅用于诊断 WARN
 };
 
 

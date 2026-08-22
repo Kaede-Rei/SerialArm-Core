@@ -1040,15 +1040,15 @@ private:
             return;
         }
 
-        // 停放是确定性的安全轨迹任务，不允许导纳改变 park reference
+        // 停放使用低刚度 COMPLIANT_TRACKING 降低碰撞风险，同时暂停导纳避免 park reference 被外力偏移
         robot_.set_admittance_suspended(true);
         const auto resume_admittance = [this]() {
             robot_.set_admittance_suspended(false);
             };
 
-        const auto mode_result = robot_.set_impedance_mode(JointImpedanceMode::RIGID_TRACKING, Robot::Clock::now());
+        const auto mode_result = robot_.set_impedance_mode(JointImpedanceMode::COMPLIANT_TRACKING, Robot::Clock::now());
         if(!mode_result) {
-            std::cout << "切换 RIGID_TRACKING 失败：\n";
+            std::cout << "切换 COMPLIANT_TRACKING 失败：\n";
             print_fault(mode_result.error());
             resume_admittance();
             return;
@@ -1066,11 +1066,14 @@ private:
         background_fault_reported_ = false;
 
         std::cout << "开始回到配置的停放姿态\n";
+        std::cout << "[停放] 前 75% 时间使用 COMPLIANT_TRACKING，若仍未严格就位则切换 RIGID_TRACKING 完成最终就位\n";
         print_vector("park_pos", cfg_.shutdown.park_pos);
 
         const Robot::TimePoint started_at = Robot::Clock::now();
         Robot::TimePoint last_progress_at = started_at;
         std::optional<Robot::TimePoint> settled_at;
+        bool rigid_finish_mode = false;
+        const double rigid_finish_switch_s = 0.75 * cfg_.shutdown.timeout_s;
         while(robot_.get_state() == RobotState::ACTIVE) {
             cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
             const Robot::TimePoint now = Robot::Clock::now();
@@ -1102,27 +1105,35 @@ private:
                 settled_at.reset();
             }
 
+            const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
+            if(!rigid_finish_mode && !reached && elapsed_s >= rigid_finish_switch_s) {
+                const auto rigid_result = robot_.set_impedance_mode(JointImpedanceMode::RIGID_TRACKING, now);
+                if(!rigid_result) {
+                    clear_command_sources();
+                    (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD, now);
+                    std::cout << "停放时间已超过 75%，但切换 RIGID_TRACKING 失败，已进入 RIGID_HOLD 并取消失能\n";
+                    print_fault(rigid_result.error());
+                    resume_admittance();
+                    return;
+                }
+                rigid_finish_mode = true;
+                std::cout << "[停放] 停放时间已超过 75% 且仍未就位，切换 RIGID_TRACKING 完成最终就位\n";
+            }
+
             if(std::chrono::duration<double>(now - last_progress_at).count() >= 1.0) {
                 std::cout << "[停放] 最大位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，最大速度="
                     << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")\n";
                 last_progress_at = now;
             }
 
-            if(std::chrono::duration<double>(now - started_at).count() > cfg_.shutdown.timeout_s) {
-                const double relaxed_position_tolerance = cfg_.shutdown.position_tolerance * cfg_.shutdown.relaxed_tolerance_ratio;
-                const double relaxed_velocity_tolerance = cfg_.shutdown.velocity_tolerance * cfg_.shutdown.relaxed_tolerance_ratio;
-                if(max_position_error <= relaxed_position_tolerance && max_velocity <= relaxed_velocity_tolerance) {
-                    std::cout << "[停放] 严格判据超时，但实测状态已满足宽松判据，将继续保持并失能\n";
-                    break;
-                }
-
+            if(elapsed_s > cfg_.shutdown.timeout_s) {
                 clear_command_sources();
                 (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD, now);
-                std::cout << "停放流程超时，已切换 RIGID_HOLD 并取消失能\n";
-                std::cout << "最差位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，允许="
-                    << cfg_.shutdown.position_tolerance << " rad，宽松允许=" << relaxed_position_tolerance << " rad\n";
-                std::cout << "最差速度=" << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")，允许="
-                    << cfg_.shutdown.velocity_tolerance << " rad/s，宽松允许=" << relaxed_velocity_tolerance << " rad/s\n";
+                std::cout << "停放流程超时，最终严格就位判据仍未满足，已切换 RIGID_HOLD 并取消失能\n";
+                std::cout << "最差位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，严格允许="
+                    << cfg_.shutdown.position_tolerance << " rad\n";
+                std::cout << "最差速度=" << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")，严格允许="
+                    << cfg_.shutdown.velocity_tolerance << " rad/s\n";
                 resume_admittance();
                 return;
             }
@@ -1513,7 +1524,7 @@ private:
     }
 
     void set_gravity_scale() {
-        const auto scale = read_vector("输入重力补偿比例 [0, 1]，以空格分隔: ", cfg_.joint_names.size());
+        const auto scale = read_vector("输入重力补偿比例 [0, 2]，以空格分隔（1.0=URDF 原模型，>1.0=补偿模型低估）: ", cfg_.joint_names.size());
         if(!scale) {
             std::cout << "输入无效\n";
             return;
@@ -1528,7 +1539,7 @@ private:
         if(!result) {
             std::cout << "set_gravity_scale() 失败: " << to_string(result.error()) << '\n';
             if(result.error() == DynamicsErr::GRAVITY_SCALE_OUT_OF_RANGE) {
-                std::cout << "重力补偿比例必须位于 [0, 1]，本次输入整组未生效\n";
+                std::cout << "重力补偿比例必须位于 [0, 2]，本次输入整组未生效\n";
             }
             return;
         }
@@ -1788,13 +1799,6 @@ private:
         if(trajectory.positions.size() < 2 || trajectory.sample_dt <= 0.0) return false;
 
         GeneralizedMomentumObserver momentum_observer;
-        TorqueResidualObserver momentum_filter;
-        TorqueResidualObserver full_id_filter;
-        TorqueResidualObserverCfg full_id_filter_cfg;
-        full_id_filter_cfg.joints_count = cfg_.joint_names.size();
-        full_id_filter_cfg.filter_alpha = admittance_cfg.observer.filter_alpha;
-        full_id_filter_cfg.initial_filtered_residual = admittance_cfg.calibration.torque_bias;
-        if(!full_id_filter.configure(full_id_filter_cfg)) return false;
         if(admittance_cfg.observer.mode == AdmittanceObserverMode::MOMENTUM) {
             GeneralizedMomentumObserverCfg momentum_cfg;
             momentum_cfg.joints_count = cfg_.joint_names.size();
@@ -1802,11 +1806,6 @@ private:
             momentum_cfg.initial_residual = admittance_cfg.calibration.torque_bias;
             if(!momentum_observer.configure(momentum_cfg)) return false;
 
-            TorqueResidualObserverCfg filter_cfg;
-            filter_cfg.joints_count = cfg_.joint_names.size();
-            filter_cfg.filter_alpha = admittance_cfg.observer.filter_alpha;
-            filter_cfg.initial_filtered_residual = admittance_cfg.calibration.torque_bias;
-            if(!momentum_filter.configure(filter_cfg)) return false;
         }
 
         std::vector<JointVector> ordered = trajectory.positions;
@@ -1883,11 +1882,9 @@ private:
             }
 
             const std::size_t n = cfg_.joint_names.size();
-            const auto full_id_filtered = full_id_filter.update(output.joint_state.tor, model_torque);
-            if(!full_id_filtered) return false;
             JointVector full_id_after_bias(n, 0.0);
             for(std::size_t i = 0; i < n; ++i) {
-                full_id_after_bias[i] = full_id_filtered->residual_filtered[i] -
+                full_id_after_bias[i] = model_torque[i] - output.joint_state.tor[i] -
                     admittance_cfg.calibration.torque_bias[i];
             }
 
@@ -1902,12 +1899,9 @@ private:
                 momentum_input.dt = output.dt > 0.0 ? output.dt : nominal_dt;
                 const auto momentum = momentum_observer.update(momentum_input);
                 if(!momentum) return false;
-                const auto filtered = momentum_filter.update(
-                    JointVector(n, 0.0), momentum->tau_ext_hat);
-                if(!filtered) return false;
                 selected_after_bias.resize(n);
                 for(std::size_t i = 0; i < n; ++i) {
-                    selected_after_bias[i] = filtered->residual_filtered[i] -
+                    selected_after_bias[i] = momentum->tau_ext_hat[i] -
                         admittance_cfg.calibration.torque_bias[i];
                 }
             }
@@ -2264,6 +2258,33 @@ private:
         return true;
     }
 
+    void print_static_validation_diagnostics(const AdmittanceStaticValidationResult& result) const {
+        std::cout << "\n静态残差验证逐轴诊断\n";
+        std::cout << "  判据: P99 为硬判据，MAX 单帧超限仅 WARN\n";
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            const bool p99_pass = i < result.pass.size() && result.pass[i] != 0;
+            const bool max_warn = i < result.residual_max.size() &&
+                i < result.guarded_max_limit.size() &&
+                result.residual_max[i] > result.guarded_max_limit[i];
+            const char* status = !p99_pass ? "P99_HARD_FAIL" : (max_warn ? "MAX_WARN" : "PASS");
+            const double p99_util_pct = i < result.threshold_utilization.size() &&
+                std::isfinite(result.threshold_utilization[i]) ?
+                100.0 * result.threshold_utilization[i] : std::numeric_limits<double>::infinity();
+            const double max_util_pct = i < result.guarded_max_utilization.size() &&
+                std::isfinite(result.guarded_max_utilization[i]) ?
+                100.0 * result.guarded_max_utilization[i] : std::numeric_limits<double>::infinity();
+
+            std::cout << "  " << cfg_.joint_names[i]
+                << " RMS=" << std::fixed << std::setprecision(6) << result.residual_rms[i]
+                << " P99/阈值=" << result.residual_p99[i] << "/" << cfg_.capability.admittance.calibration.torque_threshold[i]
+                << " (" << p99_util_pct << "%)"
+                << " MAX/保护上限=" << result.residual_max[i] << "/" << result.guarded_max_limit[i]
+                << " (" << max_util_pct << "%)"
+                << " qstep=" << result.feedback_quantization_step[i]
+                << " " << status << '\n';
+        }
+    }
+
     bool run_admittance_static_validation() {
         if(!ensure_admittance_tuning_active()) return false;
         constexpr int kPoseCount = 5;
@@ -2342,10 +2363,22 @@ private:
             return false;
         }
         last_static_validation_result_ = result.value();
+        print_static_validation_diagnostics(*result);
         const bool pass = std::all_of(result->pass.begin(), result->pass.end(), [](std::uint8_t value) {
             return value != 0;
             });
-        std::cout << (pass ? "静态残差验证：PASS\n" : "静态残差验证：FAIL（请重新执行导纳参数标定）\n");
+        const bool max_warn = std::any_of(
+            result->guarded_max_utilization.begin(),
+            result->guarded_max_utilization.end(),
+            [](double value) { return value > 1.0; });
+        if(pass) {
+            std::cout << (max_warn ?
+                "静态残差验证：PASS（存在 MAX 单帧 WARN，P99 硬判据通过）\n" :
+                "静态残差验证：PASS\n");
+        }
+        else {
+            std::cout << "静态残差验证：FAIL（至少一个关节 P99 超过 torque_threshold）\n";
+        }
         return pass;
     }
 
@@ -2358,7 +2391,6 @@ private:
         std::cout << "    observer:\n";
         std::cout << "      mode: " << observer_mode_name(a.observer.mode) << '\n';
         std::cout << "      "; print_joint_yaml_map("momentum_gain", cfg_.joint_names, a.observer.momentum_gain);
-        std::cout << "      filter_alpha: " << std::fixed << std::setprecision(6) << a.observer.filter_alpha << '\n';
         std::cout << "    calibration:\n";
         std::cout << "      "; print_joint_yaml_map("torque_bias", cfg_.joint_names, a.calibration.torque_bias);
         std::cout << "      "; print_joint_yaml_map("torque_threshold", cfg_.joint_names, a.calibration.torque_threshold);
@@ -2467,17 +2499,6 @@ private:
         }
     }
 
-    void set_admittance_filter_alpha() {
-        const auto value = read_double("filter_alpha (0,1]，越小滤波越强: ");
-        if(!value || !std::isfinite(*value) || *value <= 0.0 || *value > 1.0) {
-            std::cout << "输入无效\n";
-            return;
-        }
-        auto candidate = cfg_.capability.admittance;
-        candidate.observer.filter_alpha = *value;
-        if(apply_runtime_admittance_cfg(candidate)) std::cout << "filter_alpha 已应用到当前进程\n";
-    }
-
     void set_admittance_momentum_gain() {
         std::vector<std::size_t> indices;
         if(!select_admittance_joints(indices)) return;
@@ -2495,6 +2516,52 @@ private:
         return mode == AdmittanceObserverMode::MOMENTUM ? "MOMENTUM" : "FULL_ID";
     }
 
+    void print_admittance_mdk_guide() const {
+        const auto& controller = cfg_.capability.admittance.controller;
+        constexpr double kPi = 3.14159265358979323846;
+
+        std::cout << "\n========== M / D / K 参数关系 ==========" << '\n';
+        std::cout << "导纳方程: M*Δq_ddot + D*Δq_dot + K*Δq = tau_ext_hat" << '\n';
+        std::cout << "虚拟机械阻抗: Z(s)=M*s^2 + D*s + K，导纳: G(s)=1/Z(s)" << '\n';
+        std::cout << "自然频率: ωn=sqrt(K/M), fn=ωn/(2π)" << '\n';
+        std::cout << "临界阻尼: Dcrit=2*sqrt(M*K), 阻尼比: ζ=D/Dcrit" << '\n';
+        std::cout << "恒定外力稳态退让: Δq_ss=tau_ext_hat/K" << '\n';
+        std::cout << "单位外力初始加速度: Δq_ddot(0)=tau_ext_hat/M" << "\n\n";
+        std::cout << "调参原则" << '\n';
+        std::cout << "  1 K 先定退让距离: K 越小，同样外力退让越远，回中更软" << '\n';
+        std::cout << "  2 M 再定启动惯性: M 越小启动越快，但更敏感于外力估计波动" << '\n';
+        std::cout << "  3 D 最后定阻尼比: 用 D=2*ζ*sqrt(M*K) 从目标 ζ 反算" << '\n';
+        std::cout << "阻尼比参考" << '\n';
+        std::cout << "  ζ<1  欠阻尼，更灵活/Q 弹但会有超调；0.6~0.8 可作为柔顺调参起点" << '\n';
+        std::cout << "  ζ≈1 临界阻尼，回中快且理论上无超调" << '\n';
+        std::cout << "  ζ>1 过阻尼，更稳但更黏、回中更拖" << '\n';
+        std::cout << "组合规律" << '\n';
+        std::cout << "  同倍率缩放 M/D/K 不改变 ωn 和 ζ；整体缩小会让同样外力产生更大退让" << '\n';
+        std::cout << "  固定 K 降低 M 并按目标 ζ 重算 D，可加快启动和回中而不改变稳态退让" << '\n';
+        std::cout << "  固定 M/K 只降低 D，会更 Q 弹但也更容易振荡" << "\n\n";
+        std::cout << "当前逐轴指标" << '\n';
+        std::cout << "  joint      M       D       K      ζ      ωn(rad/s)  fn(Hz)   Dcrit   1Nm退让(rad)" << '\n';
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            const auto metrics = compute_admittance_damping_metrics(
+                controller.mass[i], controller.damping[i], controller.stiffness[i]);
+            if(!metrics) {
+                std::cout << "  " << cfg_.joint_names[i] << "  当前 M/D/K 无法计算二阶指标" << '\n';
+                continue;
+            }
+            const double fn = metrics->natural_frequency / (2.0 * kPi);
+            const double retreat_per_nm = 1.0 / controller.stiffness[i];
+            std::cout << "  " << std::setw(6) << std::left << cfg_.joint_names[i] << std::right
+                << std::setw(8) << std::fixed << std::setprecision(3) << controller.mass[i]
+                << std::setw(8) << controller.damping[i]
+                << std::setw(8) << controller.stiffness[i]
+                << std::setw(7) << metrics->damping_ratio
+                << std::setw(12) << metrics->natural_frequency
+                << std::setw(9) << fn
+                << std::setw(9) << metrics->critical_damping
+                << std::setw(14) << retreat_per_nm << '\n';
+        }
+    }
+
     void print_admittance_controller_yaml() const {
         std::cout << "\n可直接复制并替换 core.yaml 中的 capability 区块\n";
         print_admittance_capability_yaml();
@@ -2510,13 +2577,14 @@ private:
 
         while(true) {
             std::cout << "\n------------ M / D / K 设置 ------------\n";
+            std::cout << "公式: M*Δq_ddot + D*Δq_dot + K*Δq=tau_ext，ζ=D/(2*sqrt(M*K))，ωn=sqrt(K/M)\n";
             std::cout << " 1. 虚拟质量 M\n";
             std::cout << " 2. 虚拟阻尼 D\n";
             std::cout << " 3. 虚拟刚度 K\n";
             std::cout << " 4. 最大位置修正 max_delta_q\n";
             std::cout << " 5. 最大速度修正 max_delta_q_dot\n";
-            std::cout << " 6. Observer filter_alpha\n";
-            std::cout << " 7. MOMENTUM momentum_gain\n";
+            std::cout << " 6. MOMENTUM momentum_gain\n";
+            std::cout << " 7. 参数关系与调参说明\n";
             std::cout << " 8. 打印当前可写回参数\n";
             std::cout << " 0. 返回\n";
             const auto selection = read_int("请选择: ");
@@ -2542,8 +2610,8 @@ private:
                     set_admittance_controller_vector(
                         "max_delta_q_dot", "最大速度修正 rad/s (>0): ", &AdmittanceControllerCfg::max_delta_q_dot, false);
                     break;
-                case 6: set_admittance_filter_alpha(); break;
-                case 7: set_admittance_momentum_gain(); break;
+                case 6: set_admittance_momentum_gain(); break;
+                case 7: print_admittance_mdk_guide(); break;
                 case 8: print_admittance_controller_yaml(); break;
                 default: std::cout << "未知菜单编号\n"; break;
             }
@@ -2565,7 +2633,11 @@ private:
                 last_static_validation_result_->pass.begin(),
                 last_static_validation_result_->pass.end(),
                 [](std::uint8_t value) { return value != 0; });
-            std::cout << "  本次静态验证   : " << (pass ? "PASS" : "FAIL") << '\n';
+            const bool max_warn = std::any_of(
+                last_static_validation_result_->guarded_max_utilization.begin(),
+                last_static_validation_result_->guarded_max_utilization.end(),
+                [](double value) { return value > 1.0; });
+            std::cout << "  本次静态验证   : " << (pass ? (max_warn ? "PASS + MAX_WARN" : "PASS") : "FAIL") << '\n';
         }
         if(last_friction_calibration_result_) {
             const bool pass = std::all_of(
@@ -2584,6 +2656,9 @@ private:
         print_vector("torque_threshold", a.calibration.torque_threshold);
         std::cout << "Observer: " << observer_mode_name(a.observer.mode) << '\n';
         print_vector("momentum_gain", a.observer.momentum_gain);
+        if(last_static_validation_result_) {
+            print_static_validation_diagnostics(*last_static_validation_result_);
+        }
         if(a.calibration.friction.enabled) {
             print_vector("friction_C+", a.calibration.friction.positive_coulomb);
             print_vector("friction_B+", a.calibration.friction.positive_viscous);
@@ -2670,7 +2745,6 @@ private:
                     };
                     std::cout << '\n';
                     if(output->residual_raw.size() == cfg_.joint_names.size()) print_inline("raw ", output->residual_raw);
-                    if(output->residual_filtered.size() == cfg_.joint_names.size()) print_inline("| filt ", output->residual_filtered);
                     if(output->bias_compensated.size() == cfg_.joint_names.size()) print_inline("| bias ", output->bias_compensated);
                     if(output->friction_residual_hat.size() == cfg_.joint_names.size()) print_inline("| fric ", output->friction_residual_hat);
                     if(output->friction_compensated.size() == cfg_.joint_names.size()) print_inline("| ext_pre_db ", output->friction_compensated);
@@ -2685,7 +2759,7 @@ private:
             }
         });
         std::string line;
-        read_line("\n实时观测中（raw→filt→bias→fric→tau_ext→Δq，TH=deadband, DQ/DQV=导纳限幅, SP/SV=Safety）；按 Enter 停止: ", line);
+        read_line("\n实时观测中（raw→bias→fric→tau_ext→Δq，TH=deadband, DQ/DQV=导纳限幅, SP/SV=Safety）；按 Enter 停止: ", line);
         stop.store(true);
         display.join();
         std::cout << '\n';
@@ -2702,7 +2776,6 @@ private:
         if(cfg_.capability.admittance.enabled || !cfg_.capability.admittance.joint_enabled.empty()) {
             const auto& a = cfg_.capability.admittance;
             std::cout << "admittance_observer     : " << observer_mode_name(a.observer.mode) << '\n';
-            std::cout << "admittance_filter_alpha : " << a.observer.filter_alpha << '\n';
             print_vector("momentum_gain", a.observer.momentum_gain);
             print_vector("admittance_M", a.controller.mass);
             print_vector("admittance_D", a.controller.damping);

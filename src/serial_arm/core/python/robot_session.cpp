@@ -355,8 +355,8 @@ void PyRobotSession::set_model_feedforward_mode(ModelFeedforwardMode mode) {
 void PyRobotSession::set_gravity_scale(const JointVector& gravity_scale) {
     validate_joint_vector(gravity_scale, "gravity_scale");
     for(double value : gravity_scale) {
-        if(value < 0.0 || value > 1.0) {
-            throw SerialArmPythonError("gravity_scale values must be in [0, 1]");
+        if(value < 0.0 || value > 2.0) {
+            throw SerialArmPythonError("gravity_scale values must be in [0, 2]");
         }
     }
 

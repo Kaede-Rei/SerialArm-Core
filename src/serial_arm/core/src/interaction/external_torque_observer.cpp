@@ -67,11 +67,11 @@ ExternalTorqueObserver::update(
     const TorqueResidualEstimate& residual,
     const JointVector& joint_velocity) {
     if(!is_configured_) return tl::make_unexpected(ExternalTorqueObserverErr::NOT_CONFIGURED);
-    if(residual.residual_filtered.size() != cfg_.joints_count ||
+    if(residual.residual.size() != cfg_.joints_count ||
         joint_velocity.size() != cfg_.joints_count) {
         return tl::make_unexpected(ExternalTorqueObserverErr::INVALID_INPUT_SIZE);
     }
-    if(!finite_vector(residual.residual_filtered) || !finite_vector(joint_velocity)) {
+    if(!finite_vector(residual.residual) || !finite_vector(joint_velocity)) {
         return tl::make_unexpected(ExternalTorqueObserverErr::NON_FINITE_INPUT);
     }
 
@@ -83,21 +83,24 @@ ExternalTorqueObserver::update(
     estimate.threshold_active.assign(cfg_.joints_count, 0);
 
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
-        const double bias_compensated = residual.residual_filtered[i] - cfg_.torque_bias[i];
+        const double bias_compensated = residual.residual[i] - cfg_.torque_bias[i];
         if(!std::isfinite(bias_compensated)) {
             return tl::make_unexpected(ExternalTorqueObserverErr::NON_FINITE_INPUT);
         }
         estimate.bias_compensated[i] = bias_compensated;
 
         double friction_residual_hat = 0.0;
-        if(cfg_.friction.enabled &&
-            std::abs(joint_velocity[i]) >= cfg_.friction.velocity_transition) {
+        const double speed = std::abs(joint_velocity[i]);
+        if(cfg_.friction.enabled && speed > 0.0) {
             const bool positive = joint_velocity[i] > 0.0;
             const double coulomb = positive ?
                 cfg_.friction.positive_coulomb[i] : cfg_.friction.negative_coulomb[i];
             const double viscous = positive ?
                 cfg_.friction.positive_viscous[i] : cfg_.friction.negative_viscous[i];
-            friction_residual_hat = coulomb + viscous * std::abs(joint_velocity[i]);
+            const double dynamic_prediction = coulomb + viscous * speed;
+            const double normalized_speed = std::clamp(speed / cfg_.friction.velocity_transition, 0.0, 1.0);
+            const double blend = normalized_speed * normalized_speed * (3.0 - 2.0 * normalized_speed);
+            friction_residual_hat = blend * dynamic_prediction;
         }
         estimate.friction_residual_hat[i] = friction_residual_hat;
 

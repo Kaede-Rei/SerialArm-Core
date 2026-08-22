@@ -562,9 +562,15 @@ void SerialArmSystem::stop_worker() {
  * @return 停放姿态满足判据返回 true，否则返回 false
  */
 bool SerialArmSystem::park_before_deactivate() {
-    const auto mode_result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
+    robot_->set_admittance_suspended(true);
+    const auto restore_admittance = [this]() {
+        robot_->set_admittance_suspended(false);
+    };
+
+    const auto mode_result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
     if(!mode_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", mode_result.error()).c_str());
+        restore_admittance();
         return false;
     }
 
@@ -575,8 +581,10 @@ bool SerialArmSystem::park_before_deactivate() {
     serial_arm::Robot::TimePoint last_progress_at = started_at;
     serial_arm::Robot::TimePoint settled_at = started_at;
     bool settled = false;
+    bool rigid_finish_mode = false;
+    const double rigid_finish_switch_s = 0.75 * cfg_.shutdown.timeout_s;
 
-    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking before deactivate");
+    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking before deactivate in COMPLIANT_TRACKING");
     while(robot_->get_state() == serial_arm::RobotState::ACTIVE && worker_running_.load()) {
         const serial_arm::Robot::TimePoint now = serial_arm::Robot::Clock::now();
         double dt = std::chrono::duration<double>(now - last_update).count();
@@ -638,7 +646,8 @@ bool SerialArmSystem::park_before_deactivate() {
             }
         }
 
-        if(max_position_error <= cfg_.shutdown.position_tolerance && max_velocity <= cfg_.shutdown.velocity_tolerance) {
+        const bool reached = max_position_error <= cfg_.shutdown.position_tolerance && max_velocity <= cfg_.shutdown.velocity_tolerance;
+        if(reached) {
             if(!settled) {
                 settled_at = now;
                 settled = true;
@@ -652,23 +661,30 @@ bool SerialArmSystem::park_before_deactivate() {
             settled = false;
         }
 
+        const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
+        if(!rigid_finish_mode && !reached && elapsed_s >= rigid_finish_switch_s) {
+            const auto rigid_result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
+            if(!rigid_result) {
+                clear_command();
+                static_cast<void>(robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD));
+                RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot switch parking to RIGID_TRACKING", rigid_result.error()).c_str());
+                restore_admittance();
+                return false;
+            }
+            rigid_finish_mode = true;
+            RCLCPP_WARN(rclcpp::get_logger(kLoggerName), "Parking exceeded 75%% of timeout and is not seated; switching to RIGID_TRACKING for final seating");
+        }
+
         if(std::chrono::duration<double>(now - last_progress_at).count() >= 1.0) {
             RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
             last_progress_at = now;
         }
 
-        if(std::chrono::duration<double>(now - started_at).count() > cfg_.shutdown.timeout_s) {
-            const double relaxed_position_tolerance = cfg_.shutdown.position_tolerance * cfg_.shutdown.relaxed_tolerance_ratio;
-            const double relaxed_velocity_tolerance = cfg_.shutdown.velocity_tolerance * cfg_.shutdown.relaxed_tolerance_ratio;
-            if(max_position_error <= relaxed_position_tolerance && max_velocity <= relaxed_velocity_tolerance) {
-                RCLCPP_WARN(rclcpp::get_logger(kLoggerName), "Parking strict check timed out, relaxed check passed");
-                clear_command();
-                return true;
-            }
-
+        if(elapsed_s > cfg_.shutdown.timeout_s) {
             clear_command();
             static_cast<void>(robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD));
-            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking timeout; keep ACTIVE in RIGID_HOLD. error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
+            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking timeout; strict seating check still failed, keep ACTIVE in RIGID_HOLD. error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
+            restore_admittance();
             return false;
         }
 
@@ -676,6 +692,7 @@ bool SerialArmSystem::park_before_deactivate() {
     }
 
     RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking aborted; Robot state is not ACTIVE or worker stopped");
+    restore_admittance();
     return false;
 }
 

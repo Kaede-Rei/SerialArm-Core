@@ -15,7 +15,7 @@ model:
   base_frame: base_link                                                       # 动力学基坐标系
   tool_frame: tool0                                                           # 动力学末端坐标系
   gravity: [0.0, 0.0, -9.81]                                                  # 世界坐标系重力加速度 m/s^2\
-  # 各关节重力补偿比例；1.0 表示使用完整模型重力
+  # 各关节重力补偿比例 [0,2]；1.0=URDF 原模型，>1.0 表示标定认为模型低估实际重力负载
   gravity_scale: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
 
 # 02 calibration
@@ -33,7 +33,7 @@ calibration:
 control:
   runtime:
     ctrl_frequency_hz: 200.0                            # Robot::cycle() 目标控制频率 Hz
-    joint_acc_filter_alpha: 0.2                         # 关节加速度一阶低通滤波系数；越小越平滑，越大越跟随实时变化
+    joint_acc_filter_alpha: 0.2                         # 实测关节加速度低通系数；FULL_ID 对 qdd 敏感，MOMENTUM 不显式使用 qdd
     write_enabled: false                                 # 是否允许向真实执行器写入控制命令；White 真机确认前保持 false
     model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
     tracking_impedance_mode: COMPLIANT_TRACKING         # 跟踪模式默认阻抗：RIGID_TRACKING / COMPLIANT_TRACKING
@@ -95,7 +95,7 @@ safety_policy:
 
 # 05 shutdown
 shutdown:
-  park_before_disable: true                         # 正常停机前是否先回到停放姿态
+  park_before_disable: true                         # 正常停机前是否以 COMPLIANT_TRACKING 回到停放姿态
   # 各关节停放目标位置 rad
   park_pos: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
   speed_scale: 0.10                                 # 停放轨迹速度相对正常速度的比例
@@ -114,12 +114,10 @@ capability:
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
 
     observer:
-      # MOMENTUM 不显式使用 qdd，FULL_ID 直接使用完整逆动力学 residual
+      # MOMENTUM 推荐真机且不显式使用 qdd；FULL_ID 使用 qdd 和完整逆动力学 residual
       mode: FULL_ID
       # MOMENTUM observer 收敛增益 rad/s，FULL_ID 下保留但不参与计算
       momentum_gain: {joint1: 25.0, joint2: 25.0, joint3: 25.0, joint4: 25.0, joint5: 25.0, joint6: 25.0}
-      # residual 一阶低通系数，越大越接近当前采样值
-      filter_alpha: 0.10
 
     calibration:
       # 无外力时 observer residual 固定零偏 Nm，由静态标定生成
@@ -129,7 +127,7 @@ capability:
       friction:
         # 是否使用双向 Coulomb + viscous 动态摩擦 residual 模型
         enabled: false
-        # 仅当 |dq| 达到该速度后使用动态摩擦模型 rad/s
+        # 动态摩擦从零速连续渐入，并在 |dq| 达到该速度时完整生效 rad/s
         velocity_transition: 0.03
         # dq>0 时的 signed Coulomb residual Nm，由摩擦标定生成
         positive_coulomb: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
@@ -140,14 +138,19 @@ capability:
         # dq<0 时的 signed viscous residual 斜率 Nm/(rad/s)，由摩擦标定生成
         negative_viscous: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
 
+    # 固定关节导纳: M*Δq_ddot + D*Δq_dot + K*Δq = tau_ext_hat
+    # 虚拟机械阻抗 Z(s)=M*s^2+D*s+K，导纳 G(s)=1/Z(s)
+    # 二阶关系: ωn=sqrt(K/M), Dcrit=2*sqrt(M*K), ζ=D/Dcrit
+    # 恒力稳态: Δq_ss=tau_ext_hat/K；同倍率缩放 M/D/K 不改变 ωn 和 ζ
+    # 调参顺序: 先用 K 定退让距离，再用 M 定启动惯性，最后用 D=2*ζ*sqrt(M*K) 定阻尼比
     controller:
-      # 虚拟质量 M，越大启动越缓和
+      # 虚拟质量 M > 0，单位 Nm*s^2/rad；越小启动越快，过小会更敏感于外力估计波动
       mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
-      # 虚拟阻尼 D，越大运动越稳但手感越黏
+      # 虚拟阻尼 D >= 0，单位 Nm*s/rad；ζ<1 更灵活/Q 弹，ζ≈1 临界阻尼，ζ>1 更稳但更黏
       damping: {joint1: 6.0, joint2: 6.0, joint3: 6.0, joint4: 6.0, joint5: 6.0, joint6: 6.0}
-      # 虚拟刚度 K，越大松手回到 nominal q 的能力越强
+      # 虚拟刚度 K >= 0，单位 Nm/rad；越小退让越远，K=0 时不自动回中
       stiffness: {joint1: 20.0, joint2: 20.0, joint3: 20.0, joint4: 20.0, joint5: 20.0, joint6: 20.0}
-      # 最大导纳位置修正绝对值 rad
+      # 最大导纳位置修正绝对值 rad，仅作安全限幅而不参与 M/D/K 动态关系
       max_delta_q: {joint1: 0.10, joint2: 0.10, joint3: 0.10, joint4: 0.10, joint5: 0.10, joint6: 0.10}
-      # 最大导纳速度修正绝对值 rad/s
+      # 最大导纳速度修正绝对值 rad/s，仅作安全限幅而不参与 M/D/K 动态关系
       max_delta_q_dot: {joint1: 0.30, joint2: 0.30, joint3: 0.30, joint4: 0.30, joint5: 0.30, joint6: 0.30}

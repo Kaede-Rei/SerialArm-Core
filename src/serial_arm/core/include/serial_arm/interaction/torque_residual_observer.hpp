@@ -26,8 +26,6 @@ enum class TorqueResidualObserverErr {
  */
 struct TorqueResidualObserverCfg {
     std::size_t joints_count{ 0 };              ///< 受控关节数量
-    double filter_alpha{ 0.1 };                 ///< 一阶低通滤波系数
-    JointVector initial_filtered_residual;      ///< reset 后的滤波初值；导纳链使用 torque_bias，避免首帧 raw residual 直通
 };
 
 /**
@@ -35,7 +33,7 @@ struct TorqueResidualObserverCfg {
  */
 struct TorqueResidualEstimate {
     JointVector residual;           ///< model_torque - measured_torque
-    JointVector residual_filtered;  ///< 滤波后的 residual
+    JointVector residual_filtered;  ///< 兼容字段，当前与 residual 相同
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
@@ -54,9 +52,7 @@ public:
 
 private:
     TorqueResidualObserverCfg cfg_;  ///< observer 配置
-    JointVector filtered_;           ///< residual 滤波历史
     bool is_configured_{ false };    ///< 是否已经完成配置
-    bool has_sample_{ false };       ///< 是否已经接收过有效 sample
 };
 
 } // namespace serial_arm

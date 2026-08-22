@@ -102,7 +102,7 @@ struct RobotCycleOutput {
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
     JointVector residual_raw;                              ///< 正式 observer 的 raw residual
     JointVector full_id_residual_raw;                      ///< FULL-ID 对照 residual，仅诊断
-    JointVector residual_filtered;                         ///< 低通后的 residual
+    JointVector residual_filtered;                         ///< 兼容字段，当前与 residual_raw 相同
     JointVector bias_compensated;                          ///< residual_filtered - torque_bias
     JointVector friction_residual_hat;                      ///< 速度相关摩擦 residual 预测
     JointVector friction_compensated;                       ///< bias 后减去摩擦 residual

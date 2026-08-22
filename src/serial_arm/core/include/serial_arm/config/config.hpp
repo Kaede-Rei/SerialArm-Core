@@ -41,7 +41,6 @@ struct RuntimeCfg {
 struct AdmittanceObserverCfg {
     AdmittanceObserverMode mode{ AdmittanceObserverMode::FULL_ID }; ///< FULL_ID 或 MOMENTUM 外力估计模式
     JointVector momentum_gain;                  ///< momentum observer 一阶增益 rad/s
-    double filter_alpha{ 0.1 };                 ///< observer residual 一阶低通滤波系数
 };
 
 /**
@@ -108,7 +107,7 @@ struct DynamicsCfg {
     std::string base_frame{ "base_link" };              ///< 模型底座坐标系名称
     std::string tool_frame{ "tool0" };                  ///< 模型末端工具坐标系名称
     std::array<double, 3> gravity{ 0.0, 0.0, -9.81 };   ///< 重力加速度向量，单位 m/s²
-    JointVector gravity_scale;                          ///< 重力补偿缩放系数，顺序与 joint_names 一致
+    JointVector gravity_scale;                          ///< 重力补偿缩放系数 [0,2]，1.0 表示 URDF 原模型，顺序与 joint_names 一致
 };
 
 /**

@@ -26,7 +26,7 @@ JointCtrlCmd nominal_cmd(double pos = 1.0) {
 InteractionControllerCfg enabled_cfg() {
     InteractionControllerCfg cfg;
     cfg.enabled = true;
-    cfg.residual = TorqueResidualObserverCfg{ 1, 1.0, {} };
+    cfg.residual = TorqueResidualObserverCfg{ 1 };
     cfg.external_torque.joints_count = 1;
     cfg.external_torque.torque_bias = { 0.2 };
     cfg.external_torque.torque_threshold = { 0.3 };
@@ -42,9 +42,9 @@ InteractionControllerCfg enabled_cfg() {
 
 } // namespace
 
-TEST(TorqueResidualObserverTests, FiltersModelTorqueMinusMeasuredTorque) {
+TEST(TorqueResidualObserverTests, ComputesModelTorqueMinusMeasuredTorqueWithoutExtraFiltering) {
     TorqueResidualObserver observer;
-    ASSERT_TRUE(observer.configure(TorqueResidualObserverCfg{ 1, 0.5, {} }));
+    ASSERT_TRUE(observer.configure(TorqueResidualObserverCfg{ 1 }));
 
     auto first = observer.update(JointVector{ 2.0 }, JointVector{ 1.0 });
     ASSERT_TRUE(first);
@@ -54,32 +54,11 @@ TEST(TorqueResidualObserverTests, FiltersModelTorqueMinusMeasuredTorque) {
     auto second = observer.update(JointVector{ 0.0 }, JointVector{ 1.0 });
     ASSERT_TRUE(second);
     EXPECT_DOUBLE_EQ(second->residual[0], 1.0);
-    EXPECT_NEAR(second->residual_filtered[0], 0.0, 1e-12);
+    EXPECT_DOUBLE_EQ(second->residual_filtered[0], 1.0);
 }
 
-
-TEST(TorqueResidualObserverTests, BiasPrimedResetFiltersFirstSampleInsteadOfPassingRawResidual) {
-    TorqueResidualObserver observer;
-    TorqueResidualObserverCfg cfg;
-    cfg.joints_count = 1;
-    cfg.filter_alpha = 0.1;
-    cfg.initial_filtered_residual = { 0.2 };
-    ASSERT_TRUE(observer.configure(cfg));
-
-    auto first = observer.update(JointVector{ 0.0 }, JointVector{ 0.5 });
-    ASSERT_TRUE(first);
-    EXPECT_DOUBLE_EQ(first->residual[0], 0.5);
-    EXPECT_NEAR(first->residual_filtered[0], 0.23, 1e-12);
-
-    observer.reset();
-    auto after_reset = observer.update(JointVector{ 0.0 }, JointVector{ 0.5 });
-    ASSERT_TRUE(after_reset);
-    EXPECT_NEAR(after_reset->residual_filtered[0], 0.23, 1e-12);
-}
-
-TEST(InteractionControllerTests, UsesTorqueBiasAsResidualFilterResetBaseline) {
+TEST(InteractionControllerTests, AppliesTorqueBiasAfterDirectResidual) {
     auto cfg = enabled_cfg();
-    cfg.residual.filter_alpha = 0.1;
     ASSERT_DOUBLE_EQ(cfg.external_torque.torque_bias[0], 0.2);
 
     InteractionController controller;
@@ -95,7 +74,8 @@ TEST(InteractionControllerTests, UsesTorqueBiasAsResidualFilterResetBaseline) {
     });
     ASSERT_TRUE(output);
     ASSERT_EQ(output->residual.residual_filtered.size(), 1u);
-    EXPECT_NEAR(output->residual.residual_filtered[0], 0.23, 1e-12);
+    EXPECT_DOUBLE_EQ(output->residual.residual_filtered[0], 0.5);
+    EXPECT_DOUBLE_EQ(output->bias_compensated[0], 0.3);
 }
 
 TEST(JointAdmittanceControllerTests, ComputesCriticalDampingAndDampingRatio) {
@@ -135,12 +115,33 @@ TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPos
     EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 1 });
     EXPECT_NEAR(result->gravity_scale[0], 0.8, 1e-6);
     EXPECT_NEAR(result->torque_bias[0], 0.2, 1e-6);
-    // Threshold is derived from the unfiltered static residual envelope, so later
-    // filter_alpha tuning does not change the one-time calibration semantics.
+    // Threshold is derived directly from the static residual envelope.
     EXPECT_NEAR(result->residual_p99[0], 0.01, 1e-12);
     // The synthetic feedback occupies two repeated levels 0.02 Nm apart, so the
     // quantization guard reserves one further level beyond the 0.01 Nm envelope.
     EXPECT_NEAR(result->torque_threshold[0], 0.03 * (1.0 + 1e-6), 1e-12);
+}
+
+TEST(AdmittanceStaticCalibrationTests, AllowsGravityScaleAboveOneWhenModelUnderestimatesLoad) {
+    std::vector<AdmittanceStaticPoseSamples> poses(3);
+    const std::vector<double> gravity_values{ -2.0, 0.0, 2.0 };
+    for(std::size_t p = 0; p < poses.size(); ++p) {
+        const double g = gravity_values[p];
+        for(int k = 0; k < 10; ++k) {
+            const double measured = 1.4 * g - 0.15;
+            poses[p].samples.push_back(AdmittanceStaticSample{ JointVector{ g }, JointVector{ measured } });
+        }
+    }
+
+    AdmittanceStaticCalibrationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.fallback_gravity_scale = { 1.0 };
+    cfg.gravity_observability_span = 0.25;
+
+    auto result = calibrate_admittance_static(poses, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 1 });
+    EXPECT_NEAR(result->gravity_scale[0], 1.4, 1e-12);
 }
 
 TEST(AdmittanceStaticCalibrationTests, FitsEachStaticPoseWithEqualWeightRegardlessOfFrameCount) {
@@ -316,6 +317,26 @@ TEST(AdmittanceStaticCalibrationTests, ValidationStillFailsWhenPersistentResidua
     EXPECT_NEAR(result->residual_p99[0], 0.06, 1e-12);
     EXPECT_NEAR(result->feedback_quantization_step[0], 0.0, 1e-12);
     EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 0 });
+}
+
+TEST(AdmittanceStaticCalibrationTests, ValidationTreatsSingleFrameMaxOutlierAsWarningWhenP99Passes) {
+    AdmittanceStaticPoseSamples pose;
+    for(int k = 0; k < 199; ++k) {
+        pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.04 } });
+    }
+    pose.samples.push_back(AdmittanceStaticSample{ JointVector{ 0.0 }, JointVector{ -0.20 } });
+
+    AdmittanceStaticValidationCfg cfg;
+    cfg.joints_count = 1;
+    cfg.gravity_scale = { 1.0 };
+    cfg.torque_bias = { 0.0 };
+    cfg.torque_threshold = { 0.05 };
+
+    auto result = evaluate_admittance_static_validation({ pose }, cfg);
+    ASSERT_TRUE(result);
+    EXPECT_LT(result->residual_p99[0], cfg.torque_threshold[0]);
+    EXPECT_GT(result->residual_max[0], result->guarded_max_limit[0]);
+    EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 1 });
 }
 
 TEST(ExternalTorqueObserverTests, AppliesBiasAndContinuousDeadband) {
@@ -545,12 +566,12 @@ TEST(ExternalTorqueObserverTests, RemovesCalibratedMovingFrictionResidualBeforeT
     EXPECT_NEAR(estimate->tau_ext_hat[0], 0.10, 1e-12);
 }
 
-TEST(ExternalTorqueObserverTests, DoesNotApplyDynamicFrictionBelowVelocityTransition) {
+TEST(ExternalTorqueObserverTests, RampsDynamicFrictionContinuouslyUpToVelocityTransition) {
     ExternalTorqueObserver observer;
     ExternalTorqueObserverCfg cfg;
     cfg.joints_count = 1;
     cfg.torque_bias = { 0.0 };
-    cfg.torque_threshold = { 0.05 };
+    cfg.torque_threshold = { 0.0 };
     cfg.friction.enabled = true;
     cfg.friction.velocity_transition = 0.03;
     cfg.friction.positive_coulomb = { -0.20 };
@@ -562,11 +583,18 @@ TEST(ExternalTorqueObserverTests, DoesNotApplyDynamicFrictionBelowVelocityTransi
     TorqueResidualEstimate residual;
     residual.residual = { -0.15 };
     residual.residual_filtered = { -0.15 };
-    const auto estimate = observer.update(residual, JointVector{ 0.01 });
-    ASSERT_TRUE(estimate);
-    EXPECT_NEAR(estimate->friction_residual_hat[0], 0.0, 1e-12);
-    EXPECT_NEAR(estimate->friction_compensated[0], -0.15, 1e-12);
-    EXPECT_NEAR(estimate->tau_ext_hat[0], -0.10, 1e-12);
+
+    const auto stopped = observer.update(residual, JointVector{ 0.0 });
+    ASSERT_TRUE(stopped);
+    EXPECT_NEAR(stopped->friction_residual_hat[0], 0.0, 1e-12);
+
+    const auto halfway = observer.update(residual, JointVector{ 0.015 });
+    ASSERT_TRUE(halfway);
+    EXPECT_NEAR(halfway->friction_residual_hat[0], -0.10, 1e-12);
+
+    const auto full = observer.update(residual, JointVector{ 0.03 });
+    ASSERT_TRUE(full);
+    EXPECT_NEAR(full->friction_residual_hat[0], -0.20, 1e-12);
 }
 
 TEST(GeneralizedMomentumObserverTests, ConvergesToConstantExternalTorqueWithoutAccelerationInput) {
