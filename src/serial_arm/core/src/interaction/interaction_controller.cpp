@@ -4,7 +4,8 @@
 
 namespace serial_arm {
 
-tl::expected<void, InteractionControllerErr> InteractionController::configure(const InteractionControllerCfg& cfg) {
+tl::expected<void, InteractionControllerErr>
+InteractionController::configure(const InteractionControllerCfg& cfg) {
     if(is_configured_) return tl::make_unexpected(InteractionControllerErr::ALREADY_CONFIGURED);
 
     if(!cfg.enabled) {
@@ -27,7 +28,8 @@ tl::expected<void, InteractionControllerErr> InteractionController::configure(co
         !admittance_controller.configure(cfg.admittance)) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     }
-    if(cfg.observer_mode == AdmittanceObserverMode::MOMENTUM && !momentum_observer.configure(cfg.momentum)) {
+    if(cfg.observer_mode == AdmittanceObserverMode::MOMENTUM &&
+        !momentum_observer.configure(cfg.momentum)) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     }
 
@@ -40,7 +42,8 @@ tl::expected<void, InteractionControllerErr> InteractionController::configure(co
     return {};
 }
 
-tl::expected<InteractionOutput, InteractionControllerErr> InteractionController::update(const InteractionInput& input) {
+tl::expected<InteractionOutput, InteractionControllerErr>
+InteractionController::update(const InteractionInput& input) {
     if(!is_configured_) return tl::make_unexpected(InteractionControllerErr::NOT_CONFIGURED);
 
     InteractionOutput output;
@@ -73,7 +76,7 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
 
     JointVector measured_velocity = input.measured_velocity;
     if(measured_velocity.empty()) measured_velocity.assign(cfg_.external_torque.joints_count, 0.0);
-    auto tau_ext = external_torque_observer_.update(output.residual, measured_velocity, input.dt);
+    auto tau_ext = external_torque_observer_.update(output.residual, measured_velocity);
     if(!tau_ext) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
 
     auto admittance = admittance_controller_.update(JointAdmittanceInput{
@@ -83,7 +86,6 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
         input.max_delta_q,
         input.min_delta_q_dot,
         input.max_delta_q_dot,
-        tau_ext->contact_confidence,
     });
     if(!admittance) return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
     if(output.corrected_cmd.pos.size() != admittance->delta_q.size() ||
@@ -95,16 +97,14 @@ tl::expected<InteractionOutput, InteractionControllerErr> InteractionController:
     output.friction_residual_hat = std::move(tau_ext->friction_residual_hat);
     output.friction_compensated = std::move(tau_ext->friction_compensated);
     output.tau_ext_hat = std::move(tau_ext->tau_ext_hat);
-    output.contact_confidence = std::move(tau_ext->contact_confidence);
     output.threshold_active = std::move(tau_ext->threshold_active);
     output.delta_q = std::move(admittance->delta_q);
     output.delta_q_dot = std::move(admittance->delta_q_dot);
     output.delta_q_limited = std::move(admittance->delta_q_limited);
     output.delta_q_dot_limited = std::move(admittance->delta_q_dot_limited);
-    output.contact_blend = std::move(admittance->contact_blend);
-    output.effective_damping = std::move(admittance->effective_damping);
-    output.effective_stiffness = std::move(admittance->effective_stiffness);
+
     for(std::size_t i = 0; i < output.delta_q.size(); ++i) {
+        // Outer admittance only shifts the reference produced by the existing joint controller
         output.corrected_cmd.pos[i] += output.delta_q[i];
         output.corrected_cmd.vel[i] += output.delta_q_dot[i];
     }

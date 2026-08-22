@@ -20,11 +20,6 @@ bool valid_cfg_vector(const JointVector& values, std::size_t expected_size, bool
     });
 }
 
-double smoothstep01(double x) {
-    x = std::clamp(x, 0.0, 1.0);
-    return x * x * (3.0 - 2.0 * x);
-}
-
 } // namespace
 
 tl::expected<AdmittanceDampingMetrics, JointAdmittanceControllerErr>
@@ -61,28 +56,10 @@ JointAdmittanceController::configure(const JointAdmittanceControllerCfg& cfg) {
     })) {
         return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_CFG);
     }
-    if(cfg.variable.enabled &&
-        (!std::isfinite(cfg.variable.engage_time_s) || cfg.variable.engage_time_s <= 0.0 ||
-         !std::isfinite(cfg.variable.release_time_s) || cfg.variable.release_time_s <= 0.0 ||
-         !std::isfinite(cfg.variable.soft_velocity_ratio) || cfg.variable.soft_velocity_ratio <= 0.0 ||
-         cfg.variable.soft_velocity_ratio >= 1.0 ||
-         !std::isfinite(cfg.variable.max_damping_multiplier) || cfg.variable.max_damping_multiplier < 1.0 ||
-         (!cfg.variable.soft_velocity.empty() &&
-          !valid_cfg_vector(cfg.variable.soft_velocity, cfg.joints_count, false)))) {
-        return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_CFG);
-    }
-    if(cfg.variable.enabled && !cfg.variable.soft_velocity.empty()) {
-        for(std::size_t i = 0; i < cfg.joints_count; ++i) {
-            if(cfg.variable.soft_velocity[i] >= cfg.max_delta_q_dot[i]) {
-                return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_CFG);
-            }
-        }
-    }
 
     cfg_ = cfg;
     delta_q_.assign(cfg_.joints_count, 0.0);
     delta_q_dot_.assign(cfg_.joints_count, 0.0);
-    contact_blend_.assign(cfg_.joints_count, 0.0);
     is_configured_ = true;
     return {};
 }
@@ -90,12 +67,10 @@ JointAdmittanceController::configure(const JointAdmittanceControllerCfg& cfg) {
 tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr>
 JointAdmittanceController::update(const JointAdmittanceInput& input) {
     if(!is_configured_) return tl::make_unexpected(JointAdmittanceControllerErr::NOT_CONFIGURED);
-    if(input.tau_ext_hat.size() != cfg_.joints_count ||
-        (!input.contact_confidence.empty() && input.contact_confidence.size() != cfg_.joints_count)) {
+    if(input.tau_ext_hat.size() != cfg_.joints_count) {
         return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_INPUT_SIZE);
     }
-    if(!finite_vector(input.tau_ext_hat) ||
-        (!input.contact_confidence.empty() && !finite_vector(input.contact_confidence))) {
+    if(!finite_vector(input.tau_ext_hat)) {
         return tl::make_unexpected(JointAdmittanceControllerErr::NON_FINITE_INPUT);
     }
     if(!std::isfinite(input.dt) || input.dt <= 0.0) {
@@ -119,14 +94,11 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
 
     std::vector<std::uint8_t> delta_q_limited(cfg_.joints_count, 0);
     std::vector<std::uint8_t> delta_q_dot_limited(cfg_.joints_count, 0);
-    JointVector effective_damping(cfg_.joints_count, 0.0);
-    JointVector effective_stiffness(cfg_.joints_count, 0.0);
 
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
         if(cfg_.enabled[i] == 0) {
             delta_q_[i] = 0.0;
             delta_q_dot_[i] = 0.0;
-            contact_blend_[i] = 0.0;
             continue;
         }
 
@@ -148,41 +120,10 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
             }
         }
 
-        double d_eff = cfg_.damping[i];
-        double k_eff = cfg_.stiffness[i];
-        if(cfg_.variable.enabled) {
-            const double target = input.contact_confidence.empty() ? 0.0 :
-                std::clamp(input.contact_confidence[i], 0.0, 1.0);
-            const double time_constant = target > contact_blend_[i] ?
-                cfg_.variable.engage_time_s : cfg_.variable.release_time_s;
-            const double blend_alpha = 1.0 - std::exp(-input.dt / time_constant);
-            contact_blend_[i] += blend_alpha * (target - contact_blend_[i]);
-            contact_blend_[i] = std::clamp(contact_blend_[i], 0.0, 1.0);
-
-            k_eff = cfg_.stiffness[i] * (1.0 - contact_blend_[i]);
-            const double return_damping = cfg_.stiffness[i] > 0.0 ?
-                2.0 * std::sqrt(cfg_.mass[i] * cfg_.stiffness[i]) : cfg_.damping[i];
-            d_eff = contact_blend_[i] * cfg_.damping[i] +
-                (1.0 - contact_blend_[i]) * return_damping;
-
-            const double hard_speed = cfg_.max_delta_q_dot[i];
-            const double soft_speed = cfg_.variable.soft_velocity.empty() ?
-                cfg_.variable.soft_velocity_ratio * hard_speed : cfg_.variable.soft_velocity[i];
-            if(hard_speed > soft_speed && std::abs(delta_q_dot_[i]) > soft_speed) {
-                const double ratio = (std::abs(delta_q_dot_[i]) - soft_speed) /
-                    (hard_speed - soft_speed);
-                const double wall = smoothstep01(ratio);
-                d_eff *= 1.0 + (cfg_.variable.max_damping_multiplier - 1.0) * wall;
-            }
-        }
-        else {
-            contact_blend_[i] = 0.0;
-        }
-        effective_damping[i] = d_eff;
-        effective_stiffness[i] = k_eff;
-
         const double delta_q_ddot = (input.tau_ext_hat[i] -
-            d_eff * delta_q_dot_[i] - k_eff * delta_q_[i]) / cfg_.mass[i];
+            cfg_.damping[i] * delta_q_dot_[i] -
+            cfg_.stiffness[i] * delta_q_[i]) / cfg_.mass[i];
+
         const double unclamped_delta_q_dot = delta_q_dot_[i] + delta_q_ddot * input.dt;
         delta_q_dot_[i] = std::clamp(unclamped_delta_q_dot, min_delta_q_dot, max_delta_q_dot);
         if(delta_q_dot_[i] != unclamped_delta_q_dot) delta_q_dot_limited[i] = 1;
@@ -198,8 +139,7 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
             delta_q_dot_[i] = 0.0;
         }
 
-        if(!std::isfinite(delta_q_[i]) || !std::isfinite(delta_q_dot_[i]) ||
-            !std::isfinite(d_eff) || !std::isfinite(k_eff)) {
+        if(!std::isfinite(delta_q_[i]) || !std::isfinite(delta_q_dot_[i])) {
             return tl::make_unexpected(JointAdmittanceControllerErr::NON_FINITE_INPUT);
         }
     }
@@ -209,16 +149,12 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
         delta_q_dot_,
         std::move(delta_q_limited),
         std::move(delta_q_dot_limited),
-        contact_blend_,
-        std::move(effective_damping),
-        std::move(effective_stiffness),
     };
 }
 
 void JointAdmittanceController::reset() {
     std::fill(delta_q_.begin(), delta_q_.end(), 0.0);
     std::fill(delta_q_dot_.begin(), delta_q_dot_.end(), 0.0);
-    std::fill(contact_blend_.begin(), contact_blend_.end(), 0.0);
 }
 
 bool JointAdmittanceController::is_configured() const noexcept {

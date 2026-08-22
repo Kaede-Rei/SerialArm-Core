@@ -155,14 +155,17 @@ void configure_test_admittance(
     admittance.observer.filter_alpha = filter_alpha;
     admittance.calibration.torque_bias = { 0.0 };
     admittance.calibration.torque_threshold = { torque_threshold };
-    admittance.feel.comfortable_torque = { d };
-    admittance.feel.follow_speed = { 1.0 };
-    admittance.feel.start_response_s = { 3.0 * mass / d };
-    admittance.feel.q_elastic_start_speed = { 0.5 * max_delta_q_dot };
-    admittance.feel.return_time_s = { 4.74 * std::sqrt(mass / k) };
-    admittance.feel.max_retreat = { max_delta_q };
-    admittance.feel.max_correction_speed = { max_delta_q_dot };
-    admittance.feel.q_elastic_max_resistance_ratio = 4.0;
+    admittance.calibration.friction.enabled = false;
+    admittance.calibration.friction.velocity_transition = 0.03;
+    admittance.calibration.friction.positive_coulomb = { 0.0 };
+    admittance.calibration.friction.positive_viscous = { 0.0 };
+    admittance.calibration.friction.negative_coulomb = { 0.0 };
+    admittance.calibration.friction.negative_viscous = { 0.0 };
+    admittance.controller.mass = { mass };
+    admittance.controller.damping = { d };
+    admittance.controller.stiffness = { k };
+    admittance.controller.max_delta_q = { max_delta_q };
+    admittance.controller.max_delta_q_dot = { max_delta_q_dot };
 }
 
 class FakeMotorBus final : public MotorBus {
@@ -779,19 +782,16 @@ TEST(AdmittanceCapabilityValidation, DisabledCapabilityDoesNotRequireJointParame
     EXPECT_TRUE(validate_robot_core_cfg(cfg));
 }
 
-TEST(AdmittanceFeelDerivation, SemanticFeelDerivesInternalMDK) {
+TEST(AdmittanceControllerConfig, DirectMDKIsPreservedWithoutSemanticDerivation) {
     AdmittanceCapabilityCfg cfg;
     configure_test_admittance(cfg, 0.4, 3.6, 8.0, 1.0, 1.0, 0.0, 0.95);
 
-    const auto derived = derive_admittance_controller_cfg(cfg);
-    ASSERT_EQ(derived.joints_count, 1u);
-    EXPECT_NEAR(derived.damping[0], 3.6, 1e-12);
-    EXPECT_NEAR(derived.mass[0], 0.4, 1e-12);
-    EXPECT_NEAR(derived.stiffness[0], 8.0, 1e-12);
-    EXPECT_DOUBLE_EQ(derived.max_delta_q[0], 1.0);
-    EXPECT_DOUBLE_EQ(derived.max_delta_q_dot[0], 1.0);
-    EXPECT_TRUE(derived.variable.enabled);
-    EXPECT_DOUBLE_EQ(derived.variable.soft_velocity[0], 0.5);
+    ASSERT_EQ(cfg.controller.mass.size(), 1u);
+    EXPECT_NEAR(cfg.controller.mass[0], 0.4, 1e-12);
+    EXPECT_NEAR(cfg.controller.damping[0], 3.6, 1e-12);
+    EXPECT_NEAR(cfg.controller.stiffness[0], 8.0, 1e-12);
+    EXPECT_DOUBLE_EQ(cfg.controller.max_delta_q[0], 1.0);
+    EXPECT_DOUBLE_EQ(cfg.controller.max_delta_q_dot[0], 1.0);
 }
 
 TEST(AdmittanceCapabilityValidation, EnabledCapabilityRequiresValidPerJointParameters) {
@@ -800,12 +800,12 @@ TEST(AdmittanceCapabilityValidation, EnabledCapabilityRequiresValidPerJointParam
     configure_test_admittance(admittance, 5.0, 8.0, 20.0, 0.005, 0.01, 0.0, 0.1);
     EXPECT_TRUE(validate_robot_core_cfg(cfg));
 
-    admittance.feel.comfortable_torque[0] = 0.0;
-    auto invalid_feel = validate_robot_core_cfg(cfg);
-    ASSERT_FALSE(invalid_feel);
-    EXPECT_EQ(invalid_feel.error().code, ConfigErr::INVALID_VALUE);
+    admittance.controller.mass[0] = 0.0;
+    auto invalid_controller = validate_robot_core_cfg(cfg);
+    ASSERT_FALSE(invalid_controller);
+    EXPECT_EQ(invalid_controller.error().code, ConfigErr::INVALID_VALUE);
 
-    admittance.feel.comfortable_torque[0] = 8.0;
+    admittance.controller.mass[0] = 5.0;
     admittance.calibration.torque_threshold[0] = -0.1;
     auto invalid_threshold = validate_robot_core_cfg(cfg);
     ASSERT_FALSE(invalid_threshold);
@@ -856,51 +856,6 @@ TEST(RobotAdmittanceCapability, EnabledCapabilityCorrectsNominalCommandBeforeSaf
     EXPECT_LT(output->joint_cmd.pos[0], 0.0);
     EXPECT_LT(output->joint_cmd.vel[0], 0.0);
     EXPECT_EQ(bus_raw->last_cmd.pos, output->actuator_cmd.pos);
-}
-
-TEST(RobotAdmittanceCapability, KineticFrictionFeedforwardIsZeroAtRestAndBoundedInMotion) {
-    RobotCfg cfg = robot_cfg_for_validation(false);
-    cfg.runtime.write_enabled = true;
-    auto& admittance = cfg.capability.admittance;
-    configure_test_admittance(admittance, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0); // suppress synthetic residual
-    admittance.calibration.friction.enabled = true;
-    admittance.calibration.friction.velocity_transition = 0.03;
-    admittance.calibration.friction.zero_velocity_adaptation_s = 0.6;
-    admittance.calibration.friction.kinetic_feedforward_scale = 0.5;
-    admittance.calibration.friction.positive_coulomb = { -0.20 };
-    admittance.calibration.friction.positive_viscous = { 0.0 };
-    admittance.calibration.friction.negative_coulomb = { 0.20 };
-    admittance.calibration.friction.negative_viscous = { 0.0 };
-
-    auto bus = std::make_unique<FakeMotorBus>();
-    FakeMotorBus* bus_raw = bus.get();
-    bus_raw->state.tor[0] = 0.0;
-    bus_raw->state.vel[0] = 0.0;
-
-    ModelFeedforwardFn model = [](ModelFeedforwardMode mode, const JointState& state, const JointVector&, const JointVector&, double) {
-        if(mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS) {
-            return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), -0.20));
-        }
-        return tl::expected<JointVector, ModelFeedforwardErr>(JointVector(state.pos.size(), 0.0));
-        };
-
-    Robot robot;
-    ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));
-    ASSERT_TRUE(robot.activate());
-
-    auto stopped = robot.cycle(Robot::Clock::now());
-    ASSERT_TRUE(stopped);
-    ASSERT_EQ(stopped->friction_feedforward.size(), 1u);
-    EXPECT_NEAR(stopped->friction_feedforward[0], 0.0, 1e-12);
-
-    bus_raw->state.vel[0] = 0.20;
-    auto moving = robot.cycle(Robot::Clock::now() + std::chrono::milliseconds(10));
-    ASSERT_TRUE(moving);
-    ASSERT_EQ(moving->friction_residual_hat.size(), 1u);
-    ASSERT_EQ(moving->friction_feedforward.size(), 1u);
-    EXPECT_NEAR(moving->friction_residual_hat[0], -0.20, 1e-9);
-    EXPECT_NEAR(moving->friction_feedforward[0], 0.10, 1e-9);
-    EXPECT_LT(std::abs(moving->friction_feedforward[0]), std::abs(moving->friction_residual_hat[0]));
 }
 
 TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
@@ -1067,14 +1022,15 @@ TEST(RobotAdmittanceCapability, RuntimeConfigUpdateResetsStateAndExposesTelemetr
     ASSERT_TRUE(robot.activate());
 
     auto updated = admittance;
-    updated.feel.comfortable_torque[0] = 2.0;
-    updated.feel.follow_speed[0] = 1.0;
-    updated.feel.start_response_s[0] = 0.75;
-    updated.feel.max_correction_speed[0] = 0.2;
+    updated.controller.mass[0] = 0.5;
+    updated.controller.damping[0] = 2.0;
+    updated.controller.stiffness[0] = 4.0;
+    updated.controller.max_delta_q_dot[0] = 0.2;
     ASSERT_TRUE(robot.set_admittance_cfg(updated));
-    const auto derived = derive_admittance_controller_cfg(robot.get_admittance_cfg());
-    EXPECT_NEAR(derived.mass[0], 0.5, 1e-12);
-    EXPECT_NEAR(derived.damping[0], 2.0, 1e-12);
+    const auto& applied = robot.get_admittance_cfg();
+    EXPECT_NEAR(applied.controller.mass[0], 0.5, 1e-12);
+    EXPECT_NEAR(applied.controller.damping[0], 2.0, 1e-12);
+    EXPECT_NEAR(applied.controller.stiffness[0], 4.0, 1e-12);
 
     auto output = robot.cycle(Robot::Clock::now());
     ASSERT_TRUE(output);

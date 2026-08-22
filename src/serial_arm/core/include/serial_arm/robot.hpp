@@ -107,13 +107,9 @@ struct RobotCycleOutput {
     JointVector friction_residual_hat;                      ///< 速度相关摩擦 residual 预测
     JointVector friction_compensated;                       ///< bias 后减去摩擦 residual
     JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
-    JointVector contact_confidence;                        ///< 连续外力交互置信度 [0,1]
     JointVector delta_q;                                   ///< 导纳位置修正
     JointVector delta_q_dot;                               ///< 导纳速度修正
-    JointVector effective_damping;                         ///< variable admittance 本周期实际 D
-    JointVector effective_stiffness;                       ///< variable admittance 本周期实际 K
-    JointVector friction_feedforward;                      ///< 本周期执行器滑动摩擦助力 Nm
-    std::vector<std::uint8_t> torque_threshold_active;     ///< threshold 抑制/过渡标志
+    std::vector<std::uint8_t> torque_threshold_active;     ///< deadband 正在抑制小 residual 的标志
     std::vector<std::uint8_t> delta_q_limited;             ///< 导纳位置限幅标志
     std::vector<std::uint8_t> delta_q_dot_limited;         ///< 导纳速度限幅标志
     std::vector<std::uint8_t> safety_position_margin_active; ///< Safety 剩余位置空间收窄标志

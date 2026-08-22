@@ -21,30 +21,19 @@ enum class JointAdmittanceControllerErr {
 };
 
 /**
- * @brief 连续 variable admittance 的少量高级参数
+ * @brief 固定参数关节空间导纳控制器配置
  *
- * mass/damping/stiffness 仍由 JointAdmittanceControllerCfg 提供：
- * - damping：接触跟随阶段的 M-D 阻尼
- * - stiffness：松手回中阶段的目标刚度
+ * 每个关节独立执行
+ *   M * delta_q_ddot + D * delta_q_dot + K * delta_q = tau_ext_hat
  */
-struct VariableAdmittanceCfg {
-    bool enabled{ false };
-    double engage_time_s{ 0.03 };              ///< 接触置信度上升时间常数 s
-    double release_time_s{ 0.12 };             ///< 松手后回中权重恢复时间常数 s
-    JointVector soft_velocity;                  ///< 每轴 Q 弹软速度墙起点 rad/s；为空时兼容 soft_velocity_ratio
-    double soft_velocity_ratio{ 0.70 };         ///< 兼容旧配置：soft_velocity 为空时按 max_delta_q_dot 比例计算
-    double max_damping_multiplier{ 4.0 };       ///< 到达硬速度上限前最大阻尼倍率 >=1
-};
-
 struct JointAdmittanceControllerCfg {
     std::size_t joints_count{ 0 };
     std::vector<std::uint8_t> enabled;
-    JointVector mass;
-    JointVector damping;
-    JointVector stiffness;
-    JointVector max_delta_q;
-    JointVector max_delta_q_dot;
-    VariableAdmittanceCfg variable;
+    JointVector mass;                 ///< M > 0
+    JointVector damping;              ///< D >= 0
+    JointVector stiffness;            ///< K >= 0
+    JointVector max_delta_q;          ///< 最大位置修正绝对值 rad
+    JointVector max_delta_q_dot;      ///< 最大速度修正绝对值 rad/s
 };
 
 struct JointAdmittanceInput {
@@ -54,7 +43,6 @@ struct JointAdmittanceInput {
     JointVector max_delta_q;
     JointVector min_delta_q_dot;
     JointVector max_delta_q_dot;
-    JointVector contact_confidence;             ///< [0,1]；空向量按 0 处理
 };
 
 struct JointAdmittanceOutput {
@@ -62,9 +50,6 @@ struct JointAdmittanceOutput {
     JointVector delta_q_dot;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
-    JointVector contact_blend;                  ///< 经过时间平滑的交互权重
-    JointVector effective_damping;              ///< 本周期实际使用的 D
-    JointVector effective_stiffness;            ///< 本周期实际使用的 K
 };
 
 struct AdmittanceDampingMetrics {
@@ -88,7 +73,6 @@ private:
     JointAdmittanceControllerCfg cfg_;
     JointVector delta_q_;
     JointVector delta_q_dot_;
-    JointVector contact_blend_;
     bool is_configured_{ false };
 };
 

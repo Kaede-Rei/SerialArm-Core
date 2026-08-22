@@ -29,11 +29,6 @@ bool finite_vector(const JointVector& values) {
         });
 }
 
-double smoothstep01(double x) {
-    x = std::clamp(x, 0.0, 1.0);
-    return x * x * (3.0 - 2.0 * x);
-}
-
 InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count) {
     InteractionControllerCfg interaction_cfg;
     interaction_cfg.enabled = admittance.enabled;
@@ -49,7 +44,13 @@ InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& adm
     interaction_cfg.external_torque.torque_bias = admittance.calibration.torque_bias;
     interaction_cfg.external_torque.torque_threshold = admittance.calibration.torque_threshold;
     interaction_cfg.external_torque.friction = admittance.calibration.friction;
-    interaction_cfg.admittance = derive_admittance_controller_cfg(admittance);
+    interaction_cfg.admittance.joints_count = joints_count;
+    interaction_cfg.admittance.enabled = admittance.joint_enabled;
+    interaction_cfg.admittance.mass = admittance.controller.mass;
+    interaction_cfg.admittance.damping = admittance.controller.damping;
+    interaction_cfg.admittance.stiffness = admittance.controller.stiffness;
+    interaction_cfg.admittance.max_delta_q = admittance.controller.max_delta_q;
+    interaction_cfg.admittance.max_delta_q_dot = admittance.controller.max_delta_q_dot;
     return interaction_cfg;
 }
 
@@ -454,7 +455,6 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         !admittance_suspended_ &&
         ctrller_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG;
     InteractionOutput interaction_telemetry;
-    JointVector friction_feedforward(cfg_.joint_names.size(), 0.0);
     std::vector<std::uint8_t> safety_position_margin_active;
     std::vector<std::uint8_t> safety_velocity_margin_active;
     if(admittance_active) {
@@ -475,10 +475,10 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         const auto& limits = cfg_.safety.limits;
 
         for(std::size_t i = 0; i < joints_count; ++i) {
-            min_delta_q[i] = -admittance_cfg.feel.max_retreat[i];
-            max_delta_q[i] = admittance_cfg.feel.max_retreat[i];
-            min_delta_q_dot[i] = -admittance_cfg.feel.max_correction_speed[i];
-            max_delta_q_dot[i] = admittance_cfg.feel.max_correction_speed[i];
+            min_delta_q[i] = -admittance_cfg.controller.max_delta_q[i];
+            max_delta_q[i] = admittance_cfg.controller.max_delta_q[i];
+            min_delta_q_dot[i] = -admittance_cfg.controller.max_delta_q_dot[i];
+            max_delta_q_dot[i] = admittance_cfg.controller.max_delta_q_dot[i];
 
             if(limits.has_position_limit[i] != 0) {
                 const double cmd_min_pos = limits.min_pos[i] + limits.pos_margin[i];
@@ -503,10 +503,10 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
                 max_delta_q_dot[i] = std::min(max_delta_q_dot[i], max_cmd_vel - joint_cmd.vel[i]);
             }
 
-            if(min_delta_q[i] > -admittance_cfg.feel.max_retreat[i] || max_delta_q[i] < admittance_cfg.feel.max_retreat[i]) {
+            if(min_delta_q[i] > -admittance_cfg.controller.max_delta_q[i] || max_delta_q[i] < admittance_cfg.controller.max_delta_q[i]) {
                 safety_position_margin_active[i] = 1;
             }
-            if(min_delta_q_dot[i] > -admittance_cfg.feel.max_correction_speed[i] || max_delta_q_dot[i] < admittance_cfg.feel.max_correction_speed[i]) {
+            if(min_delta_q_dot[i] > -admittance_cfg.controller.max_delta_q_dot[i] || max_delta_q_dot[i] < admittance_cfg.controller.max_delta_q_dot[i]) {
                 safety_velocity_margin_active[i] = 1;
             }
         }
@@ -552,17 +552,6 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         interaction_telemetry = interaction.value();
         joint_cmd = interaction->corrected_cmd;
 
-        const auto& friction = admittance_cfg.calibration.friction;
-        if(friction.enabled && friction.kinetic_feedforward_scale > 0.0 &&
-            interaction->friction_residual_hat.size() == joints_count) {
-            for(std::size_t i = 0; i < joints_count; ++i) {
-                const double motion_ratio = smoothstep01(
-                    std::abs(joint_state->vel[i]) / friction.velocity_transition);
-                friction_feedforward[i] = -friction.kinetic_feedforward_scale *
-                    motion_ratio * interaction->friction_residual_hat[i];
-                joint_cmd.tor[i] += friction_feedforward[i];
-            }
-        }
     }
 
     const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, dt);
@@ -616,12 +605,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         output.friction_residual_hat = interaction_telemetry.friction_residual_hat;
         output.friction_compensated = interaction_telemetry.friction_compensated;
         output.tau_ext_hat = interaction_telemetry.tau_ext_hat;
-        output.contact_confidence = interaction_telemetry.contact_confidence;
         output.delta_q = interaction_telemetry.delta_q;
         output.delta_q_dot = interaction_telemetry.delta_q_dot;
-        output.effective_damping = interaction_telemetry.effective_damping;
-        output.effective_stiffness = interaction_telemetry.effective_stiffness;
-        output.friction_feedforward = friction_feedforward;
         output.torque_threshold_active = interaction_telemetry.threshold_active;
         output.delta_q_limited = interaction_telemetry.delta_q_limited;
         output.delta_q_dot_limited = interaction_telemetry.delta_q_dot_limited;

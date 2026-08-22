@@ -45,21 +45,17 @@ struct InteractionInput {
 
 struct InteractionOutput {
     JointCtrlCmd corrected_cmd;
-    TorqueResidualEstimate residual;                  ///< 正式 observer 经过 filter 后的 residual
-    JointVector full_id_residual_raw;                ///< 诊断对照：FULL-ID model - measured
+    TorqueResidualEstimate residual;                  ///< 当前 observer 的 raw + filtered residual
+    JointVector full_id_residual_raw;                ///< FULL_ID model - measured 对照 residual
     JointVector bias_compensated;
     JointVector friction_residual_hat;
     JointVector friction_compensated;
     JointVector tau_ext_hat;
-    JointVector contact_confidence;
     std::vector<std::uint8_t> threshold_active;
     JointVector delta_q;
     JointVector delta_q_dot;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
-    JointVector contact_blend;
-    JointVector effective_damping;
-    JointVector effective_stiffness;
 };
 
 class InteractionController {

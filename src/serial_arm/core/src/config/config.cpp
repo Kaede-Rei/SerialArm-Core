@@ -299,26 +299,14 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     const YAML::Node capability_node = root["capability"];
     if(!capability_node) return;
     if(!capability_node.IsMap()) {
-        throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(capability_node.Mark()) + "root.capability must be a map");
+        throw ConfigLoadException(ConfigErr::INVALID_VALUE,
+            yaml_location(capability_node.Mark()) + "root.capability must be a map");
     }
     reject_unknown_keys(capability_node, "capability", { "admittance" });
 
     const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
-    constexpr std::array<const char*, 12> legacy_keys{
-        "observer_mode", "momentum_gain", "filter_alpha", "mass", "damping", "stiffness",
-        "torque_bias", "torque_threshold", "friction_compensation", "variable_admittance",
-        "max_delta_q", "max_delta_q_dot"
-    };
-    for(const char* key : legacy_keys) {
-        if(admittance[key]) {
-            throw ConfigLoadException(ConfigErr::INVALID_VALUE,
-                yaml_location(admittance[key].Mark()) +
-                std::string("capability.admittance.") + key +
-                " has been removed; use capability.admittance.observer / calibration / feel");
-        }
-    }
     reject_unknown_keys(admittance, "capability.admittance", {
-        "enabled", "joint_enabled", "observer", "calibration", "feel"
+        "enabled", "joint_enabled", "observer", "calibration", "controller"
     });
 
     auto& cfg = capability.admittance;
@@ -335,7 +323,8 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     cfg.observer.momentum_gain = load_named_joint_vector(
         require_map(observer, "momentum_gain", "capability.admittance.observer"),
         joint_names, "capability.admittance.observer.momentum_gain");
-    cfg.observer.filter_alpha = require_as<double>(observer, "filter_alpha", "capability.admittance.observer");
+    cfg.observer.filter_alpha = require_as<double>(
+        observer, "filter_alpha", "capability.admittance.observer");
 
     const YAML::Node calibration = require_map(admittance, "calibration", "capability.admittance");
     reject_unknown_keys(calibration, "capability.admittance.calibration", {
@@ -350,13 +339,13 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 
     const YAML::Node friction = require_map(calibration, "friction", "capability.admittance.calibration");
     reject_unknown_keys(friction, "capability.admittance.calibration.friction", {
-        "enabled", "velocity_transition", "zero_velocity_adaptation_s", "kinetic_feedforward_scale",
+        "enabled", "velocity_transition",
         "positive_coulomb", "positive_viscous", "negative_coulomb", "negative_viscous"
     });
-    cfg.calibration.friction.enabled = require_as<bool>(friction, "enabled", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.velocity_transition = require_as<double>(friction, "velocity_transition", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.zero_velocity_adaptation_s = require_as<double>(friction, "zero_velocity_adaptation_s", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.kinetic_feedforward_scale = require_as<double>(friction, "kinetic_feedforward_scale", "capability.admittance.calibration.friction");
+    cfg.calibration.friction.enabled = require_as<bool>(
+        friction, "enabled", "capability.admittance.calibration.friction");
+    cfg.calibration.friction.velocity_transition = require_as<double>(
+        friction, "velocity_transition", "capability.admittance.calibration.friction");
     cfg.calibration.friction.positive_coulomb = load_named_joint_vector(
         require_map(friction, "positive_coulomb", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.positive_coulomb");
@@ -370,34 +359,25 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
         require_map(friction, "negative_viscous", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.negative_viscous");
 
-    const YAML::Node feel = require_map(admittance, "feel", "capability.admittance");
-    reject_unknown_keys(feel, "capability.admittance.feel", {
-        "comfortable_torque", "follow_speed", "start_response_s", "q_elastic_start_speed",
-        "return_time_s", "max_retreat", "max_correction_speed", "q_elastic_max_resistance_ratio"
+    const YAML::Node controller = require_map(admittance, "controller", "capability.admittance");
+    reject_unknown_keys(controller, "capability.admittance.controller", {
+        "mass", "damping", "stiffness", "max_delta_q", "max_delta_q_dot"
     });
-    cfg.feel.comfortable_torque = load_named_joint_vector(
-        require_map(feel, "comfortable_torque", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.comfortable_torque");
-    cfg.feel.follow_speed = load_named_joint_vector(
-        require_map(feel, "follow_speed", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.follow_speed");
-    cfg.feel.start_response_s = load_named_joint_vector(
-        require_map(feel, "start_response_s", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.start_response_s");
-    cfg.feel.q_elastic_start_speed = load_named_joint_vector(
-        require_map(feel, "q_elastic_start_speed", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.q_elastic_start_speed");
-    cfg.feel.return_time_s = load_named_joint_vector(
-        require_map(feel, "return_time_s", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.return_time_s");
-    cfg.feel.max_retreat = load_named_joint_vector(
-        require_map(feel, "max_retreat", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.max_retreat");
-    cfg.feel.max_correction_speed = load_named_joint_vector(
-        require_map(feel, "max_correction_speed", "capability.admittance.feel"),
-        joint_names, "capability.admittance.feel.max_correction_speed");
-    cfg.feel.q_elastic_max_resistance_ratio = require_as<double>(
-        feel, "q_elastic_max_resistance_ratio", "capability.admittance.feel");
+    cfg.controller.mass = load_named_joint_vector(
+        require_map(controller, "mass", "capability.admittance.controller"),
+        joint_names, "capability.admittance.controller.mass");
+    cfg.controller.damping = load_named_joint_vector(
+        require_map(controller, "damping", "capability.admittance.controller"),
+        joint_names, "capability.admittance.controller.damping");
+    cfg.controller.stiffness = load_named_joint_vector(
+        require_map(controller, "stiffness", "capability.admittance.controller"),
+        joint_names, "capability.admittance.controller.stiffness");
+    cfg.controller.max_delta_q = load_named_joint_vector(
+        require_map(controller, "max_delta_q", "capability.admittance.controller"),
+        joint_names, "capability.admittance.controller.max_delta_q");
+    cfg.controller.max_delta_q_dot = load_named_joint_vector(
+        require_map(controller, "max_delta_q_dot", "capability.admittance.controller"),
+        joint_names, "capability.admittance.controller.max_delta_q_dot");
 }
 
 /**
@@ -424,34 +404,6 @@ void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::stri
 }
 
 } // namespace
-
-JointAdmittanceControllerCfg derive_admittance_controller_cfg(const AdmittanceCapabilityCfg& cfg) {
-    JointAdmittanceControllerCfg out;
-    const std::size_t n = cfg.joint_enabled.size();
-    out.joints_count = n;
-    out.enabled = cfg.joint_enabled;
-    out.mass.resize(n, 0.0);
-    out.damping.resize(n, 0.0);
-    out.stiffness.resize(n, 0.0);
-    out.max_delta_q = cfg.feel.max_retreat;
-    out.max_delta_q_dot = cfg.feel.max_correction_speed;
-    out.variable.enabled = true;
-    out.variable.engage_time_s = 0.03;
-    out.variable.release_time_s = 0.12;
-    out.variable.soft_velocity = cfg.feel.q_elastic_start_speed;
-    out.variable.soft_velocity_ratio = 0.70;
-    out.variable.max_damping_multiplier = cfg.feel.q_elastic_max_resistance_ratio;
-
-    for(std::size_t i = 0; i < n; ++i) {
-        const double d_follow = cfg.feel.comfortable_torque[i] / cfg.feel.follow_speed[i];
-        const double mass = d_follow * cfg.feel.start_response_s[i] / 3.0;
-        const double wn_return = 4.74 / cfg.feel.return_time_s[i];
-        out.damping[i] = d_follow;
-        out.mass[i] = mass;
-        out.stiffness[i] = mass * wn_return * wn_return;
-    }
-    return out;
-}
 
 // ! ========================= 接 口 类 方 法 / 函 数 实 现 ========================= ! //
 
@@ -779,23 +731,21 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     const auto& observer = admittance.observer;
     const auto& calibration = admittance.calibration;
     const auto& friction = calibration.friction;
-    const auto& feel = admittance.feel;
+    const auto& controller = admittance.controller;
     const bool has_admittance_parameters = !admittance.joint_enabled.empty() ||
         !observer.momentum_gain.empty() || !calibration.torque_bias.empty() ||
-        !calibration.torque_threshold.empty() || !feel.comfortable_torque.empty() ||
-        !feel.follow_speed.empty() || !feel.start_response_s.empty() ||
-        !feel.q_elastic_start_speed.empty() || !feel.return_time_s.empty() ||
-        !feel.max_retreat.empty() || !feel.max_correction_speed.empty();
+        !calibration.torque_threshold.empty() || !controller.mass.empty() ||
+        !controller.damping.empty() || !controller.stiffness.empty() ||
+        !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
     if(admittance.enabled || has_admittance_parameters) {
         if(!std::isfinite(observer.filter_alpha) || observer.filter_alpha <= 0.0 || observer.filter_alpha > 1.0) {
             return fail(ConfigErr::INVALID_VALUE, "capability.admittance.observer.filter_alpha must be in (0, 1]");
         }
         if(admittance.joint_enabled.size() != n || observer.momentum_gain.size() != n ||
             calibration.torque_bias.size() != n || calibration.torque_threshold.size() != n ||
-            feel.comfortable_torque.size() != n || feel.follow_speed.size() != n ||
-            feel.start_response_s.size() != n || feel.q_elastic_start_speed.size() != n ||
-            feel.return_time_s.size() != n || feel.max_retreat.size() != n ||
-            feel.max_correction_speed.size() != n) {
+            controller.mass.size() != n || controller.damping.size() != n ||
+            controller.stiffness.size() != n || controller.max_delta_q.size() != n ||
+            controller.max_delta_q_dot.size() != n) {
             return fail(ConfigErr::INVALID_SIZE, "all capability.admittance joint arrays must match joint_names");
         }
         if(!std::all_of(admittance.joint_enabled.begin(), admittance.joint_enabled.end(), [](std::uint8_t value) {
@@ -804,20 +754,17 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
             return fail(ConfigErr::INVALID_VALUE, "capability.admittance.joint_enabled values must be bool");
         }
         if(!finite_vector(observer.momentum_gain) || !finite_vector(calibration.torque_bias) ||
-            !finite_vector(calibration.torque_threshold) || !finite_vector(feel.comfortable_torque) ||
-            !finite_vector(feel.follow_speed) || !finite_vector(feel.start_response_s) ||
-            !finite_vector(feel.q_elastic_start_speed) || !finite_vector(feel.return_time_s) ||
-            !finite_vector(feel.max_retreat) || !finite_vector(feel.max_correction_speed) ||
-            !std::isfinite(feel.q_elastic_max_resistance_ratio)) {
+            !finite_vector(calibration.torque_threshold) || !finite_vector(controller.mass) ||
+            !finite_vector(controller.damping) || !finite_vector(controller.stiffness) ||
+            !finite_vector(controller.max_delta_q) || !finite_vector(controller.max_delta_q_dot)) {
             return fail(ConfigErr::INVALID_VALUE, "capability.admittance contains NaN or Inf");
         }
 
-        const bool has_friction_parameters = !friction.positive_coulomb.empty() || !friction.positive_viscous.empty() ||
-            !friction.negative_coulomb.empty() || !friction.negative_viscous.empty();
+        const bool has_friction_parameters = !friction.positive_coulomb.empty() ||
+            !friction.positive_viscous.empty() || !friction.negative_coulomb.empty() ||
+            !friction.negative_viscous.empty();
         if(friction.enabled || has_friction_parameters) {
             if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition <= 0.0 ||
-                !std::isfinite(friction.zero_velocity_adaptation_s) || friction.zero_velocity_adaptation_s <= 0.0 ||
-                !std::isfinite(friction.kinetic_feedforward_scale) || friction.kinetic_feedforward_scale < 0.0 || friction.kinetic_feedforward_scale > 0.7 ||
                 friction.positive_coulomb.size() != n || friction.positive_viscous.size() != n ||
                 friction.negative_coulomb.size() != n || friction.negative_viscous.size() != n ||
                 !finite_vector(friction.positive_coulomb) || !finite_vector(friction.positive_viscous) ||
@@ -826,29 +773,13 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
             }
         }
 
-        if(feel.q_elastic_max_resistance_ratio < 1.0) {
-            return fail(ConfigErr::INVALID_VALUE, "capability.admittance.feel.q_elastic_max_resistance_ratio must be >= 1");
-        }
         for(std::size_t i = 0; i < n; ++i) {
             if(observer.momentum_gain[i] <= 0.0 || calibration.torque_threshold[i] < 0.0 ||
-                feel.comfortable_torque[i] <= 0.0 || feel.follow_speed[i] <= 0.0 ||
-                feel.start_response_s[i] <= 0.0 || feel.q_elastic_start_speed[i] <= 0.0 ||
-                feel.return_time_s[i] <= 0.0 || feel.max_retreat[i] <= 0.0 ||
-                feel.max_correction_speed[i] <= 0.0 ||
-                feel.q_elastic_start_speed[i] >= feel.max_correction_speed[i]) {
+                controller.mass[i] <= 0.0 || controller.damping[i] <= 0.0 ||
+                controller.stiffness[i] <= 0.0 || controller.max_delta_q[i] <= 0.0 ||
+                controller.max_delta_q_dot[i] <= 0.0) {
                 return fail(ConfigErr::INVALID_VALUE,
-                    "invalid capability.admittance semantic parameter at index " + std::to_string(i));
-            }
-        }
-
-        const auto derived = derive_admittance_controller_cfg(admittance);
-        if(derived.mass.size() != n || derived.damping.size() != n || derived.stiffness.size() != n ||
-            !finite_vector(derived.mass) || !finite_vector(derived.damping) || !finite_vector(derived.stiffness)) {
-            return fail(ConfigErr::INVALID_VALUE, "derived admittance M/D/K are invalid");
-        }
-        for(std::size_t i = 0; i < n; ++i) {
-            if(derived.mass[i] <= 0.0 || derived.damping[i] <= 0.0 || derived.stiffness[i] <= 0.0) {
-                return fail(ConfigErr::INVALID_VALUE, "derived admittance M/D/K must be positive");
+                    "invalid capability.admittance parameter at index " + std::to_string(i));
             }
         }
     }
@@ -1002,20 +933,15 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs_adm.calibration.torque_threshold != rhs_adm.calibration.torque_threshold ||
         lhs_adm.calibration.friction.enabled != rhs_adm.calibration.friction.enabled ||
         lhs_adm.calibration.friction.velocity_transition != rhs_adm.calibration.friction.velocity_transition ||
-        lhs_adm.calibration.friction.zero_velocity_adaptation_s != rhs_adm.calibration.friction.zero_velocity_adaptation_s ||
-        lhs_adm.calibration.friction.kinetic_feedforward_scale != rhs_adm.calibration.friction.kinetic_feedforward_scale ||
         lhs_adm.calibration.friction.positive_coulomb != rhs_adm.calibration.friction.positive_coulomb ||
         lhs_adm.calibration.friction.positive_viscous != rhs_adm.calibration.friction.positive_viscous ||
         lhs_adm.calibration.friction.negative_coulomb != rhs_adm.calibration.friction.negative_coulomb ||
         lhs_adm.calibration.friction.negative_viscous != rhs_adm.calibration.friction.negative_viscous ||
-        lhs_adm.feel.comfortable_torque != rhs_adm.feel.comfortable_torque ||
-        lhs_adm.feel.follow_speed != rhs_adm.feel.follow_speed ||
-        lhs_adm.feel.start_response_s != rhs_adm.feel.start_response_s ||
-        lhs_adm.feel.q_elastic_start_speed != rhs_adm.feel.q_elastic_start_speed ||
-        lhs_adm.feel.return_time_s != rhs_adm.feel.return_time_s ||
-        lhs_adm.feel.max_retreat != rhs_adm.feel.max_retreat ||
-        lhs_adm.feel.max_correction_speed != rhs_adm.feel.max_correction_speed ||
-        lhs_adm.feel.q_elastic_max_resistance_ratio != rhs_adm.feel.q_elastic_max_resistance_ratio) {
+        lhs_adm.controller.mass != rhs_adm.controller.mass ||
+        lhs_adm.controller.damping != rhs_adm.controller.damping ||
+        lhs_adm.controller.stiffness != rhs_adm.controller.stiffness ||
+        lhs_adm.controller.max_delta_q != rhs_adm.controller.max_delta_q ||
+        lhs_adm.controller.max_delta_q_dot != rhs_adm.controller.max_delta_q_dot) {
         add("capability.admittance");
     }
     if(lhs->shutdown.park_before_disable != rhs->shutdown.park_before_disable || lhs->shutdown.park_pos != rhs->shutdown.park_pos ||
