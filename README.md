@@ -93,6 +93,37 @@ src/
 
 只有执行器语义或厂商通信发生变化时才需要新增 `hardware/` 或 `protocol/`
 
+
+## 使用入口
+
+根据目标选择对应文档：
+
+```text
+第一次运行已有机械臂
+    ↓
+README Quick Start
+    ↓
+Tutorial 基础配置与 Terminal
+
+理解控制算法与参数
+    ↓
+Tutorial Dynamics / Impedance / Admittance
+    ↓
+原理说明文档
+
+新增机械臂或硬件适配
+    ↓
+Tutorial Profile / Hardware / Transport
+    ↓
+API Reference
+
+接入 ROS 2 / MoveIt
+    ↓
+Tutorial ROS 2 Adapter
+    ↓
+Architecture
+```
+
 ## Quick Start
 
 ### 1 获取源码与构建

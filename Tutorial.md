@@ -8,6 +8,49 @@ Tutorial 用于说明如何使用现有 Robot Profile、配置 Core 与 Hardware
 
 需要理解模块边界、Runtime 数据流和 Transport 设计时阅读 [Architecture.md](Architecture.md)
 
+
+## 控制链说明
+
+模型前馈和交互能力按照以下顺序执行：
+
+```text
+Controller / Nominal Command
+        ↓
+Interaction / Admittance
+        ↓
+Corrected Reference
+        ↓
+Reference Acceleration
+        ↓
+Model Feedforward
+        ↓
+Safety
+```
+
+`FULL_INVERSE_DYNAMICS` 使用最终参考速度计算参考加速度：
+
+$$
+\ddot q_{ref}
+=
+\frac{\dot q_{final}[k]-\dot q_{final}[k-1]}{dt}
+$$
+
+参考加速度同时受 `safety_policy.max_acc` 限制，避免不连续参考导致过大的惯性前馈
+
+需要注意：
+
+```text
+FULL_INVERSE_DYNAMICS
+    使用参考 qdd
+    用于模型前馈
+
+FULL_ID Observer
+    使用测量 qdd
+    用于外力估计
+```
+
+两者调用相同动力学模型，但用途不同
+
 ## 阅读导引
 
 第一次使用已有 Profile

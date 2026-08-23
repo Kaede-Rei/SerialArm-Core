@@ -133,7 +133,13 @@ State Safety Check
       ↓
 Controller / Nominal Command
       ↓
-Model Feedforward / Interaction Capability
+Interaction Capability
+      ↓
+Corrected Reference
+      ↓
+Reference Acceleration
+      ↓
+Model Feedforward
       ↓
 Corrected Joint Command
       ↓

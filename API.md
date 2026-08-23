@@ -2972,12 +2972,24 @@ enum class ModelFeedforwardMode {
 
 使用 Dynamics 的 `inverse_dynamics`
 
-完整逆动力学依赖
+完整逆动力学依赖：
 
 - 真实模型质量与惯量
 - 当前 `q`
 - 当前 `dq`
 - 参考 `ddq`
+
+当前参考加速度来自修正后的最终参考：
+
+$$
+\ddot q_{ref}
+=
+\frac{
+\dot q_{final}[k]-\dot q_{final}[k-1]
+}{dt}
+$$
+
+并受 `safety_policy.max_acc` 限制
 
 模型参数没有验证时不要直接把 FULL_INVERSE_DYNAMICS 用于真机
 
