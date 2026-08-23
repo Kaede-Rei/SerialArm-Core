@@ -4,10 +4,11 @@
 
 #include "serial_arm/core/types.hpp"
 #include "serial_arm/interaction/admittance_observer_mode.hpp"
-#include "serial_arm/interaction/external_torque_observer.hpp"
-#include "serial_arm/interaction/generalized_momentum_observer.hpp"
-#include "serial_arm/interaction/joint_admittance_controller.hpp"
-#include "serial_arm/interaction/torque_residual_observer.hpp"
+#include "serial_arm/interaction/estimators/external_torque_observer.hpp"
+#include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
+#include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/runtime/interaction_state.hpp"
+#include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 
 namespace serial_arm {
 
@@ -44,6 +45,7 @@ struct InteractionInput {
 };
 
 struct InteractionOutput {
+    InteractionState state;
     JointCtrlCmd corrected_cmd;
     TorqueResidualEstimate residual;                  ///< 当前 observer residual；兼容字段 residual_filtered 与 raw 相同
     JointVector full_id_residual_raw;                ///< FULL_ID model - measured 对照 residual

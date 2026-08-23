@@ -7,7 +7,7 @@
 
 #include "serial_arm/core/types.hpp"
 #include "serial_arm/interaction/friction_residual_model.hpp"
-#include "serial_arm/interaction/torque_residual_observer.hpp"
+#include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 
 namespace serial_arm {
 

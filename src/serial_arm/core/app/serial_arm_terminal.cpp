@@ -3,9 +3,9 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/interaction/admittance_calibration.hpp"
-#include "serial_arm/interaction/generalized_momentum_observer.hpp"
-#include "serial_arm/interaction/joint_admittance_controller.hpp"
-#include "serial_arm/interaction/torque_residual_observer.hpp"
+#include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
+#include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>

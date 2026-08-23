@@ -8,7 +8,8 @@
 #include "serial_arm/core/joints_ctrller.hpp"
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
-#include "serial_arm/interaction/interaction_controller.hpp"
+#include "serial_arm/interaction/runtime/interaction_state.hpp"
+#include "serial_arm/interaction/runtime/interaction_controller.hpp"
 
 #include <chrono>
 #include <functional>
@@ -100,6 +101,7 @@ struct RobotCycleOutput {
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
+    InteractionState interaction_state;                       ///< Interaction runtime state
     JointVector residual_raw;                              ///< 正式 observer 的 raw residual
     JointVector full_id_residual_raw;                      ///< FULL-ID 对照 residual，仅诊断
     JointVector residual_filtered;                         ///< 兼容字段，当前与 residual_raw 相同
@@ -288,6 +290,7 @@ public:
      * @return 最近一次模型前馈力矩
      */
     const JointVector& get_model_feedforward() const noexcept;
+    const InteractionState& get_interaction_state() const noexcept;
     /**
      * @brief 获取最近一次合法的执行器状态
      * @return 最近一次合法的 ActuatorState
@@ -460,6 +463,7 @@ private:
     JointActuatorMapper mapper_;                    ///< Joint/Actuator 映射
     Safety safety_;                                 ///< 安全检查器
     InteractionController interaction_controller_; ///< 可选导纳能力
+    InteractionState interaction_state_; ///< 最近一次交互状态
     std::unique_ptr<MotorBus> motor_bus_;           ///< 执行器后端
     ModelFeedforwardFn model_feedforward_;          ///< 动力学前馈入口
     InteractionModelStateFn interaction_model_state_; ///< momentum observer 动力学状态入口

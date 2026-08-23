@@ -1,4 +1,4 @@
-#include "serial_arm/interaction/interaction_controller.hpp"
+#include "serial_arm/interaction/runtime/interaction_controller.hpp"
 
 #include <utility>
 
@@ -44,6 +44,7 @@ InteractionController::update(const InteractionInput& input) {
 
     InteractionOutput output;
     output.corrected_cmd = input.nominal_cmd;
+    output.state.valid = false;
     if(!cfg_.enabled) return output;
 
     if(input.measured_torque.size() != input.full_id_model_torque.size()) {
@@ -96,6 +97,10 @@ InteractionController::update(const InteractionInput& input) {
     output.threshold_active = std::move(tau_ext->threshold_active);
     output.delta_q = std::move(admittance->delta_q);
     output.delta_q_dot = std::move(admittance->delta_q_dot);
+    output.state.tau_ext_hat = output.tau_ext_hat;
+    output.state.delta_q = output.delta_q;
+    output.state.delta_q_dot = output.delta_q_dot;
+    output.state.valid = true;
     output.delta_q_limited = std::move(admittance->delta_q_limited);
     output.delta_q_dot_limited = std::move(admittance->delta_q_dot_limited);
 

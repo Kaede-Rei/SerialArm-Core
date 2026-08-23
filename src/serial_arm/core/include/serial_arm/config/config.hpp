@@ -8,7 +8,7 @@
 #include "serial_arm/hardware/hardware_capability.hpp"
 #include "serial_arm/interaction/friction_residual_model.hpp"
 #include "serial_arm/interaction/admittance_observer_mode.hpp"
-#include "serial_arm/interaction/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 
 #include <array>
 #include <cstddef>

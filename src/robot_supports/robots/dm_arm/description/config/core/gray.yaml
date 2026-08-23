@@ -103,7 +103,7 @@ shutdown:
   velocity_tolerance: 0.05                          # 严格停放速度阈值 rad/s
   settle_time_s: 0.25                               # 严格判据下持续稳定时间 s
   relaxed_tolerance_ratio: 2.0                      # 超时前宽松判据相对严格阈值的倍率
-  timeout_s: 15.0                                   # 停放流程最大允许时间 s
+  timeout_s: 10.0                                   # 停放流程最大允许时间 s
 
 # 06 capability
 capability:

@@ -1,4 +1,4 @@
-#include "serial_arm/interaction/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 
 #include <algorithm>
 #include <cmath>

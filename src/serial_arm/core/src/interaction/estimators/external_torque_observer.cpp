@@ -1,4 +1,4 @@
-#include "serial_arm/interaction/external_torque_observer.hpp"
+#include "serial_arm/interaction/estimators/external_torque_observer.hpp"
 
 #include <algorithm>
 #include <cmath>

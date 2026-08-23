@@ -1,11 +1,11 @@
 #include <gtest/gtest.h>
 
 #include "serial_arm/interaction/admittance_calibration.hpp"
-#include "serial_arm/interaction/external_torque_observer.hpp"
-#include "serial_arm/interaction/generalized_momentum_observer.hpp"
-#include "serial_arm/interaction/interaction_controller.hpp"
-#include "serial_arm/interaction/joint_admittance_controller.hpp"
-#include "serial_arm/interaction/torque_residual_observer.hpp"
+#include "serial_arm/interaction/estimators/external_torque_observer.hpp"
+#include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
+#include "serial_arm/interaction/runtime/interaction_controller.hpp"
+#include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
+#include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 
 #include <cmath>
 

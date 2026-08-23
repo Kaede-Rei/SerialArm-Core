@@ -429,7 +429,7 @@ hardware_interface::CallbackReturn SerialArmSystem::configure_robot() {
     }
 
     robot_ = std::make_unique<serial_arm::Robot>();
-    const auto robot_result = robot_->configure(robot_cfg, std::move(bus), make_model_feedforward());
+    const auto robot_result = robot_->configure(robot_cfg, std::move(bus), make_model_feedforward(), make_interaction_model_state());
     if(!robot_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot configure", robot_result.error()).c_str());
         robot_.reset();
@@ -471,6 +471,28 @@ serial_arm::ModelFeedforwardFn SerialArmSystem::make_model_feedforward() {
         }
         return serial_arm::JointVector(cfg_.joint_names.size(), 0.0);
         };
+}
+
+serial_arm::InteractionModelStateFn SerialArmSystem::make_interaction_model_state() {
+    return [this](const serial_arm::JointState& state, double) -> tl::expected<serial_arm::InteractionModelState, serial_arm::ModelFeedforwardErr> {
+        if(!dynamics_->is_updated() || dynamics_->get_state().pos != state.pos) {
+            return tl::make_unexpected(serial_arm::ModelFeedforwardErr::COMPUTE_FAILED);
+        }
+
+        serial_arm::InteractionModelState result;
+        result.gravity = dynamics_->get_gravity_compensation();
+        result.coriolis = dynamics_->get_coriolis();
+
+        const auto& mass = dynamics_->get_mass_matrix();
+        result.mass_matrix.resize(static_cast<std::size_t>(mass.rows()));
+        for(Eigen::Index r = 0; r < mass.rows(); ++r) {
+            result.mass_matrix[static_cast<std::size_t>(r)].resize(static_cast<std::size_t>(mass.cols()));
+            for(Eigen::Index c = 0; c < mass.cols(); ++c) {
+                result.mass_matrix[static_cast<std::size_t>(r)][static_cast<std::size_t>(c)] = mass(r, c);
+            }
+        }
+        return result;
+    };
 }
 
 /**

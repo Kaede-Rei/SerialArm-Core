@@ -211,11 +211,11 @@ list(APPEND SERIAL_ARM_INSTALL_TARGETS serial_arm_dynamics)
 # =============================================================================
 
 add_library(serial_arm_interaction
-    src/interaction/torque_residual_observer.cpp
-    src/interaction/generalized_momentum_observer.cpp
-    src/interaction/interaction_controller.cpp
-    src/interaction/external_torque_observer.cpp
-    src/interaction/joint_admittance_controller.cpp
+    src/interaction/estimators/torque_residual_observer.cpp
+    src/interaction/estimators/generalized_momentum_observer.cpp
+    src/interaction/estimators/external_torque_observer.cpp
+    src/interaction/controllers/joint_admittance_controller.cpp
+    src/interaction/runtime/interaction_controller.cpp
     src/interaction/admittance_calibration.cpp
 )
 add_library(serial_arm::interaction ALIAS serial_arm_interaction)

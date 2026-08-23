@@ -104,6 +104,11 @@ private:
      */
     serial_arm::ModelFeedforwardFn make_model_feedforward();
     /**
+     * @brief 构造导纳 MOMENTUM observer 所需动力学状态回调
+     * @return 当前重力、科氏力和质量矩阵
+     */
+    serial_arm::InteractionModelStateFn make_interaction_model_state();
+    /**
      * @brief 固定频率执行 Robot::set_cmd()、Robot::cycle() 和状态缓存更新
      */
     void worker_loop() noexcept;

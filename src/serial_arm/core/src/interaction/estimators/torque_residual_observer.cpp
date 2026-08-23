@@ -1,4 +1,4 @@
-#include "serial_arm/interaction/torque_residual_observer.hpp"
+#include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 
 #include <algorithm>
 #include <cmath>

@@ -609,6 +609,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         output.bias_compensated = interaction_telemetry.bias_compensated;
         output.friction_residual_hat = interaction_telemetry.friction_residual_hat;
         output.friction_compensated = interaction_telemetry.friction_compensated;
+        output.interaction_state = interaction_telemetry.state;
+        interaction_state_ = interaction_telemetry.state;
         output.tau_ext_hat = interaction_telemetry.tau_ext_hat;
         output.delta_q = interaction_telemetry.delta_q;
         output.delta_q_dot = interaction_telemetry.delta_q_dot;
@@ -833,6 +835,10 @@ const JointVector& Robot::get_joint_ref_acc() const noexcept {
 /**
  * @brief 获取最近一次模型前馈力矩
  */
+const InteractionState& Robot::get_interaction_state() const noexcept {
+    return interaction_state_;
+}
+
 const JointVector& Robot::get_model_feedforward() const noexcept {
     return model_feedforward_cache_;
 }

@@ -1,4 +1,4 @@
-#include "serial_arm/interaction/generalized_momentum_observer.hpp"
+#include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
 
 #include <algorithm>
 #include <cmath>
