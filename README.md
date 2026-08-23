@@ -21,6 +21,8 @@ SerialArm-Core 是面向自研串联机械臂的通用控制能力库，将机�
 
 当前仓库内置 DM-Arm 的 Gray 和 White 两套 Robot Profile，并提供 Damiao Hardware Backend 与 Damiao USB2CAN Protocol
 
+推荐使用已有 Robot Profile 作为第一次接入示例；用户通常只需要选择 Profile、构建对应资源、加载 Terminal 或 ROS 2 Adapter，即可使用同一套 Core 能力
+
 ## 核心能力
 
 | 能力 | 作用 | 主要入口 |
@@ -31,7 +33,8 @@ SerialArm-Core 是面向自研串联机械臂的通用控制能力库，将机�
 | Safety | 位置、速度、加速度、状态超时、命令超时与故障恢复 | `safety_policy` |
 | Dynamics | FK、Jacobian、Gravity、Coriolis、Mass Matrix、Inverse Dynamics | `Dynamics` |
 | Impedance | 五种关节阻抗工作模式 | `JointImpedanceMode` |
-| Admittance | 无力传感器外力估计与固定 M / D / K 关节空间导纳 | `capability.admittance` |
+| Admittance | 基于残差外力估计的固定 M / D / K 关节空间导纳 | `capability.admittance` |
+| Interaction | 外力估计、柔顺控制与运行时交互状态管理 | `serial_arm/interaction` |
 | Hardware Abstraction | 统一 `position / velocity / torque / kp / kd` 执行器语义 | `MotorBus` |
 | Shared Transport | CAN channel fan-out 与 Serial transaction arbitration | `CanChannel` / `SerialBusClient` |
 | Python | Python 控制会话与 Dynamics 调用 | `RobotSession` / `Dynamics` |

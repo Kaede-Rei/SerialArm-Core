@@ -20,6 +20,7 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | Dynamics | `Dynamics` | 第 5 章 |
 | Impedance | `JointImpedanceMode`、`JointCtrller` | 第 6 章 |
 | Admittance | `CapabilityCfg`、`Robot` Admittance API、`RobotCycleOutput` | 第 3 → 4 → 7 章 |
+| Interaction Observer | `MOMENTUM` / `FULL_ID` 外力估计接口 | Interaction 章节 |
 | Safety / FAULT | `Safety`、`RobotFault`、Fault Recovery API | 第 8 章 |
 | Joint / Actuator 映射 | `JointActuatorMapper` | 第 9 章 |
 | Python 应用 | `RobotSession`、Python `Dynamics` | 第 10 章 |

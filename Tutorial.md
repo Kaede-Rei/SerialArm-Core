@@ -4330,3 +4330,59 @@ Safety / Robot FAULT
 
 不要直接从 MoveIt 层绕过底层错误
 
+
+
+
+## Interaction 调试说明
+
+当前交互控制链：
+
+```text
+Joint State
+    ↓
+External Torque Observer
+    ↓
+Joint Admittance
+    ↓
+Corrected Reference
+    ↓
+Joint Controller
+    ↓
+Safety
+```
+
+外力估计支持：
+
+```text
+MOMENTUM
+    基于广义动量观测
+    不显式依赖关节加速度
+
+FULL_ID
+    基于完整逆动力学 residual
+    依赖动力学模型和加速度质量
+```
+
+模型前馈：
+
+```text
+GRAVITY
+    仅补偿重力
+
+FULL_INVERSE_DYNAMICS
+    使用参考速度变化计算参考加速度
+    输出完整逆动力学前馈
+```
+
+调试时应分别区分：
+
+```text
+FULL_ID Observer
+    用于估计外力
+
+FULL_INVERSE_DYNAMICS Feedforward
+    用于补偿运动过程动力学
+```
+
+两者名称相似，但用途不同
+
