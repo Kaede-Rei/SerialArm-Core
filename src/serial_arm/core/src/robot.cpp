@@ -439,16 +439,6 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     JointCtrlCmd joint_cmd = ctrl_output->cmd;
-    const JointVector joint_ref_acc = estimate_joint_ref_acc(joint_cmd, dt);
-    const auto model_feedforward = compute_model_feedforward(joint_state.value(), joint_acc, joint_ref_acc, dt);
-    if(!model_feedforward) {
-        enter_fault(model_feedforward.error(), SafetyAction::STOP_HOLD);
-        return tl::make_unexpected(model_feedforward.error());
-    }
-
-    for(std::size_t i = 0; i < joint_cmd.tor.size(); ++i) {
-        joint_cmd.tor[i] += model_feedforward.value()[i];
-    }
 
     const bool admittance_active = cfg_.capability.admittance.enabled &&
         !admittance_suspended_ &&
@@ -550,7 +540,23 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         }
         interaction_telemetry = interaction.value();
         joint_cmd = interaction->corrected_cmd;
+    }
 
+    // Reference acceleration must be estimated in one consistent reference domain.
+    // At this point joint_cmd already includes the outer-admittance pos/vel correction,
+    // while last_joint_cmd_ stores the previous accepted final command.
+    // Using final[k] - final[k-1] prevents FULL_INVERSE_DYNAMICS from interpreting
+    // an admittance delta_q_dot as a large artificial acceleration pulse.
+    const JointVector joint_ref_acc = estimate_joint_ref_acc(joint_cmd, dt);
+    const auto model_feedforward = compute_model_feedforward(
+        joint_state.value(), joint_acc, joint_ref_acc, dt);
+    if(!model_feedforward) {
+        enter_fault(model_feedforward.error(), SafetyAction::STOP_HOLD);
+        return tl::make_unexpected(model_feedforward.error());
+    }
+
+    for(std::size_t i = 0; i < joint_cmd.tor.size(); ++i) {
+        joint_cmd.tor[i] += model_feedforward.value()[i];
     }
 
     const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, dt);
@@ -885,7 +891,9 @@ JointVector Robot::estimate_joint_ref_acc(const JointCtrlCmd& cmd, double dt) co
     if(!has_last_joint_cmd_ || last_joint_cmd_.vel.size() != cmd.vel.size()) return result;
 
     for(std::size_t i = 0; i < result.size(); ++i) {
-        result[i] = (cmd.vel[i] - last_joint_cmd_.vel[i]) / dt;
+        const double raw_ref_acc = (cmd.vel[i] - last_joint_cmd_.vel[i]) / dt;
+        const double max_ref_acc = cfg_.safety.limits.max_acc[i];
+        result[i] = std::clamp(raw_ref_acc, -max_ref_acc, max_ref_acc);
     }
     return result;
 }

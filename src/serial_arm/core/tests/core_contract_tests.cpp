@@ -972,6 +972,88 @@ TEST(RobotAdmittanceCapability, TrackingUsesDynamicModelTorqueForResidual) {
     EXPECT_NEAR(dynamic_ref_acc[0], dynamic_acc[0], 1e-12);
 }
 
+
+TEST(RobotModelFeedforward, FullInverseDynamicsUsesFinalReferenceVelocityHistoryWithAdmittance) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.runtime.ctrl_frequency_hz = 100.0;
+    cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::FULL_INVERSE_DYNAMICS;
+    cfg.safety.require_continuous_cmd = false;
+    configure_test_admittance(
+        cfg.capability.admittance,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        0.0);
+
+    auto bus = std::make_unique<FakeMotorBus>();
+    FakeMotorBus* bus_raw = bus.get();
+    bus_raw->state.tor[0] = -1.0;
+
+    ModelFeedforwardFn model = [](
+        ModelFeedforwardMode,
+        const JointState& state,
+        const JointVector&,
+        const JointVector&,
+        double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(
+            JointVector(state.pos.size(), 0.0));
+    };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));
+    ASSERT_TRUE(robot.activate());
+
+    const auto t0 = Robot::Clock::now();
+    const auto first = robot.cycle(t0);
+    ASSERT_TRUE(first);
+    ASSERT_GT(first->joint_cmd.vel[0], 0.0);
+
+    constexpr double dt = 0.01;
+    const auto second = robot.cycle(t0 + std::chrono::milliseconds(10));
+    ASSERT_TRUE(second);
+    ASSERT_EQ(second->joint_ref_acc.size(), 1u);
+
+    const double expected_ref_acc =
+        (second->joint_cmd.vel[0] - first->joint_cmd.vel[0]) / dt;
+    EXPECT_NEAR(second->joint_ref_acc[0], expected_ref_acc, 1e-9);
+}
+
+
+TEST(RobotModelFeedforward, FullInverseDynamicsReferenceAccelerationIsBoundedBySafetyLimit) {
+    RobotCfg cfg = robot_cfg_for_validation(false);
+    cfg.runtime.write_enabled = true;
+    cfg.runtime.ctrl_frequency_hz = 100.0;
+    cfg.runtime.model_feedforward_mode = ModelFeedforwardMode::FULL_INVERSE_DYNAMICS;
+    cfg.safety.require_continuous_cmd = false;
+    cfg.capability.admittance.enabled = false;
+
+    auto bus = std::make_unique<FakeMotorBus>();
+
+    ModelFeedforwardFn model = [](
+        ModelFeedforwardMode,
+        const JointState& state,
+        const JointVector&,
+        const JointVector&,
+        double) {
+        return tl::expected<JointVector, ModelFeedforwardErr>(
+            JointVector(state.pos.size(), 0.0));
+    };
+
+    Robot robot;
+    ASSERT_TRUE(robot.configure(cfg, std::move(bus), model));
+    ASSERT_TRUE(robot.activate());
+    ASSERT_TRUE(robot.set_impedance_mode(JointImpedanceMode::RIGID_TRACKING));
+    ASSERT_TRUE(robot.set_cmd(JointPosVelCmd{ { 0.0 }, { 2.0 } }));
+
+    const auto output = robot.cycle(Robot::Clock::now());
+    ASSERT_TRUE(output);
+    ASSERT_EQ(output->joint_ref_acc.size(), 1u);
+    EXPECT_NEAR(output->joint_ref_acc[0], cfg.safety.limits.max_acc[0], 1e-12);
+}
+
 TEST(RobotAdmittanceCapability, RuntimeSuspensionBypassesAndResetsAdmittance) {
     RobotCfg cfg = robot_cfg_for_validation(false);
     cfg.runtime.write_enabled = true;

@@ -318,10 +318,10 @@ private:
      */
     JointVector estimate_joint_acc(const JointState& state, double dt) const;
     /**
-     * @brief 计算当前周期的关节参考加速度
-     * @param cmd 当前关节控制命令
+     * @brief 由当前 final reference 与上一周期 final reference 估计关节参考加速度
+     * @param cmd 已包含外层导纳修正的当前关节参考命令
      * @param dt 当前周期时间步长
-     * @return 关节参考加速度
+     * @return 按 Safety max_acc 逐轴限幅后的关节参考加速度
      */
     JointVector estimate_joint_ref_acc(const JointCtrlCmd& cmd, double dt) const;
     /**

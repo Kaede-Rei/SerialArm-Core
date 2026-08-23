@@ -146,7 +146,7 @@ capability:
       # 虚拟质量 M > 0，单位 Nm*s^2/rad；越小启动越快，过小会更敏感于外力估计波动
       mass: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
       # 虚拟阻尼 D >= 0，单位 Nm*s/rad；ζ<1 更灵活/Q 弹，ζ≈1 临界阻尼，ζ>1 更稳但更黏
-      damping: {joint1: 5.0, joint2: 5.0, joint3: 5.0, joint4: 5.0, joint5: 5.0, joint6: 5.0}
+      damping: {joint1: 5.5, joint2: 5.5, joint3: 5.5, joint4: 5.5, joint5: 5.5, joint6: 5.5}
       # 虚拟刚度 K >= 0，单位 Nm/rad；越小退让越远，K=0 时不自动回中
       stiffness: {joint1: 15.0, joint2: 15.0, joint3: 15.0, joint4: 15.0, joint5: 15.0, joint6: 15.0}
       # 最大导纳位置修正绝对值 rad，仅作安全限幅而不参与 M/D/K 动态关系
