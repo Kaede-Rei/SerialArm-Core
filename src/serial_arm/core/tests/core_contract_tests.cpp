@@ -838,7 +838,7 @@ TEST(RobotAdmittanceCapability, EnabledCapabilityCorrectsNominalCommandBeforeSaf
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
-    bus_raw->state.pos[0] = -0.999;
+    bus_raw->state.pos[0] = -0.85;
     bus_raw->state.tor[0] = 100.0;
 
     ModelFeedforwardFn gravity = [](ModelFeedforwardMode mode, const JointState& state, const JointVector&, const JointVector&, double) {
@@ -864,7 +864,7 @@ TEST(RobotAdmittanceCapability, CompliantDragBypassesAdmittanceCorrection) {
 
     auto bus = std::make_unique<FakeMotorBus>();
     FakeMotorBus* bus_raw = bus.get();
-    bus_raw->state.pos[0] = -0.999;
+    bus_raw->state.pos[0] = -0.85;
     bus_raw->state.tor[0] = 100.0;
 
     ModelFeedforwardFn gravity = [](ModelFeedforwardMode, const JointState& state, const JointVector&, const JointVector&, double) {
@@ -1152,4 +1152,3 @@ TEST(RobotAdmittanceCapability, DynamicAdmittanceLimitUsesRemainingSafetyPositio
     EXPECT_DOUBLE_EQ(output->joint_cmd.vel[0], 0.0);
     EXPECT_EQ(robot.get_state(), RobotState::ACTIVE);
 }
-

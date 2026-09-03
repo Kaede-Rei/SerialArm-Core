@@ -216,6 +216,7 @@ add_library(serial_arm_interaction
     src/interaction/estimators/external_torque_observer.cpp
     src/interaction/controllers/joint_admittance_controller.cpp
     src/interaction/runtime/interaction_controller.cpp
+    src/interaction/task_constraint_projector.cpp
     src/interaction/admittance_calibration.cpp
 )
 add_library(serial_arm::interaction ALIAS serial_arm_interaction)
@@ -231,6 +232,7 @@ target_include_directories(serial_arm_interaction
 target_link_libraries(serial_arm_interaction
     PUBLIC
         serial_arm_core
+        Eigen3::Eigen
 )
 
 target_compile_features(serial_arm_interaction PUBLIC cxx_std_17)

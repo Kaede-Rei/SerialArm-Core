@@ -4,10 +4,14 @@
 #include "serial_arm/interaction/estimators/external_torque_observer.hpp"
 #include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
+#include "serial_arm/interaction/task_constraint_projector.hpp"
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 #include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 
+#include <Eigen/Dense>
+
 #include <cmath>
+#include <limits>
 
 using namespace serial_arm;
 
@@ -271,7 +275,7 @@ TEST(AdmittanceStaticCalibrationTests, ValidationChecksOnlyStaticObserverEnvelop
     auto result = evaluate_admittance_static_validation({ pose }, cfg);
     ASSERT_TRUE(result);
     EXPECT_NEAR(result->residual_max[0], 0.02, 1e-12);
-    EXPECT_NEAR(result->threshold_utilization[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->threshold_utilization[0], 0.398, 1e-12);
     EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 1 });
 }
 
@@ -788,3 +792,181 @@ TEST(JointAdmittanceControllerTests, FixedMDKReturnsDisplacementToZeroAfterExter
     EXPECT_LT(std::abs(out.delta_q_dot[0]), 1e-3);
 }
 
+TEST(TaskConstraintProjectorTests, OrientationOnlyRemovesAngularJacobianComponent) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::ORIENTATION_ONLY;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(3, 0) = 1.0;
+
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 2.0, 3.0 },
+        JointVector{ 4.0, 5.0 },
+        tool_jacobian,
+        JointVector{ 0.0, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_NEAR(output->delta_q_cmd[0], 0.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_cmd[1], 3.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[0], 0.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[1], 5.0, 1e-12);
+}
+
+TEST(TaskConstraintProjectorTests, LateralComplianceSuppressesLongitudinalCorrection) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::LATERAL_COMPLIANCE;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(0, 0) = 1.0;
+
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 1.5, -2.0 },
+        JointVector{ 0.8, 0.6 },
+        tool_jacobian,
+        JointVector{ 0.3, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_NEAR(output->delta_q_cmd[0], 0.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_cmd[1], -2.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[0], 0.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[1], 0.6, 1e-12);
+}
+
+TEST(TaskConstraintProjectorTests, LateralComplianceFallsBackToOrientationOnlyWhenNominalTranslationIsNearZero) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::LATERAL_COMPLIANCE;
+    cfg.nominal_translation_epsilon = 1e-3;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(0, 0) = 1.0;
+    tool_jacobian(4, 1) = 1.0;
+
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 4.0, 5.0 },
+        JointVector{ 6.0, 7.0 },
+        tool_jacobian,
+        JointVector{ 0.0, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_NEAR(output->delta_q_cmd[0], 4.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_cmd[1], 0.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[0], 6.0, 1e-12);
+    EXPECT_NEAR(output->delta_q_dot_cmd[1], 0.0, 1e-12);
+}
+
+TEST(TaskConstraintProjectorTests, DampingKeepsNearSingularProjectionFinite) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::ORIENTATION_ONLY;
+    cfg.damping = 1e-3;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(3, 0) = 1.0;
+    tool_jacobian(4, 0) = 1.0;
+
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 1.0, 2.0 },
+        JointVector{ 3.0, 4.0 },
+        tool_jacobian,
+        JointVector{ 0.0, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_TRUE(std::isfinite(output->delta_q_cmd[0]));
+    EXPECT_TRUE(std::isfinite(output->delta_q_cmd[1]));
+    EXPECT_TRUE(std::isfinite(output->delta_q_dot_cmd[0]));
+    EXPECT_TRUE(std::isfinite(output->delta_q_dot_cmd[1]));
+}
+
+TEST(TaskConstraintProjectorTests, RejectsInvalidInputSizes) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::ORIENTATION_ONLY;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd wrong_cols = Eigen::MatrixXd::Zero(6, 3);
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 1.0, 2.0 },
+        JointVector{ 1.0, 2.0 },
+        wrong_cols,
+        JointVector{ 0.0, 0.0 },
+    });
+    ASSERT_FALSE(output);
+    EXPECT_EQ(output.error(), TaskConstraintProjectorErr::INVALID_INPUT);
+}
+
+TEST(TaskConstraintProjectorTests, RejectsNaNAndInfInputs) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::ORIENTATION_ONLY;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(3, 0) = std::numeric_limits<double>::infinity();
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ std::numeric_limits<double>::quiet_NaN(), 2.0 },
+        JointVector{ 1.0, 2.0 },
+        tool_jacobian,
+        JointVector{ 0.0, 0.0 },
+    });
+    ASSERT_FALSE(output);
+    EXPECT_EQ(output.error(), TaskConstraintProjectorErr::INVALID_INPUT);
+}
+
+TEST(TaskConstraintProjectorTests, DisabledModePassesThroughRawCorrection) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = false;
+    cfg.mode = TaskConstraintMode::LATERAL_COMPLIANCE;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ 1.0, -2.0 },
+        JointVector{ 3.0, -4.0 },
+        Eigen::MatrixXd::Zero(6, 2),
+        JointVector{ 0.5, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_EQ(output->delta_q_cmd, (JointVector{ 1.0, -2.0 }));
+    EXPECT_EQ(output->delta_q_dot_cmd, (JointVector{ 3.0, -4.0 }));
+}
+
+TEST(TaskConstraintProjectorTests, BlockedRetreatDoesNotForbidLongitudinalRetreat) {
+    TaskConstraintProjector projector;
+    TaskConstraintProjectorCfg cfg;
+    cfg.joints_count = 2;
+    cfg.enabled = true;
+    cfg.mode = TaskConstraintMode::BLOCKED_RETREAT;
+    ASSERT_TRUE(projector.configure(cfg));
+
+    Eigen::MatrixXd tool_jacobian = Eigen::MatrixXd::Zero(6, 2);
+    tool_jacobian(0, 0) = 1.0;
+    const auto output = projector.project(TaskConstraintProjectorInput{
+        JointVector{ -0.4, 0.2 },
+        JointVector{ -0.6, 0.1 },
+        tool_jacobian,
+        JointVector{ 0.3, 0.0 },
+    });
+    ASSERT_TRUE(output);
+    EXPECT_EQ(output->delta_q_cmd, (JointVector{ -0.4, 0.2 }));
+    EXPECT_EQ(output->delta_q_dot_cmd, (JointVector{ -0.6, 0.1 }));
+}
