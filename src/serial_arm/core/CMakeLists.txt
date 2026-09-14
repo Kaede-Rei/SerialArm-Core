@@ -329,6 +329,12 @@ if(BUILD_TESTING)
     find_package(GTest REQUIRED)
 
     add_test(
+        NAME serial_arm_standalone_dependency_contract
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/standalone_dependency_contract.py
+    )
+
+    add_test(
         NAME serial_arm_robot_session_fault_recovery_contract
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_session_fault_recovery_contract.py

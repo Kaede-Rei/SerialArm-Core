@@ -6920,7 +6920,7 @@ session.return_to_fault_rigid_hold()
 
 #### 接口说明
 
-RobotSession 暴露与 C++ Robot 对应的 FAULT 恢复操作，并在需要时停止 worker 后执行
+RobotSession 暴露与 C++ Robot 对应的 FAULT 恢复操作；对于 `FAULT + fault_holding` 的可恢复故障，C++ worker 保持运行并持续调用 `maintain_fault_hold()`；`clear_fault()`、`enter_fault_compliant_recovery()` 和 `return_to_fault_rigid_hold()` 作为请求提交给同一 worker 串行执行，避免 Python 线程与控制线程同时修改 Robot 状态机
 
 返回值
 
@@ -6944,6 +6944,10 @@ if session.state == serial_arm.RobotState.FAULT:
 使用注意
 
 - `reset_fault()` 与 `clear_fault()` 执行相同的故障恢复流程
+- 在线恢复只适用于 worker 仍在运行且 Robot 处于可保持的 `FAULT`；无法建立 FAULT hold 的故障会终止 worker
+- 进入 FAULT 时 Session 会丢弃旧的 `move_to` 目标、旧阻抗模式请求和未应用的重力比例请求；`clear_fault()` 成功后固定从 `ACTIVE + RIGID_HOLD` 重新开始
+- FAULT 期间 `set_impedance_mode()`、`move_to()`、`hold_current()` 和在线 `set_gravity_scale()` 不接受新请求
+- `stop()` 在 FAULT 下使用 `force_deactivate()`，不会留下无人刷新的周期性 hold
 
 ---
 

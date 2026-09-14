@@ -303,6 +303,18 @@ ROS 2 Adapter 面向 ROS 2 Humble，并使用 ros2_control、controller_manager�
 
 MoveIt 2 只在使用 MoveIt 路径时需要
 
+Core 的 CMake 不负责下载依赖，所有入口都保持 `find_package(...)` 消费模型
+
+```text
+ROS 2 / colcon
+    package.xml -> rosdep -> apt
+
+Standalone Linux C++
+    conanfile.py -> Conan 2 -> CMakeDeps / CMakeToolchain
+```
+
+Pinocchio 属于 package dependency，不作为 SerialArm-Core 源码的一部分 vendor、submodule 或 FetchContent
+
 ### 2.2 获取仓库
 
 ```bash
@@ -312,21 +324,31 @@ cd SerialArm-Core
 
 后续命令默认从仓库根目录执行
 
-### 2.3 只构建 Core 并运行测试
+### 2.3 Standalone Core 一键构建并运行测试
 
-这条路径适合第一次确认 Core、Dynamics、Safety、Mapping 和配置系统
+这条路径适合第一次确认 Core、Dynamics、Safety、Mapping、配置系统和 Standalone 依赖闭环
 
 ```bash
-cmake -S src/serial_arm/core -B build/serial_arm_core \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DSERIAL_ARM_BUILD_PYTHON=OFF \
-  -DSERIAL_ARM_BUILD_TERMINAL=OFF
+python3 -m pip install --user "conan>=2,<3"
+export PATH="$HOME/.local/bin:$PATH"
 
-cmake --build build/serial_arm_core -j
+./tools/bootstrap_standalone.sh
+```
 
-ctest \
-  --test-dir build/serial_arm_core \
-  --output-on-failure
+bootstrap 会自动完成
+
+```text
+缺少 default profile 时运行 conan profile detect
+    ↓
+conan install
+    ↓
+CMakeToolchain + CMakeDeps
+    ↓
+Core configure / build
+    ↓
+ctest
+    ↓
+install/standalone
 ```
 
 如果 Core tests 失败，应先解决依赖或源码问题，再进入 Hardware 和真机流程
@@ -339,7 +361,7 @@ Standalone CMake 用于独立构建和安装仓库中的组件，不依赖 ROS 2
 
 如果希望一次完成整个仓库构建，直接使用 2.6 的 colcon 路径
 
-如果只需要 Native C++ Core，执行 2.4.1 即可
+如果只需要 Native C++ Core，执行 2.3 的 bootstrap 即可，也可以按 2.4.1 手动构建
 
 如果使用仓库内置 DM-Arm + Damiao Backend + Robot Profile + C++ Terminal，再继续执行 2.4.2 到 2.4.6
 
@@ -354,10 +376,23 @@ Standalone CMake 用于独立构建和安装仓库中的组件，不依赖 ROS 2
 | DM-Arm resources | 使用 `dm_arm_gray` 或 `dm_arm_white` 时 |
 | Resource Path | 使用 Standalone install prefix 解析 Profile 和动态库时 |
 
+先生成 Conan 的 CMake 依赖文件
+
+```bash
+conan profile path default >/dev/null 2>&1 || conan profile detect
+conan install . \
+  --output-folder=build/conan \
+  --build=missing \
+  -s build_type=Release
+
+CONAN_TOOLCHAIN="$PWD/build/conan/conan_toolchain.cmake"
+```
+
 #### 2.4.1 Core 与 Terminal
 
 ```bash
 cmake -S src/serial_arm/core -B build/serial_arm_core \
+  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
   -DCMAKE_BUILD_TYPE=Release \
   -DSERIAL_ARM_BUILD_PYTHON=OFF \
   -DSERIAL_ARM_BUILD_TERMINAL=ON
@@ -376,6 +411,7 @@ cmake --install build/serial_arm_core \
 cmake \
   -S src/robot_supports/protocol/damiao_usb2can \
   -B build/serial_arm_protocol_damiao_usb2can \
+  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$PWD/install/standalone"
 
@@ -396,6 +432,7 @@ cmake --install \
 cmake \
   -S src/robot_supports/hardware/damiao \
   -B build/serial_arm_hardware_damiao \
+  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_PREFIX_PATH="$PWD/install/standalone"
 
@@ -433,12 +470,15 @@ cmake --install build/dm_arm_description \
 
 #### 2.4.6 资源搜索路径
 
-Standalone install prefix 不在 ROS 2 overlay 中，因此需要显式提供资源与动态库搜索路径
+Standalone install prefix 不在 ROS 2 overlay 中，因此需要同时加载 Conan 依赖的运行时路径和 SerialArm 自身安装路径
 
 ```bash
+source "$PWD/build/conan/conanrun.sh"
 export SERIAL_ARM_RESOURCE_PATH="$PWD/install/standalone"
-export LD_LIBRARY_PATH="$PWD/install/standalone/lib:/opt/openrobots/lib:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="$PWD/install/standalone/lib:${LD_LIBRARY_PATH:-}"
 ```
+
+`conanrun.sh` 由 `VirtualRunEnv` 生成，用于提供 Pinocchio 等共享库的运行时搜索路径
 
 安装完成后至少应能找到
 
@@ -454,9 +494,16 @@ install/standalone/share/dm_arm_description/model/...
 
 ### 2.5 Python wheel
 
-Standalone Python 使用 wheel 安装
+Standalone Python 使用 wheel 安装，并复用根目录 Conan toolchain
 
 ```bash
+conan install . \
+  --output-folder=build/conan \
+  --build=missing \
+  -s build_type=Release
+source "$PWD/build/conan/conanrun.sh"
+export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$PWD/build/conan/conan_toolchain.cmake"
+
 cd src/serial_arm/core/python
 
 python -m pip install build
@@ -464,6 +511,7 @@ python -m build --wheel
 python -m pip install --force-reinstall dist/serial_arm-*.whl
 
 cd ../../../..
+unset CMAKE_ARGS
 ```
 
 确认 Binding
@@ -475,6 +523,8 @@ python3 -c "import serial_arm; print(serial_arm.__file__)"
 ### 2.6 colcon 全仓构建
 
 ROS 2、ros2_control 和 MoveIt 使用这条路径
+
+ROS 2 路径不需要 Conan，`package.xml` 中的依赖继续交给 rosdep 解析
 
 ```bash
 source /opt/ros/humble/setup.bash
