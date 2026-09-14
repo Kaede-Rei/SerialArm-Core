@@ -74,11 +74,11 @@ public:
 
     tl::expected<void, MotorBusErr> configure(const std::string& config_path) override {
         static_cast<void>(config_path);
-        return {};
+        return { };
     }
     tl::expected<void, MotorBusErr> connect() override {
         connected_ = true;
-        return {};
+        return { };
     }
     tl::expected<ActuatorState, MotorBusErr> read() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
@@ -87,21 +87,21 @@ public:
     tl::expected<void, MotorBusErr> activate() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
         active_ = true;
-        return {};
+        return { };
     }
     tl::expected<void, MotorBusErr> write(const ActuatorCtrlCmd& cmd) override {
         if(!active_) return tl::make_unexpected(MotorBusErr::NOT_ACTIVE);
         state_.pos = cmd.pos;
         state_.vel = cmd.vel;
         state_.tor = cmd.tor;
-        return {};
+        return { };
     }
-    tl::expected<void, MotorBusErr> stop() override { return {}; }
+    tl::expected<void, MotorBusErr> stop() override { return { }; }
     tl::expected<void, MotorBusErr> deactivate() override {
         active_ = false;
-        return {};
+        return { };
     }
-    tl::expected<void, MotorBusErr> recover() override { return {}; }
+    tl::expected<void, MotorBusErr> recover() override { return { }; }
     const HardwareCapabilities& capabilities() const noexcept override { return capabilities_; }
     void cleanup() noexcept override {
         active_ = false;
@@ -161,7 +161,7 @@ void PyRobotSession::configure(
     actuator_info.reserve(hardware_bus->capabilities().size());
     for(std::size_t i = 0; i < hardware_bus->capabilities().size(); ++i) {
         const auto& item = hardware_bus->capabilities()[i];
-        const std::string joint_name = i < cfg.joint_names.size() ? cfg.joint_names[i] : std::string{};
+        const std::string joint_name = i < cfg.joint_names.size() ? cfg.joint_names[i] : std::string{ };
         actuator_info.push_back(RobotSessionActuatorInfo{
             item.actuator_name,
             joint_name,
@@ -171,7 +171,7 @@ void PyRobotSession::configure(
             item.max_effort,
             item.max_kp,
             item.max_kd,
-        });
+            });
     }
 
     RobotCfg robot_cfg = cfg;
@@ -206,6 +206,11 @@ void PyRobotSession::configure(
     snapshot_.robot_state = RobotState::INACTIVE;
     snapshot_.last_error.clear();
     snapshot_.valid = false;
+    requested_fault_recovery_ = FaultRecoveryRequest::NONE;
+    fault_recovery_sequence_ = 0;
+    completed_fault_recovery_sequence_ = 0;
+    fault_recovery_error_.clear();
+    fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
     configured_ = true;
 }
 
@@ -220,11 +225,14 @@ void PyRobotSession::start() {
         worker_.join();
     }
     if(robot_->get_state() == RobotState::FAULT) {
-        throw SerialArmPythonError("Robot is in FAULT; call reset_fault() before start()");
+        throw SerialArmPythonError("Robot is in FAULT without a running session; call stop() to force INACTIVE before start()");
     }
 
     const auto activate_result = robot_->activate();
     if(!activate_result) {
+        if(robot_->get_state() == RobotState::FAULT && robot_->is_fault_holding()) {
+            static_cast<void>(robot_->force_deactivate());
+        }
         throw SerialArmPythonError(make_robot_error("Robot activate", activate_result.error()));
     }
 
@@ -239,6 +247,11 @@ void PyRobotSession::start() {
         gravity_sequence_ = 0;
         speed_scale_ = 0.3;
         has_goal_ = false;
+        requested_fault_recovery_ = FaultRecoveryRequest::NONE;
+        fault_recovery_sequence_ = 0;
+        completed_fault_recovery_sequence_ = 0;
+        fault_recovery_error_.clear();
+        fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
         snapshot_.robot_state = RobotState::ACTIVE;
         snapshot_.last_error.clear();
         snapshot_.valid = false;
@@ -257,6 +270,7 @@ void PyRobotSession::start() {
 
 void PyRobotSession::stop() {
     running_.store(false);
+    fault_recovery_cv_.notify_all();
     if(worker_.joinable()) {
         worker_.join();
     }
@@ -264,15 +278,23 @@ void PyRobotSession::stop() {
         return;
     }
 
-    if(robot_->get_state() == RobotState::ACTIVE) {
+    const RobotState state = robot_->get_state();
+    if(state == RobotState::ACTIVE) {
         const auto result = robot_->deactivate();
         if(!result) {
             throw SerialArmPythonError(make_robot_error("Robot deactivate", result.error()));
         }
     }
+    else if(state == RobotState::FAULT) {
+        const auto result = robot_->force_deactivate();
+        if(!result) {
+            throw SerialArmPythonError(make_robot_error("Robot force_deactivate", result.error()));
+        }
+    }
 
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.robot_state = robot_->get_state();
+    fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
 }
 
 void PyRobotSession::reset_fault() {
@@ -280,43 +302,47 @@ void PyRobotSession::reset_fault() {
 }
 
 void PyRobotSession::clear_fault() {
-    running_.store(false);
-    if(worker_.joinable()) {
-        worker_.join();
-    }
-    if(!robot_) {
-        throw SerialArmPythonError("RobotSession is not configured");
-    }
-
-    const auto result = robot_->clear_fault();
-    if(!result) {
-        throw SerialArmPythonError(make_robot_error("Robot clear_fault", result.error()));
-    }
-
-    std::lock_guard<std::mutex> lock(mutex_);
-    snapshot_.robot_state = robot_->get_state();
-    snapshot_.last_error.clear();
-    snapshot_.valid = false;
-    has_goal_ = false;
+    submit_fault_recovery_request(FaultRecoveryRequest::CLEAR_FAULT);
 }
 
 void PyRobotSession::enter_fault_compliant_recovery() {
-    if(!robot_) {
-        throw SerialArmPythonError("RobotSession is not configured");
-    }
-    const auto result = robot_->enter_fault_compliant_recovery();
-    if(!result) {
-        throw SerialArmPythonError(make_robot_error("Robot enter_fault_compliant_recovery", result.error()));
-    }
+    submit_fault_recovery_request(FaultRecoveryRequest::ENTER_COMPLIANT);
 }
 
 void PyRobotSession::return_to_fault_rigid_hold() {
-    if(!robot_) {
+    submit_fault_recovery_request(FaultRecoveryRequest::RETURN_RIGID);
+}
+
+void PyRobotSession::submit_fault_recovery_request(FaultRecoveryRequest request) {
+    if(!configured_ || !robot_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
-    const auto result = robot_->return_to_fault_rigid_hold();
-    if(!result) {
-        throw SerialArmPythonError(make_robot_error("Robot return_to_fault_rigid_hold", result.error()));
+
+    std::unique_lock<std::mutex> lock(mutex_);
+    fault_recovery_cv_.wait(lock, [this] {
+        return completed_fault_recovery_sequence_ >= fault_recovery_sequence_ || !running_.load();
+        });
+
+    if(!running_.load()) {
+        throw SerialArmPythonError("online FAULT recovery requires a running RobotSession");
+    }
+    if(snapshot_.robot_state != RobotState::FAULT) {
+        throw SerialArmPythonError("FAULT recovery request requires RobotState::FAULT");
+    }
+
+    const std::uint64_t sequence = ++fault_recovery_sequence_;
+    requested_fault_recovery_ = request;
+    fault_recovery_error_.clear();
+
+    fault_recovery_cv_.wait(lock, [this, sequence] {
+        return completed_fault_recovery_sequence_ >= sequence || !running_.load();
+        });
+
+    if(completed_fault_recovery_sequence_ < sequence) {
+        throw SerialArmPythonError("RobotSession stopped before FAULT recovery request completed");
+    }
+    if(!fault_recovery_error_.empty()) {
+        throw SerialArmPythonError(fault_recovery_error_);
     }
 }
 
@@ -328,6 +354,9 @@ void PyRobotSession::set_impedance_mode(JointImpedanceMode mode) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if(snapshot_.robot_state != RobotState::ACTIVE) {
+        throw SerialArmPythonError("set_impedance_mode() requires RobotState::ACTIVE");
+    }
     requested_impedance_mode_ = mode;
     ++impedance_sequence_;
 }
@@ -371,6 +400,9 @@ void PyRobotSession::set_gravity_scale(const JointVector& gravity_scale) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if(running_.load() && snapshot_.robot_state != RobotState::ACTIVE) {
+        throw SerialArmPythonError("set_gravity_scale() requires RobotState::ACTIVE while the session is running");
+    }
     requested_gravity_scale_ = gravity_scale;
     ++gravity_sequence_;
 }
@@ -395,6 +427,9 @@ void PyRobotSession::move_to(const JointVector& pos, double speed_scale) {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if(snapshot_.robot_state != RobotState::ACTIVE) {
+        throw SerialArmPythonError("move_to() requires RobotState::ACTIVE");
+    }
     if(!is_tracking_mode(requested_impedance_mode_)) {
         throw SerialArmPythonError("move_to() requires RIGID_TRACKING or COMPLIANT_TRACKING");
     }
@@ -409,6 +444,9 @@ void PyRobotSession::hold_current() {
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+    if(snapshot_.robot_state != RobotState::ACTIVE) {
+        throw SerialArmPythonError("hold_current() requires RobotState::ACTIVE");
+    }
     requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
     ++impedance_sequence_;
     has_goal_ = false;
@@ -430,7 +468,8 @@ FaultHoldMode PyRobotSession::get_fault_hold_mode() const {
     if(!robot_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
-    return robot_->get_fault_hold_mode();
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fault_hold_mode_cache_;
 }
 
 bool PyRobotSession::is_configured() const noexcept {
@@ -476,6 +515,22 @@ void PyRobotSession::loop() noexcept {
     std::uint64_t applied_gravity_sequence = 0;
     JointImpedanceMode applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
 
+    auto finish_period = [&] {
+        next_time += period;
+        std::this_thread::sleep_until(next_time);
+        };
+
+    auto handle_robot_failure = [&](const std::string& message) -> bool {
+        set_worker_error(message);
+        if(robot_ && robot_->get_state() == RobotState::FAULT && robot_->is_fault_holding()) {
+            invalidate_motion_requests_for_fault(applied_impedance_sequence, applied_gravity_sequence, applied_impedance_mode);
+            return true;
+        }
+        running_.store(false);
+        fault_recovery_cv_.notify_all();
+        return false;
+        };
+
     while(running_.load()) {
         const auto now = Robot::Clock::now();
         if(now > next_time) next_time = now;
@@ -483,6 +538,45 @@ void PyRobotSession::loop() noexcept {
         previous_time = now;
         if(!std::isfinite(dt) || dt <= 0.0) {
             dt = target_dt;
+        }
+
+        const RobotState state = robot_->get_state();
+        if(state == RobotState::FAULT) {
+            if(!robot_->is_fault_holding()) {
+                set_worker_error("Robot entered FAULT without an active hold; online recovery is unavailable");
+                running_.store(false);
+                fault_recovery_cv_.notify_all();
+                break;
+            }
+
+            // Keep the safety reaction alive first. This also accumulates the
+            // consecutive valid hold cycles required by Robot::clear_fault().
+            const auto hold_result = robot_->maintain_fault_hold();
+            if(!hold_result) {
+                set_worker_error(make_robot_error("Robot maintain_fault_hold", hold_result.error()));
+                running_.store(false);
+                fault_recovery_cv_.notify_all();
+                break;
+            }
+
+            process_fault_recovery_request(applied_impedance_sequence, applied_impedance_mode);
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                snapshot_.robot_state = robot_->get_state();
+                fault_hold_mode_cache_ = robot_->get_state() == RobotState::FAULT ?
+                    robot_->get_fault_hold_mode() : FaultHoldMode::RIGID_HOLD;
+            }
+
+            finish_period();
+            continue;
+        }
+
+        if(state != RobotState::ACTIVE) {
+            set_worker_error("RobotSession worker found Robot outside ACTIVE/FAULT state");
+            running_.store(false);
+            fault_recovery_cv_.notify_all();
+            break;
         }
 
         JointImpedanceMode impedance_mode;
@@ -502,6 +596,7 @@ void PyRobotSession::loop() noexcept {
             if(!result) {
                 set_worker_error("Dynamics set_gravity_scale failed; DynamicsErr=" + std::to_string(static_cast<int>(result.error())));
                 running_.store(false);
+                fault_recovery_cv_.notify_all();
                 break;
             }
             applied_gravity_sequence = gravity_sequence;
@@ -510,8 +605,10 @@ void PyRobotSession::loop() noexcept {
         if(impedance_sequence != applied_impedance_sequence) {
             const auto result = robot_->set_impedance_mode(impedance_mode, now);
             if(!result) {
-                set_worker_error(make_robot_error("Robot set_impedance_mode", result.error()));
-                running_.store(false);
+                if(handle_robot_failure(make_robot_error("Robot set_impedance_mode", result.error()))) {
+                    finish_period();
+                    continue;
+                }
                 break;
             }
 
@@ -530,16 +627,20 @@ void PyRobotSession::loop() noexcept {
             update_reference(dt);
             const auto cmd_result = robot_->set_cmd(JointPosVelCmd{ ref_pos_, ref_vel_ }, now);
             if(!cmd_result) {
-                set_worker_error(make_robot_error("Robot set_cmd", cmd_result.error()));
-                running_.store(false);
+                if(handle_robot_failure(make_robot_error("Robot set_cmd", cmd_result.error()))) {
+                    finish_period();
+                    continue;
+                }
                 break;
             }
         }
 
         const auto cycle_result = robot_->cycle(now);
         if(!cycle_result) {
-            set_worker_error(make_robot_error("Robot cycle", cycle_result.error()));
-            running_.store(false);
+            if(handle_robot_failure(make_robot_error("Robot cycle", cycle_result.error()))) {
+                finish_period();
+                continue;
+            }
             break;
         }
 
@@ -547,24 +648,141 @@ void PyRobotSession::loop() noexcept {
             std::lock_guard<std::mutex> lock(mutex_);
             snapshot_.cycle = cycle_result.value();
             snapshot_.dynamics = dynamics_->get_state();
-            snapshot_.robot_state = robot_->get_state();
+            snapshot_.robot_state = RobotState::ACTIVE;
             snapshot_.valid = true;
             snapshot_.last_error.clear();
+            fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
         }
 
-        next_time += period;
-        std::this_thread::sleep_until(next_time);
+        finish_period();
     }
 
-    if(robot_ && robot_->get_state() == RobotState::ACTIVE) {
-        const auto result = robot_->deactivate();
-        if(!result) {
-            set_worker_error(make_robot_error("Robot deactivate", result.error()));
+    // A stopped worker must never leave a periodic FAULT hold unattended.
+    if(robot_) {
+        const RobotState state = robot_->get_state();
+        if(state == RobotState::ACTIVE) {
+            const auto result = robot_->deactivate();
+            if(!result) {
+                set_worker_error(make_robot_error("Robot deactivate", result.error()));
+            }
+        }
+        else if(state == RobotState::FAULT && robot_->is_fault_holding()) {
+            const auto result = robot_->force_deactivate();
+            if(!result) {
+                set_worker_error(make_robot_error("Robot force_deactivate", result.error()));
+            }
         }
     }
 
+    running_.store(false);
+    fault_recovery_cv_.notify_all();
     std::lock_guard<std::mutex> lock(mutex_);
     snapshot_.robot_state = robot_ ? robot_->get_state() : RobotState::UNCONFIGURED;
+    fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
+}
+
+void PyRobotSession::invalidate_motion_requests_for_fault(
+    std::uint64_t& applied_impedance_sequence,
+    std::uint64_t& applied_gravity_sequence,
+    JointImpedanceMode& applied_impedance_mode) noexcept {
+    try {
+        const JointVector measured = robot_->get_joint_state().pos;
+        const FaultHoldMode hold_mode = robot_->get_fault_hold_mode();
+        std::lock_guard<std::mutex> lock(mutex_);
+        ref_pos_ = measured;
+        ref_vel_.assign(measured.size(), 0.0);
+        goal_pos_ = measured;
+        has_goal_ = false;
+        speed_scale_ = 0.3;
+        requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+        ++impedance_sequence_;
+        applied_impedance_sequence = impedance_sequence_;
+        requested_gravity_scale_ = dynamics_->get_gravity_scale();
+        ++gravity_sequence_;
+        applied_gravity_sequence = gravity_sequence_;
+        applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
+        snapshot_.robot_state = RobotState::FAULT;
+        fault_hold_mode_cache_ = hold_mode;
+    }
+    catch(...) {
+    }
+}
+
+void PyRobotSession::process_fault_recovery_request(
+    std::uint64_t& applied_impedance_sequence,
+    JointImpedanceMode& applied_impedance_mode) noexcept {
+    FaultRecoveryRequest request = FaultRecoveryRequest::NONE;
+    std::uint64_t sequence = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(fault_recovery_sequence_ <= completed_fault_recovery_sequence_) {
+            return;
+        }
+        request = requested_fault_recovery_;
+        sequence = fault_recovery_sequence_;
+    }
+
+    std::string error;
+    try {
+        tl::expected<void, RobotFault> result;
+        const char* action = "Robot FAULT recovery";
+        switch(request) {
+            case FaultRecoveryRequest::ENTER_COMPLIANT:
+                action = "Robot enter_fault_compliant_recovery";
+                result = robot_->enter_fault_compliant_recovery();
+                break;
+            case FaultRecoveryRequest::RETURN_RIGID:
+                action = "Robot return_to_fault_rigid_hold";
+                result = robot_->return_to_fault_rigid_hold();
+                break;
+            case FaultRecoveryRequest::CLEAR_FAULT:
+                action = "Robot clear_fault";
+                result = robot_->clear_fault();
+                break;
+            case FaultRecoveryRequest::NONE:
+                result = { };
+                break;
+        }
+
+        if(!result) {
+            error = make_robot_error(action, result.error());
+        }
+        else if(request == FaultRecoveryRequest::CLEAR_FAULT) {
+            const JointVector measured = robot_->get_joint_state().pos;
+            std::lock_guard<std::mutex> lock(mutex_);
+            ref_pos_ = measured;
+            ref_vel_.assign(measured.size(), 0.0);
+            goal_pos_ = measured;
+            has_goal_ = false;
+            speed_scale_ = 0.3;
+            requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+            ++impedance_sequence_;
+            applied_impedance_sequence = impedance_sequence_;
+            applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
+            snapshot_.robot_state = RobotState::ACTIVE;
+            snapshot_.last_error.clear();
+            snapshot_.valid = false;
+            fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
+        }
+    }
+    catch(const std::exception& ex) {
+        error = ex.what();
+    }
+    catch(...) {
+        error = "unknown exception while processing FAULT recovery request";
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_ && robot_->get_state() == RobotState::FAULT) {
+            snapshot_.robot_state = RobotState::FAULT;
+            fault_hold_mode_cache_ = robot_->get_fault_hold_mode();
+        }
+        requested_fault_recovery_ = FaultRecoveryRequest::NONE;
+        completed_fault_recovery_sequence_ = sequence;
+        fault_recovery_error_ = std::move(error);
+    }
+    fault_recovery_cv_.notify_all();
 }
 
 /**
@@ -683,7 +901,7 @@ InteractionModelStateFn PyRobotSession::make_interaction_model_state() {
             }
         }
         return snapshot;
-    };
+        };
 }
 
 } // namespace serial_arm

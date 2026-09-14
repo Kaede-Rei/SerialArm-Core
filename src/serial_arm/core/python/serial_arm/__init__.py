@@ -103,7 +103,7 @@ class RobotSession:
         self._session.start()
 
     def stop(self) -> None:
-        """停止 C++ 控制线程并在 ACTIVE 状态下安全失能"""
+        """停止 C++ 控制线程；ACTIVE 正常失能，FAULT 强制退出保持并失能"""
         self._session.stop()
 
     def reset_fault(self) -> None:
@@ -111,15 +111,15 @@ class RobotSession:
         self._session.reset_fault()
 
     def clear_fault(self) -> None:
-        """清除 Robot FAULT 并进入 ACTIVE + RIGID_HOLD"""
+        """在线清除可恢复 FAULT，并进入 ACTIVE + RIGID_HOLD"""
         self._session.clear_fault()
 
     def enter_fault_compliant_recovery(self) -> None:
-        """人工请求进入 FAULT 受限柔性恢复"""
+        """在线请求进入 FAULT 受限柔性恢复；由 C++ worker 串行执行"""
         self._session.enter_fault_compliant_recovery()
 
     def return_to_fault_rigid_hold(self) -> None:
-        """返回 FAULT 刚性保持"""
+        """在线请求返回 FAULT 刚性保持；由 C++ worker 串行执行"""
         self._session.return_to_fault_rigid_hold()
 
     def set_impedance_mode(self, mode: JointImpedanceMode) -> None:

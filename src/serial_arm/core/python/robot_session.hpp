@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -86,11 +87,11 @@ public:
      */
     void stop();
     /**
-     * @brief 在控制线程停止后清除 Robot FAULT
+     * @brief 兼容接口；在线请求控制线程清除 Robot FAULT
      */
     void reset_fault();
     /**
-     * @brief 在控制线程停止后清除 Robot FAULT
+     * @brief 在线请求控制线程清除 Robot FAULT，并恢复 ACTIVE + RIGID_HOLD
      */
     void clear_fault();
     /**
@@ -162,10 +163,34 @@ public:
     std::vector<RobotSessionActuatorInfo> get_actuator_info() const;
 
 private:
+    enum class FaultRecoveryRequest {
+        NONE,
+        ENTER_COMPLIANT,
+        RETURN_RIGID,
+        CLEAR_FAULT,
+    };
+
     /**
      * @brief C++ 周期线程入口
      */
     void loop() noexcept;
+    /**
+     * @brief 提交在线 FAULT 恢复请求并等待控制线程执行完成
+     */
+    void submit_fault_recovery_request(FaultRecoveryRequest request);
+    /**
+     * @brief 由控制线程串行执行待处理的 FAULT 恢复请求
+     */
+    void process_fault_recovery_request(
+        std::uint64_t& applied_impedance_sequence,
+        JointImpedanceMode& applied_impedance_mode) noexcept;
+    /**
+     * @brief FAULT 发生时清除旧运动目标并同步到刚性保持语义
+     */
+    void invalidate_motion_requests_for_fault(
+        std::uint64_t& applied_impedance_sequence,
+        std::uint64_t& applied_gravity_sequence,
+        JointImpedanceMode& applied_impedance_mode) noexcept;
     /**
      * @brief 根据当前目标生成一帧连续位置速度参考
      * @param dt 当前参考生成周期
@@ -196,6 +221,7 @@ private:
     std::vector<RobotSessionActuatorInfo> actuator_info_;     ///< 执行器静态信息
 
     mutable std::mutex mutex_;                          ///< 请求与快照互斥锁
+    std::condition_variable fault_recovery_cv_;          ///< 在线 FAULT 恢复请求完成通知
     RobotSessionSnapshot snapshot_;                     ///< 最近一次完整快照
     JointVector goal_pos_;                              ///< 当前绝对位置目标
     JointVector ref_pos_;                               ///< 当前连续位置参考
@@ -207,6 +233,11 @@ private:
 
     std::uint64_t impedance_sequence_{ 0 };             ///< 阻抗模式请求序号
     std::uint64_t gravity_sequence_{ 0 };               ///< 重力比例请求序号
+    FaultRecoveryRequest requested_fault_recovery_{ FaultRecoveryRequest::NONE }; ///< 待执行 FAULT 恢复请求
+    std::uint64_t fault_recovery_sequence_{ 0 };         ///< FAULT 恢复请求序号
+    std::uint64_t completed_fault_recovery_sequence_{ 0 }; ///< 已完成 FAULT 恢复请求序号
+    std::string fault_recovery_error_;                   ///< 最近一次 FAULT 恢复请求错误
+    FaultHoldMode fault_hold_mode_cache_{ FaultHoldMode::RIGID_HOLD }; ///< 线程安全的 FAULT 模式缓存
     bool has_goal_{ false };                            ///< 是否存在位置目标
     bool configured_{ false };                          ///< 会话是否已完成配置
 
