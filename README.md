@@ -140,15 +140,6 @@ cd SerialArm-Core
 
 只有需要独立安装 Core、Protocol、Hardware Backend 或 Robot Support 时才使用 Standalone CMake
 
-依赖获取与 Core 构建保持解耦
-
-| 使用场景 | 依赖获取 | Core CMake |
-| --- | --- | --- |
-| ROS 2 / colcon | `rosdep` + apt | `find_package(...)` |
-| Standalone Linux C++ | Conan 2 | `find_package(...)` |
-
-SerialArm-Core 不 vendor Pinocchio，不使用 git submodule，也不在默认 CMake 流程中 FetchContent 编译 Pinocchio
-
 #### 1.1 colcon 全仓构建
 
 这是仓库最直接的整仓构建方式，同时安装 Native C++、Python Binding、C++ Terminal、Robot Support 和 ROS 2 Adapter
@@ -172,36 +163,48 @@ source install/setup.bash
 
 适合不使用 ROS 2，只需要 Native C++ Core、Dynamics、Terminal 和测试的 Linux 用户
 
-首次使用先安装 Conan 2，然后运行 bootstrap
-
 ```bash
 python3 -m pip install --user "conan>=2,<3"
 export PATH="$HOME/.local/bin:$PATH"
 
 ./tools/bootstrap_standalone.sh
+source install/standalone/setup.bash
 ```
 
-脚本会在缺少默认 profile 时执行 `conan profile detect`，随后完成依赖安装、Core 配置、编译、测试和安装
+Conan 2 负责获取 Pinocchio、yaml-cpp、Eigen 和 GTest，Core CMake 仍保持 `find_package(...)` 消费模型，不 vendor Pinocchio，也不使用 git submodule
 
-默认输出为
+#### 1.3 Standalone DM-Arm 一键安装
+
+如果要直接使用仓库内置的 DM-Arm Profile、Damiao USB2CAN 和 Hardware Backend，只需要在同一个 bootstrap 上增加 Robot 参数
+
+```bash
+./tools/bootstrap_standalone.sh --robot dm_arm
+source install/standalone/setup.bash
+
+serial_arm_terminal --robot-profile dm_arm_gray
+```
+
+该路径会按依赖顺序安装
 
 ```text
-build/conan/            Conan CMakeDeps / Toolchain / RunEnv
-build/serial_arm_core/  Core build tree
-install/standalone/     Core install prefix
+Core + tests
+    ↓
+Damiao USB2CAN Protocol
+    ↓
+Damiao Hardware Backend
+    ↓
+Robot Profiles
+    ↓
+DM-Arm Description / Config / Model
 ```
 
-Pinocchio、yaml-cpp、Eigen 和 GTest 由 Conan 获取，Core 的 `CMakeLists.txt` 仍然只通过 `find_package(...)` 消费依赖
+生成的 `install/standalone/setup.bash` 会同时加载 Conan runtime、`SERIAL_ARM_RESOURCE_PATH` 和 SerialArm 自身动态库路径
 
-#### 1.3 Standalone CMake 按需构建
+需要自定义单个组件时仍可参考 [Tutorial.md](Tutorial.md) 使用 Standalone CMake 逐组件构建
 
-Standalone CMake 是组件级安装方式，不要求把下面所有包都构建一遍
+#### 1.4 Python wheel
 
-使用已有 DM-Arm Profile 并运行 C++ Terminal 时需要 Core、Damiao Protocol、Damiao Backend、Profiles 和 DM-Arm resources
-
-其他机械臂只构建实际需要的对应组件
-
-如果没有运行 1.2 的 bootstrap，先准备 Conan 依赖
+Standalone Python Binding 同样复用根目录 Conan 依赖，不要求安装 ROS 2
 
 ```bash
 conan profile path default >/dev/null 2>&1 || conan profile detect
@@ -210,70 +213,20 @@ conan install . \
   --build=missing \
   -s build_type=Release
 
-CONAN_TOOLCHAIN="$PWD/build/conan/conan_toolchain.cmake"
-
-# Core + C++ Terminal，Standalone 基础组件
-cmake -S src/serial_arm/core -B build/serial_arm_core \
-  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DSERIAL_ARM_BUILD_PYTHON=OFF \
-  -DSERIAL_ARM_BUILD_TERMINAL=ON
-cmake --build build/serial_arm_core -j && cmake --install build/serial_arm_core --prefix install/standalone
-
-# 仅使用 Damiao 官方 USB2CAN 时需要
-cmake -S src/robot_supports/protocol/damiao_usb2can -B build/serial_arm_protocol_damiao_usb2can \
-  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$PWD/install/standalone"
-cmake --build build/serial_arm_protocol_damiao_usb2can -j && cmake --install build/serial_arm_protocol_damiao_usb2can --prefix install/standalone
-
-# 仅使用 Damiao Hardware Backend 时需要
-cmake -S src/robot_supports/hardware/damiao -B build/serial_arm_hardware_damiao \
-  -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_PREFIX_PATH="$PWD/install/standalone"
-cmake --build build/serial_arm_hardware_damiao -j && cmake --install build/serial_arm_hardware_damiao --prefix install/standalone
-
-# 使用 Robot Profile 时需要
-cmake -S src/robot_supports/profiles -B build/serial_arm_robot_profiles
-cmake --install build/serial_arm_robot_profiles --prefix install/standalone
-
-# 使用仓库内置 DM-Arm resources 时需要
-cmake -S src/robot_supports/robots/dm_arm/description -B build/dm_arm_description
-cmake --install build/dm_arm_description --prefix install/standalone
-
-# Conan 负责 Pinocchio 等共享库的运行时搜索路径
-source "$PWD/build/conan/conanrun.sh"
-
-# SerialArm 自身安装目录的资源与动态库搜索路径
-export SERIAL_ARM_RESOURCE_PATH="$PWD/install/standalone"
-export LD_LIBRARY_PATH="$PWD/install/standalone/lib:${LD_LIBRARY_PATH:-}"
-```
-
-Standalone CMake 的逐组件说明和新 Robot Support 的安装方法见 [Tutorial.md](Tutorial.md)
-
-#### 1.4 Python wheel
-
-适合单独安装 standalone Python Binding
-
-Standalone wheel 同样复用根目录的 Conan 依赖，不需要单独安装 Pinocchio
-
-```bash
-conan install . \
-  --output-folder=build/conan \
-  --build=missing \
-  -s build_type=Release
 source "$PWD/build/conan/conanrun.sh"
 export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$PWD/build/conan/conan_toolchain.cmake"
 
 cd src/serial_arm/core/python
-python -m pip install build
-python -m build --wheel
-python -m pip install --force-reinstall dist/serial_arm-*.whl
+python3 -m pip install build
+python3 -m build --wheel
+python3 -m pip install --force-reinstall dist/serial_arm-*.whl
+python3 -c "import serial_arm; print(serial_arm.__version__)"
 cd ../../../..
 
 unset CMAKE_ARGS
 ```
+
+Standalone wheel 会把 `_serial_arm` 与其必需的 `libserial_arm_core.so` 一起安装到 Python package，并使用 `$ORIGIN` 解析 Core shared library，因此不需要用户另行把 SerialArm Core 安装到系统动态库路径
 
 ### 2 选择已有 Robot Profile
 

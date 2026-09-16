@@ -286,9 +286,20 @@ if(SERIAL_ARM_BUILD_PYTHON)
             COMPONENT python
         )
     else()
-        message(STATUS
-            "SERIAL_ARM_BUILD_PYTHON is ON, but ament_cmake was not found; "
-            "standalone Python packaging is managed by python/ wheel builds")
+        # scikit-build-core stages CMake install output into the wheel. Keep
+        # both the extension and the Core shared library inside the Python
+        # package, then resolve the latter relative to the extension itself.
+        set_target_properties(_serial_arm PROPERTIES
+            INSTALL_RPATH "$ORIGIN"
+        )
+        install(TARGETS _serial_arm
+            LIBRARY DESTINATION "serial_arm"
+            COMPONENT python
+        )
+        install(TARGETS serial_arm_core
+            LIBRARY DESTINATION "serial_arm"
+            COMPONENT python
+        )
     endif()
 endif()
 
@@ -338,6 +349,59 @@ if(BUILD_TESTING)
         NAME serial_arm_robot_session_fault_recovery_contract
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_session_fault_recovery_contract.py
+    )
+
+    add_test(
+        NAME serial_arm_bootstrap_standalone_cli
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/bootstrap_standalone_cli_test.py
+    )
+
+    find_package(Threads REQUIRED)
+
+    add_library(serial_arm_fault_inject_hardware_plugin SHARED
+        tests/fault_inject_hardware_plugin.cpp
+    )
+    target_link_libraries(serial_arm_fault_inject_hardware_plugin
+        PRIVATE
+            serial_arm_core
+    )
+    target_compile_features(serial_arm_fault_inject_hardware_plugin PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_fault_inject_hardware_plugin)
+
+    add_executable(serial_arm_robot_session_fault_recovery_runtime_tests
+        tests/robot_session_fault_recovery_runtime_tests.cpp
+        python/robot_session.cpp
+    )
+    target_include_directories(serial_arm_robot_session_fault_recovery_runtime_tests
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/python
+    )
+    target_compile_definitions(serial_arm_robot_session_fault_recovery_runtime_tests
+        PRIVATE
+            SERIAL_ARM_TEST_FAULT_INJECT_HARDWARE_PLUGIN="$<TARGET_FILE:serial_arm_fault_inject_hardware_plugin>"
+            SERIAL_ARM_TEST_DM_ARM_CORE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_supports/robots/dm_arm/description/config/core/gray.yaml"
+            SERIAL_ARM_TEST_DM_ARM_HARDWARE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_supports/robots/dm_arm/description/config/hardware.yaml"
+    )
+    target_link_libraries(serial_arm_robot_session_fault_recovery_runtime_tests
+        PRIVATE
+            serial_arm_core
+            serial_arm_config
+            serial_arm_robot
+            serial_arm_dynamics
+            Threads::Threads
+            GTest::gtest_main
+    )
+    add_dependencies(
+        serial_arm_robot_session_fault_recovery_runtime_tests
+        serial_arm_fault_inject_hardware_plugin
+    )
+    target_compile_features(serial_arm_robot_session_fault_recovery_runtime_tests PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_robot_session_fault_recovery_runtime_tests)
+
+    add_test(
+        NAME serial_arm_robot_session_fault_recovery_runtime_tests
+        COMMAND serial_arm_robot_session_fault_recovery_runtime_tests
     )
 
     add_executable(serial_arm_core_contract_tests

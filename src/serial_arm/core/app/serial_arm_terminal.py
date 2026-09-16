@@ -13,21 +13,20 @@ SerialArm pybind11 Python 交互终端
     python -m pip install --upgrade pip
     python -m pip install numpy pybind11 scikit-build-core build
 
-2 Standalone 环境从仓库根目录使用 Conan 2 准备 C++ 依赖
+2 Pinocchio 位于 /opt/openrobots 时加载环境
 
-    conan profile path default >/dev/null 2>&1 || conan profile detect
-    conan install . --output-folder=build/conan --build=missing -s build_type=Release
-    source build/conan/conanrun.sh
-    export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$PWD/build/conan/conan_toolchain.cmake"
+    export PATH=/opt/openrobots/bin:$PATH
+    export CMAKE_PREFIX_PATH=/opt/openrobots:$CMAKE_PREFIX_PATH
+    export LD_LIBRARY_PATH=/opt/openrobots/lib:$LD_LIBRARY_PATH
+    export PKG_CONFIG_PATH=/opt/openrobots/lib/pkgconfig:$PKG_CONFIG_PATH
 
 3 使用 scikit-build-core 调用 CMake 编译 pybind11 扩展并生成 wheel
 
-    cd src/serial_arm/core/python
+    cd python
     python -m build --wheel
 
     python -m pip install --force-reinstall dist/serial_arm-*.whl
-    cd ../../../..
-    unset CMAKE_ARGS
+    cd ..
 
 4 验证 wheel 是否正确安装
 
