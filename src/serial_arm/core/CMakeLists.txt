@@ -14,10 +14,15 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
-# When built by ROS 2/colcon, also register this CMake package in the ament
-# index so package://serial_arm_core URIs resolve in tools such as MoveIt Setup
-# Assistant. The library targets remain usable as a plain CMake package.
-find_package(ament_cmake QUIET)
+# ROS 2 integration is optional. Standalone/bootstrap builds explicitly set
+# this OFF so a sourced ROS environment cannot silently change a pure C++ build.
+# ROS 2/colcon builds keep the default ON and register the package with ament.
+option(SERIAL_ARM_ENABLE_ROS2 "Enable ROS 2 ament integration when available" ON)
+if(SERIAL_ARM_ENABLE_ROS2)
+    find_package(ament_cmake QUIET)
+else()
+    set(ament_cmake_FOUND FALSE)
+endif()
 include(CTest)
 
 # =============================================================================
@@ -559,6 +564,7 @@ endif()
 # =============================================================================
 
 message(STATUS "SerialArm-Core build configuration:")
+message(STATUS "  SERIAL_ARM_ENABLE_ROS2    = ${SERIAL_ARM_ENABLE_ROS2}")
 message(STATUS "  SERIAL_ARM_BUILD_TERMINAL = ${SERIAL_ARM_BUILD_TERMINAL}")
 message(STATUS "  Dynamics / Pinocchio    = REQUIRED")
 message(STATUS "  SERIAL_ARM_BUILD_PYTHON   = ${SERIAL_ARM_BUILD_PYTHON}")

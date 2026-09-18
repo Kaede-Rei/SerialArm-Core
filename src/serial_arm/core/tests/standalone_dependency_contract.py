@@ -23,15 +23,25 @@ class StandaloneDependencyContractTest(unittest.TestCase):
         self.assertIn("CMakeToolchain", recipe)
         self.assertIn("VirtualRunEnv", recipe)
         self.assertIn("pinocchio/*:with_collision_support", recipe)
+        self.assertIn('options = {"with_tests": [True, False]}', recipe)
+        self.assertIn('"with_tests": False', recipe)
+        self.assertIn("if self.options.with_tests", recipe)
 
-    def test_bootstrap_uses_conan_toolchain_and_runs_core_tests(self) -> None:
+    def test_bootstrap_prefers_system_then_conan_binary_then_explicit_source_build(self) -> None:
         bootstrap = (ROOT / "tools/bootstrap_standalone.sh").read_text(encoding="utf-8")
         for fragment in (
+            "probe_system_dependencies",
+            "Using system dependencies; Conan is not required",
             "conan profile detect",
-            "conan install",
+            "compiler.cppstd=17",
+            "Trying Conan binary packages first",
+            "SERIAL_ARM_ALLOW_SOURCE_BUILD",
+            "--build=missing",
             "conan_toolchain.cmake",
             "SERIAL_ARM_BUILD_PYTHON=OFF",
-            "BUILD_TESTING=ON",
+            "--with-tests",
+            "BUILD_TESTING=OFF",
+            "SERIAL_ARM_PROBE_TEST_DEPS",
             "ctest --test-dir",
             "cmake --install",
             "Conan did not generate runtime environment",
@@ -46,6 +56,8 @@ class StandaloneDependencyContractTest(unittest.TestCase):
         self.assertIn("install(TARGETS serial_arm_core", cmake)
         self.assertIn('INSTALL_RPATH "$ORIGIN"', cmake)
         self.assertTrue((ROOT / "src/serial_arm/core/python/README.md").is_file())
+        pyproject = (ROOT / "src/serial_arm/core/python/pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn("-DSERIAL_ARM_ENABLE_ROS2=OFF", pyproject)
 
     def test_bootstrap_can_install_complete_dm_arm_stack(self) -> None:
         bootstrap = (ROOT / "tools/bootstrap_standalone.sh").read_text(encoding="utf-8")

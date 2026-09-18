@@ -13,9 +13,11 @@ class SerialArmStandaloneDeps(ConanFile):
     """
 
     settings = "os", "compiler", "build_type", "arch"
+    options = {"with_tests": [True, False]}
     generators = "CMakeDeps", "CMakeToolchain", "VirtualRunEnv"
 
     default_options = {
+        "with_tests": False,
         "pinocchio/*:with_collision_support": False,
         "yaml-cpp/*:shared": False,
         "gtest/*:shared": False,
@@ -27,4 +29,5 @@ class SerialArmStandaloneDeps(ConanFile):
         self.requires("eigen/3.4.0")
 
     def build_requirements(self):
-        self.test_requires("gtest/1.17.0")
+        if self.options.with_tests:
+            self.test_requires("gtest/1.17.0")

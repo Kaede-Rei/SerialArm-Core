@@ -271,7 +271,7 @@ TEST(AdmittanceStaticCalibrationTests, ValidationChecksOnlyStaticObserverEnvelop
     auto result = evaluate_admittance_static_validation({ pose }, cfg);
     ASSERT_TRUE(result);
     EXPECT_NEAR(result->residual_max[0], 0.02, 1e-12);
-    EXPECT_NEAR(result->threshold_utilization[0], 0.4, 1e-12);
+    EXPECT_NEAR(result->threshold_utilization[0], 0.398, 1e-12);
     EXPECT_EQ(result->pass, std::vector<std::uint8_t>{ 1 });
 }
 

@@ -34,6 +34,7 @@ cmake.source-dir = ".."
 wheel.packages = ["serial_arm"]
 install.components = ["python"]
 cmake.args = [
+  "-DSERIAL_ARM_ENABLE_ROS2=OFF",
   "-DSERIAL_ARM_BUILD_TERMINAL=OFF",
   "-DSERIAL_ARM_BUILD_PYTHON=ON",
 ]

@@ -312,7 +312,7 @@ cd SerialArm-Core
 
 后续命令默认从仓库根目录执行
 
-### 2.3 Standalone Core 一键构建并运行测试
+### 2.3 Standalone Core 一键构建
 
 纯 C++ / 非 ROS 用户优先使用 Conan 2 bootstrap
 
@@ -324,7 +324,23 @@ export PATH="$HOME/.local/bin:$PATH"
 source install/standalone/setup.bash
 ```
 
-bootstrap 自动完成 Conan profile、依赖获取、Core configure/build、`ctest` 和安装
+bootstrap 默认只探测 Core 所需的 Pinocchio、Eigen 和 yaml-cpp；依赖齐全时直接构建，不调用 Conan；系统依赖不完整时才使用 Conan，并固定 `compiler.cppstd=17` 先尝试预编译 binary；只有 binary 不可用且用户明确同意后才会 `--build=missing` 源码编译；默认完成 Core configure/build 和安装，不构建也不运行开发测试
+
+bootstrap 的 standalone 子进程会强制 `SERIAL_ARM_ENABLE_ROS2=OFF`，同时移除 `AMENT_PREFIX_PATH`、`COLCON_PREFIX_PATH` 以及 `CMAKE_PREFIX_PATH` 中的 ROS overlay；因此它不会因为外部终端已经 source ROS 2 而切换到 ament 路径；系统级 `/opt/openrobots` Pinocchio 仍属于普通 C++ 依赖，可以继续复用
+
+需要验证开发测试时使用：
+
+```bash
+./tools/bootstrap_standalone.sh --with-tests
+```
+
+只有该模式才要求 GTest、设置 `BUILD_TESTING=ON` 并执行 `ctest`
+
+非交互环境默认不会启动耗时的源码编译；如确认接受慢速 fallback，可显式执行
+
+```bash
+SERIAL_ARM_ALLOW_SOURCE_BUILD=1 ./tools/bootstrap_standalone.sh
+```
 
 如果直接使用仓库内置 DM-Arm，再增加 Robot 参数
 
@@ -358,11 +374,11 @@ CONAN_TOOLCHAIN="$PWD/build/conan/conan_toolchain.cmake"
 cmake -S src/serial_arm/core -B build/serial_arm_core \
   -DCMAKE_TOOLCHAIN_FILE="$CONAN_TOOLCHAIN" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DSERIAL_ARM_ENABLE_ROS2=OFF \
   -DSERIAL_ARM_BUILD_PYTHON=OFF \
   -DSERIAL_ARM_BUILD_TERMINAL=ON \
-  -DBUILD_TESTING=ON
+  -DBUILD_TESTING=OFF
 cmake --build build/serial_arm_core -j
-ctest --test-dir build/serial_arm_core --output-on-failure
 cmake --install build/serial_arm_core --prefix install/standalone
 ```
 

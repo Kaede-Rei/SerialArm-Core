@@ -161,7 +161,7 @@ source install/setup.bash
 
 #### 1.2 Standalone Core 一键构建
 
-适合不使用 ROS 2，只需要 Native C++ Core、Dynamics、Terminal 和测试的 Linux 用户
+适合不使用 ROS 2，只需要 Native C++ Core、Dynamics 和 Terminal 的 Linux 用户；开发测试默认关闭
 
 ```bash
 python3 -m pip install --user "conan>=2,<3"
@@ -171,7 +171,23 @@ export PATH="$HOME/.local/bin:$PATH"
 source install/standalone/setup.bash
 ```
 
-Conan 2 负责获取 Pinocchio、yaml-cpp、Eigen 和 GTest，Core CMake 仍保持 `find_package(...)` 消费模型，不 vendor Pinocchio，也不使用 git submodule
+bootstrap 默认只检测并安装运行 Core 所需的 Pinocchio、yaml-cpp 和 Eigen，不要求 GTest，也不会构建或运行开发测试；依赖齐全时直接使用系统 CMake package，不调用 Conan；系统依赖不完整时才回退到 Conan，并固定 `compiler.cppstd=17` 优先获取预编译 binary；只有预编译 binary 不可用且用户明确同意时才执行 `--build=missing` 源码编译，因此不会再默认静默编译 Boost / Pinocchio 等大型依赖
+
+Standalone bootstrap 会显式关闭 ROS 2 / ament 集成，并从构建子进程的 `CMAKE_PREFIX_PATH` 中剔除 ROS/colcon overlay；即使当前终端已经 `source /opt/ros/.../setup.bash`，这条路径仍按纯 C++ 模式构建；`/opt/openrobots` 等非 ROS 系统前缀不会被删除
+
+需要开发者测试时显式增加 `--with-tests`：
+
+```bash
+./tools/bootstrap_standalone.sh --with-tests
+```
+
+此时才会要求 GTest、配置 `BUILD_TESTING=ON` 并运行 `ctest`
+
+交互式终端会在需要源码编译时询问；非交互环境默认停止；需要明确允许慢速源码 fallback 时使用：
+
+```bash
+SERIAL_ARM_ALLOW_SOURCE_BUILD=1 ./tools/bootstrap_standalone.sh
+```
 
 #### 1.3 Standalone DM-Arm 一键安装
 
@@ -187,7 +203,7 @@ serial_arm_terminal --robot-profile dm_arm_gray
 该路径会按依赖顺序安装
 
 ```text
-Core + tests
+Core
     ↓
 Damiao USB2CAN Protocol
     ↓
@@ -198,7 +214,7 @@ Robot Profiles
 DM-Arm Description / Config / Model
 ```
 
-生成的 `install/standalone/setup.bash` 会同时加载 Conan runtime、`SERIAL_ARM_RESOURCE_PATH` 和 SerialArm 自身动态库路径
+生成的 `install/standalone/setup.bash` 会加载 `SERIAL_ARM_RESOURCE_PATH`、SerialArm 自身动态库与可执行文件路径；仅在实际使用 Conan 时才额外加载 Conan runtime
 
 需要自定义单个组件时仍可参考 [Tutorial.md](Tutorial.md) 使用 Standalone CMake 逐组件构建
 
