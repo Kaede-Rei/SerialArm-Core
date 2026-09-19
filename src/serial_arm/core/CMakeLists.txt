@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(serial_arm_core VERSION 0.5.1 LANGUAGES CXX)
+project(serial_arm_core VERSION 0.5.2 LANGUAGES CXX)
 
 # =============================================================================
 # 全局 C++ / CMake 配置
@@ -354,6 +354,12 @@ if(BUILD_TESTING)
         NAME serial_arm_robot_session_fault_recovery_contract
         COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_session_fault_recovery_contract.py
+    )
+
+    add_test(
+        NAME serial_arm_python_profile_binding_contract
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_profile_binding_contract.py
     )
 
     add_test(

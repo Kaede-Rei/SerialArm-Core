@@ -619,6 +619,28 @@ auto profile = serial_arm::load_robot_profile_core(
 
 测试代码常使用显式 `profile_file`，正常安装环境更常只依赖 resource path
 
+Python Binding 在 v0.5.2 起完整暴露这两个选项
+
+```python
+from serial_arm import load_robot_profile_core
+
+profile = load_robot_profile_core(
+    "tomato_picker",
+    "/path/to/robot_profiles.yaml",
+    ["/opt/my_robot", "/home/user/robot_ws/install"],
+)
+```
+
+Python 签名等价于
+
+```text
+load_robot_profile_core(
+    profile_name,
+    profile_file="",
+    resource_paths=[]
+)
+```
+
 ---
 
 ### `load_robot_profile_core()`

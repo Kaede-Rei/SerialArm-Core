@@ -3,7 +3,7 @@ import sys
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import Command, FindExecutable, PathJoinSubstitution
 from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -14,13 +14,26 @@ from profile_utils import load_profile
 
 def resolve_profile(context):
     robot_profile = context.launch_configurations["robot_profile"]
-    profile = load_profile(robot_profile)
+    profile = load_profile(
+        robot_profile,
+        profile_file=context.launch_configurations.get("profile_file", ""),
+        resource_paths=context.launch_configurations.get("resource_paths", ""),
+    )
     use_sim_time = context.launch_configurations.get(
         "use_sim_time", "false"
     ).lower() in ("true", "1", "yes")
 
-    description_urdf = Path(profile["description_urdf_path"])
-    robot_description = description_urdf.read_text(encoding="utf-8")
+    if profile["description_type"] == "xacro":
+        robot_description = Command(
+            [
+                FindExecutable(name="xacro"),
+                " ",
+                profile["description_path"],
+            ]
+        )
+    else:
+        description_urdf = Path(profile["description_path"])
+        robot_description = description_urdf.read_text(encoding="utf-8")
     robot_description_param = ParameterValue(robot_description, value_type=str)
 
     return [
@@ -66,6 +79,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_profile"),
+            DeclareLaunchArgument("profile_file", default_value=""),
+            DeclareLaunchArgument("resource_paths", default_value=""),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             OpaqueFunction(function=resolve_profile),
         ]

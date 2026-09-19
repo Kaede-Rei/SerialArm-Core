@@ -92,7 +92,9 @@ src/
             └── tests/
 ```
 
-接入新机械臂时优先在 `robot_supports/robots/` 创建 Robot Support，并在 `robot_supports/profiles/config/robot_profiles.yaml` 注册 Profile
+如果机械臂属于 SerialArm-Core 仓库维护的官方 Robot Support，可在 `robot_supports/robots/` 创建资源并在 `robot_supports/profiles/config/robot_profiles.yaml` 注册内置 Profile
+
+如果机械臂属于下游整机或应用项目，推荐由下游项目自己维护 `robot_profiles.yaml`，通过 ROS 2 Adapter 的 `profile_file` 直接加载，不需要把 Profile 合并回 SerialArm-Core
 
 只有执行器语义或厂商通信发生变化时才需要新增 `hardware/` 或 `protocol/`
 
@@ -456,6 +458,47 @@ ros2 topic echo /joint_states
 
 当前 `SerialArmSystem` 向 ros2_control 暴露 position 和 velocity command interfaces，并暴露 position、velocity 和 effort state interfaces
 
+#### 下游机器人自持 Profile
+
+v0.5.2 起，`display.launch.py`、`hardware.launch.py` 和 `moveit.launch.py` 都支持下游项目自己的 Robot Profile
+
+```bash
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=tomato_picker \
+  profile_file:=/path/to/tomato_picker_bringup/config/robot_profiles.yaml
+```
+
+`profile_file` 为空时保持旧行为，继续读取 `serial_arm_robot_profiles/config/robot_profiles.yaml`
+
+ROS 2 Adapter 会根据 Profile 中声明的 ament package 自动补充 Core resolver 所需的 resource roots；只有资源不在当前 ROS 2 overlay 中时才需要额外传入 `resource_paths`，多个路径使用系统路径分隔符连接
+
+```bash
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=my_robot \
+  profile_file:=/path/to/robot_profiles.yaml \
+  resource_paths:=/opt/my_robot:/srv/serial_arm_resources
+```
+
+Profile 的 `description` 可以使用静态 URDF，也可以使用 Xacro
+
+```yaml
+description:
+  package: tomato_picker_description
+  xacro: urdf/tomato_picker.urdf.xacro
+  ros2_control_xacro: urdf/tomato_picker.ros2_control.xacro
+```
+
+Controller 默认仍启动 `joint_state_broadcaster` 和 `joint_trajectory_controller`；下游项目可以显式覆盖
+
+```yaml
+controllers:
+  package: tomato_picker_bringup
+  config: config/ros2_controllers.yaml
+  spawn:
+    - joint_state_broadcaster
+    - tomato_arm_controller
+```
+
 ### 8 MoveIt 2 Quick Start
 
 MoveIt 通过 `serial_arm_ros2_control` Adapter 使用同一个 Robot Profile，不直接访问 MotorBus
@@ -497,6 +540,14 @@ moveit_rviz.launch.py
 ros2 launch serial_arm_ros2_control moveit.launch.py \
   robot_profile:=dm_arm_white \
   serial_port:=/dev/ttyACM1
+```
+
+下游 Profile 使用同一入口，`profile_file` 和 `resource_paths` 会继续透传给内部的 `hardware.launch.py`
+
+```bash
+ros2 launch serial_arm_ros2_control moveit.launch.py \
+  robot_profile:=tomato_picker \
+  profile_file:=/path/to/tomato_picker_bringup/config/robot_profiles.yaml
 ```
 
 `display.launch.py` 只用于检查模型，`hardware.launch.py` 用于直接检查 ros2_control 真机链路，`moveit.launch.py` 在硬件链路之上继续启动 MoveIt

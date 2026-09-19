@@ -3280,13 +3280,19 @@ HardwareCapabilities 正确
 
 ### 10.8 注册 Profile
 
-在
+Robot Profile 有两种推荐所有权
 
 ```text
-src/robot_supports/profiles/config/robot_profiles.yaml
+SerialArm-Core 官方 Robot Support
+  -> src/robot_supports/profiles/config/robot_profiles.yaml
+
+下游整机 / 应用机器人
+  -> 由下游项目自己维护 robot_profiles.yaml
 ```
 
-注册最小 Profile
+两者使用同一份 Profile schema，不需要复制 Core
+
+最小 Profile
 
 ```yaml
 profiles:
@@ -3301,7 +3307,15 @@ profiles:
       config: config/hardware.yaml
 ```
 
-这一步完成后 Native C++、Python 和 C++ Terminal 已经可以通过 Profile 名称解析机器人
+仓库内官方 Robot Support 可以直接注册到 `serial_arm_robot_profiles`
+
+下游项目建议把文件放在自己的 bringup package，例如
+
+```text
+my_robot_bringup/config/robot_profiles.yaml
+```
+
+Native C++ / Python 可以显式指定 Profile 文件；ROS 2 Adapter 在 v0.5.2 起同样支持 `profile_file` 和可选 `resource_paths`
 
 ### 10.9 构建新 Robot Support
 
@@ -3730,19 +3744,56 @@ profiles:
       config: config/ros2_controllers.yaml
 ```
 
-重新构建后先运行
+`description.urdf` 可以替换成 `description.xacro`
+
+```yaml
+description:
+  package: my_arm_description
+  xacro: model/default/urdf/my_arm.urdf.xacro
+  ros2_control_xacro: model/default/urdf/my_arm.ros2_control.xacro
+```
+
+默认会启动
+
+```text
+joint_state_broadcaster
+joint_trajectory_controller
+```
+
+需要其他 Controller 时在 Profile 中显式配置
+
+```yaml
+controllers:
+  package: my_arm_description
+  config: config/ros2_controllers.yaml
+  spawn:
+    - joint_state_broadcaster
+    - arm_controller
+```
+
+如果 Profile 注册在 SerialArm-Core 内置 `serial_arm_robot_profiles` 中，重新构建后直接运行
 
 ```bash
 ros2 launch serial_arm_ros2_control display.launch.py \
   robot_profile:=my_arm_default
-```
 
-再运行
-
-```bash
 ros2 launch serial_arm_ros2_control hardware.launch.py \
   robot_profile:=my_arm_default
 ```
+
+如果 Profile 属于下游项目，不需要修改 SerialArm-Core，显式传入该项目的 Profile 文件
+
+```bash
+ros2 launch serial_arm_ros2_control display.launch.py \
+  robot_profile:=my_arm_default \
+  profile_file:=/path/to/my_robot_bringup/config/robot_profiles.yaml
+
+ros2 launch serial_arm_ros2_control hardware.launch.py \
+  robot_profile:=my_arm_default \
+  profile_file:=/path/to/my_robot_bringup/config/robot_profiles.yaml
+```
+
+ROS 2 Adapter 会从 Profile 中声明的 ament package 自动收集 resource roots；只有 Core/Hardware 资源不在当前 ROS overlay 中时才需要额外传入 `resource_paths`
 
 检查
 
@@ -3777,10 +3828,22 @@ moveit:
 
 启动
 
+内置 Profile
+
 ```bash
 ros2 launch serial_arm_ros2_control moveit.launch.py \
   robot_profile:=my_arm_default
 ```
+
+下游 Profile
+
+```bash
+ros2 launch serial_arm_ros2_control moveit.launch.py \
+  robot_profile:=my_arm_default \
+  profile_file:=/path/to/my_robot_bringup/config/robot_profiles.yaml
+```
+
+`moveit.launch.py` 会把 `profile_file`、`resource_paths`、运行时总线覆盖参数和 `controller_manager_name` 继续透传给 `hardware.launch.py`
 
 MoveIt 验收
 

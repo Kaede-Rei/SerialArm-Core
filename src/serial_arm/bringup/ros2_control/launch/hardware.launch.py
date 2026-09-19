@@ -13,7 +13,11 @@ from profile_utils import load_profile
 
 def resolve_profile(context):
     robot_profile = context.launch_configurations["robot_profile"]
-    profile = load_profile(robot_profile)
+    profile = load_profile(
+        robot_profile,
+        profile_file=context.launch_configurations.get("profile_file", ""),
+        resource_paths=context.launch_configurations.get("resource_paths", ""),
+    )
     use_sim_time = context.launch_configurations.get(
         "use_sim_time", "false"
     ).lower() in ("true", "1", "yes")
@@ -70,29 +74,22 @@ def resolve_profile(context):
             ("~/robot_description", "/robot_description"),
         ],
     )
-    joint_state_broadcaster = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "joint_state_broadcaster",
-            "--controller-manager",
-            controller_manager_name,
-        ],
-    )
-    joint_trajectory_controller = Node(
-        package="controller_manager",
-        executable="spawner",
-        arguments=[
-            "joint_trajectory_controller",
-            "--controller-manager",
-            controller_manager_name,
-        ],
-    )
+    controller_spawners = [
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            arguments=[
+                controller_name,
+                "--controller-manager",
+                controller_manager_name,
+            ],
+        )
+        for controller_name in profile["controller_names"]
+    ]
     return [
         robot_state_publisher,
         ros2_control_node,
-        joint_state_broadcaster,
-        joint_trajectory_controller,
+        *controller_spawners,
     ]
 
 
@@ -100,6 +97,8 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("robot_profile"),
+            DeclareLaunchArgument("profile_file", default_value=""),
+            DeclareLaunchArgument("resource_paths", default_value=""),
             DeclareLaunchArgument("use_sim_time", default_value="false"),
             DeclareLaunchArgument("serial_port", default_value=""),
             DeclareLaunchArgument("baudrate", default_value=""),

@@ -2,8 +2,8 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
     <name>serial_arm_robot_profiles</name>
-    <version>0.5.1</version>
-    <description>Robot profile resources for SerialArm launch files.</description>
+    <version>0.5.2</version>
+    <description>Built-in Robot Profile resources for SerialArm; downstream robots may provide external Profile files.</description>
     <maintainer email="kaerei86@gmail.com">kaede-rei</maintainer>
     <license>MIT</license>
 

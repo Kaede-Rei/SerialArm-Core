@@ -654,11 +654,15 @@ void bind_config(py::module_& module) {
         auto bus = unwrap_value(loader.load(hardware_plugin, hardware_config, overrides), [](HardwareLoaderErr error) { return "HardwareLoaderErr=" + std::to_string(static_cast<int>(error)); });
         return unwrap_value(load_robot_cfg(path, bus->capabilities()), [](const ConfigErrInfo& error) { return error.message; });
         }, py::arg("path"), py::arg("hardware_plugin"), py::arg("hardware_config"), py::arg("serial_port") = py::none(), py::arg("baudrate") = py::none(), py::arg("bus") = py::none());
-    module.def("load_robot_profile_core", [](const std::string& profile_name, const std::string& profile_file) {
+    module.def("load_robot_profile_core", [](
+        const std::string& profile_name,
+        const std::string& profile_file,
+        const std::vector<std::string>& resource_paths) {
         RobotProfileLoadOptions options;
         options.profile_file = profile_file;
+        options.resource_paths = resource_paths;
         return unwrap_value(serial_arm::load_robot_profile_core(profile_name, options), [](const RobotProfileErrInfo& error) { return error.message; });
-        }, py::arg("profile_name"), py::arg("profile_file") = "");
+        }, py::arg("profile_name"), py::arg("profile_file") = "", py::arg("resource_paths") = std::vector<std::string>{});
     module.def("validate_robot_core_cfg", [](const RobotCfg& cfg) {
         unwrap_void(validate_robot_core_cfg(cfg), [](const ConfigErrInfo& error) { return error.message; });
         });
@@ -888,7 +892,7 @@ void bind_robot_session(py::module_& module) {
  */
 PYBIND11_MODULE(_serial_arm, module) {
     module.doc() = "SerialArm C++17 control, dynamics and hardware bindings";
-    module.attr("__version__") = "0.5.1";
+    module.attr("__version__") = "0.5.2";
 
     py::register_exception<serial_arm::SerialArmPythonError>(module, "SerialArmError");
 

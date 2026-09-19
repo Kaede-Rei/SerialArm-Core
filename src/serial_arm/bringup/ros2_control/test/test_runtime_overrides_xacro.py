@@ -40,7 +40,7 @@ def fake_core_profile(monkeypatch):
     monkeypatch.setattr(
         profile_utils,
         "load_core_profile",
-        lambda robot_profile, profiles_file: CoreProfile(),
+        lambda robot_profile, profiles_file, resource_paths: CoreProfile(),
     )
 
 

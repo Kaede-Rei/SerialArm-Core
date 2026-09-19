@@ -586,6 +586,10 @@ Adapter Config
 
 Robot Profile 负责聚合这些资源
 
+Profile 不要求由 SerialArm-Core 仓库统一持有；仓库内官方 Robot Support 可以使用内置 `serial_arm_robot_profiles`，下游整机或应用机器人可以在自己的 bringup package 中维护独立 `robot_profiles.yaml`，再由 Adapter 通过显式 `profile_file` 加载
+
+v0.5.2 的 ROS 2 Adapter 与 framework-neutral Core 使用同一 Profile schema：Core 只解析 `core + hardware`，ROS 2 Adapter 继续解析 `description + controllers + moveit`
+
 它解决的是：
 
 > **同一个 Core 如何启动不同机械臂**
