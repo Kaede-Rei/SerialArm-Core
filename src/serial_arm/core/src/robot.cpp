@@ -542,11 +542,11 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         joint_cmd = interaction->corrected_cmd;
     }
 
-    // Reference acceleration must be estimated in one consistent reference domain.
+    // Reference acceleration must be estimated in one consistent reference domain
     // At this point joint_cmd already includes the outer-admittance pos/vel correction,
-    // while last_joint_cmd_ stores the previous accepted final command.
+    // while last_joint_cmd_ stores the previous accepted final command
     // Using final[k] - final[k-1] prevents FULL_INVERSE_DYNAMICS from interpreting
-    // an admittance delta_q_dot as a large artificial acceleration pulse.
+    // an admittance delta_q_dot as a large artificial acceleration pulse
     const JointVector joint_ref_acc = estimate_joint_ref_acc(joint_cmd, dt);
     const auto model_feedforward = compute_model_feedforward(
         joint_state.value(), joint_acc, joint_ref_acc, dt);

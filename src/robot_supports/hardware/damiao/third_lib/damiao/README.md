@@ -1,6 +1,6 @@
 # dm_hw
 
-`dm_hw` 是一个基于 CAN channel 与达妙电机通信的轻量 C++ 库，提供：
+`dm_hw` 是一个基于 CAN channel 与达妙电机通信的轻量 C++ 库，提供
 
 - 电机对象建模（型号、ID、状态、参数缓存）
 - 电机使能/失能/回零
@@ -25,7 +25,7 @@
 
 ### 1) 编译 `dm_hw`
 
-在 ROS2 工作空间根目录执行：
+在 ROS2 工作空间根目录执行
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -45,7 +45,7 @@ source install/setup.bash
 ros2 run dm_hw test_damiao
 ```
 
-示例程序会演示：
+示例程序会演示
 
 - 创建共享 CAN bus/channel 与控制器
 - 添加电机到控制器
@@ -74,7 +74,7 @@ ros2 run dm_hw test_damiao
 
 用于描述单个电机并缓存反馈/参数
 
-常用接口：
+常用接口
 
 - 构造
   - `Motor(DmMotorType motor_type, MotorId slave_id, MotorId master_id)`
@@ -100,7 +100,7 @@ ros2 run dm_hw test_damiao
 
 用于发送控制命令、接收反馈、读写寄存器
 
-常用接口：
+常用接口
 
 - 初始化
   - `MotorControl(std::shared_ptr<serial_arm::transport::CanChannel> channel)`

@@ -1,11 +1,10 @@
 .pytest_cache/
 __pycache__/
-build/
-install/
-log/
-logs/
-docs/other/
-dist/
+/build/
+/install/
+/log/
+/logs/
+/dist/
 
 .VSCodeCounter/
 .agents/
@@ -16,4 +15,11 @@ dist/
 .codex
 *.pyc
 
+# Unified installer local state
 .install/
+
+# Launcher dependency installs
+node_modules/
+
+# Private reading notes and archived documents
+/docs/other/

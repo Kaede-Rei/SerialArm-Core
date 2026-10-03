@@ -657,7 +657,7 @@ void PyRobotSession::loop() noexcept {
         finish_period();
     }
 
-    // A stopped worker must never leave a periodic FAULT hold unattended.
+    // A stopped worker must never leave a periodic FAULT hold unattended
     if(robot_) {
         const RobotState state = robot_->get_state();
         if(state == RobotState::ACTIVE) {

@@ -115,10 +115,10 @@ TEST(AdmittanceStaticCalibrationTests, FitsGravityScaleBiasAndThresholdAcrossPos
     EXPECT_EQ(result->gravity_scale_observable, std::vector<std::uint8_t>{ 1 });
     EXPECT_NEAR(result->gravity_scale[0], 0.8, 1e-6);
     EXPECT_NEAR(result->torque_bias[0], 0.2, 1e-6);
-    // Threshold is derived directly from the static residual envelope.
+    // Threshold is derived directly from the static residual envelope
     EXPECT_NEAR(result->residual_p99[0], 0.01, 1e-12);
     // The synthetic feedback occupies two repeated levels 0.02 Nm apart, so the
-    // quantization guard reserves one further level beyond the 0.01 Nm envelope.
+    // quantization guard reserves one further level beyond the 0.01 Nm envelope
     EXPECT_NEAR(result->torque_threshold[0], 0.03 * (1.0 + 1e-6), 1e-12);
 }
 
@@ -180,9 +180,9 @@ TEST(AdmittanceStaticCalibrationTests, ThresholdCoversLeaveOnePoseOutGeneralizat
     ASSERT_TRUE(result);
 
     // The all-pose fit only sees a 0.2 Nm in-sample residual, but leaving either
-    // endpoint pose out exposes a 0.4 Nm cross-pose generalization error.
+    // endpoint pose out exposes a 0.4 Nm cross-pose generalization error
     // The calibration threshold must protect the latter rather than overfit the
-    // poses that were used to estimate gravity_scale / torque_bias.
+    // poses that were used to estimate gravity_scale / torque_bias
     EXPECT_NEAR(result->within_pose_residual_p99[0], 0.0, 1e-12);
     EXPECT_NEAR(result->within_pose_residual_max[0], 0.0, 1e-12);
     EXPECT_NEAR(result->lopo_residual_p99[0], 0.4, 1e-12);
@@ -213,7 +213,7 @@ TEST(AdmittanceStaticCalibrationTests, ThresholdAddsOneMeasuredTorqueQuantizatio
     // The observed LOPO/static envelope ends at 0.02 Nm, while measured torque
     // itself changes only in 0.01 Nm discrete levels. One further feedback LSB
     // must therefore be reserved beyond the observed envelope so a static
-    // validation sample landing on the next quantization bin is not rejected.
+    // validation sample landing on the next quantization bin is not rejected
     EXPECT_NEAR(result->residual_max[0], 0.02, 1e-12);
     EXPECT_GT(result->torque_threshold[0], 0.03);
 }
@@ -604,7 +604,7 @@ TEST(GeneralizedMomentumObserverTests, ConvergesToConstantExternalTorqueWithoutA
     cfg.gain = { 25.0 };
     ASSERT_TRUE(observer.configure(cfg));
 
-    // M=1, C=0, g=0. A constant +1 Nm external torque produces dq=t.
+    // M=1, C=0, g=0. A constant +1 Nm external torque produces dq=t
     GeneralizedMomentumInput input;
     input.measured_torque = { 0.0 };
     input.gravity = { 0.0 };
@@ -678,7 +678,7 @@ TEST(AdmittanceFrictionCalibrationTests, CrossValidationRejectsReplaySpecificMod
         const double speed = 0.08 + 0.004 * static_cast<double>(k);
         reverse.push_back({ { speed }, { 0.1 }, { -0.20 - 0.10 * speed } });
         reverse.push_back({ { -speed }, { -0.1 }, { 0.20 + 0.10 * speed } });
-        // Deliberately different replay-specific offset: a model fit on one pass must not validate on the other.
+        // Deliberately different replay-specific offset: a model fit on one pass must not validate on the other
         forward.push_back({ { speed }, { 0.1 }, { -0.55 - 0.10 * speed } });
         forward.push_back({ { -speed }, { -0.1 }, { 0.55 + 0.10 * speed } });
     }

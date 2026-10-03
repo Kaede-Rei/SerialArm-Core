@@ -20,15 +20,15 @@ usage() {
 Usage: ./tools/bootstrap_standalone.sh [--robot dm_arm] [--with-tests] [--without-terminal]
 
 Dependency strategy:
-  1. Prefer already installed system CMake packages.
-  2. If system dependencies are incomplete, try Conan binary packages only.
-  3. Build missing Conan packages from source only after explicit opt-in.
+  1. Prefer already installed system CMake packages
+  2. If system dependencies are incomplete, try Conan binary packages only
+  3. Build missing Conan packages from source only after explicit opt-in
 
-By default, build and install the standalone SerialArm Core without developer tests.
-Use --with-tests to build and run the Core test suite with CTest.
-Use --without-terminal for a library-only installation.
+By default, build and install the standalone SerialArm Core without developer tests
+Use --with-tests to build and run the Core test suite with CTest
+Use --without-terminal for a library-only installation
 With --robot dm_arm, also install the Damiao USB2CAN protocol, Damiao hardware
-backend, robot profiles and DM-Arm resources required by dm_arm_gray/white.
+backend, robot profiles and DM-Arm resources required by dm_arm_gray/white
 
 Environment overrides:
   BUILD_TYPE                    CMake build type (default: Release)
@@ -85,7 +85,7 @@ require_command() {
 
 # Build a standalone-only CMake search path. Any prefix exported by a ROS 2
 # environment (AMENT/COLCON) is removed, while ordinary system prefixes such
-# as /opt/openrobots remain available for a pure C++ build.
+# as /opt/openrobots remain available for a pure C++ build
 standalone_cmake_prefix_path() {
     local raw="${CMAKE_PREFIX_PATH:-}"
     local deny="${AMENT_PREFIX_PATH:-}:${COLCON_PREFIX_PATH:-}"
@@ -254,7 +254,7 @@ setup_conan_dependencies() {
     require_command conan
 
     case "$(conan --version)" in
-        "Conan version 2."*) ;;
+        "Conan version 2"*) ;;
         *)
             printf 'error: Conan 2 is required, got: %s\n' "$(conan --version)" >&2
             exit 2

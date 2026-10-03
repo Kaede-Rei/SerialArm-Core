@@ -2,9 +2,9 @@
 
 # SerialArm-Core
 
-Portable C++17 control, dynamics, safety and hardware abstraction core for custom serial manipulators
+面向自研串联机械臂的 C++17 控制、动力学、安全与硬件抽象库
 
-面向自研串联机械臂的 C++17 控制、动力学、安全与硬件抽象核心
+提供 Robot Profile、C++ Terminal、Python Binding、ROS2 Adapter、MoveIt 与桌面 GUI
 
 [![License](https://img.shields.io/github/license/Kaede-Rei/SerialArm-Core?style=flat-square)](https://github.com/Kaede-Rei/SerialArm-Core)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square)](https://isocpp.org/)
@@ -13,617 +13,96 @@ Portable C++17 control, dynamics, safety and hardware abstraction core for custo
 
 </div>
 
-## 定位
+## 安装与启动
 
-SerialArm-Core 是面向自研串联机械臂的通用控制能力库，将机器人模型、关节与执行器映射、控制、安全、动力学、交互控制和硬件 Backend 统一在同一套 Core 接口中
+Linux / Python 3.10+，GUI 需要 Node.js 20+、npm 和桌面环境
 
-仓库同时提供 Robot Profile、C++ Terminal、Python Binding、ros2_control Adapter 和 MoveIt 2 启动入口，可用于机械臂基础控制、柔顺控制、动力学实验、真机调试以及上层机器人框架接入
-
-当前仓库内置 DM-Arm 的 Gray 和 White 两套 Robot Profile，并提供 Damiao Hardware Backend 与 Damiao USB2CAN Protocol
-
-推荐使用已有 Robot Profile 作为第一次接入示例；用户通常只需要选择 Profile、构建对应资源、加载 Terminal 或 ROS 2 Adapter，即可使用同一套 Core 能力
-
-## 快速安装（推荐入口）
+ROS2 方案需要预先安装 ROS2，主要面向 Ubuntu 22.04 + Humble
 
 ```bash
 ./install.sh
+./launch.sh
 ```
 
-按交互向导选择 Core、Standalone Robot、ROS2、Python、Developer 或 Custom
-自动化环境使用 `./install.sh --preset standalone --yes`；预览计划使用 `--dry-run`
-安装后可直接通过 `./.install/run serial_arm_terminal --robot-profile dm_arm_gray` 使用已选组件，
-或执行 `source .install/setup.bash` 加载统一环境
+安装器会展示功能组合和确认计划，系统依赖需要权限时在当前终端提示 sudo 密码
 
-详见 [统一安装说明](docs/install.md)；也可直接使用 bootstrap、colcon 或 wheel 安装
-
-## 核心能力
-
-| 能力 | 作用 | 主要入口 |
+| 用途 | 安装内容 | 适用场景 |
 | --- | --- | --- |
-| Robot Profile | 聚合 Core、Hardware、URDF、Controllers 和 MoveIt 资源 | `robot_profiles.yaml` |
-| Robot Control | 生命周期、跟踪命令、保持、FAULT 与停放 | `Robot` |
-| Joint / Actuator Mapping | 方向、比例、零位与执行器语义转换 | `calibration.joints` |
-| Safety | 位置、速度、加速度、状态超时、命令超时与故障恢复 | `safety_policy` |
-| Dynamics | FK、Jacobian、Gravity、Coriolis、Mass Matrix、Inverse Dynamics | `Dynamics` |
-| Impedance | 五种关节阻抗工作模式 | `JointImpedanceMode` |
-| Admittance | 基于残差外力估计的固定 M / D / K 关节空间导纳 | `capability.admittance` |
-| Interaction | 外力估计、柔顺控制与运行时交互状态管理 | `serial_arm/interaction` |
-| Hardware Abstraction | 统一 `position / velocity / torque / kp / kd` 执行器语义 | `MotorBus` |
-| Shared Transport | CAN channel fan-out 与 Serial transaction arbitration | `CanChannel` / `SerialBusClient` |
-| Python | Python 控制会话与 Dynamics 调用 | `RobotSession` / `Dynamics` |
-| ROS 2 | ros2_control SystemInterface | `serial_arm_ros2_control` |
-| MoveIt 2 | 基于 Robot Profile 启动硬件、move_group 与 RViz | `moveit.launch.py` |
-| Terminal | 真机联通、运动、动力学、阻抗、导纳和故障调试 | `serial_arm_terminal` |
+| `core` | Core + Dynamics | 在自己的 C++ 程序中集成控制库 |
+| `standalone` | Core + Terminal + GUI，可选 DM-Arm 支持 | 不使用 ROS2，直接调试机械臂 |
+| `python` | Core + Python Binding | 在独立 Python 环境中调用控制和动力学接口 |
+| `ros2` | Core + Terminal + Python + ROS2 + DM-Arm + MoveIt + GUI | 使用 ros2_control 和 MoveIt |
+| `dev` | ROS2 方案全部组件 + 开发测试 | 修改源码并运行测试 |
+| `custom` | Core 起步，自选组件并自动补齐依赖 | 按项目需要组合安装 |
 
-## 仓库结构
+Core → Standalone → ROS2 → Developer 对应逐步增加的集成需求，Python 是独立接口选项
 
-`serial_arm/` 是通用核心实现，日常接入新机械臂时通常不需要修改
-
-`robot_supports/` 保存与具体机器人、执行器和通信设备相关的资源，也是使用者最常修改的部分
-
-```text
-src/
-├── serial_arm/
-│   ├── core/                              # Core、Python Binding、Terminal、Transport
-│   └── bringup/ros2_control/              # ROS 2 / ros2_control Adapter
-│
-└── robot_supports/
-    ├── profiles/	# 机器人汇总（统一入口）
-    │   └── config/
-    │       └── robot_profiles.yaml        # 机器人入口，聚合 Core、Hardware、URDF、Controller、MoveIt
-    │
-    ├── robots/		# 机器人具体配置
-    │   └── dm_arm/
-    │       ├── description/
-    │       │   ├── config/
-    │       │   │   ├── core/
-    │       │   │   │   ├── gray.yaml     # Gray Core、Control、Safety、Admittance 配置
-    │       │   │   │   └── white.yaml    # White Core、Control、Safety、Admittance 配置
-    │       │   │   ├── hardware.yaml      # Joint 到执行器、ID、串口和 Backend 参数
-    │       │   │   └── ros2_controllers.yaml
-    │       │   └── model/
-    │       │       ├── gray/
-    │       │       │   ├── urdf/          # Gray URDF 与 ros2_control Xacro
-    │       │       │   └── meshes/
-    │       │       └── white/
-    │       │           ├── urdf/          # White URDF 与 ros2_control Xacro
-    │       │           └── meshes/
-    │       └── moveit_config/
-    │           ├── dm_arm_no_gripper/     # Gray 对应 MoveIt 配置
-    │           └── dm_arm_with_gripper/   # White 对应 MoveIt 配置
-    │
-    ├── hardware/	# 执行器驱动
-    │   └── damiao/                        # Damiao MotorBus Backend
-    │       ├── include/
-    │       ├── src/
-    │       └── tests/
-    │
-    └── protocol/	# 通信协议
-        └── damiao_usb2can/                # Damiao 官方 USB2CAN 私有协议适配
-            ├── include/
-            ├── src/
-            └── tests/
-```
-
-如果机械臂属于 SerialArm-Core 仓库维护的官方 Robot Support，可在 `robot_supports/robots/` 创建资源并在 `robot_supports/profiles/config/robot_profiles.yaml` 注册内置 Profile
-
-如果机械臂属于下游整机或应用项目，推荐由下游项目自己维护 `robot_profiles.yaml`，通过 ROS 2 Adapter 的 `profile_file` 直接加载，不需要把 Profile 合并回 SerialArm-Core
-
-只有执行器语义或厂商通信发生变化时才需要新增 `hardware/` 或 `protocol/`
-
-
-## 使用入口
-
-根据目标选择对应文档：
-
-```text
-第一次运行已有机械臂
-    ↓
-README Quick Start
-    ↓
-Tutorial 基础配置与 Terminal
-
-理解控制算法与参数
-    ↓
-Tutorial Dynamics / Impedance / Admittance
-    ↓
-原理说明文档
-
-新增机械臂或硬件适配
-    ↓
-Tutorial Profile / Hardware / Transport
-    ↓
-API Reference
-
-接入 ROS 2 / MoveIt
-    ↓
-Tutorial ROS 2 Adapter
-    ↓
-Architecture
-```
-
-## Quick Start
-
-### 1 获取源码与构建
+已有 Core 安装时单独补装 GUI
 
 ```bash
-git clone https://github.com/Kaede-Rei/SerialArm-Core.git
-cd SerialArm-Core
+./install.sh --gui-only --yes
 ```
 
-如果使用 ROS 2、ros2_control、MoveIt 2，或者只是希望一次构建整个仓库，优先使用 colcon
-
-只有需要独立安装 Core、Protocol、Hardware Backend 或 Robot Support 时才使用 Standalone CMake
-
-#### 1.1 colcon 全仓构建
-
-这是仓库最直接的整仓构建方式，同时安装 Native C++、Python Binding、C++ Terminal、Robot Support 和 ROS 2 Adapter
+自动确认安装或预览计划
 
 ```bash
-source /opt/ros/humble/setup.bash
-
-rosdep install \
-  --from-paths src \
-  --ignore-src \
-  -r -y \
-  --rosdistro humble
-
-colcon build --symlink-install
-source install/setup.bash
+./install.sh --preset ros2 --yes
+./install.sh --preset ros2 --dry-run
 ```
 
-构建后即使不启动 ROS 2，也可以继续直接使用 Native C++、Python Binding 和 C++ Terminal
+## 使用
 
-#### 1.2 Standalone Core 一键构建
+GUI 中选择 Profile、检查配置，再选择 Model、Terminal、Hardware 或 MoveIt
 
-适合不使用 ROS 2，只需要 Native C++ Core、Dynamics 和 Terminal 的 Linux 用户；开发测试默认关闭
+命令行入口自动加载对应环境
 
 ```bash
-python3 -m pip install --user "conan>=2,<3"
-export PATH="$HOME/.local/bin:$PATH"
-
-./tools/bootstrap_standalone.sh
-source install/standalone/setup.bash
+./.install/run serial_arm_terminal --robot-profile dm_arm_gray
+./.install/run ros2 launch serial_arm_ros2_control display.launch.py robot_profile:=dm_arm_gray
 ```
 
-bootstrap 默认只检测并安装运行 Core 所需的 Pinocchio、yaml-cpp 和 Eigen，不要求 GTest，也不会构建或运行开发测试；依赖齐全时直接使用系统 CMake package，不调用 Conan；系统依赖不完整时才回退到 Conan，并固定 `compiler.cppstd=17` 优先获取预编译 binary；只有预编译 binary 不可用且用户明确同意时才执行 `--build=missing` 源码编译，因此不会再默认静默编译 Boost / Pinocchio 等大型依赖
+运行需要对应组件已安装，Terminal、Hardware 与 MoveIt 可能连接真实执行器
 
-Standalone bootstrap 会显式关闭 ROS 2 / ament 集成，并从构建子进程的 `CMAKE_PREFIX_PATH` 中剔除 ROS/colcon overlay；即使当前终端已经 `source /opt/ros/.../setup.bash`，这条路径仍按纯 C++ 模式构建；`/opt/openrobots` 等非 ROS 系统前缀不会被删除
-
-需要开发者测试时显式增加 `--with-tests`：
+外部机器人使用下游项目自己的 Profile 和资源
 
 ```bash
-./tools/bootstrap_standalone.sh --with-tests
+./.install/run serial_arm_terminal \
+  --robot-profile tomato_picker \
+  --profile-file /absolute/path/robot_profiles.yaml
 ```
 
-此时才会要求 GTest、配置 `BUILD_TESTING=ON` 并运行 `ctest`
+## 能力与配置
 
-交互式终端会在需要源码编译时询问；非交互环境默认停止；需要明确允许慢速源码 fallback 时使用：
+Core 提供生命周期、关节控制、安全、FK、Jacobian、动力学、五种关节阻抗模式与关节导纳
 
-```bash
-SERIAL_ARM_ALLOW_SOURCE_BUILD=1 ./tools/bootstrap_standalone.sh
-```
+Robot Profile 将 Core YAML、Hardware Backend、模型、Controllers 和 MoveIt 资源组合为一个机器人实例
 
-#### 1.3 Standalone DM-Arm 一键安装
+内置 `dm_arm_gray` 与 `dm_arm_white`，其他机械臂由自己的 Profile 定义关节、坐标系与标定参数
 
-如果要直接使用仓库内置的 DM-Arm Profile、Damiao USB2CAN 和 Hardware Backend，只需要在同一个 bootstrap 上增加 Robot 参数
+## 目录
 
-```bash
-./tools/bootstrap_standalone.sh --robot dm_arm
-source install/standalone/setup.bash
-
-serial_arm_terminal --robot-profile dm_arm_gray
-```
-
-该路径会按依赖顺序安装
-
-```text
-Core
-    ↓
-Damiao USB2CAN Protocol
-    ↓
-Damiao Hardware Backend
-    ↓
-Robot Profiles
-    ↓
-DM-Arm Description / Config / Model
-```
-
-生成的 `install/standalone/setup.bash` 会加载 `SERIAL_ARM_RESOURCE_PATH`、SerialArm 自身动态库与可执行文件路径；仅在实际使用 Conan 时才额外加载 Conan runtime
-
-需要自定义单个组件时仍可参考 [Tutorial.md](Tutorial.md) 使用 Standalone CMake 逐组件构建
-
-#### 1.4 Python wheel
-
-Standalone Python Binding 同样复用根目录 Conan 依赖，不要求安装 ROS 2
-
-```bash
-conan profile path default >/dev/null 2>&1 || conan profile detect
-conan install . \
-  --output-folder=build/conan \
-  --build=missing \
-  -s build_type=Release
-
-source "$PWD/build/conan/conanrun.sh"
-export CMAKE_ARGS="-DCMAKE_TOOLCHAIN_FILE=$PWD/build/conan/conan_toolchain.cmake"
-
-cd src/serial_arm/core/python
-python3 -m pip install build
-python3 -m build --wheel
-python3 -m pip install --force-reinstall dist/serial_arm-*.whl
-python3 -c "import serial_arm; print(serial_arm.__version__)"
-cd ../../../..
-
-unset CMAKE_ARGS
-```
-
-Standalone wheel 会把 `_serial_arm` 与其必需的 `libserial_arm_core.so` 一起安装到 Python package，并使用 `$ORIGIN` 解析 Core shared library，因此不需要用户另行把 SerialArm Core 安装到系统动态库路径
-
-### 2 选择已有 Robot Profile
-
-当前仓库可直接使用的 DM-Arm Profile 如下
-
-| Profile | Core Config | Robot Description | MoveIt Package | 典型用途 |
-| --- | --- | --- | --- | --- |
-| `dm_arm_gray` | `config/core/gray.yaml` | Gray 无夹爪 | `dm_arm_no_gripper` | Native C++、Terminal、动力学与 MOMENTUM 导纳 |
-| `dm_arm_white` | `config/core/white.yaml` | White 带夹爪模型 | `dm_arm_with_gripper` | Native C++、Terminal、ROS 2 与 FULL_ID 导纳 |
-
-Profile 将下面几类资源聚合为一个可启动机器人实例
-
-```text
-Robot Profile
-├── Core YAML
-├── Hardware Backend
-├── Hardware YAML
-├── URDF / ros2_control Xacro
-├── ros2_controllers.yaml
-└── MoveIt config package
-```
-
-查看当前 Profile
-
-```bash
-cat src/robot_supports/profiles/config/robot_profiles.yaml
-```
-
-### 3 检查硬件连接
-
-DM-Arm Hardware Config 默认使用 `/dev/ttyACM0`
-
-```bash
-ls /dev/ttyACM*
-```
-
-如果实际设备为 `/dev/ttyACM1`，不需要修改 Profile，可以对当前进程覆盖串口
-
-```bash
-serial_arm_terminal \
-  --robot-profile dm_arm_gray \
-  --serial-port /dev/ttyACM1
-```
-
-运行时覆盖优先级如下
-
-```text
-runtime override > hardware.yaml
-```
-
-`--serial-port`、`--baudrate` 和 `--bus` 只修改当前进程，不写回 Hardware YAML
-
-### 4 使用 C++ Terminal
-
-最常用启动方式
-
-```bash
-serial_arm_terminal --robot-profile dm_arm_gray
-```
-
-查看命令行参数
-
-```bash
-serial_arm_terminal --help
-```
-
-可用启动参数及作用
-
-| 参数 | 作用 |
+| 路径 | 职责 |
 | --- | --- |
-| `--robot-profile <name>` | 使用已有 Robot Profile |
-| `--profile-file <path>` | 显式指定 Profile 文件 |
-| `--config <path>` | 不使用 Profile 时直接指定 Core YAML |
-| `--hardware-plugin <name>` | 不使用 Profile 时直接指定 Hardware Backend |
-| `--hardware-config <path>` | 不使用 Profile 时直接指定 Hardware YAML |
-| `--serial-port <path>` | 覆盖串口设备 |
-| `--baudrate <n>` | 覆盖串口波特率 |
-| `--bus <name>` | 覆盖 Hardware Bus 名称 |
-| `--compare-config <a> <b>` | 使用指定 Backend capabilities 比较两份 Core Config |
-| `--help` / `-h` | 查看用法 |
-
-不使用 Robot Profile 时可以直接指定三项路径
-
-```bash
-serial_arm_terminal \
-  --config <core.yaml> \
-  --hardware-plugin <backend.so> \
-  --hardware-config <hardware.yaml>
-```
-
-进入 Terminal 后的主菜单如下
-
-| 菜单 | 作用 |
-| --- | --- |
-| `状态查看` | Robot 状态、Joint / Actuator 周期状态、执行器参数和配置摘要 |
-| `使能 / 失能 / 故障` | activate、停放失能、立即失能、FAULT 恢复与 clear_fault |
-| `模式与补偿` | 五种阻抗模式、模型前馈模式和 gravity scale |
-| `运动与命令` | 绝对位置移动、相对移动、取消运动并保持当前位置 |
-| `动力学与配置` | 动力学向量、Mass Matrix、Jacobian、Frame 状态和配置摘要 |
-| `调参与测试` | 导纳一次性 / 分步标定、M / D / K 调参、实时状态与 Observer 诊断 |
-| `安全退出` | 按 shutdown 配置回到 park pose 后失能退出 |
-
-第一次连接机械臂时优先使用 `状态查看`、`动力学与配置` 和离线配置检查，确认方向、零位、限位和执行器型号后再允许真机写入
-
-### 5 Python Quick Start
-
-检查 Binding
-
-```bash
-python3 -c "import serial_arm; print(serial_arm.__file__)"
-```
-
-使用 Python Terminal 做 Profile 和配置检查
-
-```bash
-python3 src/serial_arm/core/app/serial_arm_terminal.py \
-  --robot-profile dm_arm_gray \
-  --check-only
-```
-
-Python 控制入口
-
-```python
-import serial_arm
-
-arm = serial_arm.RobotSession(
-    core_yaml,
-    hardware_plugin,
-    hardware_yaml,
-)
-
-arm.start()
-arm.set_impedance_mode(serial_arm.JointImpedanceMode.RIGID_TRACKING)
-arm.move_to(target, speed_scale=0.15)
-arm.stop()
-```
-
-`RobotSession` 维护 C++ 控制线程，Python 上层不需要自己实现高频 `Robot::cycle()` 循环
-
-### 6 Native C++ Quick Start
-
-外部 CMake 项目可以直接链接已安装的 Core
-
-```cmake
-find_package(serial_arm_core CONFIG REQUIRED)
-
-add_executable(my_robot_app main.cpp)
-
-target_link_libraries(my_robot_app
-  PRIVATE
-    serial_arm::core
-    serial_arm::config
-    serial_arm::robot
-    serial_arm::dynamics
-)
-```
-
-Native C++ 的主要执行链如下
-
-```text
-load Robot Profile
-    ↓
-HardwareLoader
-    ↓
-load_robot_cfg
-    ↓
-Dynamics
-    ↓
-Robot::configure
-    ↓
-Robot::activate
-    ↓
-set_cmd + cycle
-    ↓
-Robot::deactivate
-```
-
-完整 C++ 示例、模型回调和 MOMENTUM 导纳所需 `InteractionModelStateFn` 见 [Tutorial.md](Tutorial.md)
-
-### 7 ROS 2 / ros2_control Quick Start
-
-只显示模型，不连接 Hardware Backend
-
-```bash
-ros2 launch serial_arm_ros2_control display.launch.py \
-  robot_profile:=dm_arm_gray
-```
-
-启动 ros2_control hardware
-
-```bash
-ros2 launch serial_arm_ros2_control hardware.launch.py \
-  robot_profile:=dm_arm_white
-```
-
-需要覆盖串口时
-
-```bash
-ros2 launch serial_arm_ros2_control hardware.launch.py \
-  robot_profile:=dm_arm_white \
-  serial_port:=/dev/ttyACM1
-```
-
-检查接口和 Controller
-
-```bash
-ros2 control list_hardware_interfaces
-ros2 control list_controllers
-ros2 topic echo /joint_states
-```
-
-当前 `SerialArmSystem` 向 ros2_control 暴露 position 和 velocity command interfaces，并暴露 position、velocity 和 effort state interfaces
-
-#### 下游机器人自持 Profile
-
-`display.launch.py`、`hardware.launch.py` 和 `moveit.launch.py` 都支持下游项目自己的 Robot Profile
-
-```bash
-ros2 launch serial_arm_ros2_control hardware.launch.py \
-  robot_profile:=tomato_picker \
-  profile_file:=/path/to/tomato_picker_bringup/config/robot_profiles.yaml
-```
-
-`profile_file` 为空时保持旧行为，继续读取 `serial_arm_robot_profiles/config/robot_profiles.yaml`
-
-ROS 2 Adapter 会根据 Profile 中声明的 ament package 自动补充 Core resolver 所需的 resource roots；只有资源不在当前 ROS 2 overlay 中时才需要额外传入 `resource_paths`，多个路径使用系统路径分隔符连接
-
-```bash
-ros2 launch serial_arm_ros2_control hardware.launch.py \
-  robot_profile:=my_robot \
-  profile_file:=/path/to/robot_profiles.yaml \
-  resource_paths:=/opt/my_robot:/srv/serial_arm_resources
-```
-
-Profile 的 `description` 可以使用静态 URDF，也可以使用 Xacro
-
-```yaml
-description:
-  package: tomato_picker_description
-  xacro: urdf/tomato_picker.urdf.xacro
-  ros2_control_xacro: urdf/tomato_picker.ros2_control.xacro
-```
-
-Controller 默认仍启动 `joint_state_broadcaster` 和 `joint_trajectory_controller`；下游项目可以显式覆盖
-
-```yaml
-controllers:
-  package: tomato_picker_bringup
-  config: config/ros2_controllers.yaml
-  spawn:
-    - joint_state_broadcaster
-    - tomato_arm_controller
-```
-
-### 8 MoveIt 2 Quick Start
-
-MoveIt 通过 `serial_arm_ros2_control` Adapter 使用同一个 Robot Profile，不直接访问 MotorBus
-
-当前链路如下
-
-```text
-MoveIt 2
-  ↓
-move_group
-  ↓
-JointTrajectoryController
-  ↓
-ros2_control SerialArmSystem
-  ↓
-Robot
-  ↓
-Hardware Backend
-```
-
-使用现有 `dm_arm_white` Profile 启动
-
-```bash
-ros2 launch serial_arm_ros2_control moveit.launch.py \
-  robot_profile:=dm_arm_white
-```
-
-该入口会同时启动
-
-```text
-hardware.launch.py
-move_group.launch.py
-moveit_rviz.launch.py
-```
-
-需要覆盖串口时
-
-```bash
-ros2 launch serial_arm_ros2_control moveit.launch.py \
-  robot_profile:=dm_arm_white \
-  serial_port:=/dev/ttyACM1
-```
-
-下游 Profile 使用同一入口，`profile_file` 和 `resource_paths` 会继续透传给内部的 `hardware.launch.py`
-
-```bash
-ros2 launch serial_arm_ros2_control moveit.launch.py \
-  robot_profile:=tomato_picker \
-  profile_file:=/path/to/tomato_picker_bringup/config/robot_profiles.yaml
-```
-
-`display.launch.py` 只用于检查模型，`hardware.launch.py` 用于直接检查 ros2_control 真机链路，`moveit.launch.py` 在硬件链路之上继续启动 MoveIt
-
-当前 ros2_control Adapter 为 Robot 提供 `ModelFeedforwardFn`，但没有提供 MOMENTUM Observer 所需的 `InteractionModelStateFn`
-
-因此通过当前 ros2_control / MoveIt Adapter 使用导纳时应使用与 Adapter 能力匹配的配置，`dm_arm_white` 当前使用 FULL_ID Observer，`dm_arm_gray` 当前使用 MOMENTUM Observer，MOMENTUM 导纳应通过 Native C++ 或 C++ Terminal 使用，或者先扩展 Adapter 的 Interaction Model State 回调
-
-### 9 开始调试前确认 write_enabled
-
-Core YAML 中的开关决定是否允许真实 Robot 使用 Hardware Backend 写入执行器
-
-```yaml
-control:
-  runtime:
-    write_enabled: false
-```
-
-新机械臂、新零位或新硬件配置第一次调试时应先保持 `false`
-
-完成 Joint direction、zero、URDF limit、HardwareCapabilities、Safety 和 park pose 检查后再切换为真机写入
-
-## Robot Profile 示例
-
-`dm_arm_gray` 的 Profile 结构如下
-
-```yaml
-profiles:
-  dm_arm_gray:
-    core:
-      package: dm_arm_description
-      config: config/core/gray.yaml
-
-    hardware:
-      plugin: serial_arm_hardware_damiao
-      config_package: dm_arm_description
-      config: config/hardware.yaml
-
-    description:
-      package: dm_arm_description
-      urdf: model/gray/urdf/dm_arm_no_gripper.urdf
-      ros2_control_xacro: model/gray/urdf/dm_arm.ros2_control.xacro
-
-    controllers:
-      package: dm_arm_description
-      config: config/ros2_controllers.yaml
-
-    moveit:
-      package: dm_arm_no_gripper
-```
-
-Native C++、Python、Terminal 和 ROS 2 Adapter 共用同一套 Robot Profile
+| `install.sh` / `launch.sh` | 安装与桌面启动入口 |
+| `src/serial_arm/core/` | 通用控制库、Python、Terminal 与测试 |
+| `src/serial_arm/bringup/ros2_control/` | ROS2 Adapter 与 launch |
+| `src/robot_supports/profiles/` | 内置 Profile 注册 |
+| `src/robot_supports/robots/` | 机器人模型、参数与 MoveIt 配置 |
+| `src/robot_supports/hardware/` / `protocol/` | 执行器后端与通信协议 |
+| `apps/launcher/` | Electron 界面、Python 后端与测试 |
+| `tools/` / `conanfile.py` | 安装器、Standalone 构建与依赖声明 |
+| `docs/` | 使用说明与 API 参考 |
+| `docs/other/` | 私人阅读资料与原始长文，Git 忽略 |
+
+`build/`、`install/`、`log/` 与 `.install/` 是自动生成目录，Git 忽略
 
 ## 文档
 
-| 文档 | 适合阅读的内容 |
-| --- | --- |
-| [Tutorial.md](Tutorial.md) | 构建、已有 Profile 使用、YAML 配置、Terminal 调试、Dynamics、Impedance、Admittance、Adapter 和新机械臂接入 |
-| [API.md](API.md) | C++ / Python 类型、函数、参数、返回值、错误码和 Transport / Hardware API |
-| [Architecture.md](Architecture.md) | Core 架构、模块边界、Runtime 数据流、Transport 和 Adapter 设计 |
+- [安装与参数](docs/install.md)
+- [GUI 使用](docs/launcher.md)
+- [配置与机器人接入](docs/tutorial.md)
+- [架构与职责边界](docs/architecture.md)
+- [API 参考](docs/reference/api.md)
+- [开发与验证](docs/development.md)
 
-第一次使用仓库建议先完成本 README 的 Quick Start，再进入 Tutorial 按实际需求继续阅读
-
-## License
-
-许可证以仓库 [LICENSE](LICENSE) 为准
+MIT License，见 [LICENSE](LICENSE)

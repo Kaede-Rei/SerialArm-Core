@@ -27,7 +27,7 @@ Task-level behaviors such as keeping a picking direction, insertion constraints,
 
 Runtime interaction output is exchanged through `InteractionState`
 
-It contains:
+It contains
 
 - estimated external joint torque
 - admittance position correction

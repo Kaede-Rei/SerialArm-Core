@@ -45,7 +45,7 @@ TEST(RobotSessionFaultRecoveryRuntime, RecoverableReadFaultKeepsWorkerAliveAndDr
     EXPECT_EQ(session.get_fault_hold_mode(), FaultHoldMode::RIGID_HOLD);
 
     // The worker must continue refreshing the hold long enough for the Core's
-    // three-valid-cycle clear gate to become eligible.
+    // three-valid-cycle clear gate to become eligible
     std::this_thread::sleep_for(50ms);
 
     bool cleared = false;

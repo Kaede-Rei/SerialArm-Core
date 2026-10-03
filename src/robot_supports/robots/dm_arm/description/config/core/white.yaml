@@ -34,7 +34,7 @@ control:
   runtime:
     ctrl_frequency_hz: 200.0                            # Robot::cycle() 目标控制频率 Hz
     joint_acc_filter_alpha: 0.2                         # 实测关节加速度低通系数；FULL_ID 对 qdd 敏感，MOMENTUM 不显式使用 qdd
-    write_enabled: false                                 # 是否允许向真实执行器写入控制命令；White 真机确认前保持 false
+    write_enabled: true                                 # 是否允许向真实执行器写入控制命令；White 真机确认前保持 false
     model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
     tracking_impedance_mode: COMPLIANT_TRACKING         # 跟踪模式默认阻抗：RIGID_TRACKING / COMPLIANT_TRACKING
   controller:

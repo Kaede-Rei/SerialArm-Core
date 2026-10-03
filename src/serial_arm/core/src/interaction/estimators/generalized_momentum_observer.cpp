@@ -72,7 +72,7 @@ GeneralizedMomentumObserver::update(const GeneralizedMomentumInput& input) {
             // Keep the observer algebra r=K*(p-p_hat) consistent on the very first
             // sample. Initialising p_hat=p would force a calibrated non-zero bias to
             // collapse to zero on sample two and then reconverge, which appears as a
-            // false interaction transient at activation/reset.
+            // false interaction transient at activation/reset
             momentum_error[i] = residual_[i] / cfg_.gain[i];
             predicted_momentum_[i] = momentum[i] - momentum_error[i];
         }
@@ -91,7 +91,7 @@ GeneralizedMomentumObserver::update(const GeneralizedMomentumInput& input) {
 
     // p_dot = tau + tau_ext - g + C^T*dq,
     // C^T*dq = Mdot*dq - C*dq. The integral state predicts momentum using the
-    // previous residual; the current momentum error closes the observer loop.
+    // previous residual; the current momentum error closes the observer loop
     for(std::size_t i = 0; i < n; ++i) {
         const double c_transpose_dq = mdot_times_dq[i] - input.coriolis[i];
         const double known_momentum_rate = input.measured_torque[i] - input.gravity[i] + c_transpose_dq;

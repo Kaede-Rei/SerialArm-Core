@@ -1859,7 +1859,7 @@ private:
 
                 // Replay calibration always uses actual state. FULL-ID is retained only as
                 // a diagnostic reference; when MOMENTUM is selected the fitted friction
-                // residual must come from the same observer family used at runtime.
+                // residual must come from the same observer family used at runtime
                 const auto dynamics_result = dynamics_.update(
                     output.joint_state, output.joint_acc, output.joint_acc);
                 if(!dynamics_result) {

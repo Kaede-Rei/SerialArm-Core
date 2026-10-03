@@ -2,9 +2,9 @@
 
 本文档用于查询 SerialArm-Core 的公共类型、配置结构、类、函数、生命周期接口、错误模型与扩展契约
 
-如果目标是第一次运行机械臂、配置 Robot Profile、调试 Dynamics / Impedance / Admittance、接入 ROS 2 / MoveIt 或新增机械臂，请先阅读 [Tutorial.md](Tutorial.md)
+如果目标是第一次运行机械臂、配置 Robot Profile、调试 Dynamics / Impedance / Admittance、接入 ROS 2 / MoveIt 或新增机械臂，请先阅读 [配置教程](../tutorial.md)
 
-如果目标是理解 Core、Adapter、Hardware、Transport 与 Robot Support 的模块边界，请阅读 [Architecture.md](Architecture.md)
+如果目标是理解 Core、Adapter、Hardware、Transport 与 Robot Support 的模块边界，请阅读 [架构](../architecture.md)
 
 [toc]
 
@@ -2995,14 +2995,14 @@ enum class ModelFeedforwardMode {
 
 使用 Dynamics 的 `inverse_dynamics`
 
-完整逆动力学依赖：
+完整逆动力学依赖
 
 - 真实模型质量与惯量
 - 当前 `q`
 - 当前 `dq`
 - 参考 `ddq`
 
-当前参考加速度来自修正后的最终参考：
+当前参考加速度来自修正后的最终参考
 
 $$
 \ddot q_{ref}

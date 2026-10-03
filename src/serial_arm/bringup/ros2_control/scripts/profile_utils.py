@@ -25,7 +25,7 @@ def get_package_prefix(package):
 
 
 def normalize_resource_paths(resource_paths=None):
-    """Normalize launch/Python resource roots to a stable, de-duplicated list."""
+    """Normalize launch/Python resource roots to a stable, de-duplicated list"""
     if resource_paths is None:
         return []
 
@@ -116,14 +116,14 @@ def _profile_packages(profile):
 
 
 def _ament_resource_paths(profile):
-    """Return install prefixes for packages that are visible in the current ROS 2 overlay."""
+    """Return install prefixes for packages that are visible in the current ROS 2 overlay"""
     paths = []
     for package in _profile_packages(profile):
         try:
             prefix = str(Path(get_package_prefix(package)))
         except Exception:
             # Core/Hardware resources may intentionally live outside ament and be
-            # supplied through the explicit resource_paths launch argument.
+            # supplied through the explicit resource_paths launch argument
             continue
         if prefix not in paths:
             paths.append(prefix)

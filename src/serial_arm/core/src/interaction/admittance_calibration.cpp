@@ -220,8 +220,8 @@ calibrate_admittance_static(
 
     for(std::size_t joint = 0; joint < cfg.joints_count; ++joint) {
         // gravity_scale / torque_bias describe the robot itself, so each manually selected
-        // static pose must contribute equal weight regardless of scheduler/sample-count jitter.
-        // Reduce every pose to a robust median first, then fit across pose representatives.
+        // static pose must contribute equal weight regardless of scheduler/sample-count jitter
+        // Reduce every pose to a robust median first, then fit across pose representatives
         std::vector<double> pose_gravity;
         std::vector<double> pose_torque;
         pose_gravity.reserve(poses.size());
@@ -250,7 +250,7 @@ calibrate_admittance_static(
         result.gravity_scale_observable[joint] = full_fit.gravity_scale_observable;
 
         // Envelope A: within-pose static noise. Remove each pose's own robust center so
-        // cross-pose model mismatch does not get confused with sensor/static-friction jitter.
+        // cross-pose model mismatch does not get confused with sensor/static-friction jitter
         std::vector<double> within_pose_abs_error;
         within_pose_abs_error.reserve(total_samples);
         for(const auto& pose : poses) {
@@ -268,9 +268,9 @@ calibrate_admittance_static(
         }
 
         // Envelope B: Leave-One-Pose-Out generalization error. Every manually selected
-        // pose must once be predicted by a gravity_scale / bias fit that did not see it.
+        // pose must once be predicted by a gravity_scale / bias fit that did not see it
         // This prevents torque_threshold from being estimated by the same pose data used
-        // to fit the static model itself.
+        // to fit the static model itself
         std::vector<double> lopo_abs_error;
         if(pose_gravity.size() >= 2) {
             for(std::size_t held_out = 0; held_out < pose_gravity.size(); ++held_out) {
@@ -325,9 +325,9 @@ calibrate_admittance_static(
         // Quantized torque feedback can make an otherwise valid static sample land one
         // discrete code beyond the largest code observed during calibration. Infer the
         // smallest repeatedly occupied feedback spacing from the raw static samples and
-        // reserve exactly one additional step beyond the calibrated residual envelope.
+        // reserve exactly one additional step beyond the calibrated residual envelope
         // Requiring >=3 samples at both levels prevents a single isolated outlier from
-        // being misclassified as feedback quantization.
+        // being misclassified as feedback quantization
         const double torque_quantization_step = estimate_repeated_torque_quantization_step(poses, joint);
         double quantization_guard = 0.0;
         if(torque_quantization_step > 0.0) {

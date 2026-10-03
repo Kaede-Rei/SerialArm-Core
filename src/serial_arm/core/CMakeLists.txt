@@ -15,8 +15,8 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 # ROS 2 integration is optional. Standalone/bootstrap builds explicitly set
-# this OFF so a sourced ROS environment cannot silently change a pure C++ build.
-# ROS 2/colcon builds keep the default ON and register the package with ament.
+# this OFF so a sourced ROS environment cannot silently change a pure C++ build
+# ROS 2/colcon builds keep the default ON and register the package with ament
 option(SERIAL_ARM_ENABLE_ROS2 "Enable ROS 2 ament integration when available" ON)
 if(SERIAL_ARM_ENABLE_ROS2)
     find_package(ament_cmake QUIET)
@@ -293,7 +293,7 @@ if(SERIAL_ARM_BUILD_PYTHON)
     else()
         # scikit-build-core stages CMake install output into the wheel. Keep
         # both the extension and the Core shared library inside the Python
-        # package, then resolve the latter relative to the extension itself.
+        # package, then resolve the latter relative to the extension itself
         set_target_properties(_serial_arm PROPERTIES
             INSTALL_RPATH "$ORIGIN"
         )

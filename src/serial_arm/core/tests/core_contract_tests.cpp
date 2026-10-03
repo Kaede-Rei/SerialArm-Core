@@ -470,7 +470,7 @@ TEST(DynamicsMandatory, FullInverseDynamicsUsesCalibratedGravityScale) {
     ASSERT_TRUE(dynamics.update(state, zero, zero));
 
     // dq=0 and ddq=0 => inverse dynamics must reduce to the same calibrated
-    // gravity term used by the quasi-static HOLD residual.
+    // gravity term used by the quasi-static HOLD residual
     for(std::size_t i = 0; i < names.size(); ++i) {
         EXPECT_NEAR(dynamics.get_inverse_dynamics()[i], dynamics.get_gravity_compensation()[i], 1e-10);
     }
