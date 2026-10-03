@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import yaml
 
 MODES = ('model', 'terminal', 'hardware', 'moveit')
+ROS_LAUNCH = {'model': 'display.launch.py', 'hardware': 'hardware.launch.py', 'moveit': 'moveit.launch.py'}
 
 
 def text(value):
@@ -48,7 +49,7 @@ def command_for(mode, config):
                           ('baudrate', '--baudrate'), ('bus', '--bus')]:
             if c[key]: args += [flag, c[key]]
     else:
-        args = ['ros2', 'launch', 'serial_arm_ros2_control', mode + '.launch.py', 'robot_profile:=' + c['profile']]
+        args = ['ros2', 'launch', 'serial_arm_ros2_control', ROS_LAUNCH[mode], 'robot_profile:=' + c['profile']]
         keys = ['profile_file', 'resource_paths']
         if mode != 'model': keys += ['serial_port', 'baudrate', 'bus']
         args += [key + ':=' + c[key] for key in keys if c[key]]

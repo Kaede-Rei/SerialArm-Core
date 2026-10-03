@@ -41,6 +41,14 @@ Terminal、Hardware 与 MoveIt 启动前需要确认 Profile、设备和 `write_
 
 Terminal 使用 PTY，点击终端后输入，运行中不能修改连接参数或切换会话
 
+拖选文本后用 Ctrl+Shift+C 复制，Ctrl+Shift+V 粘贴，Ctrl+Shift+A 全选
+
+右键菜单提供复制所选、复制全部输出、粘贴和全选，工具栏也有复制全部与粘贴按钮
+
+复制使用终端文本，去除 ANSI 控制码，范围为当前终端缓冲，最多保留约 100 万个字符
+
+只有活动的 Terminal 会话允许粘贴，Ctrl+C 保留原程序的中断语义
+
 停止先发送 SIGINT，等待退出后才能切换模式，强制结束会中断清理流程
 
 关闭窗口时如有活动会话，会询问停止或强制结束
@@ -76,3 +84,23 @@ Terminal 使用 PTY，点击终端后输入，运行中不能修改连接参数�
 ![浅色界面](images/launcher-light.png)
 
 验证命令见 [开发说明](development.md)
+
+## 常见启动报错
+
+`model.launch.py was not found` 表示 Launcher 调用的文件名错误，Model 实际使用 `display.launch.py`
+
+`Missing gripper_left` 表示 MoveIt 缺少夹爪关节状态，不等同于 CAN 或串口断线
+
+内置白色模型包含夹爪关节，但随附 Hardware 与 ros2_control 只接入 joint1 到 joint6
+
+需要接入真实夹爪驱动与状态发布，不能用固定零位冒充硬件反馈
+
+运行 Hardware 或 MoveIt 后可在另一终端检查
+
+```bash
+./.install/run ros2 topic echo /joint_states --once
+```
+
+如果只有 joint1 到 joint6，没有 gripper_left，先补齐夹爪状态接口
+
+`/recognize_objects not available` 是物体识别 action 服务未启动，不是末端电机通信错误

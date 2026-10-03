@@ -47,6 +47,8 @@ SERIAL_ARM_LAUNCHER_PYTHON="$PWD/.install/gui-venv/bin/python" \
 
 界面测试使用离线状态，检查 Profile、模式、确认、主题、语言、偏好与 IPC 限制
 
+终端测试验证系统剪贴板复制、复制全部、右键菜单、粘贴输入与 Ctrl+C，输入由测试夹具接收
+
 以上检查不替代目标环境的 Core/ROS2 全栈编译与真机验收
 
 ## 文档约定
