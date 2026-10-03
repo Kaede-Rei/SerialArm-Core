@@ -4,7 +4,7 @@ build/
 install/
 log/
 logs/
-docs/
+docs/other/
 dist/
 
 .VSCodeCounter/
@@ -15,3 +15,5 @@ dist/
 
 .codex
 *.pyc
+
+.install/

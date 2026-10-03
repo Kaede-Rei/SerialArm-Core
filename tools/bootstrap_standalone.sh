@@ -9,13 +9,15 @@ INSTALL_PREFIX="${INSTALL_PREFIX:-${ROOT_DIR}/install/standalone}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}"
 ROBOT=""
 WITH_TESTS=0
+WITH_TERMINAL=1
+BOOTSTRAP_BUILD_ROOT="${BOOTSTRAP_BUILD_ROOT:-${ROOT_DIR}/build}"
 DEPENDENCY_MODE="system"
 RUNENV_FILE=""
 CMAKE_DEP_ARGS=()
 
 usage() {
     cat <<'USAGE'
-Usage: ./tools/bootstrap_standalone.sh [--robot dm_arm] [--with-tests]
+Usage: ./tools/bootstrap_standalone.sh [--robot dm_arm] [--with-tests] [--without-terminal]
 
 Dependency strategy:
   1. Prefer already installed system CMake packages.
@@ -24,6 +26,7 @@ Dependency strategy:
 
 By default, build and install the standalone SerialArm Core without developer tests.
 Use --with-tests to build and run the Core test suite with CTest.
+Use --without-terminal for a library-only installation.
 With --robot dm_arm, also install the Damiao USB2CAN protocol, Damiao hardware
 backend, robot profiles and DM-Arm resources required by dm_arm_gray/white.
 
@@ -33,6 +36,7 @@ Environment overrides:
   CORE_BUILD_DIR                Core build directory
   INSTALL_PREFIX                Standalone install prefix
   JOBS                          Parallel build jobs
+  BOOTSTRAP_BUILD_ROOT          Auxiliary builds directory (default: build)
   SERIAL_ARM_ALLOW_SOURCE_BUILD Set to 1 to allow Conan --build=missing
 USAGE
 }
@@ -46,6 +50,10 @@ while [[ $# -gt 0 ]]; do
             fi
             ROBOT="$2"
             shift 2
+            ;;
+        --without-terminal)
+            WITH_TERMINAL=0
+            shift
             ;;
         --with-tests)
             WITH_TESTS=1
@@ -153,9 +161,9 @@ configure_build_install() {
 }
 
 probe_system_dependencies() {
-    local probe_src="${ROOT_DIR}/build/serial_arm_dependency_probe_src"
-    local probe_build="${ROOT_DIR}/build/serial_arm_dependency_probe"
-    local probe_log="${ROOT_DIR}/build/serial_arm_dependency_probe.log"
+    local probe_src="${BOOTSTRAP_BUILD_ROOT}/serial_arm_dependency_probe_src"
+    local probe_build="${BOOTSTRAP_BUILD_ROOT}/serial_arm_dependency_probe"
+    local probe_log="${BOOTSTRAP_BUILD_ROOT}/serial_arm_dependency_probe.log"
 
     mkdir -p "${probe_src}"
     cat > "${probe_src}/CMakeLists.txt" <<'EOF_CMAKE'
@@ -324,7 +332,7 @@ run_standalone_command cmake \
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
     -DSERIAL_ARM_ENABLE_ROS2=OFF \
     -DSERIAL_ARM_BUILD_PYTHON=OFF \
-    -DSERIAL_ARM_BUILD_TERMINAL=ON \
+    -DSERIAL_ARM_BUILD_TERMINAL=$([[ ${WITH_TERMINAL} -eq 1 ]] && printf ON || printf OFF) \
     -DBUILD_TESTING=$([[ ${WITH_TESTS} -eq 1 ]] && printf ON || printf OFF)
 
 run_standalone_command cmake --build "${CORE_BUILD_DIR}" --parallel "${JOBS}"
@@ -336,21 +344,21 @@ run_standalone_command cmake --install "${CORE_BUILD_DIR}" --prefix "${INSTALL_P
 if [[ "${ROBOT}" == "dm_arm" ]]; then
     configure_build_install \
         "${ROOT_DIR}/src/robot_supports/protocol/damiao_usb2can" \
-        "${ROOT_DIR}/build/serial_arm_protocol_damiao_usb2can" \
+        "${BOOTSTRAP_BUILD_ROOT}/serial_arm_protocol_damiao_usb2can" \
         -DBUILD_TESTING=OFF
 
     configure_build_install \
         "${ROOT_DIR}/src/robot_supports/hardware/damiao" \
-        "${ROOT_DIR}/build/serial_arm_hardware_damiao" \
+        "${BOOTSTRAP_BUILD_ROOT}/serial_arm_hardware_damiao" \
         -DBUILD_TESTING=OFF
 
     configure_build_install \
         "${ROOT_DIR}/src/robot_supports/profiles" \
-        "${ROOT_DIR}/build/serial_arm_robot_profiles"
+        "${BOOTSTRAP_BUILD_ROOT}/serial_arm_robot_profiles"
 
     configure_build_install \
         "${ROOT_DIR}/src/robot_supports/robots/dm_arm/description" \
-        "${ROOT_DIR}/build/dm_arm_description"
+        "${BOOTSTRAP_BUILD_ROOT}/dm_arm_description"
 fi
 
 mkdir -p "${INSTALL_PREFIX}"
@@ -382,6 +390,6 @@ if [[ "${ROBOT}" == "dm_arm" ]]; then
 fi
 printf '\nBefore running installed binaries in a new shell:\n'
 printf '  source %q\n' "${SETUP_FILE}"
-if [[ "${ROBOT}" == "dm_arm" ]]; then
+if [[ "${ROBOT}" == "dm_arm" && ${WITH_TERMINAL} -eq 1 ]]; then
     printf '  serial_arm_terminal --robot-profile dm_arm_gray\n'
 fi

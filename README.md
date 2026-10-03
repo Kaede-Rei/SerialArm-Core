@@ -23,6 +23,19 @@ SerialArm-Core 是面向自研串联机械臂的通用控制能力库，将机�
 
 推荐使用已有 Robot Profile 作为第一次接入示例；用户通常只需要选择 Profile、构建对应资源、加载 Terminal 或 ROS 2 Adapter，即可使用同一套 Core 能力
 
+## 快速安装（推荐入口）
+
+```bash
+./install.sh
+```
+
+按交互向导选择 Core、Standalone Robot、ROS2、Python、Developer 或 Custom
+自动化环境使用 `./install.sh --preset standalone --yes`；预览计划使用 `--dry-run`
+安装后可直接通过 `./.install/run serial_arm_terminal --robot-profile dm_arm_gray` 使用已选组件，
+或执行 `source .install/setup.bash` 加载统一环境
+
+详见 [统一安装说明](docs/install.md)；也可直接使用 bootstrap、colcon 或 wheel 安装
+
 ## 核心能力
 
 | 能力 | 作用 | 主要入口 |
@@ -460,7 +473,7 @@ ros2 topic echo /joint_states
 
 #### 下游机器人自持 Profile
 
-v0.5.2 起，`display.launch.py`、`hardware.launch.py` 和 `moveit.launch.py` 都支持下游项目自己的 Robot Profile
+`display.launch.py`、`hardware.launch.py` 和 `moveit.launch.py` 都支持下游项目自己的 Robot Profile
 
 ```bash
 ros2 launch serial_arm_ros2_control hardware.launch.py \
