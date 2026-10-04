@@ -35,9 +35,11 @@ class BridgeIntegrationTests(unittest.TestCase):
             bin_dir = root / 'bin'
             bin_dir.mkdir()
             terminal = bin_dir / 'serial_arm_terminal'
-            terminal.write_text('#!' + sys.executable + '\nimport sys,time\nprint("PTY_READY",sys.stdin.isatty(),flush=True)\nprint("GOT",input(),flush=True)\ntime.sleep(30)\n')
+            terminal.write_text('#!/bin/sh\nprintf \'PTY_READY %s\\n\' "$([ -t 0 ] && printf True || printf False)"\nIFS= read -r line\nprintf \'GOT %s\\n\' "$line"\nsleep 30\n')
             terminal.chmod(0o755)
             env = dict(os.environ, PATH=str(bin_dir)+os.pathsep+os.environ['PATH'], XDG_CACHE_HOME=str(root/'cache'))
+            env.pop('PYTHONPATH', None)
+            env.pop('PYTHONHOME', None)
             proc = subprocess.Popen([sys.executable, '-u', str(backend/'bridge.py')], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, text=True, bufsize=1)
             events = []
             def request(number, method, params=None):

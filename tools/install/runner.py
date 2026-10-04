@@ -274,6 +274,10 @@ class Runner:
             if not binary.is_file() or not os.access(binary, os.X_OK):
                 raise InstallError(f'未找到 Terminal：{binary}')
             self.run('verify-terminal', [binary, '--help'], source=candidate)
+            model_probe = self.prefix / 'bin/serial_arm_model_probe'
+            if not model_probe.is_file() or not os.access(model_probe, os.X_OK):
+                raise InstallError(f'未找到 Model Probe：{model_probe}')
+            self.run('verify-model-probe', [model_probe, '--help'], source=candidate)
         if self.plan.ros2:
             for package in self.plan.packages:
                 self.run('verify-' + package, ['ros2', 'pkg', 'prefix', package], source=candidate)

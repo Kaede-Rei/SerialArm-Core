@@ -51,6 +51,7 @@ struct CliOptions {
     HardwareConfigOverrides hardware_overrides;
     bool show_help{ false };
     bool compare_config{ false };
+    bool machine_mode{ false };
 };
 
 struct HardwareConnectionSummary {
@@ -409,6 +410,9 @@ bool parse_cli(int argc, char** argv, CliOptions& options) {
                 return false;
             }
         }
+        else if(arg == "--machine") {
+            options.machine_mode = true;
+        }
         else if(arg == "--compare-config") {
             if(i + 2 >= argc) return false;
             options.compare_config = true;
@@ -429,6 +433,7 @@ bool parse_cli(int argc, char** argv, CliOptions& options) {
 void print_usage(const char* program) {
     std::cout << "用法: " << program << " --robot-profile <name> [--profile-file <path>] [--serial-port <path>] [--baudrate <n>] [--bus <name>]\n";
     std::cout << "路径: " << program << " [--config <path>] [--hardware-plugin <name>] [--hardware-config <path>]\n";
+    std::cout << "机器接口: " << program << " --machine --robot-profile <name> [connection overrides]\n";
     std::cout << "比较: " << program << " --hardware-plugin <name> --hardware-config <path> --compare-config <config-a.yaml> <config-b.yaml>\n";
     std::cout << "  --serial-port  Override serial port from robot profile hardware configuration\n";
     std::cout << "  --baudrate     Override serial baudrate\n";
@@ -613,14 +618,16 @@ public:
         std::string hardware_config,
         HardwareConfigOverrides hardware_overrides,
         HardwareConnectionSummary connection_summary,
-        std::string robot_profile)
+        std::string robot_profile,
+        bool machine_mode = false)
         : cfg_(std::move(cfg)),
         config_path_(std::move(config_path)),
         hardware_plugin_(std::move(hardware_plugin)),
         hardware_config_(std::move(hardware_config)),
         hardware_overrides_(std::move(hardware_overrides)),
         connection_summary_(std::move(connection_summary)),
-        robot_profile_(std::move(robot_profile)) {
+        robot_profile_(std::move(robot_profile)),
+        machine_mode_(machine_mode) {
 
     }
 
@@ -726,7 +733,459 @@ public:
         return 0;
     }
 
+    int run_machine() {
+        std::streambuf* protocol_buffer = std::cout.rdbuf();
+        struct StreamRestore {
+            std::ostream& stream;
+            std::streambuf* buffer;
+            ~StreamRestore() { stream.rdbuf(buffer); }
+        } restore{ std::cout, protocol_buffer };
+        std::cout.rdbuf(std::cerr.rdbuf());
+        std::ostream protocol(protocol_buffer);
+        std::mutex protocol_mutex;
+        std::atomic<bool> telemetry_running{ true };
+
+        auto emit_reply = [&](long long id, const std::string& result, const std::string& error = std::string{}) {
+            std::lock_guard<std::mutex> output_lock(protocol_mutex);
+            protocol << "{\"id\":" << id << ',';
+            if(error.empty()) protocol << "\"result\":" << result;
+            else protocol << "\"error\":\"" << machine_json_escape(error) << "\"";
+            protocol << "}\n" << std::flush;
+        };
+
+        std::thread telemetry([&]() {
+            while(telemetry_running.load()) {
+                try {
+                    const std::string snapshot = machine_snapshot_json();
+                    std::lock_guard<std::mutex> output_lock(protocol_mutex);
+                    protocol << "{\"event\":\"telemetry\",\"time_ms\":"
+                             << std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch()).count()
+                             << ",\"data\":" << snapshot << "}\n" << std::flush;
+                }
+                catch(...) {}
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+
+        auto stop_telemetry = [&]() {
+            telemetry_running.store(false);
+            if(telemetry.joinable()) telemetry.join();
+        };
+
+        try {
+            std::string line;
+            while(std::getline(std::cin, line)) {
+                if(line.empty()) continue;
+                long long id = 0;
+                try {
+                    if(line.size() > 1024 * 1024) throw std::runtime_error("request exceeds 1 MiB");
+                    const YAML::Node request = YAML::Load(line);
+                    if(!request || !request.IsMap()) throw std::runtime_error("request must be an object");
+                    if(request["id"]) id = request["id"].as<long long>();
+                    if(!request["method"] || !request["method"].IsScalar()) throw std::runtime_error("method is required");
+                    const std::string method = request["method"].as<std::string>();
+                    const YAML::Node params = request["params"];
+
+                    if(method == "status") {
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "activate") {
+                        machine_activate();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "deactivate") {
+                        machine_deactivate();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "park") {
+                        park_and_deactivate();
+                        if(machine_robot_state() != RobotState::INACTIVE) throw std::runtime_error("park did not reach INACTIVE");
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "clear_fault") {
+                        machine_clear_fault();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "fault_compliant") {
+                        machine_fault_compliant();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "fault_rigid") {
+                        machine_fault_rigid();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "set_impedance_mode") {
+                        if(!params || !params["mode"]) throw std::runtime_error("mode is required");
+                        machine_set_impedance_mode(machine_parse_impedance_mode(params["mode"].as<std::string>()));
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "set_model_feedforward_mode") {
+                        if(!params || !params["mode"]) throw std::runtime_error("mode is required");
+                        machine_set_model_feedforward_mode(machine_parse_feedforward_mode(params["mode"].as<std::string>()));
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "set_gravity_scale") {
+                        machine_set_gravity_scale(machine_node_vector(params["values"], "values"));
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "move_to") {
+                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
+                        machine_move_to(machine_node_vector(params["positions"], "positions"), speed_scale, false);
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "move_relative") {
+                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
+                        machine_move_to(machine_node_vector(params["delta"], "delta"), speed_scale, true);
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "hold") {
+                        machine_hold();
+                        emit_reply(id, "true");
+                    }
+                    else if(method == "shutdown") {
+                        park_and_deactivate();
+                        if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
+                        if(machine_robot_state() != RobotState::INACTIVE) throw std::runtime_error("shutdown could not deactivate Robot");
+                        emit_reply(id, "true");
+                        break;
+                    }
+                    else {
+                        throw std::runtime_error("unknown request method");
+                    }
+                }
+                catch(const std::exception& error) {
+                    emit_reply(id, "null", error.what());
+                }
+            }
+        }
+        catch(...) {
+            stop_telemetry();
+            throw;
+        }
+
+        stop_telemetry();
+        if(machine_robot_state() == RobotState::ACTIVE) park_and_deactivate();
+        if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
+        quit_.store(true);
+        return 0;
+    }
+
 private:
+    static std::string machine_json_escape(const std::string& value) {
+        std::ostringstream out;
+        for(const unsigned char ch : value) {
+            switch(ch) {
+                case '\\': out << "\\\\"; break;
+                case '"': out << "\\\""; break;
+                case '\n': out << "\\n"; break;
+                case '\r': out << "\\r"; break;
+                case '\t': out << "\\t"; break;
+                default:
+                    if(ch < 0x20) {
+                        out << "\\u" << std::hex << std::setw(4) << std::setfill('0')
+                            << static_cast<int>(ch) << std::dec << std::setfill(' ');
+                    }
+                    else out << static_cast<char>(ch);
+            }
+        }
+        return out.str();
+    }
+
+    static void machine_json_string(std::ostream& out, const std::string& value) {
+        out << '"' << machine_json_escape(value) << '"';
+    }
+
+    template <typename T>
+    static void machine_json_vector(std::ostream& out, const std::vector<T>& values) {
+        out << '[';
+        for(std::size_t i = 0; i < values.size(); ++i) {
+            if(i) out << ',';
+            out << +values[i];
+        }
+        out << ']';
+    }
+
+    static void machine_json_joint_vector(std::ostream& out, const JointVector& values) {
+        out << '[';
+        for(std::size_t i = 0; i < values.size(); ++i) {
+            if(i) out << ',';
+            out << std::setprecision(17) << values[i];
+        }
+        out << ']';
+    }
+
+    static JointVector machine_node_vector(const YAML::Node& node, const char* name) {
+        if(!node || !node.IsSequence()) throw std::runtime_error(std::string(name) + " must be an array");
+        JointVector values;
+        values.reserve(node.size());
+        for(const auto& item : node) {
+            const double value = item.as<double>();
+            if(!std::isfinite(value)) throw std::runtime_error(std::string(name) + " contains non-finite value");
+            values.push_back(value);
+        }
+        return values;
+    }
+
+    static JointImpedanceMode machine_parse_impedance_mode(const std::string& value) {
+        if(value == "RIGID_HOLD") return JointImpedanceMode::RIGID_HOLD;
+        if(value == "RIGID_TRACKING") return JointImpedanceMode::RIGID_TRACKING;
+        if(value == "COMPLIANT_HOLD") return JointImpedanceMode::COMPLIANT_HOLD;
+        if(value == "COMPLIANT_DRAG") return JointImpedanceMode::COMPLIANT_DRAG;
+        if(value == "COMPLIANT_TRACKING") return JointImpedanceMode::COMPLIANT_TRACKING;
+        throw std::runtime_error("unknown impedance mode");
+    }
+
+    static ModelFeedforwardMode machine_parse_feedforward_mode(const std::string& value) {
+        if(value == "NONE") return ModelFeedforwardMode::NONE;
+        if(value == "GRAVITY") return ModelFeedforwardMode::GRAVITY;
+        if(value == "FULL_INVERSE_DYNAMICS") return ModelFeedforwardMode::FULL_INVERSE_DYNAMICS;
+        throw std::runtime_error("unknown model feedforward mode");
+    }
+
+    static std::runtime_error machine_robot_error(const char* action, const RobotFault& fault) {
+        return std::runtime_error(std::string(action) + " failed: " + to_string(fault.code));
+    }
+
+    RobotState machine_robot_state() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return robot_.get_state();
+    }
+
+    void machine_activate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.activate();
+        if(!result) throw machine_robot_error("activate", result.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        background_fault_reported_ = false;
+    }
+
+    void machine_deactivate() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.force_deactivate();
+        if(!result) throw machine_robot_error("deactivate", result.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        background_fault_reported_ = false;
+    }
+
+    void machine_clear_fault() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.clear_fault();
+        if(!result) throw machine_robot_error("clear_fault", result.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        background_fault_reported_ = false;
+    }
+
+    void machine_fault_compliant() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.enter_fault_compliant_recovery();
+        if(!result) throw machine_robot_error("fault_compliant", result.error());
+        background_fault_reported_ = false;
+    }
+
+    void machine_fault_rigid() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.return_to_fault_rigid_hold();
+        if(!result) throw machine_robot_error("fault_rigid", result.error());
+        background_fault_reported_ = false;
+    }
+
+    void machine_set_impedance_mode(JointImpedanceMode mode) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        clear_command_sources();
+        const auto result = robot_.set_impedance_mode(mode);
+        if(!result) throw machine_robot_error("set_impedance_mode", result.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        background_fault_reported_ = false;
+    }
+
+    void machine_set_model_feedforward_mode(ModelFeedforwardMode mode) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto result = robot_.set_model_feedforward_mode(mode);
+        if(!result) throw machine_robot_error("set_model_feedforward_mode", result.error());
+        cfg_.runtime.model_feedforward_mode = mode;
+    }
+
+    void machine_set_gravity_scale(const JointVector& values) {
+        if(values.size() != cfg_.joint_names.size()) throw std::runtime_error("gravity scale size does not match joint count");
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_.get_state() != RobotState::INACTIVE) throw std::runtime_error("set_gravity_scale requires RobotState::INACTIVE");
+        const auto result = dynamics_.set_gravity_scale(values);
+        if(!result) throw std::runtime_error("set_gravity_scale failed: " + to_string(result.error()));
+        cfg_.dynamics.gravity_scale = values;
+    }
+
+    void machine_validate_target(const JointVector& target, double speed_scale) const {
+        if(target.size() != cfg_.joint_names.size()) throw std::runtime_error("target size does not match joint count");
+        if(!std::isfinite(speed_scale) || speed_scale <= 0.0 || speed_scale > 1.0) throw std::runtime_error("speed_scale must be in (0, 1]");
+        for(std::size_t i = 0; i < target.size(); ++i) {
+            if(!std::isfinite(target[i])) throw std::runtime_error("target contains non-finite value");
+            if(target[i] < cfg_.safety.limits.min_pos[i] || target[i] > cfg_.safety.limits.max_pos[i]) {
+                throw std::runtime_error("target exceeds configured joint position limit: " + cfg_.joint_names[i]);
+            }
+        }
+    }
+
+    void machine_move_to(const JointVector& values, double speed_scale, bool relative) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("motion requires RobotState::ACTIVE");
+        if(!is_tracking_mode(robot_.get_impedance_mode())) throw std::runtime_error("motion requires a tracking impedance mode");
+        JointVector target = values;
+        if(relative) {
+            if(values.size() != cfg_.joint_names.size()) throw std::runtime_error("delta size does not match joint count");
+            target = current_reference_pos();
+            for(std::size_t i = 0; i < target.size(); ++i) target[i] += values[i];
+        }
+        machine_validate_target(target, speed_scale);
+        begin_stream(target, speed_scale);
+    }
+
+    void machine_hold() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("hold requires RobotState::ACTIVE");
+        clear_command_sources();
+        const auto result = robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+        if(!result) throw machine_robot_error("hold", result.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        background_fault_reported_ = false;
+    }
+
+    std::string machine_snapshot_json() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::ostringstream out;
+        out << std::setprecision(17);
+        out << "{\"robot_state\":";
+        machine_json_string(out, to_string(robot_.get_state()));
+        out << ",\"fault_hold_mode\":";
+        machine_json_string(out, to_string(robot_.get_fault_hold_mode()));
+        out << ",\"impedance_mode\":";
+        machine_json_string(out, to_string(robot_.get_impedance_mode()));
+        out << ",\"model_feedforward_mode\":";
+        machine_json_string(out, to_string(robot_.get_model_feedforward_mode()));
+        out << ",\"valid\":" << (last_output_ ? "true" : "false");
+        out << ",\"sequence\":" << cycle_counter_;
+        if(feedback_time_ns_ > 0) {
+            const auto now_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                Robot::Clock::now().time_since_epoch()).count());
+            const double age_ms = now_ns >= feedback_time_ns_ ? static_cast<double>(now_ns - feedback_time_ns_) / 1.0e6 : 0.0;
+            out << ",\"feedback_age_ms\":" << age_ms;
+        }
+        else out << ",\"feedback_age_ms\":null";
+        out << ",\"write_enabled\":" << (cfg_.runtime.write_enabled ? "true" : "false");
+        out << ",\"joint_names\":[";
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
+            if(i) out << ',';
+            machine_json_string(out, cfg_.joint_names[i]);
+        }
+        out << ']';
+        out << ",\"actuator_info\":[";
+        for(std::size_t i = 0; i < actuator_info_.size(); ++i) {
+            if(i) out << ',';
+            const auto& item = actuator_info_[i];
+            out << "{\"name\":";
+            machine_json_string(out, item.actuator_name);
+            out << ",\"min_pos\":" << item.min_pos
+                << ",\"max_pos\":" << item.max_pos
+                << ",\"max_vel\":" << item.max_vel
+                << ",\"max_effort\":" << item.max_effort
+                << ",\"max_kp\":" << item.max_kp
+                << ",\"max_kd\":" << item.max_kd << '}';
+        }
+        out << ']';
+        if(const auto fault = robot_.get_last_fault()) {
+            out << ",\"last_fault\":";
+            machine_json_string(out, to_string(fault->code));
+        }
+        else out << ",\"last_fault\":null";
+
+        if(last_output_) {
+            const auto& output = *last_output_;
+            out << ",\"joint\":{\"pos\":";
+            machine_json_joint_vector(out, output.joint_state.pos);
+            out << ",\"vel\":";
+            machine_json_joint_vector(out, output.joint_state.vel);
+            out << ",\"tor\":";
+            machine_json_joint_vector(out, output.joint_state.tor);
+            out << ",\"ref_pos\":";
+            machine_json_joint_vector(out, output.joint_cmd.pos);
+            out << ",\"ref_vel\":";
+            machine_json_joint_vector(out, output.joint_cmd.vel);
+            out << ",\"model_feedforward\":";
+            machine_json_joint_vector(out, output.model_feedforward);
+            out << ",\"residual_raw\":";
+            machine_json_joint_vector(out, output.residual_raw);
+            out << ",\"tau_ext_hat\":";
+            machine_json_joint_vector(out, output.tau_ext_hat);
+            out << ",\"delta_q\":";
+            machine_json_joint_vector(out, output.delta_q);
+            out << '}';
+            out << ",\"actuator\":{\"pos\":";
+            machine_json_joint_vector(out, output.actuator_state.pos);
+            out << ",\"vel\":";
+            machine_json_joint_vector(out, output.actuator_state.vel);
+            out << ",\"tor\":";
+            machine_json_joint_vector(out, output.actuator_state.tor);
+            out << ",\"online\":";
+            machine_json_vector(out, output.actuator_state.online);
+            out << ",\"enabled\":";
+            machine_json_vector(out, output.actuator_state.enabled);
+            out << ",\"err_code\":";
+            machine_json_vector(out, output.actuator_state.err_code);
+            out << '}';
+        }
+
+        if(dynamics_.is_updated()) {
+            const auto& state = dynamics_.get_state();
+            out << ",\"dynamics\":{\"gravity\":";
+            machine_json_joint_vector(out, state.gravity);
+            out << ",\"gravity_compensation\":";
+            machine_json_joint_vector(out, state.gravity_compensation);
+            out << ",\"coriolis\":";
+            machine_json_joint_vector(out, state.coriolis);
+            out << ",\"inverse_dynamics\":";
+            machine_json_joint_vector(out, state.inverse_dynamics);
+            out << ",\"center_of_mass\":[" << state.center_of_mass.x() << ',' << state.center_of_mass.y() << ',' << state.center_of_mass.z() << ']';
+            out << ",\"mass_matrix\":[";
+            for(Eigen::Index row = 0; row < state.mass_matrix.rows(); ++row) {
+                if(row) out << ',';
+                out << '[';
+                for(Eigen::Index col = 0; col < state.mass_matrix.cols(); ++col) {
+                    if(col) out << ',';
+                    out << state.mass_matrix(row, col);
+                }
+                out << ']';
+            }
+            out << "]}";
+
+            out << ",\"frames\":[";
+            bool first = true;
+            for(const auto& name : dynamics_.get_info().frame_names) {
+                const auto pose = dynamics_.get_frame_pose(name);
+                if(!pose) continue;
+                if(!first) out << ',';
+                first = false;
+                const Eigen::Quaterniond q(pose->linear());
+                out << "{\"name\":";
+                machine_json_string(out, name);
+                out << ",\"position\":[" << pose->translation().x() << ',' << pose->translation().y() << ',' << pose->translation().z() << ']';
+                out << ",\"quaternion\":[" << q.x() << ',' << q.y() << ',' << q.z() << ',' << q.w() << "]}";
+            }
+            out << ']';
+        }
+        out << '}';
+        return out.str();
+    }
+
     void start_worker() {
         worker_running_.store(true);
         worker_ = std::thread([this]() { worker_loop(); });
@@ -775,6 +1234,8 @@ private:
             return;
         }
         last_output_ = cycle_result.value();
+        feedback_time_ns_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now.time_since_epoch()).count());
         ++cycle_counter_;
         cycle_cv_.notify_all();
     }
@@ -2897,6 +3358,8 @@ private:
     std::uint64_t cycle_counter_{ 0 };
     bool background_fault_reported_{ false };
     std::optional<DynamicsErr> last_dynamics_err_;
+    bool machine_mode_{ false };
+    std::uint64_t feedback_time_ns_{ 0 };
 };
 
 } // namespace
@@ -2984,11 +3447,12 @@ int main(int argc, char** argv) {
         options.hardware_config,
         options.hardware_overrides,
         connection_summary.value(),
-        options.robot_profile);
+        options.robot_profile,
+        options.machine_mode);
     const auto init_result = app.initialize();
     if(!init_result) {
         std::cerr << init_result.error() << '\n';
         return EXIT_FAILURE;
     }
-    return app.run();
+    return options.machine_mode ? app.run_machine() : app.run();
 }

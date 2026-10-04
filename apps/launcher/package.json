@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@xterm/xterm": "5.5.0",
-    "@xterm/addon-fit": "0.10.0"
+    "@xterm/addon-fit": "0.10.0",
+    "three": "0.186.1"
   },
   "devDependencies": {
     "electron": "41.10.5"

@@ -331,7 +331,20 @@ if(SERIAL_ARM_BUILD_TERMINAL)
     target_compile_features(serial_arm_terminal PRIVATE cxx_std_17)
     serial_arm_enable_warnings(serial_arm_terminal)
 
-    install(TARGETS serial_arm_terminal
+    add_executable(serial_arm_model_probe
+        app/serial_arm_model_probe.cpp
+    )
+
+    target_link_libraries(serial_arm_model_probe
+        PRIVATE
+            serial_arm_config
+            serial_arm_dynamics
+    )
+
+    target_compile_features(serial_arm_model_probe PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_model_probe)
+
+    install(TARGETS serial_arm_terminal serial_arm_model_probe
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()

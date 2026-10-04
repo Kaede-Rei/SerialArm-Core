@@ -34,16 +34,32 @@ enum class DynamicsErr {
 };
 
 /**
+ * @brief 约简模型中一个受控刚体的有效惯性
+ */
+struct DynamicsInertiaInfo {
+    std::string joint_name;                              ///< 惯性所属受控关节名称
+    double mass{ 0.0 };                                  ///< 约简后有效质量 kg
+    Eigen::Vector3d center_of_mass{ Eigen::Vector3d::Zero() }; ///< 相对关节坐标系的质心 m
+    Eigen::Matrix3d inertia{ Eigen::Matrix3d::Zero() };  ///< 质心处惯量矩阵 kg m^2
+};
+
+/**
  * @brief 动力学模型基本信息
  */
 struct DynamicsInfo {
     std::size_t joints_count{ 0 };              ///< 受控关节数量
     int nq{ 0 };                                ///< Pinocchio 模型位置空间维数
     int nv{ 0 };                                ///< Pinocchio 模型速度空间维数
-    double total_mass{ 0.0 };                   ///< URDF 模型总质量
+    double total_mass{ 0.0 };                   ///< 原始 URDF 模型总质量
+    double reduced_total_mass{ 0.0 };           ///< 约简模型总质量
+    double effective_moving_mass{ 0.0 };        ///< 受控关节有效惯性质量之和
+    std::string base_frame;                     ///< 配置 base_frame
+    std::string tool_frame;                     ///< 配置 tool_frame
     std::vector<std::string> joint_names;       ///< 受控关节名称
+    std::vector<std::string> frame_names;       ///< 约简模型全部 Frame 名称
     std::vector<int> q_indices;                 ///< 受控关节位置索引
     std::vector<int> v_indices;                 ///< 受控关节速度索引
+    std::vector<DynamicsInertiaInfo> effective_inertias; ///< 约简后每个受控关节有效惯性
 };
 
 /**
@@ -64,6 +80,7 @@ struct DynamicsState {
     JointVector forward_dynamics;       ///< 使用反馈力矩计算的正向动力学结果
 
     Eigen::MatrixXd mass_matrix;        ///< 关节空间质量矩阵
+    Eigen::Vector3d center_of_mass{ Eigen::Vector3d::Zero() }; ///< 整体质心相对于 base_frame 的位置
     Eigen::Isometry3d tool_pose{ Eigen::Isometry3d::Identity() };  ///< tool_frame 相对于 base_frame 的位姿
     Eigen::MatrixXd tool_jacobian;      ///< tool_frame 的 LOCAL_WORLD_ALIGNED Jacobian
 };

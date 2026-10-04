@@ -21,5 +21,8 @@ __pycache__/
 # Launcher dependency installs
 node_modules/
 
+# Generated offline Three.js runtime copied by install
+/apps/launcher/renderer/vendor/three/
+
 # Private reading notes and archived documents
 /docs/other/

@@ -54,7 +54,7 @@ class Supervisor:
                     raise FileNotFoundError(str(argv[0]) if argv else 'empty command')
                 master, slave = pty.openpty()
                 child = Path(__file__).with_name('pty_child.py')
-                self.proc = subprocess.Popen([sys.executable, str(child), *argv], env=env, stdin=slave, stdout=slave, stderr=slave,
+                self.proc = subprocess.Popen([sys.executable, '-S', str(child), *argv], env=env, stdin=slave, stdout=slave, stderr=slave,
                                              start_new_session=True, close_fds=True)
                 os.close(slave)
                 slave = None

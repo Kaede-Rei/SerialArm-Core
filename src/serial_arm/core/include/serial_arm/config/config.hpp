@@ -153,6 +153,13 @@ struct ConfigErrInfo {
 tl::expected<RobotCfg, ConfigErrInfo> load_robot_cfg(const std::string& path, const HardwareCapabilities& capabilities);
 
 /**
+ * @brief 只读加载模型与动力学配置，不依赖 HardwareCapabilities
+ * @param path YAML 配置文件路径
+ * @return 成功时返回 DynamicsCfg，失败时返回 ConfigErrInfo
+ */
+tl::expected<DynamicsCfg, ConfigErrInfo> load_dynamics_cfg(const std::string& path);
+
+/**
  * @brief 只读比较两个配置解析后的最终配置差异
  */
 tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const std::string& lhs_path, const std::string& rhs_path);

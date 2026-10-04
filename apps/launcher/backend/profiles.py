@@ -5,11 +5,13 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import math
+import subprocess
 import xml.etree.ElementTree as ET
 import yaml
 
-MODES = ('model', 'terminal', 'hardware', 'moveit')
-ROS_LAUNCH = {'model': 'display.launch.py', 'hardware': 'hardware.launch.py', 'moveit': 'moveit.launch.py'}
+MODES = ('terminal', 'hardware', 'moveit')
+ROS_LAUNCH = {'hardware': 'hardware.launch.py', 'moveit': 'moveit.launch.py'}
 
 
 def text(value):
@@ -50,8 +52,7 @@ def command_for(mode, config):
             if c[key]: args += [flag, c[key]]
     else:
         args = ['ros2', 'launch', 'serial_arm_ros2_control', ROS_LAUNCH[mode], 'robot_profile:=' + c['profile']]
-        keys = ['profile_file', 'resource_paths']
-        if mode != 'model': keys += ['serial_port', 'baudrate', 'bus']
+        keys = ['profile_file', 'resource_paths', 'serial_port', 'baudrate', 'bus']
         args += [key + ':=' + c[key] for key in keys if c[key]]
     return args, env
 
@@ -120,6 +121,183 @@ class Inspector:
                     except (OSError, ET.ParseError): pass
         raise ValueError(f'resource package not found: {package}')
 
+    def machine_terminal(self):
+        candidates = [
+            os.environ.get('SERIAL_ARM_TERMINAL', ''),
+            shutil.which('serial_arm_terminal') or '',
+            str(self.root / '.install/standalone/bin/serial_arm_terminal'),
+            str(self.root / 'install/standalone/bin/serial_arm_terminal'),
+            str(self.root / 'build/serial_arm_core/serial_arm_terminal'),
+        ]
+        for value in candidates:
+            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
+        return ''
+
+    def model_probe(self):
+        candidates = [
+            os.environ.get('SERIAL_ARM_MODEL_PROBE', ''),
+            shutil.which('serial_arm_model_probe') or '',
+            str(self.root / '.install/standalone/bin/serial_arm_model_probe'),
+            str(self.root / 'install/standalone/bin/serial_arm_model_probe'),
+            str(self.root / 'build/serial_arm_core/serial_arm_model_probe'),
+        ]
+        for value in candidates:
+            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
+        return ''
+
+    @staticmethod
+    def _numbers(value, count, default):
+        if not value: return list(default)
+        parts = value.split()
+        if len(parts) != count: raise ValueError(f'expected {count} numeric values, got {value!r}')
+        result = [float(item) for item in parts]
+        if any(not math.isfinite(item) for item in result): raise ValueError('non-finite numeric value')
+        return result
+
+    @staticmethod
+    def _origin(node):
+        origin = node.find('origin') if node is not None else None
+        return {'xyz': Inspector._numbers(origin.get('xyz') if origin is not None else '', 3, (0, 0, 0)),
+                'rpy': Inspector._numbers(origin.get('rpy') if origin is not None else '', 3, (0, 0, 0))}
+
+    def _resolve_mesh(self, value, urdf, roots):
+        value = text(value)
+        if value.startswith('package://'):
+            tail = value[len('package://'):]
+            package, sep, relative = tail.partition('/')
+            if not sep: raise ValueError('invalid package mesh URI: ' + value)
+            return str((self.share(package, roots) / relative).resolve())
+        path = Path(value).expanduser()
+        if not path.is_absolute(): path = Path(urdf).parent / path
+        return str(path.resolve())
+
+    def _geometry(self, geometry, urdf, roots, mesh_files):
+        if geometry is None: raise ValueError('missing geometry')
+        box = geometry.find('box')
+        if box is not None: return {'type': 'box', 'size': self._numbers(box.get('size'), 3, (1, 1, 1))}
+        cylinder = geometry.find('cylinder')
+        if cylinder is not None:
+            return {'type': 'cylinder', 'radius': float(cylinder.get('radius')), 'length': float(cylinder.get('length'))}
+        sphere = geometry.find('sphere')
+        if sphere is not None: return {'type': 'sphere', 'radius': float(sphere.get('radius'))}
+        mesh = geometry.find('mesh')
+        if mesh is not None:
+            path = self._resolve_mesh(mesh.get('filename'), urdf, roots)
+            if not Path(path).is_file(): raise ValueError('mesh file not found: ' + path)
+            mesh_files.add(path)
+            return {'type': 'mesh', 'path': path, 'source': mesh.get('filename'),
+                    'scale': self._numbers(mesh.get('scale') or '', 3, (1, 1, 1))}
+        raise ValueError('unsupported URDF geometry')
+
+    @staticmethod
+    def _inertia_valid(matrix, mass):
+        if not math.isfinite(mass) or mass <= 0: return False, 'mass must be finite and greater than zero'
+        a, b, c = matrix[0]
+        _, d, e = matrix[1]
+        _, _, f = matrix[2]
+        det2 = a * d - b * b
+        det3 = a * (d * f - e * e) - b * (b * f - e * c) + c * (b * e - d * c)
+        if not all(math.isfinite(x) for row in matrix for x in row): return False, 'inertia contains non-finite values'
+        if a <= 0 or det2 <= 0 or det3 <= 0: return False, 'inertia matrix is not positive definite'
+        return True, ''
+
+    def _parse_urdf(self, urdf, roots):
+        root = ET.parse(urdf).getroot()
+        if root.tag != 'robot': raise ValueError('URDF root must be robot')
+        links, joints, mesh_files = [], [], set()
+        for link in root.findall('link'):
+            item = {'name': text(link.get('name')), 'visuals': [], 'collisions': [], 'inertial': None}
+            inertial = link.find('inertial')
+            if inertial is not None:
+                mass_node, inertia_node = inertial.find('mass'), inertial.find('inertia')
+                if mass_node is None or inertia_node is None:
+                    item['inertial'] = {'valid': False, 'reason': 'inertial requires mass and inertia'}
+                else:
+                    mass = float(mass_node.get('value'))
+                    ixx, ixy, ixz = (float(inertia_node.get(k)) for k in ('ixx', 'ixy', 'ixz'))
+                    iyy, iyz, izz = (float(inertia_node.get(k)) for k in ('iyy', 'iyz', 'izz'))
+                    matrix = [[ixx, ixy, ixz], [ixy, iyy, iyz], [ixz, iyz, izz]]
+                    valid, reason = self._inertia_valid(matrix, mass)
+                    item['inertial'] = {'origin': self._origin(inertial), 'mass': mass, 'inertia': matrix,
+                                        'valid': valid, 'reason': reason}
+            for kind in ('visual', 'collision'):
+                target = item[kind + 's']
+                for index, node in enumerate(link.findall(kind)):
+                    try:
+                        entry = {'name': node.get('name') or f'{kind}-{index}', 'origin': self._origin(node),
+                                 'geometry': self._geometry(node.find('geometry'), urdf, roots, mesh_files)}
+                        material = node.find('material')
+                        color = material.find('color') if material is not None else None
+                        if color is not None and color.get('rgba'):
+                            entry['rgba'] = self._numbers(color.get('rgba'), 4, (0.7, 0.7, 0.7, 1))
+                        target.append(entry)
+                    except ValueError as error:
+                        target.append({'name': node.get('name') or f'{kind}-{index}', 'origin': self._origin(node),
+                                       'error': str(error)})
+            links.append(item)
+        for joint in root.findall('joint'):
+            parent, child, axis, limit, mimic = joint.find('parent'), joint.find('child'), joint.find('axis'), joint.find('limit'), joint.find('mimic')
+            entry = {'name': text(joint.get('name')), 'type': text(joint.get('type')), 'origin': self._origin(joint),
+                     'parent': text(parent.get('link')) if parent is not None else '',
+                     'child': text(child.get('link')) if child is not None else '',
+                     'axis': self._numbers(axis.get('xyz') if axis is not None else '', 3, (1, 0, 0))}
+            if limit is not None:
+                entry['limit'] = {key: float(limit.get(key)) for key in ('lower', 'upper', 'effort', 'velocity') if limit.get(key) is not None}
+            if mimic is not None:
+                entry['mimic'] = {'joint': text(mimic.get('joint')), 'multiplier': float(mimic.get('multiplier', '1')),
+                                  'offset': float(mimic.get('offset', '0'))}
+            joints.append(entry)
+        return {'robot_name': root.get('name') or '', 'links': links, 'joints': joints, 'mesh_files': sorted(mesh_files)}
+
+    @staticmethod
+    def validate_positions(positions):
+        if positions is None: return
+        if not isinstance(positions, list) or any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in positions):
+            raise ValueError('positions must be a finite numeric array')
+
+    def model_payload(self, config, native, info=None):
+        c = config_values(config)
+        info = info or self.inspect(c)
+        core = info['resources'].get('core')
+        if not core or not Path(core).is_file(): raise ValueError('Core model configuration is unavailable')
+        if not isinstance(native, dict) or not native.get('ok'): raise ValueError((native or {}).get('error') or 'model probe failed')
+        roots = self.roots(c, info['profile_file'])
+        urdf = native['config']['urdf_path']
+        raw = self._parse_urdf(urdf, roots)
+        controlled = set(native['config']['joint_names'])
+        for joint in raw['joints']:
+            joint['controlled'] = joint['name'] in controlled
+            if joint['controlled']:
+                joint['preview_status'] = 'controlled'
+            elif joint['type'] == 'fixed':
+                joint['preview_status'] = 'fixed'
+            elif joint.get('mimic'):
+                joint['preview_status'] = 'mimic-readonly'
+            else:
+                joint['preview_status'] = 'noncontrolled-locked'
+        description_path = info['resources'].get('description', '')
+        description_mismatch = bool(description_path and Path(description_path).resolve() != Path(urdf).resolve())
+        return {'profile': info['profile'], 'core_config': core, 'urdf': urdf, 'description_urdf': description_path,
+                'description_mismatch': description_mismatch, 'native': native, 'model': raw,
+                'mesh_files': raw['mesh_files'], 'offline': True}
+
+    def model(self, config, positions=None):
+        c = config_values(config)
+        info = self.inspect(c)
+        core = info['resources'].get('core')
+        if not core or not Path(core).is_file(): raise ValueError('Core model configuration is unavailable')
+        probe = self.model_probe()
+        if not probe: raise ValueError('serial_arm_model_probe is not installed')
+        self.validate_positions(positions)
+        argv = [probe, '--config', core]
+        if positions is not None:
+            argv += ['--positions', ','.join(format(float(v), '.17g') for v in positions)]
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=8, check=False)
+        try: native = json.loads(result.stdout.strip())
+        except json.JSONDecodeError: raise ValueError('model probe returned invalid JSON')
+        if result.returncode != 0 or not native.get('ok'): raise ValueError(native.get('error') or result.stderr.strip() or 'model probe failed')
+        return self.model_payload(c, native, info)
+
     def inspect(self, config):
         c = config_values(config)
         listing = self.profiles(c)
@@ -174,7 +352,8 @@ class Inspector:
                 return any((Path(p) / 'share/ament_index/resource_index/packages' / package).is_file() for p in prefixes if p)
         generic_ros = ament_ready('serial_arm_ros2_control') and installed and 'ros2' in components and 'python' in components and bool(shutil.which('ros2'))
         available = {'terminal': installed and 'terminal' in components and bool(shutil.which('serial_arm_terminal')) and okay.get('core', False) and okay.get('hardware', False),
-                     'model': generic_ros and okay.get('description', False) and ament_ready((profile.get('description') or {}).get('package', '')),
+                     'model': okay.get('core', False) and bool(self.model_probe()),
+                     'workbench': okay.get('core', False) and okay.get('hardware', False) and bool(self.machine_terminal()),
                      'hardware': generic_ros and all(okay.get(k, False) for k in ('core', 'hardware', 'ros2_control', 'controllers')) and all(ament_ready((profile.get(k) or {}).get('package', '')) for k in ('description', 'controllers'))}
         moveit_package = (profile.get('moveit') or {}).get('package', '')
         try: moveit_ready = bool(moveit_package and (self.share(moveit_package, roots) / 'package.xml').is_file())

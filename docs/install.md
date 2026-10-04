@@ -15,7 +15,7 @@ Linux / Python 3.10+，ROS2 路径需预先安装 ROS2，GUI 需要 Node.js 20+ 
 | 选项 | 内容与用途 |
 | --- | --- |
 | 1 / `core` | Core + Dynamics，用于 C++ 集成 |
-| 2 / `standalone` | Core + Terminal + GUI，不依赖 ROS2，DM-Arm 支持可选 |
+| 2 / `standalone` | Core + Terminal + Model Probe + GUI，不依赖 ROS2，DM-Arm 支持可选 |
 | 3 / `python` | Core + Python Binding，独立 Python 环境，无 Terminal、ROS2 或 GUI |
 | 4 / `ros2` | Core + Terminal + Python + ROS2 Adapter + DM-Arm + MoveIt + GUI |
 | 5 / `dev` | 包含选项 4，并增加测试依赖与测试执行 |
@@ -81,6 +81,7 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 ```bash
 ./launch.sh
 ./.install/run serial_arm_terminal --robot-profile dm_arm_gray
+./.install/run serial_arm_model_probe --help
 ./.install/run python -c 'import serial_arm; print(serial_arm.__version__)'
 
 # 或在当前终端加载一次环境
@@ -93,7 +94,7 @@ source .install/setup.bash
 
 `.install/manifest.json` 保存最后通过离线检查的安装状态，`.install/last_attempt.json` 保存最近结果
 
-离线检查包括库加载、Terminal help、Python import、ROS package 与资源存在性，不启动机器人
+离线检查包括库加载、Terminal help、Model Probe help、Python import、ROS package 与资源存在性，不启动机器人
 
 失败不会提交新 manifest，但同一安装前缀可能留下部分产物，需要完成重试
 

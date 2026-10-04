@@ -528,6 +528,71 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
 
 tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string& path, const HardwareCapabilities& capabilities);
 
+tl::expected<DynamicsCfg, ConfigErrInfo> load_dynamics_cfg(const std::string& path) {
+    try {
+        const std::filesystem::path config_path = std::filesystem::absolute(path).lexically_normal();
+        const YAML::Node root = YAML::LoadFile(path);
+        if(!root || !root.IsMap()) {
+            return tl::make_unexpected(make_err(ConfigErr::SYNTAX_ERROR, "configuration root must be a YAML map"));
+        }
+
+        DynamicsCfg cfg;
+        if(root["model"]) {
+            const YAML::Node model = require_map(root, "model", "root");
+            cfg.joint_names = require_as<std::vector<std::string>>(model, "joint_names", "model");
+            cfg.urdf_path = resolve_urdf_path(config_path, require_as<std::string>(model, "urdf_path", "model")).string();
+            cfg.base_frame = require_as<std::string>(model, "base_frame", "model");
+            cfg.tool_frame = require_as<std::string>(model, "tool_frame", "model");
+            const JointVector gravity = require_as<JointVector>(model, "gravity", "model");
+            if(gravity.size() != 3) throw ConfigLoadException(ConfigErr::INVALID_SIZE, "model.gravity must have length 3");
+            cfg.gravity = { gravity[0], gravity[1], gravity[2] };
+            const YAML::Node gravity_scale = model["gravity_scale"];
+            if(!gravity_scale) throw ConfigLoadException(ConfigErr::MISSING_FIELD, "model: missing field 'gravity_scale'");
+            cfg.gravity_scale = gravity_scale.IsMap() ?
+                load_named_joint_vector(gravity_scale, cfg.joint_names, "model.gravity_scale") :
+                require_as<JointVector>(model, "gravity_scale", "model");
+        }
+        else {
+            const YAML::Node joints = require_map(root, "joints", "root");
+            const YAML::Node dynamics = require_map(root, "dynamics", "root");
+            cfg.joint_names = require_as<std::vector<std::string>>(joints, "names", "joints");
+            cfg.urdf_path = resolve_urdf_path(config_path, require_as<std::string>(dynamics, "urdf_path", "dynamics")).string();
+            cfg.base_frame = require_as<std::string>(dynamics, "base_frame", "dynamics");
+            cfg.tool_frame = require_as<std::string>(dynamics, "tool_frame", "dynamics");
+            const JointVector gravity = require_as<JointVector>(dynamics, "gravity", "dynamics");
+            if(gravity.size() != 3) throw ConfigLoadException(ConfigErr::INVALID_SIZE, "dynamics.gravity must have length 3");
+            cfg.gravity = { gravity[0], gravity[1], gravity[2] };
+            cfg.gravity_scale = require_as<JointVector>(dynamics, "gravity_scale", "dynamics");
+        }
+
+        if(cfg.joint_names.empty() || cfg.base_frame.empty() || cfg.tool_frame.empty()) {
+            return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, "model configuration is incomplete"));
+        }
+        if(cfg.gravity_scale.size() != cfg.joint_names.size()) {
+            return tl::make_unexpected(make_err(ConfigErr::INVALID_SIZE, "gravity_scale size must match joint_names"));
+        }
+        if(!std::filesystem::is_regular_file(cfg.urdf_path)) {
+            return tl::make_unexpected(make_err(ConfigErr::FILE_OPEN_FAILED, "URDF file not found: " + cfg.urdf_path));
+        }
+        return cfg;
+    }
+    catch(const ConfigLoadException& error) {
+        return tl::make_unexpected(make_err(error.code(), error.what()));
+    }
+    catch(const YAML::BadFile&) {
+        return tl::make_unexpected(make_err(ConfigErr::FILE_OPEN_FAILED, "failed to open configuration file: " + path));
+    }
+    catch(const YAML::ParserException& error) {
+        return tl::make_unexpected(make_err(ConfigErr::SYNTAX_ERROR, yaml_location(error.mark) + error.msg));
+    }
+    catch(const YAML::Exception& error) {
+        return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, yaml_location(error.mark) + error.msg));
+    }
+    catch(const std::exception& error) {
+        return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, error.what()));
+    }
+}
+
 /**
  * @brief 使用 yaml-cpp 加载完整机器人配置
  * @param path YAML 文件路径

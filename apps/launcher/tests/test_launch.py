@@ -22,6 +22,9 @@ class LaunchTests(unittest.TestCase):
             electron.parent.mkdir(parents=True)
             electron.write_text('#!/bin/sh\ntest "$LAUNCH_TEST_SETUP" = ready || exit 8\ntest -x "$SERIAL_ARM_LAUNCHER_PYTHON" || exit 9\nprintf "%s" "$1"\n')
             electron.chmod(0o755)
+            three = root / 'apps/launcher/renderer/vendor/three/build/three.module.js'
+            three.parent.mkdir(parents=True)
+            three.write_text('export {};\n')
             proc = subprocess.run(['bash', str(root / 'launch.sh')], text=True, capture_output=True)
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertEqual(proc.stdout, str(root / 'apps/launcher'))

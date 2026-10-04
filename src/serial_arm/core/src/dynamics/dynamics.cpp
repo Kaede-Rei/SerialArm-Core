@@ -270,6 +270,8 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
         }
     }
 
+    const double original_total_mass = pinocchio::computeTotalMass(full_model);
+
     std::unordered_set<std::string> controlled(cfg.joint_names.begin(), cfg.joint_names.end());
     std::vector<pinocchio::JointIndex> joints_to_lock;
     for(pinocchio::JointIndex joint_id = 1; static_cast<int>(joint_id) < full_model.njoints; ++joint_id) {
@@ -346,6 +348,7 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     impl_->state.inverse_dynamics.assign(joints_count, 0.0);
     impl_->state.forward_dynamics.assign(joints_count, 0.0);
     impl_->state.mass_matrix = Eigen::MatrixXd::Zero(expected_size, expected_size);
+    impl_->state.center_of_mass = Eigen::Vector3d::Zero();
     impl_->state.tool_pose = Eigen::Isometry3d::Identity();
     impl_->state.tool_jacobian = Eigen::MatrixXd::Zero(6, expected_size);
 
@@ -358,10 +361,30 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     impl_->info.joints_count = joints_count;
     impl_->info.nq = impl_->model.nq;
     impl_->info.nv = impl_->model.nv;
-    impl_->info.total_mass = pinocchio::computeTotalMass(impl_->model);
+    impl_->info.total_mass = original_total_mass;
+    impl_->info.reduced_total_mass = pinocchio::computeTotalMass(impl_->model);
+    impl_->info.effective_moving_mass = 0.0;
+    impl_->info.base_frame = cfg.base_frame;
+    impl_->info.tool_frame = cfg.tool_frame;
     impl_->info.joint_names = cfg.joint_names;
     impl_->info.q_indices = impl_->q_indices;
     impl_->info.v_indices = impl_->v_indices;
+    impl_->info.frame_names.clear();
+    impl_->info.frame_names.reserve(impl_->model.frames.size());
+    for(const auto& frame : impl_->model.frames) impl_->info.frame_names.push_back(frame.name);
+    impl_->info.effective_inertias.clear();
+    impl_->info.effective_inertias.reserve(cfg.joint_names.size());
+    for(const auto& name : cfg.joint_names) {
+        const pinocchio::JointIndex joint_id = impl_->model.getJointId(name);
+        const pinocchio::Inertia& inertia = impl_->model.inertias[joint_id];
+        impl_->info.effective_moving_mass += inertia.mass();
+        DynamicsInertiaInfo item;
+        item.joint_name = name;
+        item.mass = inertia.mass();
+        item.center_of_mass = inertia.lever();
+        item.inertia = inertia.inertia();
+        impl_->info.effective_inertias.push_back(std::move(item));
+    }
 
     impl_->is_configured = true;
     impl_->is_updated = false;
@@ -420,6 +443,8 @@ tl::expected<void, DynamicsErr> Dynamics::update_state(const JointState& state, 
         pinocchio::updateFramePlacements(impl_->model, *impl_->data);
 
         const pinocchio::SE3 base_pose_inverse = impl_->data->oMf[impl_->base_frame_id].inverse();
+        const Eigen::Vector3d center_world = pinocchio::centerOfMass(impl_->model, *impl_->data, impl_->q_model, false);
+        impl_->state.center_of_mass = base_pose_inverse.rotation() * center_world + base_pose_inverse.translation();
         for(pinocchio::FrameIndex frame_id = 0; static_cast<int>(frame_id) < impl_->model.nframes; ++frame_id) {
             impl_->frame_poses[frame_id] = to_isometry(base_pose_inverse * impl_->data->oMf[frame_id]);
             impl_->frame_jacobian_model.setZero();
