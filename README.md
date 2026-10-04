@@ -52,7 +52,7 @@ Core → Standalone → ROS2 → Developer 对应逐步增加的集成需求，P
 
 ## 使用
 
-GUI 中选择 Profile、检查配置，再选择 Model、Terminal、Hardware 或 MoveIt
+GUI 中选择 Profile、检查配置，可进入 Model、Control Workspace、Terminal、Hardware 或 MoveIt
 
 命令行入口自动加载对应环境
 
@@ -73,7 +73,7 @@ GUI 中选择 Profile、检查配置，再选择 Model、Terminal、Hardware 或
 
 ## 能力与配置
 
-Core 提供生命周期、关节控制、安全、FK、Jacobian、动力学、五种关节阻抗模式与关节导纳
+Core 提供生命周期、关节控制、安全、FK、Jacobian、动力学、五种关节阻抗模式与关节导纳，桌面工作台复用同一 C++ 会话完成控制、调参、标定与诊断
 
 Robot Profile 将 Core YAML、Hardware Backend、模型、Controllers 和 MoveIt 资源组合为一个机器人实例
 

@@ -26,3 +26,6 @@ node_modules/
 
 # Private reading notes and archived documents
 /docs/other/
+
+# Runtime parameter backups created by the control workspace
+*.bak-*

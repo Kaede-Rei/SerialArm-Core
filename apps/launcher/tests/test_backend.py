@@ -224,3 +224,24 @@ class RuntimeTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class PersistenceTests(unittest.TestCase):
+    def test_narrow_persistence_preserves_unrelated_text_and_detects_conflict(self):
+        import tempfile
+        from persistence import preview, save
+        joints = ['joint1', 'joint2']
+        text = '''# keep me\nmodel:\n  gravity_scale: {joint1: 1.0, joint2: 1.0} # keep comment\ncapability:\n  admittance:\n    observer:\n      mode: FULL_ID\n      momentum_gain: {joint1: 10, joint2: 10}\n    calibration:\n      torque_bias: {joint1: 0, joint2: 0}\n      torque_threshold: {joint1: 0.1, joint2: 0.1}\n      friction:\n        enabled: false\n        velocity_transition: 0.03\n        positive_coulomb: {joint1: 0, joint2: 0}\n        positive_viscous: {joint1: 0, joint2: 0}\n        negative_coulomb: {joint1: 0, joint2: 0}\n        negative_viscous: {joint1: 0, joint2: 0}\n    controller:\n      mass: {joint1: 1, joint2: 1}\n      damping: {joint1: 2, joint2: 2}\n      stiffness: {joint1: 3, joint2: 3}\n      max_delta_q: {joint1: 0.5, joint2: 0.5}\n      max_delta_q_dot: {joint1: 1, joint2: 1}\nunrelated:\n  answer: 42\n'''
+        runtime = {'observer_mode':'MOMENTUM','momentum_gain':[20,21],'mass':[1.1,1.2],'damping':[2.1,2.2],
+                   'stiffness':[3.1,3.2],'max_delta_q':[0.4,0.4],'max_delta_q_dot':[0.9,0.9],
+                   'torque_bias':[0.01,0.02],'torque_threshold':[0.2,0.3],
+                   'friction':{'enabled':True,'velocity_transition':0.03,'positive_coulomb':[1,2],
+                               'positive_viscous':[3,4],'negative_coulomb':[5,6],'negative_viscous':[7,8]}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'core.yaml'; path.write_text(text)
+            diff = preview(path, joints, runtime, [1.01, 0.99])
+            self.assertTrue(diff['changed']); self.assertGreater(len(diff['changes']), 5)
+            result = save(path, diff['sha256'], joints, runtime, [1.01, 0.99])
+            self.assertTrue(result['changed']); self.assertTrue(Path(result['backup']).is_file())
+            updated = path.read_text(); self.assertIn('# keep me', updated); self.assertIn('answer: 42', updated); self.assertIn('# keep comment', updated)
+            path.write_text(updated + '# external\n')
+            with self.assertRaises(ValueError): save(path, result['sha256'], joints, runtime, [1.0, 1.0])

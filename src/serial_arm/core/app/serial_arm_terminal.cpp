@@ -799,6 +799,7 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "park") {
+                        machine_require_no_calibration("park");
                         park_and_deactivate();
                         if(machine_robot_state() != RobotState::INACTIVE) throw std::runtime_error("park did not reach INACTIVE");
                         emit_reply(id, "true");
@@ -818,12 +819,12 @@ public:
                     else if(method == "set_impedance_mode") {
                         if(!params || !params["mode"]) throw std::runtime_error("mode is required");
                         machine_set_impedance_mode(machine_parse_impedance_mode(params["mode"].as<std::string>()));
-                        emit_reply(id, "true");
+                        emit_reply(id, machine_snapshot_json());
                     }
                     else if(method == "set_model_feedforward_mode") {
                         if(!params || !params["mode"]) throw std::runtime_error("mode is required");
                         machine_set_model_feedforward_mode(machine_parse_feedforward_mode(params["mode"].as<std::string>()));
-                        emit_reply(id, "true");
+                        emit_reply(id, machine_snapshot_json());
                     }
                     else if(method == "set_gravity_scale") {
                         machine_set_gravity_scale(machine_node_vector(params["values"], "values"));
@@ -839,11 +840,48 @@ public:
                         machine_move_to(machine_node_vector(params["delta"], "delta"), speed_scale, true);
                         emit_reply(id, "true");
                     }
+                    else if(method == "get_admittance") {
+                        emit_reply(id, machine_admittance_json());
+                    }
+                    else if(method == "set_admittance") {
+                        machine_set_admittance(params);
+                        emit_reply(id, machine_admittance_json());
+                    }
+                    else if(method == "calibration_begin") {
+                        if(!params || !params["kind"]) throw std::runtime_error("calibration kind is required");
+                        machine_calibration_begin(params["kind"].as<std::string>());
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "calibration_capture") {
+                        machine_calibration_capture();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "calibration_finish") {
+                        machine_calibration_finish();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "calibration_cancel") {
+                        machine_calibration_cancel();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "friction_record_begin") {
+                        machine_friction_record_begin();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "friction_record_stop") {
+                        machine_friction_record_stop();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
+                    else if(method == "friction_replay_start") {
+                        machine_friction_replay_start();
+                        emit_reply(id, machine_calibration_status_json());
+                    }
                     else if(method == "hold") {
                         machine_hold();
                         emit_reply(id, "true");
                     }
                     else if(method == "shutdown") {
+                        if(machine_calibration_kind_ != "none") machine_calibration_cancel();
                         park_and_deactivate();
                         if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
                         if(machine_robot_state() != RobotState::INACTIVE) throw std::runtime_error("shutdown could not deactivate Robot");
@@ -860,10 +898,17 @@ public:
             }
         }
         catch(...) {
+            if(machine_friction_thread_.joinable()) {
+                machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
+            }
             stop_telemetry();
             throw;
         }
 
+        if(machine_calibration_kind_ != "none") machine_calibration_cancel();
+        if(machine_friction_thread_.joinable()) {
+            machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
+        }
         stop_telemetry();
         if(machine_robot_state() == RobotState::ACTIVE) park_and_deactivate();
         if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
@@ -952,7 +997,12 @@ private:
         return robot_.get_state();
     }
 
+    void machine_require_no_calibration(const char* action) const {
+        if(machine_calibration_kind_ != "none") throw std::runtime_error(std::string(action) + " is blocked while a calibration task is active");
+    }
+
     void machine_activate() {
+        machine_require_no_calibration("activate");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.activate();
@@ -963,6 +1013,7 @@ private:
     }
 
     void machine_deactivate() {
+        machine_require_no_calibration("deactivate");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.force_deactivate();
@@ -973,6 +1024,7 @@ private:
     }
 
     void machine_clear_fault() {
+        machine_require_no_calibration("clear_fault");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.clear_fault();
@@ -983,6 +1035,7 @@ private:
     }
 
     void machine_fault_compliant() {
+        machine_require_no_calibration("fault_compliant");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.enter_fault_compliant_recovery();
@@ -991,6 +1044,7 @@ private:
     }
 
     void machine_fault_rigid() {
+        machine_require_no_calibration("fault_rigid");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.return_to_fault_rigid_hold();
@@ -999,6 +1053,7 @@ private:
     }
 
     void machine_set_impedance_mode(JointImpedanceMode mode) {
+        machine_require_no_calibration("set_impedance_mode");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.set_impedance_mode(mode);
@@ -1009,6 +1064,7 @@ private:
     }
 
     void machine_set_model_feedforward_mode(ModelFeedforwardMode mode) {
+        machine_require_no_calibration("set_model_feedforward_mode");
         std::lock_guard<std::mutex> lock(mutex_);
         const auto result = robot_.set_model_feedforward_mode(mode);
         if(!result) throw machine_robot_error("set_model_feedforward_mode", result.error());
@@ -1016,6 +1072,7 @@ private:
     }
 
     void machine_set_gravity_scale(const JointVector& values) {
+        machine_require_no_calibration("set_gravity_scale");
         if(values.size() != cfg_.joint_names.size()) throw std::runtime_error("gravity scale size does not match joint count");
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::INACTIVE) throw std::runtime_error("set_gravity_scale requires RobotState::INACTIVE");
@@ -1036,6 +1093,7 @@ private:
     }
 
     void machine_move_to(const JointVector& values, double speed_scale, bool relative) {
+        machine_require_no_calibration("motion");
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("motion requires RobotState::ACTIVE");
         if(!is_tracking_mode(robot_.get_impedance_mode())) throw std::runtime_error("motion requires a tracking impedance mode");
@@ -1050,6 +1108,7 @@ private:
     }
 
     void machine_hold() {
+        machine_require_no_calibration("hold");
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("hold requires RobotState::ACTIVE");
         clear_command_sources();
@@ -1058,6 +1117,298 @@ private:
         last_output_.reset();
         feedback_time_ns_ = 0;
         background_fault_reported_ = false;
+    }
+
+    std::string machine_admittance_json() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto& a = cfg_.capability.admittance;
+        std::ostringstream out;
+        out << std::setprecision(17) << "{\"enabled\":" << (a.enabled ? "true" : "false");
+        out << ",\"observer_mode\":\"" << observer_mode_name(a.observer.mode) << "\"";
+        out << ",\"joint_enabled\":"; machine_json_vector(out, a.joint_enabled);
+        out << ",\"momentum_gain\":"; machine_json_joint_vector(out, a.observer.momentum_gain);
+        out << ",\"mass\":"; machine_json_joint_vector(out, a.controller.mass);
+        out << ",\"damping\":"; machine_json_joint_vector(out, a.controller.damping);
+        out << ",\"stiffness\":"; machine_json_joint_vector(out, a.controller.stiffness);
+        out << ",\"max_delta_q\":"; machine_json_joint_vector(out, a.controller.max_delta_q);
+        out << ",\"max_delta_q_dot\":"; machine_json_joint_vector(out, a.controller.max_delta_q_dot);
+        out << ",\"torque_bias\":"; machine_json_joint_vector(out, a.calibration.torque_bias);
+        out << ",\"torque_threshold\":"; machine_json_joint_vector(out, a.calibration.torque_threshold);
+        out << ",\"friction\":{\"enabled\":" << (a.calibration.friction.enabled ? "true" : "false")
+            << ",\"velocity_transition\":" << a.calibration.friction.velocity_transition;
+        out << ",\"positive_coulomb\":"; machine_json_joint_vector(out, a.calibration.friction.positive_coulomb);
+        out << ",\"positive_viscous\":"; machine_json_joint_vector(out, a.calibration.friction.positive_viscous);
+        out << ",\"negative_coulomb\":"; machine_json_joint_vector(out, a.calibration.friction.negative_coulomb);
+        out << ",\"negative_viscous\":"; machine_json_joint_vector(out, a.calibration.friction.negative_viscous);
+        out << "}}";
+        return out.str();
+    }
+
+    void machine_set_admittance(const YAML::Node& params) {
+        if(!params || !params.IsMap()) throw std::runtime_error("admittance params must be an object");
+        AdmittanceCapabilityCfg candidate;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("set_admittance requires RobotState::ACTIVE");
+            candidate = cfg_.capability.admittance;
+        }
+        auto set_vector = [&](const char* name, JointVector& target) {
+            if(!params[name]) return;
+            JointVector values = machine_node_vector(params[name], name);
+            if(values.size() != cfg_.joint_names.size()) throw std::runtime_error(std::string(name) + " size does not match joint count");
+            for(double value : values) if(!std::isfinite(value) || value <= 0.0) throw std::runtime_error(std::string(name) + " contains invalid value");
+            target = std::move(values);
+        };
+        set_vector("mass", candidate.controller.mass);
+        set_vector("damping", candidate.controller.damping);
+        set_vector("stiffness", candidate.controller.stiffness);
+        set_vector("max_delta_q", candidate.controller.max_delta_q);
+        set_vector("max_delta_q_dot", candidate.controller.max_delta_q_dot);
+        set_vector("momentum_gain", candidate.observer.momentum_gain);
+        if(params["observer_mode"]) {
+            const std::string mode = params["observer_mode"].as<std::string>();
+            if(mode == "FULL_ID") candidate.observer.mode = AdmittanceObserverMode::FULL_ID;
+            else if(mode == "MOMENTUM") candidate.observer.mode = AdmittanceObserverMode::MOMENTUM;
+            else throw std::runtime_error("unknown observer mode");
+        }
+        if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("set_admittance failed");
+    }
+
+    void machine_restore_calibration_runtime(bool restore_gravity) {
+        if(!machine_calibration_context_valid_) return;
+        if(restore_gravity) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto result = dynamics_.set_gravity_scale(machine_calibration_original_gravity_);
+            if(result) cfg_.dynamics.gravity_scale = machine_calibration_original_gravity_;
+        }
+        set_tuning_impedance_mode(machine_calibration_original_mode_);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            robot_.set_admittance_suspended(machine_calibration_original_suspended_);
+            last_output_.reset();
+        }
+    }
+
+    void machine_calibration_begin(const std::string& kind) {
+        if(machine_calibration_kind_ != "none") throw std::runtime_error("another calibration task is active");
+        if(kind != "static" && kind != "validation") throw std::runtime_error("unsupported calibration kind");
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("calibration requires RobotState::ACTIVE");
+            if(!dynamics_.is_updated()) throw std::runtime_error("dynamics is not ready");
+            machine_calibration_original_mode_ = robot_.get_impedance_mode();
+            machine_calibration_original_admittance_ = cfg_.capability.admittance;
+            machine_calibration_original_gravity_ = dynamics_.get_gravity_scale();
+            machine_calibration_original_suspended_ = robot_.is_admittance_suspended();
+            robot_.set_admittance_suspended(true);
+            last_output_.reset();
+        }
+        machine_calibration_context_valid_ = true;
+        machine_calibration_error_.clear();
+        machine_calibration_kind_ = kind;
+        machine_calibration_phase_ = "waiting_user";
+        machine_calibration_expected_ = kind == "static" ? 8 : 5;
+        machine_calibration_poses_.clear();
+        if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) {
+            machine_calibration_kind_ = "none";
+            machine_restore_calibration_runtime(true);
+            throw std::runtime_error("failed to enter COMPLIANT_DRAG");
+        }
+    }
+
+    void machine_calibration_capture() {
+        if(machine_calibration_kind_ != "static" && machine_calibration_kind_ != "validation") throw std::runtime_error("no static calibration task is active");
+        if(machine_calibration_poses_.size() >= machine_calibration_expected_) throw std::runtime_error("all required poses are already captured");
+        machine_calibration_phase_ = "collecting";
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD) || !wait_for_static_tuning_pose(0.30, 5.0, 0.03, 1.5)) {
+            machine_calibration_phase_ = "waiting_user";
+            throw std::runtime_error("pose did not become static within timeout");
+        }
+        auto samples = collect_static_pose_samples(0.0, 1.0);
+        if(!samples) { machine_calibration_phase_ = "waiting_user"; throw std::runtime_error("static sample collection failed"); }
+        machine_calibration_poses_.push_back(std::move(*samples));
+        if(machine_calibration_poses_.size() < machine_calibration_expected_) {
+            if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) throw std::runtime_error("failed to return to COMPLIANT_DRAG");
+            machine_calibration_phase_ = "waiting_user";
+        } else machine_calibration_phase_ = "ready_to_fit";
+    }
+
+    void machine_calibration_finish() {
+        if(machine_calibration_poses_.size() != machine_calibration_expected_) throw std::runtime_error("required poses have not all been captured");
+        machine_calibration_phase_ = "fitting";
+        if(machine_calibration_kind_ == "static") {
+            AdmittanceStaticCalibrationCfg config;
+            config.joints_count = cfg_.joint_names.size();
+            config.fallback_gravity_scale = machine_calibration_original_gravity_;
+            config.gravity_observability_span = 0.25;
+            config.threshold_margin = 1.2;
+            config.threshold_max_margin = 1.05;
+            const auto result = calibrate_admittance_static(machine_calibration_poses_, config);
+            if(!result) { machine_calibration_phase_ = "failed"; machine_restore_calibration_runtime(true); throw std::runtime_error("static calibration fit failed"); }
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                const auto scale = dynamics_.set_gravity_scale(result->gravity_scale);
+                if(!scale) throw std::runtime_error("gravity_scale apply failed");
+                cfg_.dynamics.gravity_scale = result->gravity_scale;
+            }
+            auto candidate = machine_calibration_original_admittance_;
+            candidate.calibration.torque_bias = result->torque_bias;
+            candidate.calibration.torque_threshold = result->torque_threshold;
+            candidate.calibration.friction.enabled = false;
+            if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("calibration parameters apply failed");
+            last_static_calibration_result_ = result.value();
+            machine_restore_calibration_runtime(false);
+            machine_calibration_phase_ = "complete";
+        } else {
+            AdmittanceStaticValidationCfg config;
+            config.joints_count = cfg_.joint_names.size();
+            config.gravity_scale = machine_calibration_original_gravity_;
+            config.torque_bias = machine_calibration_original_admittance_.calibration.torque_bias;
+            config.torque_threshold = machine_calibration_original_admittance_.calibration.torque_threshold;
+            const auto result = evaluate_admittance_static_validation(machine_calibration_poses_, config);
+            if(!result) { machine_calibration_phase_ = "failed"; machine_restore_calibration_runtime(false); throw std::runtime_error("static validation failed"); }
+            last_static_validation_result_ = result.value();
+            machine_restore_calibration_runtime(false);
+            machine_calibration_phase_ = "complete";
+        }
+        machine_calibration_kind_ = "none";
+        machine_calibration_context_valid_ = false;
+    }
+
+    void machine_calibration_cancel() {
+        if(machine_calibration_kind_ == "friction_recording" || machine_calibration_kind_ == "friction_replaying") {
+            machine_friction_stop_.store(true);
+            cycle_cv_.notify_all();
+            if(machine_friction_thread_.joinable()) machine_friction_thread_.join();
+        }
+        if(machine_calibration_context_valid_) machine_restore_calibration_runtime(true);
+        machine_calibration_kind_ = "none";
+        machine_calibration_phase_ = "cancelled";
+        machine_calibration_poses_.clear();
+        machine_friction_trajectory_.reset();
+        machine_calibration_context_valid_ = false;
+    }
+
+    void machine_friction_record_begin() {
+        if(machine_calibration_kind_ != "none") throw std::runtime_error("another calibration task is active");
+        if(machine_friction_thread_.joinable()) machine_friction_thread_.join();
+        machine_calibration_error_.clear();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("friction calibration requires RobotState::ACTIVE");
+            machine_calibration_original_mode_ = robot_.get_impedance_mode();
+            machine_calibration_original_admittance_ = cfg_.capability.admittance;
+            machine_calibration_original_gravity_ = dynamics_.get_gravity_scale();
+            machine_calibration_original_suspended_ = robot_.is_admittance_suspended();
+            robot_.set_admittance_suspended(true);
+            last_output_.reset();
+        }
+        machine_calibration_context_valid_ = true;
+        machine_calibration_kind_ = "friction_recording";
+        machine_calibration_phase_ = "recording";
+        machine_friction_stop_.store(false);
+        machine_friction_trajectory_.reset();
+        if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG)) throw std::runtime_error("failed to enter COMPLIANT_DRAG");
+        machine_friction_thread_ = std::thread([this]() { machine_friction_trajectory_ = collect_friction_drag_trajectory_until_stop(machine_friction_stop_); });
+    }
+
+    void machine_friction_record_stop() {
+        if(machine_calibration_kind_ != "friction_recording") throw std::runtime_error("friction recording is not active");
+        machine_friction_stop_.store(true);
+        cycle_cv_.notify_all();
+        if(machine_friction_thread_.joinable()) machine_friction_thread_.join();
+        if(!machine_friction_trajectory_) { machine_calibration_cancel(); throw std::runtime_error("friction trajectory is too short"); }
+        *machine_friction_trajectory_ = smooth_friction_trajectory(*machine_friction_trajectory_);
+        if(!friction_trajectory_inside_safe_replay_range(*machine_friction_trajectory_)) { machine_calibration_cancel(); throw std::runtime_error("friction trajectory exceeds safe replay range"); }
+        machine_friction_replay_rate_ = friction_replay_rate(*machine_friction_trajectory_);
+        if(!std::isfinite(machine_friction_replay_rate_) || machine_friction_replay_rate_ < 0.01) { machine_calibration_cancel(); throw std::runtime_error("demonstration is too fast for safe replay"); }
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) throw std::runtime_error("failed to enter RIGID_HOLD");
+        machine_calibration_kind_ = "friction_ready";
+        machine_calibration_phase_ = "waiting_replay_confirmation";
+    }
+
+    void machine_friction_replay_start() {
+        if(machine_calibration_kind_ != "friction_ready" || !machine_friction_trajectory_) throw std::runtime_error("friction trajectory is not ready");
+        if(machine_friction_thread_.joinable()) throw std::runtime_error("friction worker is already active");
+        machine_calibration_kind_ = "friction_replaying";
+        machine_calibration_phase_ = "replaying_reverse";
+        machine_friction_stop_.store(false);
+        machine_friction_thread_ = std::thread([this]() { machine_friction_replay_worker(); });
+    }
+
+    void machine_friction_replay_worker() {
+        try {
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING)) throw std::runtime_error("failed to enter RIGID_TRACKING");
+            std::vector<AdmittanceFrictionSample> reverse_samples, forward_samples, full_reverse, full_forward;
+            const bool compare_full = machine_calibration_original_admittance_.observer.mode == AdmittanceObserverMode::MOMENTUM;
+            machine_calibration_phase_ = "replaying_reverse";
+            if(!play_friction_calibration_pass(*machine_friction_trajectory_, true, machine_friction_replay_rate_, machine_calibration_original_admittance_, reverse_samples, compare_full ? &full_reverse : nullptr)) {
+                if(machine_friction_stop_.load()) return;
+                throw std::runtime_error("friction reverse replay failed");
+            }
+            machine_calibration_phase_ = "replaying_forward";
+            if(!play_friction_calibration_pass(*machine_friction_trajectory_, false, machine_friction_replay_rate_, machine_calibration_original_admittance_, forward_samples, compare_full ? &full_forward : nullptr)) {
+                if(machine_friction_stop_.load()) return;
+                throw std::runtime_error("friction forward replay failed");
+            }
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) throw std::runtime_error("failed to return to RIGID_HOLD");
+            machine_calibration_phase_ = "fitting";
+            AdmittanceFrictionCalibrationCfg config;
+            config.joints_count = cfg_.joint_names.size(); config.min_fit_velocity = 0.05; config.max_fit_acceleration = 1.5;
+            config.min_speed_span = 0.03; config.min_samples_per_direction = 30; config.cross_validation_max_rms_ratio = 0.8;
+            const auto result = calibrate_admittance_friction_cross_validated(reverse_samples, forward_samples, config);
+            if(!result) throw std::runtime_error("friction fit failed");
+            last_friction_calibration_result_ = result.value();
+            if(compare_full) { const auto full = calibrate_admittance_friction_cross_validated(full_reverse, full_forward, config); if(full) last_full_id_friction_calibration_result_ = full.value(); }
+            else last_full_id_friction_calibration_result_ = result.value();
+            bool valid = result->observable.size() == cfg_.joint_names.size() && result->validation_pass.size() == cfg_.joint_names.size();
+            for(std::size_t i=0;i<cfg_.joint_names.size()&&valid;++i) valid = result->observable[i] && result->validation_pass[i];
+            if(!valid) throw std::runtime_error("friction cross validation failed");
+            auto candidate = machine_calibration_original_admittance_;
+            candidate.calibration.friction.enabled = true; candidate.calibration.friction.velocity_transition = 0.03;
+            candidate.calibration.friction.positive_coulomb = result->positive_coulomb;
+            candidate.calibration.friction.positive_viscous = result->positive_viscous;
+            candidate.calibration.friction.negative_coulomb = result->negative_coulomb;
+            candidate.calibration.friction.negative_viscous = result->negative_viscous;
+            if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("friction parameters apply failed");
+            machine_restore_calibration_runtime(false);
+            machine_calibration_kind_ = "none"; machine_calibration_phase_ = "complete"; machine_calibration_context_valid_ = false;
+        }
+        catch(const std::exception& error) {
+            if(!machine_friction_stop_.load()) machine_calibration_error_ = error.what();
+            machine_calibration_phase_ = machine_friction_stop_.load() ? "cancelled" : "failed";
+            if(machine_calibration_context_valid_) machine_restore_calibration_runtime(false);
+            machine_calibration_kind_ = "none";
+            machine_calibration_context_valid_ = false;
+        }
+    }
+
+    std::string machine_calibration_status_json() const {
+        std::ostringstream out;
+        out << "{\"kind\":\"" << machine_json_escape(machine_calibration_kind_) << "\",\"phase\":\"" << machine_json_escape(machine_calibration_phase_) << "\"";
+        out << ",\"captured\":" << machine_calibration_poses_.size() << ",\"expected\":" << machine_calibration_expected_;
+        if(!machine_calibration_error_.empty()) out << ",\"error\":\"" << machine_json_escape(machine_calibration_error_) << "\"";
+        if(machine_friction_trajectory_) out << ",\"trajectory_samples\":" << machine_friction_trajectory_->positions.size() << ",\"replay_rate\":" << machine_friction_replay_rate_;
+        if(last_static_calibration_result_) {
+            out << ",\"static\":{\"gravity_scale\":"; machine_json_joint_vector(out,last_static_calibration_result_->gravity_scale);
+            out << ",\"torque_bias\":"; machine_json_joint_vector(out,last_static_calibration_result_->torque_bias);
+            out << ",\"torque_threshold\":"; machine_json_joint_vector(out,last_static_calibration_result_->torque_threshold);
+            out << ",\"observable\":"; machine_json_vector(out,last_static_calibration_result_->gravity_scale_observable); out << '}';
+        }
+        if(last_static_validation_result_) {
+            out << ",\"validation\":{\"residual_rms\":"; machine_json_joint_vector(out,last_static_validation_result_->residual_rms);
+            out << ",\"residual_p99\":"; machine_json_joint_vector(out,last_static_validation_result_->residual_p99);
+            out << ",\"residual_max\":"; machine_json_joint_vector(out,last_static_validation_result_->residual_max);
+            out << ",\"pass\":"; machine_json_vector(out,last_static_validation_result_->pass); out << '}';
+        }
+        if(last_friction_calibration_result_) {
+            out << ",\"friction\":{\"positive_coulomb\":"; machine_json_joint_vector(out,last_friction_calibration_result_->positive_coulomb);
+            out << ",\"positive_viscous\":"; machine_json_joint_vector(out,last_friction_calibration_result_->positive_viscous);
+            out << ",\"negative_coulomb\":"; machine_json_joint_vector(out,last_friction_calibration_result_->negative_coulomb);
+            out << ",\"negative_viscous\":"; machine_json_joint_vector(out,last_friction_calibration_result_->negative_viscous);
+            out << ",\"validation_pass\":"; machine_json_vector(out,last_friction_calibration_result_->validation_pass); out << '}';
+        }
+        out << '}'; return out.str();
     }
 
     std::string machine_snapshot_json() const {
@@ -1082,6 +1433,8 @@ private:
         }
         else out << ",\"feedback_age_ms\":null";
         out << ",\"write_enabled\":" << (cfg_.runtime.write_enabled ? "true" : "false");
+        out << ",\"gravity_scale\":"; machine_json_joint_vector(out, cfg_.dynamics.gravity_scale);
+        out << ",\"calibration\":" << machine_calibration_status_json();
         out << ",\"joint_names\":[";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
             if(i) out << ',';
@@ -2279,6 +2632,7 @@ private:
         JointVector previous_ref = ordered.front();
         double progress = 0.0;
         while(progress < static_cast<double>(ordered.size() - 1)) {
+            if(machine_friction_stop_.load()) return false;
             const double next_progress = std::min(
                 static_cast<double>(ordered.size() - 1), progress + index_step);
             const std::size_t lower = static_cast<std::size_t>(std::floor(next_progress));
@@ -3360,6 +3714,20 @@ private:
     std::optional<DynamicsErr> last_dynamics_err_;
     bool machine_mode_{ false };
     std::uint64_t feedback_time_ns_{ 0 };
+    std::string machine_calibration_kind_{ "none" };
+    std::string machine_calibration_phase_{ "idle" };
+    std::size_t machine_calibration_expected_{ 0 };
+    std::vector<AdmittanceStaticPoseSamples> machine_calibration_poses_;
+    bool machine_calibration_context_valid_{ false };
+    JointImpedanceMode machine_calibration_original_mode_{ JointImpedanceMode::RIGID_HOLD };
+    AdmittanceCapabilityCfg machine_calibration_original_admittance_;
+    JointVector machine_calibration_original_gravity_;
+    bool machine_calibration_original_suspended_{ false };
+    std::atomic<bool> machine_friction_stop_{ false };
+    std::thread machine_friction_thread_;
+    std::optional<FrictionCalibrationTrajectory> machine_friction_trajectory_;
+    double machine_friction_replay_rate_{ 0.0 };
+    std::string machine_calibration_error_;
 };
 
 } // namespace

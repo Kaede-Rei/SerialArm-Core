@@ -38,6 +38,29 @@ Link Frame、Joint Axis、质心、惯性与 Labels 可独立切换，左侧模�
 
 原始 Link 惯性与 Core 约简后的有效惯性分开展示，物理参数无效时对应惯性图形保持禁用
 
+
+## 控制工作台
+
+Control Workspace 使用 `serial_arm_terminal --machine` 的结构化会话，并与 C++ Terminal 共用 `TerminalApp`、控制线程、Robot、Dynamics 与安全规则
+
+工作台包含 Control、Tuning、Calibration 与 Diagnostics 四个任务页，Model 继续作为独立顶层模型工作台
+
+Control 提供生命周期、停放、立即失能、FAULT 恢复、五种关节阻抗模式、模型前馈、绝对与相对关节目标、速度比例与当前位置保持
+
+Tuning 提供导纳 M、D、K、位置与速度限幅、MOMENTUM gain、Observer 模式以及 ωn、Dcrit、ζ 和单位力稳态退让指标
+
+运行时应用参数只影响当前会话，写回 Core YAML 前必须先预览差异并显式确认，保存会检查源文件指纹、建立备份并原子替换目标文件
+
+Calibration 提供静态残差标定、独立静态验证、双向摩擦示教与回放，以及按相同顺序执行的一次性流程
+
+标定任务状态由 C++ 后台维护，示教记录和摩擦回放可取消，冲突控制动作由后台拒绝
+
+Diagnostics 显示 Joint、Actuator、动力学向量、质量矩阵、Frame 位姿、Observer residual 与限长实时曲线
+
+工作台模型只显示真实遥测姿态，反馈过期时停止继续更新模型
+
+会话遥测可导出到 `.install/exports/`，记录 Profile、Core 来源、时间戳、关节位置、速度、力矩与运行时诊断数据
+
 ## 运行
 
 | 模式 | 入口 | 作用 |
@@ -72,9 +95,9 @@ Terminal 使用 PTY，点击终端后输入，运行中不能修改连接参数�
 
 `serial_arm_terminal --machine` 提供 JSON 行协议，和交互式 Terminal 共用同一个 `TerminalApp`、控制线程、Robot、Dynamics 与安全流程
 
-该接口用于后续控制工作台，不通过自动输入菜单数字驱动 Terminal
+该接口由控制工作台直接使用，不通过自动输入菜单数字驱动 Terminal
 
-当前接口覆盖生命周期、FAULT 恢复、阻抗模式、模型前馈、重力比例、绝对与相对关节目标、当前位置保持、状态快照与安全退出
+接口覆盖生命周期、FAULT 恢复、阻抗模式、模型前馈、重力比例、绝对与相对关节目标、当前位置保持、导纳调参、标定任务、状态快照与安全退出
 
 Launcher 的结构化会话与 PTY Terminal 共用设备锁，同一实际设备不能由两种入口同时占用
 

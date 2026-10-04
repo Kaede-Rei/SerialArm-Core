@@ -113,3 +113,89 @@ test('link frames use independent visibility and high-contrast XYZ arrows', () =
   assert.match(model, /0x3b82f6/);
   assert.match(model, /depthTest=false/);
 });
+
+test('control workspace shares native telemetry across control tuning calibration and diagnostics', () => {
+  const app = read('apps/launcher/renderer/app.js');
+  const bridge = read('apps/launcher/backend/bridge.py');
+  const terminal = read('src/serial_arm/core/app/serial_arm_terminal.cpp');
+  assert.match(app, /workbenchTabs/);
+  assert.match(app, /controlTab/);
+  assert.match(app, /tuningTab/);
+  assert.match(app, /calibrationTab/);
+  assert.match(app, /runtimeDiagTab/);
+  assert.match(app, /event\.event==='telemetry'/);
+  assert.match(app, /modelView\.updatePose/);
+  assert.match(bridge, /workbench_start/);
+  assert.match(terminal, /method == "activate"/);
+  assert.match(terminal, /method == "set_impedance_mode"/);
+  assert.match(terminal, /method == "move_relative"/);
+  assert.match(terminal, /method == "get_admittance"/);
+  assert.match(terminal, /method == "set_admittance"/);
+});
+
+test('calibration machine interface reuses existing fit functions and exposes cancellable phases', () => {
+  const terminal = read('src/serial_arm/core/app/serial_arm_terminal.cpp');
+  assert.match(terminal, /method == "calibration_begin"/);
+  assert.match(terminal, /method == "calibration_capture"/);
+  assert.match(terminal, /method == "calibration_finish"/);
+  assert.match(terminal, /method == "calibration_cancel"/);
+  assert.match(terminal, /calibrate_admittance_static\(machine_calibration_poses_/);
+  assert.match(terminal, /evaluate_admittance_static_validation\(machine_calibration_poses_/);
+  assert.match(terminal, /calibrate_admittance_friction_cross_validated/);
+  assert.match(terminal, /machine_friction_stop_\.load\(\)/);
+  assert.match(terminal, /friction_replaying/);
+});
+
+test('runtime application and file persistence stay separate and saving is conflict checked', () => {
+  const app = read('apps/launcher/renderer/app.js');
+  const bridge = read('apps/launcher/backend/bridge.py');
+  const persistence = read('apps/launcher/backend/persistence.py');
+  assert.match(app, /applyTuning/);
+  assert.match(app, /workbench_config_preview/);
+  assert.match(app, /workbench_config_save/);
+  assert.match(bridge, /preview_config/);
+  assert.match(bridge, /save_config/);
+  assert.match(persistence, /configuration changed outside the workspace/);
+  assert.match(persistence, /\.tmp/);
+  assert.match(persistence, /\.bak-/);
+});
+
+
+test('workbench model canvas is clipped to its column and cannot cover controls', () => {
+  const css = read('apps/launcher/renderer/styles.css');
+  const model = read('apps/launcher/renderer/model-view.js');
+  assert.match(css, /\.workbench-layout\{[^}]*isolation:isolate/);
+  assert.match(css, /\.workbench-model\{[^}]*overflow:hidden/);
+  assert.match(css, /#workbench-viewport\{[^}]*overflow:hidden[^}]*contain:paint/);
+  assert.match(css, /#workbench-viewport canvas\{[^}]*width:100%!important[^}]*height:100%!important/);
+  assert.match(css, /\.workbench-task\{[^}]*z-index:3[^}]*background:var\(--card\)/);
+  assert.match(model, /renderer\.domElement\.style/);
+  assert.match(model, /width:'100%'/);
+  assert.match(model, /height:'100%'/);
+});
+
+
+test('workbench backend operations use one blocking glass overlay with live confirmed state', () => {
+  const app = read('apps/launcher/renderer/app.js');
+  const css = read('apps/launcher/renderer/styles.css');
+  const terminal = read('src/serial_arm/core/app/serial_arm_terminal.cpp');
+  assert.match(app, /workbenchPending:\{kind:'',value:''\},blockingBusy:false/);
+  assert.match(app, /id=\"operation-overlay\" class=\"operation-overlay\"/);
+  assert.match(app, /function setOperationOverlay\(message=''\)/);
+  assert.match(app, /async function blockingOperation\(message,fn,minimumMs=320\)/);
+  assert.match(app, /正在切换阻抗模式至/);
+  assert.match(app, /正在使能/);
+  assert.match(app, /正在应用导纳参数/);
+  assert.match(app, /正在采集当前姿态/);
+  assert.match(app, /正在保存配置/);
+  assert.match(app, /classList\.toggle\('active',x\.impedance_mode===mode\)/);
+  assert.match(app, /button\.disabled=!active\|\|pending\.kind==='impedance'/);
+  assert.match(app, /button\.disabled=!inactive\|\|pending\.kind==='feedforward'/);
+  assert.match(app, /Model Feedforward 只能在 INACTIVE 状态修改/);
+  assert.match(css, /\.operation-overlay\{[^}]*backdrop-filter:blur\(9px\)/);
+  assert.match(css, /\.operation-progress\{/);
+  assert.match(css, /\.operation-spinner\{/);
+  assert.match(css, /@keyframes operation-spin/);
+  assert.match(terminal, /machine_set_impedance_mode[\s\S]*emit_reply\(id, machine_snapshot_json\(\)\)/);
+  assert.match(terminal, /machine_set_model_feedforward_mode[\s\S]*emit_reply\(id, machine_snapshot_json\(\)\)/);
+});

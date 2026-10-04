@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+from collections import deque
 
 
 class NativeSession:
@@ -21,6 +22,7 @@ class NativeSession:
         self.mutex = threading.RLock()
         self.reader = None
         self.stderr_reader = None
+        self.telemetry_history = deque(maxlen=20000)
 
     def status(self):
         with self.mutex:
@@ -73,6 +75,9 @@ class NativeSession:
                     self.emit({'event': 'error', 'error': 'Invalid native session message'})
                     continue
                 if message.get('event'):
+                    if message.get('event') == 'telemetry':
+                        with self.mutex:
+                            self.telemetry_history.append(message)
                     self.emit(message)
                     continue
                 request = None
@@ -119,6 +124,11 @@ class NativeSession:
         message = request['message'] or {}
         if message.get('error'): raise ValueError(message['error'])
         return message.get('result')
+
+
+    def telemetry(self):
+        with self.mutex:
+            return list(self.telemetry_history)
 
     def stop(self, force=False):
         with self.mutex:

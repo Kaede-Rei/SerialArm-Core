@@ -11,6 +11,7 @@ from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
+from persistence import export_telemetry, preview as preview_config, save as save_config
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
@@ -69,6 +70,20 @@ def main():
                     result = native.request(native_method, params.get('params', {}), timeout=120 if native_method == 'park' else 8)
                 elif method == 'workbench_stop':
                     result = native.stop(params.get('force') is True)
+                elif method == 'workbench_config_preview':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    runtime = native.request('get_admittance', {}, timeout=8)
+                    snapshot = native.request('status', {}, timeout=8)
+                    result = preview_config(info['resources']['core'], snapshot['joint_names'], runtime, snapshot['gravity_scale'])
+                elif method == 'workbench_config_save':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    runtime = native.request('get_admittance', {}, timeout=8)
+                    snapshot = native.request('status', {}, timeout=8)
+                    result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'])
+                elif method == 'workbench_export':
+                    result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')

@@ -81,6 +81,7 @@ export class SerialArmModelView {
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(0x000000, 0);
+    Object.assign(this.renderer.domElement.style,{display:'block',width:'100%',height:'100%',maxWidth:'100%',maxHeight:'100%'});
     container.replaceChildren(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;

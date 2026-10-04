@@ -71,7 +71,7 @@ async function start() {
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });
   win.once('ready-to-show', () => win.show());
-  const methods = new Set(['status', 'profiles', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'start', 'input', 'resize', 'stop']);
+  const methods = new Set(['status', 'profiles', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'start', 'input', 'resize', 'stop']);
   ipcMain.handle('launcher:request', async (event, method, params = {}) => {
     trusted(event);
     if (method === 'logs') return bridge.output;
