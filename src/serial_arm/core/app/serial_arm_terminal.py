@@ -31,7 +31,7 @@ SerialArm pybind11 Python 交互终端
 4 验证 wheel 是否正确安装
 
     python -c "import serial_arm; print(serial_arm.__file__)"
-    python -c "import serial_arm; print(getattr(serial_arm, '__version__', 'unknown'))"
+    python -c "import serial_arm; print('serial_arm import OK')"
 
 输出路径应位于当前 .venv 的 site-packages 中，而不是仓库源码目录
 
@@ -782,9 +782,6 @@ class Terminal:
             "tool_jacobian": np.asarray(dynamics.tool_jacobian).shape
             == (6, len(self.joint_names)),
         }
-        print(
-            f"serial_arm version     : {getattr(self.serial_arm_module, '__version__', 'unknown')}"
-        )
         print(f"RobotSession configured : {self.session.configured}")
         print(f"Actuator count          : {len(self.session.actuator_info)}")
         for name, passed in checks.items():
@@ -846,9 +843,6 @@ def check_only(
     dynamics.configure(cfg.dynamics)
     zero = np.zeros(len(cfg.joint_names), dtype=np.float64)
     dynamics.update(zero, zero, zero, zero, zero)
-    print(
-        f"serial_arm version   : {getattr(serial_arm_module, '__version__', 'unknown')}"
-    )
     print(f"joint_names          : {list(cfg.joint_names)}")
     print(f"gravity shape        : {np.asarray(dynamics.gravity).shape}")
     print(f"mass_matrix shape    : {np.asarray(dynamics.mass_matrix).shape}")

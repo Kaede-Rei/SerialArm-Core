@@ -5,13 +5,14 @@ import os
 from pathlib import Path
 import signal
 import sys
+import subprocess
 import threading
 
 from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
-from persistence import export_telemetry, preview as preview_config, save as save_config
+from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
@@ -84,6 +85,58 @@ def main():
                     result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'])
                 elif method == 'workbench_export':
                     result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
+                elif method == 'model_calibration_load':
+                    result = load_model_calibration_summary(params.get('directory', ''))
+                elif method == 'model_calibration_preview_save':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    directory = params.get('directory', '')
+                    if not directory and native.status().get('state') == 'running':
+                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
+                    result = preview_gravity_correction(info['resources']['core'], directory)
+                elif method == 'model_calibration_save':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    directory = params.get('directory', '')
+                    if not directory and native.status().get('state') == 'running':
+                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
+                    result = save_gravity_correction(info['resources']['core'], params.get('expected_sha', ''), directory)
+                elif method == 'model_calibration_restore_config':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    result = restore_gravity_correction(info['resources']['core'], params.get('directory', ''))
+                elif method == 'model_calibration_export_urdf':
+                    directory = params.get('directory', '')
+                    if not directory and native.status().get('state') == 'running':
+                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
+                    result = export_candidate_urdf(directory, params.get('destination') or None)
+                    calibrator = inspector.model_calibrator()
+                    if not calibrator: raise ValueError('serial_arm_model_calibrator is not installed; candidate verification cannot run')
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    verification = subprocess.run([calibrator, '--config', info['resources']['core'], '--dataset', str(Path(directory).resolve()), '--verify-urdf', result['candidate_urdf']], text=True, capture_output=True, timeout=60)
+                    if verification.returncode != 0:
+                        raise ValueError((verification.stderr or verification.stdout or 'candidate URDF verification failed').strip())
+                    try:
+                        verified = json.loads(verification.stdout.strip().splitlines()[-1])
+                    except (json.JSONDecodeError, IndexError):
+                        raise ValueError('candidate URDF verification returned invalid JSON')
+                    result['verification'] = update_candidate_urdf_verification(Path(result['candidate_urdf']).parent, verified)
+                elif method == 'model_calibration_recompute':
+                    config = config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    calibrator = inspector.model_calibrator()
+                    if not calibrator: raise ValueError('serial_arm_model_calibrator is not installed')
+                    directory = str(Path(params.get('directory', '')).expanduser().resolve())
+                    if not Path(directory).is_dir(): raise ValueError('model calibration task directory is missing')
+                    output = str(Path(directory) / 'recomputed-candidate.json')
+                    completed = subprocess.run([calibrator, '--config', info['resources']['core'], '--dataset', directory, '--output', output], text=True, capture_output=True, timeout=60)
+                    if completed.returncode not in (0, 3): raise ValueError((completed.stderr or completed.stdout or 'offline recalculation failed').strip())
+                    try:
+                        candidate = json.loads(Path(output).read_text())
+                    except (OSError, json.JSONDecodeError) as error:
+                        raise ValueError(f'offline recalculation produced invalid candidate JSON: {error}')
+                    result = {'path': output, 'static_pass': completed.returncode == 0, 'candidate': candidate, 'output': completed.stdout.strip()}
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')

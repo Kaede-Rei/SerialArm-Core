@@ -177,6 +177,7 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 
 add_library(serial_arm_dynamics
     src/dynamics/dynamics.cpp
+    src/dynamics/gravity_calibration.cpp
 )
 add_library(serial_arm::dynamics ALIAS serial_arm_dynamics)
 set_target_properties(serial_arm_dynamics PROPERTIES EXPORT_NAME dynamics)
@@ -331,6 +332,19 @@ if(SERIAL_ARM_BUILD_TERMINAL)
     target_compile_features(serial_arm_terminal PRIVATE cxx_std_17)
     serial_arm_enable_warnings(serial_arm_terminal)
 
+    add_executable(serial_arm_model_calibrator
+        app/serial_arm_model_calibrator.cpp
+    )
+
+    target_link_libraries(serial_arm_model_calibrator
+        PRIVATE
+            serial_arm_config
+            serial_arm_dynamics
+    )
+
+    target_compile_features(serial_arm_model_calibrator PRIVATE cxx_std_17)
+    serial_arm_enable_warnings(serial_arm_model_calibrator)
+
     add_executable(serial_arm_model_probe
         app/serial_arm_model_probe.cpp
     )
@@ -344,7 +358,7 @@ if(SERIAL_ARM_BUILD_TERMINAL)
     target_compile_features(serial_arm_model_probe PRIVATE cxx_std_17)
     serial_arm_enable_warnings(serial_arm_model_probe)
 
-    install(TARGETS serial_arm_terminal serial_arm_model_probe
+    install(TARGETS serial_arm_terminal serial_arm_model_probe serial_arm_model_calibrator
         RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
     )
 endif()

@@ -133,6 +133,18 @@ class Inspector:
             if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
         return ''
 
+    def model_calibrator(self):
+        candidates = [
+            os.environ.get('SERIAL_ARM_MODEL_CALIBRATOR', ''),
+            shutil.which('serial_arm_model_calibrator') or '',
+            str(self.root / '.install/standalone/bin/serial_arm_model_calibrator'),
+            str(self.root / 'install/standalone/bin/serial_arm_model_calibrator'),
+            str(self.root / 'build/serial_arm_core/serial_arm_model_calibrator'),
+        ]
+        for value in candidates:
+            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
+        return ''
+
     def model_probe(self):
         candidates = [
             os.environ.get('SERIAL_ARM_MODEL_PROBE', ''),

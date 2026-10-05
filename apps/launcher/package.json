@@ -1,6 +1,5 @@
 {
   "name": "serial-arm-launcher",
-  "version": "0.1.0",
   "private": true,
   "description": "SerialArm desktop profile, diagnostics and runtime launcher",
   "main": "desktop/main.cjs",

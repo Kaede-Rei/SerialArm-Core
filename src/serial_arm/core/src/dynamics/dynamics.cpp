@@ -10,9 +10,16 @@
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/parsers/urdf.hpp>
 
+#include <Eigen/Eigenvalues>
+
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <optional>
+#include <regex>
+#include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace serial_arm {
@@ -49,12 +56,123 @@ struct Dynamics::Impl {
     Eigen::MatrixXd frame_jacobian_model;           ///< 完整模型 Frame Jacobian 临时缓存
     std::vector<Eigen::Isometry3d> frame_poses;     ///< 所有 Frame 位姿缓存
     std::vector<Eigen::MatrixXd> frame_jacobians;   ///< 所有 Frame Jacobian 缓存
+    std::vector<GravityLinkParameterInfo> gravity_links; ///< 原始 URDF Link 重力参数
+    std::unordered_map<std::string, std::size_t> gravity_link_index; ///< Link 名称到参数索引
+    std::vector<GravityFirstMoment> gravity_override; ///< 当前候选一阶矩
+    bool gravity_override_active{ false }; ///< 是否启用候选重力覆盖
 
     bool is_configured{ false };    ///< 是否已经完成配置
     bool is_updated{ false };       ///< 是否已经完成至少一次更新
 };
 
 namespace {
+
+
+/**
+ * @brief 读取文本文件
+ */
+std::string read_text_file(const std::string& path) {
+    std::ifstream stream(path);
+    if(!stream) return {};
+    std::ostringstream out;
+    out << stream.rdbuf();
+    return out.str();
+}
+
+/**
+ * @brief 从 XML 标签文本读取属性
+ */
+std::optional<std::string> xml_attribute(const std::string& text, const std::string& name) {
+    const std::regex pattern(name + R"(\s*=\s*[\"']([^\"']*)[\"'])", std::regex::icase);
+    std::smatch match;
+    if(!std::regex_search(text, match, pattern)) return std::nullopt;
+    return match[1].str();
+}
+
+/**
+ * @brief 解析空格分隔的三维向量
+ */
+bool parse_vec3_text(const std::string& text, Eigen::Vector3d& value) {
+    std::istringstream stream(text);
+    double x = 0.0, y = 0.0, z = 0.0;
+    if(!(stream >> x >> y >> z)) return false;
+    std::string extra;
+    if(stream >> extra) return false;
+    if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
+    value = Eigen::Vector3d(x, y, z);
+    return true;
+}
+
+/**
+ * @brief 解析 URDF 原始 Link 惯性参数
+ */
+std::vector<GravityLinkParameterInfo> parse_urdf_gravity_links(const std::string& urdf_path) {
+    std::vector<GravityLinkParameterInfo> links;
+    const std::string xml = read_text_file(urdf_path);
+    if(xml.empty()) return links;
+    const std::regex link_pattern(R"(<link\b([^>]*)>([\s\S]*?)</link\s*>)", std::regex::icase);
+    const std::regex inertial_pattern(R"(<inertial\b[^>]*>([\s\S]*?)</inertial\s*>)", std::regex::icase);
+    const std::regex origin_pattern(R"(<origin\b([^>]*)/?>)", std::regex::icase);
+    const std::regex mass_pattern(R"(<mass\b([^>]*)/?>)", std::regex::icase);
+    const std::regex inertia_pattern(R"(<inertia\b([^>]*)/?>)", std::regex::icase);
+    for(std::sregex_iterator it(xml.begin(), xml.end(), link_pattern), end; it != end; ++it) {
+        const auto name = xml_attribute((*it)[1].str(), "name");
+        if(!name || name->empty()) continue;
+        std::smatch inertial_match;
+        const std::string body = (*it)[2].str();
+        if(!std::regex_search(body, inertial_match, inertial_pattern)) continue;
+        const std::string inertial = inertial_match[1].str();
+        GravityLinkParameterInfo info;
+        info.link_name = *name;
+        Eigen::Vector3d xyz = Eigen::Vector3d::Zero();
+        Eigen::Vector3d rpy = Eigen::Vector3d::Zero();
+        std::smatch match;
+        if(std::regex_search(inertial, match, origin_pattern)) {
+            const auto xyz_text = xml_attribute(match[1].str(), "xyz");
+            const auto rpy_text = xml_attribute(match[1].str(), "rpy");
+            if(xyz_text && !parse_vec3_text(*xyz_text, xyz)) continue;
+            if(rpy_text && !parse_vec3_text(*rpy_text, rpy)) continue;
+        }
+        if(!std::regex_search(inertial, match, mass_pattern)) continue;
+        const auto mass_text = xml_attribute(match[1].str(), "value");
+        if(!mass_text) continue;
+        try { info.mass = std::stod(*mass_text); }
+        catch(...) { continue; }
+        if(!std::isfinite(info.mass) || info.mass <= 0.0) continue;
+        if(!std::regex_search(inertial, match, inertia_pattern)) continue;
+        const std::string inertia_attrs = match[1].str();
+        auto get = [&](const char* key, double& out) {
+            const auto value = xml_attribute(inertia_attrs, key);
+            if(!value) return false;
+            try { out = std::stod(*value); }
+            catch(...) { return false; }
+            return std::isfinite(out);
+        };
+        double ixx=0.0, ixy=0.0, ixz=0.0, iyy=0.0, iyz=0.0, izz=0.0;
+        if(!get("ixx",ixx)||!get("ixy",ixy)||!get("ixz",ixz)||!get("iyy",iyy)||!get("iyz",iyz)||!get("izz",izz)) continue;
+        Eigen::Matrix3d inertia_matrix;
+        inertia_matrix << ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz;
+        const Eigen::AngleAxisd roll(rpy.x(), Eigen::Vector3d::UnitX());
+        const Eigen::AngleAxisd pitch(rpy.y(), Eigen::Vector3d::UnitY());
+        const Eigen::AngleAxisd yaw(rpy.z(), Eigen::Vector3d::UnitZ());
+        const Eigen::Matrix3d rotation = (yaw * pitch * roll).toRotationMatrix();
+        info.center_of_mass = xyz;
+        info.inertia = rotation * inertia_matrix * rotation.transpose();
+        const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(info.inertia);
+        info.inertia_valid = eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() >= -1.0e-10;
+        links.push_back(std::move(info));
+    }
+    return links;
+}
+
+/**
+ * @brief 将完整模型向量按受控关节索引提取为 JointVector
+ */
+JointVector extract_controlled(const Eigen::VectorXd& source, const std::vector<int>& indices) {
+    JointVector result(indices.size(), 0.0);
+    for(std::size_t i = 0; i < indices.size(); ++i) result[i] = source[indices[i]];
+    return result;
+}
 
 /**
  * @brief 检查关节向量是否包含有限值
@@ -342,7 +460,10 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     impl_->state.tor.assign(joints_count, 0.0);
     impl_->state.ref_acc.assign(joints_count, 0.0);
     impl_->state.gravity.assign(joints_count, 0.0);
+    impl_->state.candidate_gravity.assign(joints_count, 0.0);
+    impl_->state.effective_gravity.assign(joints_count, 0.0);
     impl_->state.gravity_compensation.assign(joints_count, 0.0);
+    impl_->state.gravity_override_active = false;
     impl_->state.nonlinear.assign(joints_count, 0.0);
     impl_->state.coriolis.assign(joints_count, 0.0);
     impl_->state.inverse_dynamics.assign(joints_count, 0.0);
@@ -357,6 +478,18 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     for(pinocchio::FrameIndex frame_id = 0; static_cast<int>(frame_id) < impl_->model.nframes; ++frame_id) {
         impl_->frame_jacobians.emplace_back(Eigen::MatrixXd::Zero(6, expected_size));
     }
+
+    impl_->gravity_links.clear();
+    impl_->gravity_link_index.clear();
+    for(auto info : parse_urdf_gravity_links(cfg.urdf_path)) {
+        if(!impl_->model.existFrame(info.link_name)) continue;
+        const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(info.link_name);
+        if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
+        impl_->gravity_link_index.emplace(info.link_name, impl_->gravity_links.size());
+        impl_->gravity_links.push_back(std::move(info));
+    }
+    impl_->gravity_override.clear();
+    impl_->gravity_override_active = false;
 
     impl_->info.joints_count = joints_count;
     impl_->info.nq = impl_->model.nq;
@@ -454,8 +587,30 @@ tl::expected<void, DynamicsErr> Dynamics::update_state(const JointState& state, 
 
         extract_joint_vector(impl_->data->g, impl_->v_indices, impl_->state.gravity);
         extract_joint_vector(impl_->data->nle, impl_->v_indices, impl_->state.nonlinear);
+        impl_->state.candidate_gravity = impl_->state.gravity;
+        if(impl_->gravity_override_active) {
+            for(const auto& candidate : impl_->gravity_override) {
+                const auto index_it = impl_->gravity_link_index.find(candidate.link_name);
+                if(index_it == impl_->gravity_link_index.end()) continue;
+                const auto& original = impl_->gravity_links[index_it->second];
+                const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(candidate.link_name);
+                if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
+                const Eigen::Vector3d delta_h = candidate.value - original.mass * original.center_of_mass;
+                const Eigen::Matrix3d rotation = impl_->data->oMf[frame_id].rotation();
+                const Eigen::Vector3d gravity_world = impl_->model.gravity.linear();
+                const Eigen::Vector3d moment = gravity_world.cross(rotation * delta_h);
+                const Eigen::MatrixXd& jacobian = impl_->frame_jacobians[frame_id];
+                // Pinocchio Motion/Jacobian rows are [linear; angular]
+                for(std::size_t joint = 0; joint < impl_->info.joints_count; ++joint) {
+                    impl_->state.candidate_gravity[joint] += jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint)).dot(moment);
+                }
+            }
+        }
+        impl_->state.gravity_override_active = impl_->gravity_override_active;
         for(std::size_t i = 0; i < impl_->info.joints_count; ++i) {
-            impl_->state.gravity_compensation[i] = impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.effective_gravity[i] = impl_->gravity_override_active ?
+                impl_->state.candidate_gravity[i] : impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.gravity_compensation[i] = impl_->state.effective_gravity[i];
             impl_->state.coriolis[i] = impl_->state.nonlinear[i] - impl_->state.gravity[i];
         }
 
@@ -533,9 +688,10 @@ tl::expected<void, DynamicsErr> Dynamics::set_gravity_scale(const JointVector& g
     }
 
     impl_->cfg.gravity_scale = gravity_scale;
-    if(impl_->is_updated) {
+    if(impl_->is_updated && !impl_->gravity_override_active) {
         for(std::size_t i = 0; i < impl_->info.joints_count; ++i) {
-            impl_->state.gravity_compensation[i] = impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.effective_gravity[i] = impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.gravity_compensation[i] = impl_->state.effective_gravity[i];
         }
     }
     return {};
@@ -619,6 +775,140 @@ const JointVector& Dynamics::get_gravity() const noexcept {
 /**
  * @brief 获取最近一次 update() 的缩放后重力补偿
  */
+tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regression(const JointVector& positions) const {
+    if(!is_configured()) return tl::make_unexpected(DynamicsErr::NOT_CONFIGURED);
+    const auto valid = validate_joint_vector(positions, impl_->info.joints_count);
+    if(!valid) return tl::make_unexpected(valid.error());
+    try {
+        Eigen::VectorXd q_model = Eigen::VectorXd::Zero(impl_->model.nq);
+        assign_joint_vector(positions, impl_->q_indices, q_model);
+        Eigen::VectorXd dq_model = Eigen::VectorXd::Zero(impl_->model.nv);
+        pinocchio::Data data(impl_->model);
+        pinocchio::computeAllTerms(impl_->model, data, q_model, dq_model);
+        pinocchio::updateFramePlacements(impl_->model, data);
+        GravityRegressionResult result;
+        result.original_gravity = extract_controlled(data.g, impl_->v_indices);
+        result.links = impl_->gravity_links;
+        result.first_moment_regressor = Eigen::MatrixXd::Zero(
+            static_cast<Eigen::Index>(impl_->info.joints_count),
+            static_cast<Eigen::Index>(3 * result.links.size()));
+        Eigen::VectorXd reconstructed = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(impl_->info.joints_count));
+        const Eigen::Vector3d gravity_world = impl_->model.gravity.linear();
+        Eigen::MatrixXd jacobian_model = Eigen::MatrixXd::Zero(6, impl_->model.nv);
+        for(std::size_t link_index = 0; link_index < result.links.size(); ++link_index) {
+            const auto& link = result.links[link_index];
+            const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(link.link_name);
+            if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
+            jacobian_model.setZero();
+            pinocchio::getFrameJacobian(impl_->model, data, frame_id, pinocchio::LOCAL_WORLD_ALIGNED, jacobian_model);
+            Eigen::MatrixXd jacobian;
+            extract_frame_jacobian(jacobian_model, impl_->v_indices, jacobian);
+            const Eigen::Matrix3d rotation = data.oMf[frame_id].rotation();
+            const Eigen::Vector3d h = link.mass * link.center_of_mass;
+            const Eigen::Vector3d force = link.mass * gravity_world;
+            for(std::size_t joint = 0; joint < impl_->info.joints_count; ++joint) {
+                // Pinocchio Motion/Jacobian rows are [linear; angular]
+                const Eigen::Vector3d linear = jacobian.block<3,1>(0, static_cast<Eigen::Index>(joint));
+                const Eigen::Vector3d angular = jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint));
+                reconstructed(static_cast<Eigen::Index>(joint)) += -linear.dot(force) + angular.dot(gravity_world.cross(rotation * h));
+                for(int axis = 0; axis < 3; ++axis) {
+                    const Eigen::Vector3d basis = rotation.col(axis);
+                    result.first_moment_regressor(
+                        static_cast<Eigen::Index>(joint),
+                        static_cast<Eigen::Index>(3 * link_index + static_cast<std::size_t>(axis))) =
+                        angular.dot(gravity_world.cross(basis));
+                }
+            }
+        }
+        double error_sq = 0.0;
+        for(std::size_t joint = 0; joint < impl_->info.joints_count; ++joint) {
+            const double error = reconstructed(static_cast<Eigen::Index>(joint)) - result.original_gravity[joint];
+            error_sq += error * error;
+        }
+        result.reconstruction_rms = impl_->info.joints_count ?
+            std::sqrt(error_sq / static_cast<double>(impl_->info.joints_count)) : 0.0;
+        return result;
+    }
+    catch(...) { return tl::make_unexpected(DynamicsErr::COMPUTE_FAILED); }
+}
+
+tl::expected<JointVector, DynamicsErr> Dynamics::compute_gravity_with_first_moments(
+    const JointVector& positions,
+    const std::vector<GravityFirstMoment>& first_moments) const {
+    const auto regression = get_gravity_regression(positions);
+    if(!regression) return tl::make_unexpected(regression.error());
+    Eigen::VectorXd delta = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(3 * regression->links.size()));
+    std::unordered_map<std::string, Eigen::Vector3d> candidates;
+    for(const auto& item : first_moments) {
+        if(!item.value.allFinite()) return tl::make_unexpected(DynamicsErr::NON_FINITE_INPUT);
+        candidates[item.link_name] = item.value;
+    }
+    for(std::size_t i = 0; i < regression->links.size(); ++i) {
+        const auto& link = regression->links[i];
+        const auto it = candidates.find(link.link_name);
+        if(it == candidates.end()) continue;
+        delta.segment<3>(static_cast<Eigen::Index>(3 * i)) = it->second - link.mass * link.center_of_mass;
+    }
+    Eigen::VectorXd gravity = Eigen::Map<const Eigen::VectorXd>(regression->original_gravity.data(), static_cast<Eigen::Index>(regression->original_gravity.size()));
+    gravity += regression->first_moment_regressor * delta;
+    JointVector result(static_cast<std::size_t>(gravity.size()), 0.0);
+    for(Eigen::Index i = 0; i < gravity.size(); ++i) result[static_cast<std::size_t>(i)] = gravity[i];
+    return result;
+}
+
+tl::expected<void, DynamicsErr> Dynamics::set_gravity_first_moment_override(
+    const std::vector<GravityFirstMoment>& first_moments) {
+    if(!is_configured()) return tl::make_unexpected(DynamicsErr::NOT_CONFIGURED);
+    std::unordered_set<std::string> names;
+    for(const auto& item : first_moments) {
+        if(!item.value.allFinite() || impl_->gravity_link_index.find(item.link_name) == impl_->gravity_link_index.end() ||
+            !names.insert(item.link_name).second) return tl::make_unexpected(DynamicsErr::INVALID_CFG);
+    }
+    impl_->gravity_override = first_moments;
+    impl_->gravity_override_active = !first_moments.empty();
+    if(impl_->is_updated) {
+        const auto candidate = compute_gravity_with_first_moments(impl_->state.pos, impl_->gravity_override);
+        if(!candidate) return tl::make_unexpected(candidate.error());
+        impl_->state.candidate_gravity = candidate.value();
+        impl_->state.gravity_override_active = impl_->gravity_override_active;
+        for(std::size_t i = 0; i < impl_->info.joints_count; ++i) {
+            impl_->state.effective_gravity[i] = impl_->gravity_override_active ? impl_->state.candidate_gravity[i] : impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.gravity_compensation[i] = impl_->state.effective_gravity[i];
+        }
+    }
+    return {};
+}
+
+void Dynamics::clear_gravity_first_moment_override() {
+    if(!impl_) return;
+    impl_->gravity_override.clear();
+    impl_->gravity_override_active = false;
+    if(impl_->is_updated) {
+        impl_->state.candidate_gravity = impl_->state.gravity;
+        impl_->state.gravity_override_active = false;
+        for(std::size_t i = 0; i < impl_->info.joints_count; ++i) {
+            impl_->state.effective_gravity[i] = impl_->cfg.gravity_scale[i] * impl_->state.gravity[i];
+            impl_->state.gravity_compensation[i] = impl_->state.effective_gravity[i];
+        }
+    }
+}
+
+bool Dynamics::has_gravity_first_moment_override() const noexcept {
+    return impl_ && impl_->gravity_override_active;
+}
+
+const std::vector<GravityFirstMoment>& Dynamics::get_gravity_first_moment_override() const noexcept {
+    return impl_->gravity_override;
+}
+
+const JointVector& Dynamics::get_effective_gravity() const noexcept {
+    return impl_->state.effective_gravity;
+}
+
+const JointVector& Dynamics::get_candidate_gravity() const noexcept {
+    return impl_->state.candidate_gravity;
+}
+
 const JointVector& Dynamics::get_gravity_compensation() const noexcept {
     return impl_->state.gravity_compensation;
 }

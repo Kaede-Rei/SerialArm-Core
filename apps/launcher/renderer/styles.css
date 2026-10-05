@@ -61,3 +61,40 @@
 .operation-message{font-size:13px;font-weight:650;line-height:1.55;word-break:break-word}
 @keyframes operation-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.operation-spinner{animation-duration:1.8s}}
+
+/* Model calibration workflow */
+.model-calibration-card{display:grid;gap:12px}
+.model-calibration-card .workspace-section-head{margin-bottom:0}
+.model-calibration-options{display:grid;grid-template-columns:repeat(5,minmax(92px,1fr));gap:9px}
+.model-calibration-options label{display:grid;gap:6px;color:var(--muted);font-size:10px}
+.model-calibration-options input{width:100%;min-width:0;height:34px;padding:0 8px;border:1px solid var(--line);border-radius:7px;background:var(--subtle);color:var(--text);font:11px ui-monospace,monospace}
+.model-calibration-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.model-calibration-summary>div{min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--subtle);display:grid;gap:4px}
+.model-calibration-summary span{font-size:9px;color:var(--dim);letter-spacing:.02em}
+.model-calibration-summary b{font:11px ui-monospace,monospace;overflow-wrap:anywhere}
+.result-badges{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.result-badge{display:inline-flex;align-items:center;min-height:25px;padding:4px 8px;border:1px solid var(--line);border-radius:999px;background:var(--subtle);font-size:9px;color:var(--muted)}
+.result-badge.pass{border-color:color-mix(in srgb,var(--green) 38%,var(--line));color:var(--green)}
+.result-badge.fail{border-color:color-mix(in srgb,var(--red) 38%,var(--line));color:var(--red)}
+.result-badge.warn{border-color:color-mix(in srgb,var(--accent) 40%,var(--line));color:var(--accent)}
+.result-badge.neutral{color:var(--dim)}
+.candidate-compare-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-top:1px solid var(--line);padding-top:12px}
+.candidate-compare-head h4{margin:0;font-size:12px}
+.candidate-compare-head span{font-size:9px;color:var(--dim);text-align:right}
+.calibration-metrics{min-width:660px}
+.task-directory{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--subtle);font-size:9px;color:var(--dim)}
+.task-directory code{overflow-wrap:anywhere}
+.single-calibration-tools{border-top:1px solid var(--line);padding-top:10px}
+.single-calibration-tools>summary{cursor:pointer;color:var(--muted);font-size:10px;font-weight:650;margin-bottom:10px}
+.error-callout{border-color:color-mix(in srgb,var(--red) 35%,var(--line));background:color-mix(in srgb,var(--red) 7%,var(--card));color:var(--red)}
+.model-calibration-overlay{position:fixed;inset:0;z-index:130;display:grid;place-items:center;padding:24px;background:rgba(15,23,42,.20);backdrop-filter:blur(10px) saturate(.80);-webkit-backdrop-filter:blur(10px) saturate(.80)}
+.model-calibration-overlay[hidden]{display:none}
+.model-calibration-task-window{width:min(600px,92vw);display:grid;gap:14px;padding:20px;border:1px solid color-mix(in srgb,var(--line) 82%,transparent);border-radius:16px;background:color-mix(in srgb,var(--card) 94%,transparent);box-shadow:0 20px 80px rgba(15,23,42,.28)}
+.task-window-head{display:flex;align-items:center;gap:14px}
+.task-progress-track{height:8px;overflow:hidden;border-radius:999px;background:var(--subtle);border:1px solid var(--line)}
+.task-progress-track>span{display:block;width:0;height:100%;background:var(--accent);transition:width .18s ease}
+.task-live-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
+.task-live-grid span{padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:var(--subtle);font:9px ui-monospace,monospace;color:var(--muted);overflow-wrap:anywhere}
+.task-window-actions{display:flex;gap:8px;flex-wrap:wrap}
+@media(max-width:900px){.model-calibration-options{grid-template-columns:repeat(2,minmax(0,1fr))}.model-calibration-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.task-live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-compare-head{align-items:flex-start;flex-direction:column}.candidate-compare-head span{text-align:left}}
+@media(prefers-reduced-motion:reduce){.task-progress-track>span{transition:none}}

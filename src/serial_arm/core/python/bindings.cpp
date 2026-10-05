@@ -624,7 +624,8 @@ void bind_config(py::module_& module) {
         .def_readwrite("base_frame", &DynamicsCfg::base_frame)
         .def_readwrite("tool_frame", &DynamicsCfg::tool_frame)
         .def_readwrite("gravity", &DynamicsCfg::gravity)
-        .def_readwrite("gravity_scale", &DynamicsCfg::gravity_scale);
+        .def_readwrite("gravity_scale", &DynamicsCfg::gravity_scale)
+        .def_readwrite("gravity_correction_path", &DynamicsCfg::gravity_correction_path);
 
     py::class_<RobotCfg>(module, "RobotCfg")
         .def(py::init<>())
@@ -892,7 +893,6 @@ void bind_robot_session(py::module_& module) {
  */
 PYBIND11_MODULE(_serial_arm, module) {
     module.doc() = "SerialArm C++17 control, dynamics and hardware bindings";
-    module.attr("__version__") = "0.5.2";
 
     py::register_exception<serial_arm::SerialArmPythonError>(module, "SerialArmError");
 

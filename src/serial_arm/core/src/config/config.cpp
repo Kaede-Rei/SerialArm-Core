@@ -500,6 +500,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         }
         cfg.dynamics.gravity = { gravity[0], gravity[1], gravity[2] };
         cfg.dynamics.gravity_scale = require_as<JointVector>(dynamics, "gravity_scale", "dynamics");
+        if(dynamics["gravity_correction_path"]) cfg.dynamics.gravity_correction_path = resolve_urdf_path(config_path, require_as<std::string>(dynamics, "gravity_correction_path", "dynamics")).string();
 
         cfg.ctrller.joints_count = cfg.joint_names.size();
         cfg.mapper.joints_count = cfg.joint_names.size();
@@ -551,6 +552,7 @@ tl::expected<DynamicsCfg, ConfigErrInfo> load_dynamics_cfg(const std::string& pa
             cfg.gravity_scale = gravity_scale.IsMap() ?
                 load_named_joint_vector(gravity_scale, cfg.joint_names, "model.gravity_scale") :
                 require_as<JointVector>(model, "gravity_scale", "model");
+            if(model["gravity_correction_path"]) cfg.gravity_correction_path = resolve_urdf_path(config_path, require_as<std::string>(model, "gravity_correction_path", "model")).string();
         }
         else {
             const YAML::Node joints = require_map(root, "joints", "root");
@@ -563,6 +565,7 @@ tl::expected<DynamicsCfg, ConfigErrInfo> load_dynamics_cfg(const std::string& pa
             if(gravity.size() != 3) throw ConfigLoadException(ConfigErr::INVALID_SIZE, "dynamics.gravity must have length 3");
             cfg.gravity = { gravity[0], gravity[1], gravity[2] };
             cfg.gravity_scale = require_as<JointVector>(dynamics, "gravity_scale", "dynamics");
+            if(dynamics["gravity_correction_path"]) cfg.gravity_correction_path = resolve_urdf_path(config_path, require_as<std::string>(dynamics, "gravity_correction_path", "dynamics")).string();
         }
 
         if(cfg.joint_names.empty() || cfg.base_frame.empty() || cfg.tool_frame.empty()) {
@@ -629,7 +632,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const YAML::Node control_node = require_map(root, "control", "root");
         const YAML::Node safety_node = require_map(root, "safety_policy", "root");
         const YAML::Node shutdown_node = require_map(root, "shutdown", "root");
-        reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale" });
+        reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path" });
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
         reject_unknown_keys(control_node, "control", { "runtime", "controller" });
         reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
@@ -650,6 +653,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.dynamics.gravity_scale = gravity_scale.IsMap() ?
             load_named_joint_vector(gravity_scale, cfg.joint_names, "model.gravity_scale") :
             require_as<JointVector>(model_node, "gravity_scale", "model");
+        if(model_node["gravity_correction_path"]) cfg.dynamics.gravity_correction_path = resolve_urdf_path(config_path, require_as<std::string>(model_node, "gravity_correction_path", "model")).string();
 
         load_admittance_capability_cfg(root, cfg.joint_names, cfg.capability);
 

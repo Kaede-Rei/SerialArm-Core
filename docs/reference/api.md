@@ -619,7 +619,7 @@ auto profile = serial_arm::load_robot_profile_core(
 
 测试代码常使用显式 `profile_file`，正常安装环境更常只依赖 resource path
 
-Python Binding 在 v0.5.2 起完整暴露这两个选项
+Python Binding 当前实现中完整暴露这两个选项
 
 ```python
 from serial_arm import load_robot_profile_core

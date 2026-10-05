@@ -56,7 +56,6 @@ from ._serial_arm import SafetyCfg
 from ._serial_arm import SafetyErr
 from ._serial_arm import SafetyFault
 from ._serial_arm import _RobotSession
-from ._serial_arm import __version__
 from ._serial_arm import load_robot_cfg
 from ._serial_arm import load_robot_profile_core
 from ._serial_arm import validate_robot_cfg
@@ -251,5 +250,4 @@ __all__ = [
     "load_robot_cfg",
     "validate_robot_cfg",
     "validate_robot_core_cfg",
-    "__version__",
 ]

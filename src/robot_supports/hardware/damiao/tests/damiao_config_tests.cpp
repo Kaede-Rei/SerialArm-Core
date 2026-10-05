@@ -58,11 +58,11 @@ TEST(DamiaoConfigTests, NamedCanBusSuppliesPhysicalConnection) {
     EXPECT_EQ(bus.config().baudrate, 1000000);
 }
 
-TEST(DamiaoConfigTests, LegacyInlineConnectionStillConfigures) {
+TEST(DamiaoConfigTests, InlineConnectionStillConfigures) {
     const auto path = write_yaml(
-        "legacy_inline",
+        "inline_connection",
         "damiao:\n"
-        "  bus: legacy_can\n"
+        "  bus: inline_can\n"
         "  serial_port: /dev/ttyACM4\n"
         "  baudrate: 921600\n" +
             common_driver_fields());
@@ -70,7 +70,7 @@ TEST(DamiaoConfigTests, LegacyInlineConnectionStillConfigures) {
     serial_arm::DamiaoMotorBus bus;
     auto configured = bus.configure(path.string());
     ASSERT_TRUE(configured);
-    EXPECT_EQ(bus.config().bus, "legacy_can");
+    EXPECT_EQ(bus.config().bus, "inline_can");
     EXPECT_EQ(bus.config().serial_port, "/dev/ttyACM4");
     EXPECT_EQ(bus.config().baudrate, 921600);
 }

@@ -93,7 +93,7 @@ export class SerialArmModelView {
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x29313a, 2.3));
     const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2,2,3); this.scene.add(key);
     this.grid = new THREE.GridHelper(2.5, 25, 0x6b7280, 0x343841); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
-    this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
+    this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
     this.comGroup = new THREE.Group(); this.root.add(this.comGroup);
     this.layers = {visual:true, collision:false, linkFrames:true, jointAxes:true, com:true, inertia:true, labels:true};
     this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
@@ -255,6 +255,35 @@ export class SerialArmModelView {
     this.updateCenterOfMass(native);
   }
 
+  clearGravityComparison() {
+    for (const group of this.comparisonGroups) {
+      group.parent?.remove(group);
+      group.traverse(node=>{node.geometry?.dispose?.();if(node.material){const list=Array.isArray(node.material)?node.material:[node.material];for(const material of list)material.dispose?.();}node.userData?.texture?.dispose?.();});
+    }
+    this.comparisonGroups=[];
+  }
+
+  setGravityComparison(result) {
+    this.clearGravityComparison();
+    if(!result?.first_moments?.length||!this.payload)return;
+    const links=new Map((this.payload.model?.links||[]).map(link=>[link.name,link]));
+    for(const item of result.first_moments){
+      const link=links.get(item.link_name),holder=this.linkGroups.get(item.link_name);
+      const mass=Number(link?.inertial?.mass||0);
+      if(!holder||!(mass>0)||!Array.isArray(item.value)||item.value.length!==3)continue;
+      const original=(link.inertial?.origin?.xyz||[0,0,0]).map(Number);
+      const candidate=item.value.map(value=>Number(value)/mass);
+      if(candidate.some(value=>!Number.isFinite(value)))continue;
+      const group=new THREE.Group();group.userData.layer='candidate';
+      const originalPoint=new THREE.Mesh(new THREE.SphereGeometry(0.012,18,12),new THREE.MeshBasicMaterial({color:0xff4f87,depthTest:false,depthWrite:false}));originalPoint.position.set(...original);originalPoint.renderOrder=60;group.add(originalPoint);
+      const candidatePoint=new THREE.Mesh(new THREE.SphereGeometry(0.015,18,12),new THREE.MeshBasicMaterial({color:0x22c7e8,depthTest:false,depthWrite:false}));candidatePoint.position.set(...candidate);candidatePoint.renderOrder=61;group.add(candidatePoint);
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...original),new THREE.Vector3(...candidate)]),new THREE.LineBasicMaterial({color:0x22c7e8,transparent:true,opacity:0.95,depthTest:false,depthWrite:false}));line.renderOrder=60;group.add(line);
+      const label=this.makeLabel(`${item.link_name} candidate`,[candidate[0]+0.018,candidate[1]+0.018,candidate[2]+0.018],['candidate']);label.scale.multiplyScalar(0.82);group.add(label);
+      holder.add(group);this.comparisonGroups.push(group);
+    }
+    this.refreshVisibility();
+  }
+
   setLayers(layers) {
     this.layers = {...this.layers, ...layers};
     this.refreshVisibility();
@@ -326,7 +355,7 @@ export class SerialArmModelView {
 
   disposeRoot() {
     this.root.traverse(node=>{if(node.geometry)node.geometry.dispose?.();if(node.material){const list=Array.isArray(node.material)?node.material:[node.material];for(const m of list)m.dispose?.();}node.userData?.texture?.dispose?.();});
-    this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
+    this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
 
   dispose() { this.running=false; this.resizeObserver.disconnect(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }

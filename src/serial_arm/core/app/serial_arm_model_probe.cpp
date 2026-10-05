@@ -1,5 +1,6 @@
 #include "serial_arm/config/config.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
+#include "serial_arm/dynamics/gravity_calibration.hpp"
 
 #include <Eigen/Geometry>
 
@@ -121,6 +122,7 @@ void emit_payload(const serial_arm::DynamicsCfg& cfg,
     std::cout << std::setprecision(17);
     std::cout << "{\"ok\":true,\"schema\":\"serial-arm-model\",\"config\":{";
     std::cout << "\"urdf_path\":"; print_string(std::cout, cfg.urdf_path);
+    std::cout << ",\"urdf_fingerprint\":"; print_string(std::cout, serial_arm::model_calibration_file_fingerprint(cfg.urdf_path));
     std::cout << ",\"base_frame\":"; print_string(std::cout, cfg.base_frame);
     std::cout << ",\"tool_frame\":"; print_string(std::cout, cfg.tool_frame);
     std::cout << ",\"gravity\":[" << cfg.gravity[0] << ',' << cfg.gravity[1] << ',' << cfg.gravity[2] << ']';

@@ -44,6 +44,9 @@ class ExecutionTests(unittest.TestCase):
         model_probe = r.prefix / 'bin/serial_arm_model_probe'
         model_probe.write_text('#!/bin/sh\n[ "$1" = "--help" ]\n')
         model_probe.chmod(0o755)
+        model_calibrator = r.prefix / 'bin/serial_arm_model_calibrator'
+        model_calibrator.write_text('#!/bin/sh\n[ "$1" = "--help" ]\n')
+        model_calibrator.chmod(0o755)
 
     def test_verify_ros_terminal_matches_existing_bin_layout(self):
         r = Runner(self.plan('--preset', 'ros2', '--without-moveit', '--robot', 'none'))
@@ -54,6 +57,8 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(terminal.args[1][0], r.prefix / 'bin/serial_arm_terminal')
             model_probe = [c for c in command.call_args_list if c.args[0] == 'verify-model-probe'][0]
             self.assertEqual(model_probe.args[1][0], r.prefix / 'bin/serial_arm_model_probe')
+            model_calibrator = [c for c in command.call_args_list if c.args[0] == 'verify-model-calibrator'][0]
+            self.assertEqual(model_calibrator.args[1][0], r.prefix / 'bin/serial_arm_model_calibrator')
 
     def test_success_records_only_verified_components_and_sources_spaces(self):
         p = self.plan('--preset', 'core', '--skip-system-deps')

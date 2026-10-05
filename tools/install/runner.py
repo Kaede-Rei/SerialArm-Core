@@ -278,6 +278,10 @@ class Runner:
             if not model_probe.is_file() or not os.access(model_probe, os.X_OK):
                 raise InstallError(f'未找到 Model Probe：{model_probe}')
             self.run('verify-model-probe', [model_probe, '--help'], source=candidate)
+            model_calibrator = self.prefix / 'bin/serial_arm_model_calibrator'
+            if not model_calibrator.is_file() or not os.access(model_calibrator, os.X_OK):
+                raise InstallError(f'未找到 Model Calibrator：{model_calibrator}')
+            self.run('verify-model-calibrator', [model_calibrator, '--help'], source=candidate)
         if self.plan.ros2:
             for package in self.plan.packages:
                 self.run('verify-' + package, ['ros2', 'pkg', 'prefix', package], source=candidate)

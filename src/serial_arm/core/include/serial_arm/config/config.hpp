@@ -108,6 +108,7 @@ struct DynamicsCfg {
     std::string tool_frame{ "tool0" };                  ///< 模型末端工具坐标系名称
     std::array<double, 3> gravity{ 0.0, 0.0, -9.81 };   ///< 重力加速度向量，单位 m/s²
     JointVector gravity_scale;                          ///< 重力补偿缩放系数 [0,2]，1.0 表示 URDF 原模型，顺序与 joint_names 一致
+    std::string gravity_correction_path;                ///< 可选重力校正包路径，为空时仅使用原模型与 gravity_scale
 };
 
 /**

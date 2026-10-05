@@ -4,6 +4,7 @@
 #include "serial_arm/core/joint_actuator_mapper.hpp"
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
+#include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/model/model_loader.hpp"
 #include "serial_arm/robot.hpp"
@@ -13,8 +14,10 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <numeric>
 #include <limits>
 #include <fstream>
+#include <iterator>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -455,6 +458,325 @@ TEST(DynamicsMandatory, PlaceholderInertialFixtureComputesFiniteOutputs) {
     EXPECT_TRUE(dynamics.get_tool_jacobian().allFinite());
 }
 
+
+TEST(GravityCalibration, FirstMomentRegressionReconstructsOriginalGravityAndCandidate) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+    const JointVector q{ 0.2, -0.45, 0.35, 0.1 };
+    const auto regression = dynamics.get_gravity_regression(q);
+    ASSERT_TRUE(regression);
+    EXPECT_EQ(regression->first_moment_regressor.rows(), static_cast<Eigen::Index>(names.size()));
+    EXPECT_EQ(regression->first_moment_regressor.cols(), static_cast<Eigen::Index>(3 * regression->links.size()));
+    EXPECT_LT(regression->reconstruction_rms, 1.0e-8);
+
+    ASSERT_FALSE(regression->links.empty());
+    std::vector<GravityFirstMoment> candidate;
+    bool changed = false;
+    for(const auto& link : regression->links) {
+        GravityFirstMoment item{ link.link_name, link.mass * link.center_of_mass };
+        if(!changed && link.link_name != "base_link") {
+            item.value.x() += link.mass * 0.01;
+            changed = true;
+        }
+        candidate.push_back(item);
+    }
+    ASSERT_TRUE(changed);
+    const auto candidate_gravity = dynamics.compute_gravity_with_first_moments(q, candidate);
+    ASSERT_TRUE(candidate_gravity);
+    ASSERT_EQ(candidate_gravity->size(), names.size());
+    EXPECT_TRUE(std::all_of(candidate_gravity->begin(), candidate_gravity->end(), [](double value) { return std::isfinite(value); }));
+    ASSERT_TRUE(dynamics.set_gravity_first_moment_override(candidate));
+    JointState state = joint_state(names.size());
+    state.pos = q;
+    state.vel.assign(names.size(), 0.0);
+    state.tor.assign(names.size(), 0.0);
+    const JointVector zero(names.size(), 0.0);
+    ASSERT_TRUE(dynamics.update(state, zero, zero));
+    EXPECT_TRUE(dynamics.get_state().gravity_override_active);
+    for(std::size_t i = 0; i < names.size(); ++i) EXPECT_NEAR(dynamics.get_effective_gravity()[i], (*candidate_gravity)[i], 1.0e-10);
+    dynamics.clear_gravity_first_moment_override();
+    EXPECT_FALSE(dynamics.has_gravity_first_moment_override());
+}
+
+TEST(GravityCalibration, CandidateFirstMomentMatchesRebuiltUrdfGravity) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+    const JointVector q{ 0.2, -0.45, 0.35, 0.1 };
+    const auto regression = dynamics.get_gravity_regression(q);
+    ASSERT_TRUE(regression);
+
+    std::vector<GravityFirstMoment> candidate;
+    bool changed = false;
+    for(const auto& link : regression->links) {
+        GravityFirstMoment item{ link.link_name, link.mass * link.center_of_mass };
+        if(link.link_name == "link2") {
+            item.value.x() += link.mass * 0.01;
+            changed = true;
+        }
+        candidate.push_back(item);
+    }
+    ASSERT_TRUE(changed);
+    const auto predicted = dynamics.compute_gravity_with_first_moments(q, candidate);
+    ASSERT_TRUE(predicted);
+
+    std::ifstream fixture(fixture_path("simple_4dof_revolute_arm.urdf"));
+    ASSERT_TRUE(fixture.good());
+    std::string urdf((std::istreambuf_iterator<char>(fixture)), std::istreambuf_iterator<char>());
+    const std::string original = "<link name=\"link2\"><inertial><origin xyz=\"0.05 0 0\"";
+    const std::string modified = "<link name=\"link2\"><inertial><origin xyz=\"0.06 0 0\"";
+    const auto offset = urdf.find(original);
+    ASSERT_NE(offset, std::string::npos);
+    urdf.replace(offset, original.size(), modified);
+
+    const fs::path temp_root = fs::temp_directory_path() / "serial_arm_gravity_candidate_fixture";
+    fs::remove_all(temp_root);
+    const fs::path candidate_urdf = temp_root / "candidate.urdf";
+    write_text(candidate_urdf, urdf);
+
+    DynamicsCfg candidate_cfg = dynamics_cfg(names);
+    candidate_cfg.urdf_path = candidate_urdf.string();
+    Dynamics rebuilt;
+    ASSERT_TRUE(rebuilt.configure(candidate_cfg));
+    JointState state = joint_state(names.size());
+    state.pos = q;
+    const JointVector zero(names.size(), 0.0);
+    ASSERT_TRUE(rebuilt.update(state, zero, zero));
+    const auto& direct = rebuilt.get_gravity();
+    ASSERT_EQ(direct.size(), predicted->size());
+    for(std::size_t joint = 0; joint < direct.size(); ++joint) {
+        EXPECT_NEAR(direct[joint], (*predicted)[joint], 1.0e-8);
+    }
+    fs::remove_all(temp_root);
+}
+
+TEST(GravityCalibration, SyntheticFirstMomentFitImprovesHeldOutGravityPrediction) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    const fs::path temp_root = fs::temp_directory_path() / "serial_arm_gravity_fit_fixture";
+    fs::remove_all(temp_root);
+    std::ifstream fixture(fixture_path("simple_4dof_revolute_arm.urdf"));
+    ASSERT_TRUE(fixture.good());
+    std::string urdf((std::istreambuf_iterator<char>(fixture)), std::istreambuf_iterator<char>());
+    const std::string original_link2 =
+        "<link name=\"link2\"><inertial><origin xyz=\"0.05 0 0\" rpy=\"0 0 0\"/><mass value=\"0.001\"";
+    const std::string synthetic_link2 =
+        "<link name=\"link2\"><inertial><origin xyz=\"0.05 0 0\" rpy=\"0 0 0\"/><mass value=\"1.0\"";
+    const auto mass_offset = urdf.find(original_link2);
+    ASSERT_NE(mass_offset, std::string::npos);
+    urdf.replace(mass_offset, original_link2.size(), synthetic_link2);
+    const fs::path synthetic_urdf = temp_root / "synthetic.urdf";
+    write_text(synthetic_urdf, urdf);
+
+    DynamicsCfg cfg = dynamics_cfg(names);
+    cfg.urdf_path = synthetic_urdf.string();
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(cfg));
+    const auto base = dynamics.get_gravity_regression(JointVector(names.size(), 0.0));
+    ASSERT_TRUE(base);
+    std::vector<GravityFirstMoment> truth;
+    bool changed = false;
+    for(const auto& link : base->links) {
+        GravityFirstMoment item{ link.link_name, link.mass * link.center_of_mass };
+        if(link.link_name == "link2") { item.value.x() += link.mass * 0.012; changed = true; }
+        truth.push_back(item);
+    }
+    ASSERT_TRUE(changed);
+
+    std::vector<GravityCalibrationPoseGroup> groups;
+    for(std::size_t pose = 0; pose < 10; ++pose) {
+        JointVector q{ 0.1 * static_cast<double>(pose % 3), -0.55 + 0.11 * static_cast<double>(pose),
+                       0.45 - 0.08 * static_cast<double>(pose), -0.2 + 0.04 * static_cast<double>(pose) };
+        const auto torque = dynamics.compute_gravity_with_first_moments(q, truth);
+        ASSERT_TRUE(torque);
+        GravityCalibrationPoseGroup group;
+        group.pose_group = pose + 1;
+        group.validation = pose >= 7;
+        for(std::size_t sample = 0; sample < 12; ++sample) {
+            ModelCalibrationFrame frame;
+            frame.position = q;
+            frame.velocity.assign(names.size(), 0.0);
+            frame.acceleration.assign(names.size(), 0.0);
+            frame.reference_position = q;
+            frame.reference_velocity.assign(names.size(), 0.0);
+            frame.torque = *torque;
+            for(std::size_t joint = 0; joint < names.size(); ++joint) frame.torque[joint] += 0.01 * static_cast<double>(joint + 1);
+            frame.valid = true;
+            frame.pose_group = group.pose_group;
+            frame.validation = group.validation;
+            frame.phase = "static_forward";
+            group.samples.push_back(std::move(frame));
+        }
+        groups.push_back(std::move(group));
+    }
+    GravityCalibrationOptions options;
+    options.minimum_training_groups = 5;
+    options.default_max_com_offset_m = 0.05;
+    options.absolute_rms_target_nm = 1.0e-3;
+    options.minimum_rms_improvement_nm = 0.0;
+    options.maximum_joint_degradation_nm = 1.0e-3;
+    const JointVector scale(names.size(), 1.0);
+    const auto result = fit_gravity_calibration(dynamics, groups, scale, options);
+    ASSERT_TRUE(result) << result.error();
+    EXPECT_GT(result->numerical_rank, 0u);
+    EXPECT_TRUE(result->static_pass);
+    ASSERT_EQ(result->validation_original.rms.size(), names.size());
+    ASSERT_EQ(result->validation_candidate.rms.size(), names.size());
+    const double original = std::accumulate(result->validation_original.rms.begin(), result->validation_original.rms.end(), 0.0);
+    const double candidate = std::accumulate(result->validation_candidate.rms.begin(), result->validation_candidate.rms.end(), 0.0);
+    EXPECT_LT(candidate, 0.5 * original);
+    fs::remove_all(temp_root);
+}
+
+TEST(GravityCalibrationRecorder, ReportsBoundedBufferDropAndReloadsWrittenFrames) {
+    const fs::path directory = fs::path(SERIAL_ARM_TEST_TMP_DIR) / "gravity_recorder_contract";
+    fs::remove_all(directory);
+    ModelCalibrationMetadata metadata;
+    metadata.task_id = "contract";
+    metadata.joint_names = { "joint1" };
+    metadata.original_gravity_scale = { 1.0 };
+    metadata.mapping_pos_ratio = { 1.0 };
+    metadata.mapping_tor_ratio = { 1.0 };
+    metadata.mapping_direction = { 1 };
+    metadata.mapping_joint_zero_offset = { 0.0 };
+    metadata.mapping_actuator_zero_offset = { 0.0 };
+    metadata.pose_budget = 11;
+    metadata.validation_fraction = 0.25;
+    metadata.max_com_offset_m = 0.04;
+    metadata.regularization = 0.02;
+    metadata.svd_relative_threshold = 2.0e-4;
+    metadata.minimum_information_score = 3.0e-4;
+    metadata.max_task_duration_s = 420.0;
+    ModelCalibrationRecorder recorder(2);
+    ASSERT_TRUE(recorder.start(directory, metadata));
+    {
+        std::ifstream metadata_file(directory / "metadata.json");
+        ASSERT_TRUE(metadata_file.good());
+        const std::string contents((std::istreambuf_iterator<char>(metadata_file)), std::istreambuf_iterator<char>());
+        EXPECT_NE(contents.find("\"locked_joint_reference\":\"pinocchio_neutral\""), std::string::npos);
+        EXPECT_NE(contents.find("\"pose_budget\":11"), std::string::npos);
+        EXPECT_NE(contents.find("\"validation_fraction\":0.25"), std::string::npos);
+        EXPECT_NE(contents.find("\"max_task_duration_s\":420"), std::string::npos);
+    }
+    for(std::size_t i = 0; i < 8; ++i) {
+        ModelCalibrationFrame frame;
+        frame.monotonic_ns = i;
+        frame.cycle = i;
+        frame.position = { 0.1 };
+        frame.velocity = { 0.0 };
+        frame.torque = { 0.2 };
+        frame.acceleration = { 0.0 };
+        frame.reference_position = { 0.1 };
+        frame.reference_velocity = { 0.0 };
+        frame.phase = "static_forward";
+        frame.pose_group = 1;
+        frame.valid = true;
+        recorder.push(std::move(frame));
+    }
+    recorder.stop();
+    const auto status = recorder.status();
+    EXPECT_EQ(status.accepted_frames, 8u);
+    EXPECT_GE(status.written_frames + status.dropped_frames, 1u);
+    EXPECT_EQ(status.written_frames + status.dropped_frames, status.accepted_frames);
+    const auto loaded = load_model_calibration_frames(directory, 1);
+    ASSERT_TRUE(loaded);
+    EXPECT_EQ(loaded->size(), status.written_frames);
+}
+
+TEST(GravityCalibration, RepeatedPoseKeepsUnobservableFirstMomentsAtPrior) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+    const JointVector q{ 0.2, -0.35, 0.25, -0.1 };
+    const auto regression = dynamics.get_gravity_regression(q);
+    ASSERT_TRUE(regression);
+
+    std::vector<GravityCalibrationPoseGroup> groups;
+    for(std::size_t pose = 0; pose < 7; ++pose) {
+        GravityCalibrationPoseGroup group;
+        group.pose_group = pose + 1;
+        group.validation = pose >= 5;
+        for(std::size_t sample = 0; sample < 8; ++sample) {
+            ModelCalibrationFrame frame;
+            frame.position = q;
+            frame.velocity.assign(names.size(), 0.0);
+            frame.acceleration.assign(names.size(), 0.0);
+            frame.reference_position = q;
+            frame.reference_velocity.assign(names.size(), 0.0);
+            frame.torque = regression->original_gravity;
+            for(std::size_t joint = 0; joint < names.size(); ++joint) {
+                frame.torque[joint] += 0.02 * static_cast<double>(joint + 1);
+            }
+            frame.valid = true;
+            frame.pose_group = group.pose_group;
+            frame.validation = group.validation;
+            frame.phase = "static_forward";
+            group.samples.push_back(std::move(frame));
+        }
+        groups.push_back(std::move(group));
+    }
+
+    GravityCalibrationOptions options;
+    options.minimum_training_groups = 5;
+    options.minimum_rms_improvement_nm = 0.0;
+    options.maximum_joint_degradation_nm = 1.0;
+    const JointVector scale(names.size(), 1.0);
+    const auto result = fit_gravity_calibration(dynamics, groups, scale, options);
+    ASSERT_TRUE(result) << result.error();
+    EXPECT_EQ(result->numerical_rank, 0u);
+    EXPECT_FALSE(result->static_pass);
+    EXPECT_EQ(result->failure_reason, "gravity_parameters_unobservable");
+    ASSERT_EQ(result->first_moments.size(), regression->links.size());
+    for(std::size_t link = 0; link < regression->links.size(); ++link) {
+        const Eigen::Vector3d prior = regression->links[link].mass * regression->links[link].center_of_mass;
+        EXPECT_TRUE(result->first_moments[link].value.isApprox(prior, 1.0e-12));
+    }
+}
+
+TEST(GravityCalibration, RuntimeGravityOverrideDoesNotReplaceMassMatrix) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    DynamicsCfg cfg = dynamics_cfg(names);
+    cfg.gravity_scale = { 0.4, 0.5, 0.6, 0.7 };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(cfg));
+
+    JointState state = joint_state(names.size());
+    state.pos = { 0.25, -0.4, 0.3, -0.15 };
+    state.vel = { 0.02, -0.01, 0.015, -0.005 };
+    state.tor.assign(names.size(), 0.0);
+    const JointVector zero(names.size(), 0.0);
+    ASSERT_TRUE(dynamics.update(state, zero, zero));
+    const Eigen::MatrixXd original_mass = dynamics.get_mass_matrix();
+    const JointVector scaled_gravity = dynamics.get_effective_gravity();
+
+    const auto regression = dynamics.get_gravity_regression(state.pos);
+    ASSERT_TRUE(regression);
+    std::vector<GravityFirstMoment> candidate;
+    bool changed = false;
+    for(const auto& link : regression->links) {
+        GravityFirstMoment item{ link.link_name, link.mass * link.center_of_mass };
+        if(!changed && link.mass > 0.0) {
+            item.value.y() += link.mass * 0.01;
+            changed = true;
+        }
+        candidate.push_back(item);
+    }
+    ASSERT_TRUE(changed);
+    const auto candidate_gravity = dynamics.compute_gravity_with_first_moments(state.pos, candidate);
+    ASSERT_TRUE(candidate_gravity);
+    ASSERT_TRUE(dynamics.set_gravity_first_moment_override(candidate));
+    ASSERT_TRUE(dynamics.update(state, zero, zero));
+
+    EXPECT_TRUE(dynamics.get_mass_matrix().isApprox(original_mass, 1.0e-12));
+    EXPECT_TRUE(dynamics.get_state().gravity_override_active);
+    EXPECT_FALSE(std::equal(scaled_gravity.begin(), scaled_gravity.end(), dynamics.get_effective_gravity().begin(),
+        [](double left, double right) { return std::abs(left - right) < 1.0e-12; }));
+    for(std::size_t joint = 0; joint < names.size(); ++joint) {
+        EXPECT_NEAR(dynamics.get_effective_gravity()[joint], (*candidate_gravity)[joint], 1.0e-10);
+        EXPECT_NEAR(dynamics.get_gravity_compensation()[joint], (*candidate_gravity)[joint], 1.0e-10);
+    }
+}
+
 TEST(DynamicsMandatory, FullInverseDynamicsUsesCalibratedGravityScale) {
     const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
     DynamicsCfg cfg = dynamics_cfg(names);
@@ -476,7 +798,7 @@ TEST(DynamicsMandatory, FullInverseDynamicsUsesCalibratedGravityScale) {
     }
 }
 
-TEST(DynamicsTwoStage, LegacyUpdateMatchesStateThenReferenceUpdate) {
+TEST(DynamicsTwoStage, SingleCallUpdateMatchesStateThenReferenceUpdate) {
     const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
     JointState state = joint_state(names.size());
     state.pos = { 0.1, -0.2, 0.3, -0.4 };
@@ -485,16 +807,16 @@ TEST(DynamicsTwoStage, LegacyUpdateMatchesStateThenReferenceUpdate) {
     const JointVector acc{ 0.02, -0.01, 0.03, -0.02 };
     const JointVector ref_acc{ 0.04, -0.03, 0.02, -0.01 };
 
-    Dynamics legacy;
-    ASSERT_TRUE(legacy.configure(dynamics_cfg(names)));
-    ASSERT_TRUE(legacy.update(state, acc, ref_acc));
+    Dynamics single_call;
+    ASSERT_TRUE(single_call.configure(dynamics_cfg(names)));
+    ASSERT_TRUE(single_call.update(state, acc, ref_acc));
 
     Dynamics staged;
     ASSERT_TRUE(staged.configure(dynamics_cfg(names)));
     ASSERT_TRUE(staged.update_state(state, acc));
     ASSERT_TRUE(staged.update_reference(ref_acc));
 
-    const DynamicsState& legacy_state = legacy.get_state();
+    const DynamicsState& single_call_state = single_call.get_state();
     const DynamicsState& staged_state = staged.get_state();
     EXPECT_EQ(staged_state.pos, state.pos);
     EXPECT_EQ(staged_state.vel, state.vel);
@@ -503,15 +825,15 @@ TEST(DynamicsTwoStage, LegacyUpdateMatchesStateThenReferenceUpdate) {
     EXPECT_EQ(staged_state.ref_acc, ref_acc);
     EXPECT_EQ(staged_state.gravity.size(), names.size());
     EXPECT_EQ(staged_state.inverse_dynamics.size(), names.size());
-    EXPECT_TRUE(staged_state.mass_matrix.isApprox(legacy_state.mass_matrix, 1e-12));
-    EXPECT_TRUE(staged_state.tool_jacobian.isApprox(legacy_state.tool_jacobian, 1e-12));
+    EXPECT_TRUE(staged_state.mass_matrix.isApprox(single_call_state.mass_matrix, 1e-12));
+    EXPECT_TRUE(staged_state.tool_jacobian.isApprox(single_call_state.tool_jacobian, 1e-12));
     for(std::size_t i = 0; i < names.size(); ++i) {
-        EXPECT_NEAR(staged_state.gravity[i], legacy_state.gravity[i], 1e-12);
-        EXPECT_NEAR(staged_state.gravity_compensation[i], legacy_state.gravity_compensation[i], 1e-12);
-        EXPECT_NEAR(staged_state.nonlinear[i], legacy_state.nonlinear[i], 1e-12);
-        EXPECT_NEAR(staged_state.coriolis[i], legacy_state.coriolis[i], 1e-12);
-        EXPECT_NEAR(staged_state.forward_dynamics[i], legacy_state.forward_dynamics[i], 1e-12);
-        EXPECT_NEAR(staged_state.inverse_dynamics[i], legacy_state.inverse_dynamics[i], 1e-12);
+        EXPECT_NEAR(staged_state.gravity[i], single_call_state.gravity[i], 1e-12);
+        EXPECT_NEAR(staged_state.gravity_compensation[i], single_call_state.gravity_compensation[i], 1e-12);
+        EXPECT_NEAR(staged_state.nonlinear[i], single_call_state.nonlinear[i], 1e-12);
+        EXPECT_NEAR(staged_state.coriolis[i], single_call_state.coriolis[i], 1e-12);
+        EXPECT_NEAR(staged_state.forward_dynamics[i], single_call_state.forward_dynamics[i], 1e-12);
+        EXPECT_NEAR(staged_state.inverse_dynamics[i], single_call_state.inverse_dynamics[i], 1e-12);
     }
 }
 

@@ -44,6 +44,35 @@ struct DynamicsInertiaInfo {
 };
 
 /**
+ * @brief 原始 URDF Link 的重力校正参数
+ */
+struct GravityLinkParameterInfo {
+    std::string link_name;                                  ///< 原始 URDF Link 名称
+    double mass{ 0.0 };                                      ///< 原始质量 kg
+    Eigen::Vector3d center_of_mass{ Eigen::Vector3d::Zero() }; ///< 原始质心，位于 Link 坐标系 m
+    Eigen::Matrix3d inertia{ Eigen::Matrix3d::Zero() };      ///< 原始质心处惯量，位于 Link 坐标系 kg m^2
+    bool inertia_valid{ false };                             ///< 原始惯性是否满足基本物理检查
+};
+
+/**
+ * @brief 一个 Link 的候选质量一阶矩
+ */
+struct GravityFirstMoment {
+    std::string link_name;                                  ///< 原始 URDF Link 名称
+    Eigen::Vector3d value{ Eigen::Vector3d::Zero() };        ///< h=m*c，位于 Link 坐标系 kg m
+};
+
+/**
+ * @brief 固定质量条件下的重力一阶矩线性回归
+ */
+struct GravityRegressionResult {
+    JointVector original_gravity;                           ///< 原始 URDF 重力广义力 Nm
+    Eigen::MatrixXd first_moment_regressor;                 ///< N×(3L) 一阶矩回归矩阵
+    std::vector<GravityLinkParameterInfo> links;            ///< 列分组对应的原始 Link
+    double reconstruction_rms{ 0.0 };                       ///< 由原始 Link 参数重建原重力的 RMS Nm
+};
+
+/**
  * @brief 动力学模型基本信息
  */
 struct DynamicsInfo {
@@ -72,8 +101,11 @@ struct DynamicsState {
     JointVector tor;                    ///< 当前关节反馈力矩
     JointVector ref_acc;                ///< 当前关节参考加速度
 
-    JointVector gravity;                ///< 未缩放重力广义力
-    JointVector gravity_compensation;   ///< 缩放后的重力补偿
+    JointVector gravity;                ///< 原始 URDF 未缩放重力广义力
+    JointVector candidate_gravity;      ///< 当前候选一阶矩对应的重力广义力，未启用候选时与 gravity 相同
+    JointVector effective_gravity;      ///< 控制与 Observer 当前实际使用的重力广义力
+    JointVector gravity_compensation;   ///< 兼容字段，始终与 effective_gravity 一致
+    bool gravity_override_active{ false }; ///< 是否启用候选重力覆盖
     JointVector nonlinear;              ///< 非线性广义力
     JointVector coriolis;               ///< 科氏力和离心力广义力
     JointVector inverse_dynamics;       ///< 使用 ref_acc 计算且应用 gravity_scale 校准后的逆动力学结果
@@ -201,6 +233,49 @@ public:
      * @return 重力补偿缓存的只读引用
      */
     const JointVector& get_gravity_compensation() const noexcept;
+
+    /**
+     * @brief 计算固定质量条件下原始 Link 一阶矩对重力广义力的线性回归
+     * @param positions 受控关节位置
+     * @return 原始重力、回归矩阵与原始 Link 参数
+     */
+    tl::expected<GravityRegressionResult, DynamicsErr> get_gravity_regression(const JointVector& positions) const;
+    /**
+     * @brief 用候选一阶矩计算重力广义力，不修改当前运行模型
+     * @param positions 受控关节位置
+     * @param first_moments 候选一阶矩，未出现的 Link 保留原值
+     * @return 候选重力广义力
+     */
+    tl::expected<JointVector, DynamicsErr> compute_gravity_with_first_moments(
+        const JointVector& positions,
+        const std::vector<GravityFirstMoment>& first_moments) const;
+    /**
+     * @brief 启用运行时重力覆盖，质量矩阵与科氏项仍使用原模型
+     * @param first_moments 候选一阶矩
+     * @return 成功返回空 expected
+     */
+    tl::expected<void, DynamicsErr> set_gravity_first_moment_override(
+        const std::vector<GravityFirstMoment>& first_moments);
+    /**
+     * @brief 清除运行时重力覆盖并恢复 gravity_scale 路径
+     */
+    void clear_gravity_first_moment_override();
+    /**
+     * @brief 查询候选重力覆盖是否启用
+     */
+    bool has_gravity_first_moment_override() const noexcept;
+    /**
+     * @brief 获取当前候选一阶矩
+     */
+    const std::vector<GravityFirstMoment>& get_gravity_first_moment_override() const noexcept;
+    /**
+     * @brief 获取当前控制链实际使用的重力项
+     */
+    const JointVector& get_effective_gravity() const noexcept;
+    /**
+     * @brief 获取当前候选重力诊断值
+     */
+    const JointVector& get_candidate_gravity() const noexcept;
     /**
      * @brief 获取最近一次 update() 的完整非线性广义力
      * @return 非线性广义力缓存的只读引用

@@ -82,7 +82,7 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 ./launch.sh
 ./.install/run serial_arm_terminal --robot-profile dm_arm_gray
 ./.install/run serial_arm_model_probe --help
-./.install/run python -c 'import serial_arm; print(serial_arm.__version__)'
+./.install/run python -c 'import serial_arm; print("serial_arm import OK")'
 
 # 或在当前终端加载一次环境
 source .install/setup.bash

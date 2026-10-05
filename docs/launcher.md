@@ -36,7 +36,7 @@ Link Frame、Joint Axis、质心、惯性与 Labels 可独立切换，左侧模�
 
 关节滑块拖动期间持续调用常驻的原生 Model Probe 更新 Core 姿态，连续拖动时合并过期请求而不是等待松开后才刷新
 
-原始 Link 惯性与 Core 约简后的有效惯性分开展示，物理参数无效时对应惯性图形保持禁用
+URDF Link 惯性与 Core 约简后的有效惯性分开展示，物理参数无效时对应惯性图形保持禁用
 
 
 ## 控制工作台
@@ -57,9 +57,68 @@ Calibration 提供静态残差标定、独立静态验证、双向摩擦示教�
 
 Diagnostics 显示 Joint、Actuator、动力学向量、质量矩阵、Frame 位姿、Observer residual 与限长实时曲线
 
+### 重力模型校正
+
+Calibration 页的重力模型校正使用一次拖动示教生成唯一回放路径
+
+结束示教后会检查路径覆盖并从示教路径中选择训练与留出静态姿态，所有真机采集都沿同一条已检查路径执行
+
+确认完全松手后，后台自动执行双向静态停留采样和双向多速度摩擦回放，任务窗口持续显示 task_id、阶段、进度、反馈年龄和原始数据状态
+
+长任务期间可以暂停、继续、取消、当前位置保持或立即失能，暂停后位置变化过大时继续任务需要再次明确确认
+
+静态校正固定原始 Link 质量和质心处惯量先验，只拟合可观测的质量一阶矩 `h=m*c` 与 residual 零偏，不把结果解释为完整惯量辨识
+
+候选结果分别显示当前 URDF、当前 gravity_scale 与候选重力在训练和留出姿态上的逐关节误差，摩擦验证与静态验证分别报告
+
+候选重力在保存或运行时应用前保持只读，运行时应用只替换有效重力项，质量矩阵与科氏项继续来自当前动力学模型
+
+候选应用和恢复只允许在 INACTIVE 且没有活动模型校正任务时进行，FULL_INVERSE_DYNAMICS 与 FULL_ID 不允许使用该重力覆盖
+
+任务目录保留 `metadata.json`、`frames.csv`、`trajectory.csv`、`result.json` 与源配置快照，可在断开硬件后重新加载和离线重算
+
+候选保存会写入独立重力校正文件并在 Core 配置中增加 `gravity_correction_path`，校正前配置会保留备份且支持恢复
+
+候选 URDF 仅修改已校正原始 Link 的 `<inertial><origin xyz>`，不会自动替换 Profile 的 `model.urdf_path` 或宣称完整动力学已经校正
+
 工作台模型只显示真实遥测姿态，反馈过期时停止继续更新模型
 
 会话遥测可导出到 `.install/exports/`，记录 Profile、Core 来源、时间戳、关节位置、速度、力矩与运行时诊断数据
+
+### 非 GUI 使用模型校正
+
+交互式 `serial_arm_terminal` 的 `调参与测试 → 导纳控制 → 导纳参数标定 → 重力模型校正` 提供与工作台相同的在线任务控制
+
+Terminal 可以设置校正参数、开始和结束拖动示教、确认自动回放、查看任务状态、暂停、继续、取消、应用候选重力和恢复校正前运行配置
+
+在线任务和 GUI 共用 `TerminalApp`、Dynamics、控制线程、任务状态机和安全检查，不维护第二套模型校正实现
+
+| 功能 | GUI | 非 GUI |
+| --- | --- | --- |
+| 设置校正参数 | 标定页 | 交互式 Terminal |
+| 拖动示教与路径冻结 | 标定页 | 交互式 Terminal |
+| 自动静态采样与多速度回放 | 标定页 | 交互式 Terminal |
+| 查看进度、暂停、继续与取消 | 任务窗口 | 交互式 Terminal |
+| 查看留出误差与候选结果 | 候选模型比较 | Terminal 状态与 `inspect` |
+| 离线重算 | 加载任务记录 | `recompute` |
+| 保存候选校正 | 保存候选 | `preview-save` 与 `save` |
+| 导出候选 URDF | 导出候选 URDF | `export-urdf` |
+| 恢复校正前配置 | 恢复校正前保存配置 | `restore-config` |
+
+Three.js 三维叠加属于图形展示，非 GUI 入口提供相同候选参数、误差指标和可观测性数据，不改变算法与保存结果
+
+任务完成或中断后，非 GUI 用户可直接处理同一任务目录
+
+```bash
+python3 tools/model_calibration_cli.py inspect --directory /path/to/task
+python3 tools/model_calibration_cli.py recompute --config /path/to/core.yaml --directory /path/to/task
+python3 tools/model_calibration_cli.py preview-save --config /path/to/core.yaml --directory /path/to/task
+python3 tools/model_calibration_cli.py save --config /path/to/core.yaml --directory /path/to/task --confirm
+python3 tools/model_calibration_cli.py export-urdf --config /path/to/core.yaml --directory /path/to/task
+python3 tools/model_calibration_cli.py restore-config --config /path/to/core.yaml --directory /path/to/task --confirm
+```
+
+`save` 与 `restore-config` 必须显式使用 `--confirm`，候选 URDF 导出后仍执行 Core 校验
 
 ## 运行
 

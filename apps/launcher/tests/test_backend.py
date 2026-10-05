@@ -245,3 +245,79 @@ class PersistenceTests(unittest.TestCase):
             updated = path.read_text(); self.assertIn('# keep me', updated); self.assertIn('answer: 42', updated); self.assertIn('# keep comment', updated)
             path.write_text(updated + '# external\n')
             with self.assertRaises(ValueError): save(path, result['sha256'], joints, runtime, [1.0, 1.0])
+
+class ModelCalibrationPersistenceTests(unittest.TestCase):
+    def make_task(self, root):
+        from persistence import sha256_file
+        root = Path(root)
+        task = root / 'task'; task.mkdir()
+        urdf = root / 'robot.urdf'
+        urdf.write_text('<robot name="r"><link name="base"/><link name="link1"><inertial><origin xyz="0.1 0 0" rpy="0 0 0"/><mass value="2"/><inertia ixx="0.2" ixy="0" ixz="0" iyy="0.3" iyz="0" izz="0.4"/></inertial></link><joint name="joint1" type="revolute"><parent link="base"/><child link="link1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="5" velocity="2"/></joint></robot>')
+        core = root / 'core.yaml'
+        core.write_text(f'''model:\n  joint_names: [joint1]\n  urdf_path: {urdf}\n  base_frame: base\n  tool_frame: link1\n  gravity: [0, 0, -9.81]\n  gravity_scale: [1]\n''')
+        metadata = {'task_id':'task-1','core_config_path':str(core),'core_fingerprint':sha256_file(core),'urdf_path':str(urdf),'urdf_fingerprint':sha256_file(urdf),'joint_names':['joint1'],'original_gravity_scale':[1.0],'resource_paths':[],'units':{'position':'rad','velocity':'rad/s','torque':'Nm'},'mapping':{},'load_description':'fixture','calibration_options':{'max_com_offset_m':0.05,'regularization':0.01,'svd_relative_threshold':0.0001}}
+        gravity = {'static_pass':True,'constraints_ok':True,'numerical_rank':1,'first_moments':[{'link_name':'link1','value':[0.24,0.0,0.0]}],'torque_bias':[0.01],'validation_candidate':{'rms':[0.1],'p99':[0.15],'maximum':[0.2],'bias':[0.0]},'validation_original':{'rms':[0.3],'p99':[0.4],'maximum':[0.5],'bias':[0.0]},'validation_scaled':{'rms':[0.25],'p99':[0.35],'maximum':[0.45],'bias':[0.0]},'training_original':{'rms':[0.3]},'training_candidate':{'rms':[0.1]},'noise_rms':[0.02]}
+        result = {'task_id':'task-1','phase':'complete','core_fingerprint':metadata['core_fingerprint'],'urdf_fingerprint':metadata['urdf_fingerprint'],'joint_names':['joint1'],'original_gravity_scale':[1.0],'gravity_result':gravity,'friction_pass':False,'friction':{}}
+        (task/'metadata.json').write_text(json.dumps(metadata)); (task/'result.json').write_text(json.dumps(result)); (task/'frames.csv').write_text('header\n'); (task/'trajectory.csv').write_text('sample_dt,0.01\nindex,joint1\n0,0\n')
+        return task, core, urdf
+
+    def test_candidate_save_load_and_restore_are_traceable(self):
+        from persistence import load_model_calibration_summary, preview_gravity_correction, save_gravity_correction, restore_gravity_correction, sha256_file
+        with tempfile.TemporaryDirectory() as temp:
+            task, core, _ = self.make_task(temp)
+            loaded = load_model_calibration_summary(task)
+            self.assertEqual(loaded['task_id'], 'task-1')
+            preview = preview_gravity_correction(core, task)
+            self.assertTrue(preview['changed'])
+            saved = save_gravity_correction(core, preview['sha256'], task)
+            self.assertTrue(Path(saved['gravity_correction_path']).is_file())
+            self.assertIn('gravity_correction_path:', core.read_text())
+            restored = restore_gravity_correction(core, task)
+            self.assertTrue(Path(restored['core_path']).is_file())
+            self.assertNotIn('gravity_correction_path:', core.read_text())
+            self.assertEqual(sha256_file(core), restored['core_sha256'])
+
+    def test_candidate_urdf_changes_only_calibrated_inertial_origin(self):
+        from persistence import export_candidate_urdf
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as temp:
+            task, _, _ = self.make_task(temp)
+            exported = export_candidate_urdf(task)
+            root = ET.parse(exported['candidate_urdf']).getroot()
+            link = next(node for node in root.findall('link') if node.get('name') == 'link1')
+            inertial = link.find('inertial')
+            self.assertEqual(inertial.find('mass').get('value'), '2')
+            self.assertEqual(inertial.find('inertia').get('ixx'), '0.2')
+            self.assertEqual(inertial.find('origin').get('xyz'), '0.12 0 0')
+            self.assertFalse(exported['joint_geometry_modified'])
+
+
+    def test_candidate_urdf_preserves_namespace_and_copies_relative_meshes(self):
+        from persistence import export_candidate_urdf, sha256_file
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as temp:
+            task, _, urdf = self.make_task(temp)
+            mesh = urdf.parent / 'meshes' / 'link1.stl'
+            mesh.parent.mkdir()
+            mesh.write_text('solid fixture\nendsolid fixture\n')
+            urdf.write_text('<robot xmlns="urn:serial-arm:test" name="r"><link name="base"/><link name="link1"><inertial><origin xyz="0.1 0 0" rpy="0 0 0"/><mass value="2"/><inertia ixx="0.2" ixy="0" ixz="0" iyy="0.3" iyz="0" izz="0.4"/></inertial><visual><geometry><mesh filename="meshes/link1.stl"/></geometry></visual></link><joint name="joint1" type="revolute"><parent link="base"/><child link="link1"/><axis xyz="0 1 0"/><limit lower="-1" upper="1" effort="5" velocity="2"/></joint></robot>')
+            metadata_path = task / 'metadata.json'
+            result_path = task / 'result.json'
+            metadata = json.loads(metadata_path.read_text())
+            result = json.loads(result_path.read_text())
+            metadata['urdf_fingerprint'] = sha256_file(urdf)
+            result['urdf_fingerprint'] = metadata['urdf_fingerprint']
+            metadata_path.write_text(json.dumps(metadata))
+            result_path.write_text(json.dumps(result))
+
+            exported = export_candidate_urdf(task)
+            candidate = Path(exported['candidate_urdf'])
+            root = ET.parse(candidate).getroot()
+            self.assertTrue(root.tag.startswith('{urn:serial-arm:test}'))
+            link = next(node for node in root if node.tag.endswith('link') and node.get('name') == 'link1')
+            inertial = next(node for node in link if node.tag.endswith('inertial'))
+            origin = next(node for node in inertial if node.tag.endswith('origin'))
+            self.assertEqual(origin.get('xyz'), '0.12 0 0')
+            mesh_node = next(node for node in root.iter() if node.tag.endswith('mesh'))
+            self.assertTrue(mesh_node.get('filename').startswith('resources/'))
+            self.assertTrue((candidate.parent / mesh_node.get('filename')).is_file())
