@@ -34,4 +34,11 @@ if [[ ! -f "$THREE_VENDOR" ]]; then
 fi
 [[ -f .install/setup.bash ]] && source .install/setup.bash
 export SERIAL_ARM_LAUNCHER_PYTHON="$ROOT_DIR/.install/gui-venv/bin/python"
+BACKEND="$ROOT_DIR/apps/launcher/backend/bridge.py"
+if ! BACKEND_ERROR="$("$SERIAL_ARM_LAUNCHER_PYTHON" -u "$BACKEND" --check 2>&1 >/dev/null)"; then
+    echo 'Launcher 后端启动自检失败：' >&2
+    echo "$BACKEND_ERROR" >&2
+    echo '可先执行 ./install.sh --gui-only --yes 修复 GUI Python 依赖。' >&2
+    exit 1
+fi
 exec "$ELECTRON" "$ROOT_DIR/apps/launcher"

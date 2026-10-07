@@ -63,6 +63,7 @@ async function closeWindow() {
 async function start() {
   const prefs = readPrefs();
   bridge = new Bridge(process.env.SERIAL_ARM_LAUNCHER_PYTHON || '/usr/bin/python3', path.resolve(__dirname, '../backend/bridge.py'), {cwd: root});
+  await bridge.ready;
   win = new BrowserWindow({width: prefs.bounds?.width || 1300, height: prefs.bounds?.height || 900, minWidth: 1000, minHeight: 720,
     frame: false, backgroundColor: '#0a0a10', show: false,
     webPreferences: {preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true}});

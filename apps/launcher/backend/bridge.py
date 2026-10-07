@@ -31,6 +31,12 @@ def main():
     native = NativeSession(emit, lock_dir)
     model_runtime = ModelRuntime()
     profile_library = ProfileLibrary(ROOT, inspector)
+    emit({'event': 'backend_ready'})
+    if '--check' in sys.argv[1:]:
+        model_runtime.close()
+        native.close()
+        manager.close()
+        return
     def stop(signum, frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)

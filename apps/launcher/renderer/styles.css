@@ -138,11 +138,11 @@
   --spring-ui:cubic-bezier(.16,1.38,.30,1);
   --spring-soft:cubic-bezier(.20,1.18,.32,1);
 }
-.page{animation:page-spring-in .52s var(--spring-soft) both;transform-origin:50% 18%}
+.page{animation:page-spring-in .36s var(--spring-soft) both;transform-origin:50% 18%}
 @keyframes page-spring-in{
-  0%{opacity:0;transform:translateY(18px) scale(.968)}
-  56%{opacity:1;transform:translateY(-5px) scale(1.012)}
-  78%{transform:translateY(2px) scale(.996)}
+  0%{opacity:0;transform:translateY(10px) scale(.982)}
+  58%{opacity:1;transform:translateY(-3px) scale(1.010)}
+  80%{transform:translateY(1px) scale(.997)}
   100%{opacity:1;transform:translateY(0) scale(1)}
 }
 .button,.title-button,.nav-item,.segmented button,.tree-row,.tree-eye,.library-card,.lifecycle-step,.readiness-chip{
@@ -206,4 +206,23 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 @media(prefers-reduced-motion:reduce){
   .page,.start-choice,.nav-item.active,.operation-overlay:not([hidden]),.operation-progress,.model-calibration-overlay:not([hidden]),.model-calibration-task-window,dialog[open],dialog[open]::backdrop,.toast,.readiness-chip.ready,.readiness-chip.warning,.readiness-chip.pending{animation:none!important}
   .button,.title-button,.nav-item,.segmented button,.tree-row,.tree-eye,.library-card,.lifecycle-step,.readiness-chip,.mode-card,.start-choice{transition:none!important;transform:none!important}
+}
+
+/* Page navigation spring: exit first, then overshoot into the next view. */
+.page{transform-origin:50% 22%;will-change:transform,opacity}
+.page.page-transition-out{animation:page-spring-out .08s cubic-bezier(.55,.06,.68,.19) both;pointer-events:none}
+.page.page-transition-in{animation:page-spring-in-strong .28s var(--spring-ui) both}
+@keyframes page-spring-out{
+  0%{opacity:1;transform:translateY(0) scale(1)}
+  100%{opacity:0;transform:translateY(4px) scale(.982)}
+}
+@keyframes page-spring-in-strong{
+  0%{opacity:0;transform:translateY(14px) scale(.965)}
+  55%{opacity:1;transform:translateY(-4px) scale(1.015)}
+  78%{transform:translateY(2px) scale(.994)}
+  90%{transform:translateY(-1px) scale(1.003)}
+  100%{opacity:1;transform:translateY(0) scale(1)}
+}
+@media(prefers-reduced-motion:reduce){
+  .page.page-transition-out,.page.page-transition-in{animation:none!important;transform:none!important;opacity:1!important}
 }

@@ -92,7 +92,7 @@ function shell() {
     }
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigate(b.dataset.page));
     ['min', 'max', 'close'].forEach((n, i) => { const node = $('win-' + n); if (node) node.onclick = () => api.window(['minimize', 'maximize', 'close'][i]); });
-    if ($('settings-quick')) $('settings-quick').onclick = () => { if (state.page === 'settings') { state.page = state.previousPage && state.previousPage !== 'settings' ? state.previousPage : 'start'; shell(); return; } state.previousPage = state.page; state.page = 'settings'; shell(); };
+    if ($('settings-quick')) $('settings-quick').onclick = async () => { await pageExit(); if (state.page === 'settings') { state.page = state.previousPage && state.previousPage !== 'settings' ? state.previousPage : 'start'; renderedPage = ''; shell(); return; } state.previousPage = state.page; state.page = 'settings'; renderedPage = ''; shell(); };
     if ($('back-home')) $('back-home').onclick = () => { resetToStart(); };
     if ($('theme-quick')) $('theme-quick').onclick = async () => { state.theme = document.documentElement.classList.contains('light') ? 'dark' : 'light'; applyTheme(); await save(); };
     if ($('copy-log')) $('copy-log').onclick = () => operation(() => copyTerminal(true));
@@ -172,13 +172,14 @@ function statusUI() {
     const stop = $('stop-runtime'); if (stop) stop.disabled = !active() || state.session.state === 'stopping'; const force = $('force-runtime'); if (force) force.classList.toggle('is-hidden', state.session.state !== 'stopping');
 }
 
-function resetToStart() {
+async function resetToStart() {
     if (active()) { toast(state.language === 'en' ? 'Stop the active session before returning to the start page' : '请先停止当前运行会话', true); return; }
-    state.page = 'start'; state.entryIntent = ''; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; shell();
+    await pageExit();
+    state.page = 'start'; state.entryIntent = ''; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
 }
 function startPage() {
     const option = (intent, title, desc, ico) => `<button class="start-choice" data-start-intent="${intent}"><span class="start-choice-icon">${icon(ico)}</span><span><b>${t(title)}</b><small>${t(desc)}</small></span><span class="choice-arrow">›</span></button>`;
-    return `<section class="start-hero"><div class="eyebrow">SERIALARM · WORKSPACE</div><h1>${t('startQuestion')}</h1><p>${t('startDesc')}</p></section><div class="start-choice-grid">${option('description', 'newDescription', 'newDescriptionDesc', 'model')}${option('continue', 'continueProfile', 'continueProfileDesc', 'robot')}${option('use', 'useProfile', 'useProfileDesc', 'run')}</div>`;
+    return `<section class="start-hero"><div class="eyebrow">SERIALARM · WORKSPACE</div><h1>${t('startQuestion')}</h1><p>${t('startDesc')}</p></section><div class="start-choice-grid">${option('description','newDescription','newDescriptionDesc','model')}${option('continue','continueProfile','continueProfileDesc','robot')}${option('use','useProfile','useProfileDesc','run')}</div>`;
 }
 function libraryStateClass(value) { return value === 'ready' ? 'ready' : value === 'needs_revalidation' ? 'warning' : value === 'configuring' ? 'muted' : 'pending'; }
 function libraryPage() {
@@ -526,12 +527,31 @@ async function createDescriptionProfile() {
 async function markReadinessStage(stage) { state.readiness = await api.request('readiness_mark', { config: state.config, stage, confirmed: true }); await refreshLibrary(); render(); }
 function collectProfileEditor() { const e = state.profileEditor; if (!e) return null; const payload = { core_sha: e.core_sha, hardware_sha: e.hardware_sha, hardware_plugin: $('edit-hardware-plugin')?.value || e.hardware_plugin || '', write_enabled: !!$('edit-write-enabled')?.checked, bus: $('edit-bus')?.value || '', device: $('edit-device')?.value || '', baudrate: $('edit-baudrate')?.value || '', calibration: {}, actuators: {}, park_pos: e.park_pos || {} }; for (const j of e.joint_names) { payload.calibration[j] = {}; for (const key of ['direction', 'pos_ratio', 'tor_ratio', 'joint_zero_offset', 'actuator_zero_offset']) payload.calibration[j][key] = Number(document.querySelector(`[data-edit="${key}"][data-joint="${CSS.escape(j)}"]`)?.value); payload.actuators[j] = { motor_id: Number(document.querySelector(`[data-edit-act="motor_id"][data-joint="${CSS.escape(j)}"]`)?.value || 0), motor_type: document.querySelector(`[data-edit-act="motor_type"][data-joint="${CSS.escape(j)}"]`)?.value || '', name: e.actuators?.[j]?.name || '', master_id: Number(e.actuators?.[j]?.master_id || 0) }; } return payload; }
 let previewFrame = 0, previewInFlight = false, previewDirty = false;
+let renderedPage = '';
 function queuePreview() { previewDirty = true; if (previewFrame || previewInFlight) return; previewFrame = requestAnimationFrame(async () => { previewFrame = 0; if (previewInFlight) return; previewInFlight = true; previewDirty = false; try { await previewModel(); } catch (error) { toast(t('error') + ': ' + error.message, true); } finally { previewInFlight = false; if (previewDirty) queuePreview(); } }); }
+function reducedMotion() { return matchMedia('(prefers-reduced-motion: reduce)').matches; }
+async function pageExit() {
+    const page = $('page');
+    if (!page || reducedMotion()) return;
+    page.classList.remove('page-transition-in');
+    page.classList.add('page-transition-out');
+    await new Promise(resolve => setTimeout(resolve, 80));
+}
+function pageEnter(pageChanged = true) {
+    const page = $('page');
+    if (!page || reducedMotion() || !pageChanged) return;
+    page.classList.remove('page-transition-out', 'page-transition-in');
+    void page.offsetWidth;
+    page.classList.add('page-transition-in');
+}
 function render() {
     if (modelView) { modelView.dispose(); modelView = null; }
     const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: robotPage, model: modelPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
     const factory = pages[state.page] || startPage;
+    const pageChanged = renderedPage !== state.page;
     $('page').innerHTML = factory();
+    pageEnter(pageChanged);
+    renderedPage = state.page;
     const runtime = $('runtime-panel'); if (runtime) runtime.classList.toggle('is-hidden', state.page !== 'run' && !active());
     document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === state.page));
     statusUI(); bindPage();
@@ -557,7 +577,8 @@ async function inspect() {
     if (serial !== state.inspecting) return; state.status = status; state.info = info; await save(); statusUI();
 }
 async function navigate(page) {
-    capture(); await operation(save); state.page = page;
+    if (page === state.page) return;
+    capture(); await operation(save); await pageExit(); state.page = page;
     if (page === 'lifecycle' && state.config.profile) state.readiness = await api.request('readiness', { config: state.config });
     if (page === 'profile_setup' && state.config.profile) state.profileEditor = await api.request('profile_editor_load', { config: state.config });
     if (['run', 'model', 'workbench', 'diagnostics'].includes(page)) await operation(inspect);
@@ -565,7 +586,7 @@ async function navigate(page) {
     render();
 }
 function bindPage() {
-    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { state.entryIntent = 'description'; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); state.page = 'library'; render(); }));
+    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { await pageExit(); state.entryIntent = 'description'; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); await pageExit(); state.page = 'library'; render(); }));
     if ($('library-home')) $('library-home').onclick = resetToStart;
     if ($('library-import-dir')) $('library-import-dir').onclick = () => operation(async () => { const source = await api.selectProfilePackage(); if (source) await importProfileSource(source); });
     if ($('library-import-file')) $('library-import-file').onclick = () => operation(async () => { const source = await api.selectProfile(); if (source) await importProfileSource(source); });
@@ -585,7 +606,7 @@ function bindPage() {
     document.querySelectorAll('[data-confirm-stage]').forEach(button => button.onclick = () => blockingOperation(busyText('正在记录验证结果...', 'Recording verification evidence...'), () => markReadinessStage(button.dataset.confirmStage)));
     if ($('ready-control')) $('ready-control').onclick = () => navigate('workbench');
     if ($('profile-save')) $('profile-save').onclick = () => blockingOperation(busyText('正在保存 Profile...', 'Saving Profile...'), async () => { const payload = collectProfileEditor(); state.profileEditor = await api.request('profile_editor_save', { config: state.config, payload }); state.info = null; await inspect(); state.readiness = await api.request('readiness', { config: state.config }); await refreshLibrary(); toast(t('saved')); render(); });
-    if ($('settings-back')) $('settings-back').onclick = () => { state.page = state.previousPage || 'start'; shell(); };
+    if ($('settings-back')) $('settings-back').onclick = async () => { await pageExit(); state.page = state.previousPage || 'start'; renderedPage = ''; shell(); };
     for (const key of Object.keys(state.config)) {
         const element = $(key); if (element) element.onchange = () => { capture(); state.info = null; operation(save); };
     }
