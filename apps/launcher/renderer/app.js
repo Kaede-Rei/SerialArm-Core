@@ -76,7 +76,28 @@ function pageHead(title, desc, action = '') { return `<header class="page-head">
 function configField(key, label, placeholder = '') { return `<div class="field"><label for="${key}">${t(label)}</label><input id="${key}" value="${esc(state.config[key])}" placeholder="${esc(placeholder)}" autocomplete="off"></div>`; }
 function active() { return ['running', 'stopping'].includes(state.session.state); }
 async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language }); }
-function applyTheme() { const light = state.theme === 'light' || (state.theme === 'system' && matchMedia('(prefers-color-scheme: light)').matches); document.documentElement.className = light ? 'light' : 'dark'; }
+function themeIsLight(theme = state.theme) { return theme === 'light' || (theme === 'system' && matchMedia('(prefers-color-scheme: light)').matches); }
+function applyTheme(theme = state.theme) { document.documentElement.className = themeIsLight(theme) ? 'light' : 'dark'; }
+async function switchTheme(nextTheme, event = null, rerender = false) {
+    if (!['system', 'dark', 'light'].includes(nextTheme) || nextTheme === state.theme) return;
+    const previousLight = themeIsLight(state.theme), nextLight = themeIsLight(nextTheme);
+    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const canTransition = typeof document.startViewTransition === 'function' && !reduceMotion && previousLight !== nextLight;
+    if (!canTransition) { state.theme = nextTheme; applyTheme(); if (rerender) render(); await save(); return; }
+    const source = event?.currentTarget || event?.target;
+    const rect = source?.getBoundingClientRect?.();
+    const x = Number.isFinite(event?.clientX) && event.clientX > 0 ? event.clientX : (rect ? rect.left + rect.width / 2 : innerWidth / 2);
+    const y = Number.isFinite(event?.clientY) && event.clientY > 0 ? event.clientY : (rect ? rect.top + rect.height / 2 : innerHeight / 2);
+    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+    const root = document.documentElement;
+    root.style.setProperty('--theme-ripple-x', `${x}px`);
+    root.style.setProperty('--theme-ripple-y', `${y}px`);
+    root.style.setProperty('--theme-ripple-radius', `${Math.ceil(radius)}px`);
+    root.style.setProperty('--theme-ripple-overshoot', `${Math.ceil(radius * 1.018)}px`);
+    const transition = document.startViewTransition(() => { state.theme = nextTheme; applyTheme(); if (rerender) render(); });
+    try { await transition.finished; } finally { root.style.removeProperty('--theme-ripple-x'); root.style.removeProperty('--theme-ripple-y'); root.style.removeProperty('--theme-ripple-radius'); root.style.removeProperty('--theme-ripple-overshoot'); }
+    await save();
+}
 function shell() {
     const onboarding = ['start', 'library', 'description'].includes(state.page) || (state.page === 'settings' && !state.config.profile);
     const quickTheme = onboarding ? '' : `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
@@ -94,7 +115,7 @@ function shell() {
     ['min', 'max', 'close'].forEach((n, i) => { const node = $('win-' + n); if (node) node.onclick = () => api.window(['minimize', 'maximize', 'close'][i]); });
     if ($('settings-quick')) $('settings-quick').onclick = async () => { await pageExit(); if (state.page === 'settings') { state.page = state.previousPage && state.previousPage !== 'settings' ? state.previousPage : 'start'; renderedPage = ''; shell(); return; } state.previousPage = state.page; state.page = 'settings'; renderedPage = ''; shell(); };
     if ($('back-home')) $('back-home').onclick = () => { resetToStart(); };
-    if ($('theme-quick')) $('theme-quick').onclick = async () => { state.theme = document.documentElement.classList.contains('light') ? 'dark' : 'light'; applyTheme(); await save(); };
+    if ($('theme-quick')) $('theme-quick').onclick = event => switchTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light', event);
     if ($('copy-log')) $('copy-log').onclick = () => operation(() => copyTerminal(true));
     if ($('paste-log')) $('paste-log').onclick = () => operation(pasteTerminal);
     if ($('clear-log')) $('clear-log').onclick = () => { outputBuffer = ''; term?.clear(); };
@@ -693,7 +714,7 @@ function bindPage() {
     if (state.page === 'robot' && active()) document.querySelectorAll('#page input,#page select,#source-builtin,#source-external,#browse-profile,#refresh-profiles,#add-root').forEach(e => e.disabled = true);
     if ($('launch-session')) { $('launch-session').disabled = state.busy || active() || !state.info?.available?.[state.mode]; $('launch-session').onclick = () => blockingOperation(busyText('正在检查启动条件...', 'Checking launch conditions...'), async () => { await inspect(); if (!state.info?.available?.[state.mode]) throw new Error(t('modeMissing')); hardwareConfirm(); }); }
     if ($('check-now')) $('check-now').onclick = () => blockingOperation(busyText('正在检查环境与资源...', 'Checking environment and resources...'), async () => { await inspect(); render(); });
-    document.querySelectorAll('[data-theme]').forEach(b => b.onclick = () => { state.theme = b.dataset.theme; applyTheme(); operation(save); render(); });
+    document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
 }
 async function workbenchRequest(method, params = {}) { if (!workbenchConnected()) throw new Error('workspace session is not connected'); return api.request('workbench_request', { method, params }); }
