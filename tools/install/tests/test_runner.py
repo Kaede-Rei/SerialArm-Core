@@ -60,6 +60,18 @@ class ExecutionTests(unittest.TestCase):
             model_calibrator = [c for c in command.call_args_list if c.args[0] == 'verify-model-calibrator'][0]
             self.assertEqual(model_calibrator.args[1][0], r.prefix / 'bin/serial_arm_model_calibrator')
 
+    def test_python_verification_does_not_require_project_version_attribute(self):
+        r = Runner(self.plan('--preset', 'python'))
+        self.artifacts(r)
+        r.python = Path(sys.executable)
+        with patch.object(r, 'run') as command:
+            r.verify()
+        verify_python = [c for c in command.call_args_list if c.args[0] == 'verify-python'][0]
+        code = verify_python.args[1][2]
+        self.assertIn('import serial_arm', code)
+        self.assertIn('__file__', code)
+        self.assertNotIn('__version__', code)
+
     def test_success_records_only_verified_components_and_sources_spaces(self):
         p = self.plan('--preset', 'core', '--skip-system-deps')
         def build(r):

@@ -286,7 +286,7 @@ class Runner:
             for package in self.plan.packages:
                 self.run('verify-' + package, ['ros2', 'pkg', 'prefix', package], source=candidate)
         if self.plan.python:
-            self.run('verify-python', [self.python, '-c', 'import serial_arm; print(serial_arm.__version__)'], source=candidate)
+            self.run('verify-python', [self.python, '-c', 'import serial_arm; print(serial_arm.__file__)'], source=candidate)
         if self.plan.robot == 'dm_arm':
             for package in ('serial_arm_robot_profiles', 'dm_arm_description'):
                 if not (self.prefix / 'share' / package).is_dir():
@@ -300,7 +300,7 @@ class Runner:
         setup_path = self.state / 'environments' / (generation + '.bash')
         atomic_write(setup_path, setup_text)
         manifest = self.plan.describe()
-        manifest.update(schema_version=1, version='0.5.2', status='verified',
+        manifest.update(schema_version=1, status='verified',
                         verified_at=datetime.now(timezone.utc).isoformat(),
                         installed_components=[c for c in ('core', 'terminal', 'python', 'ros2', 'moveit', 'tests')
                                               if c == 'core' or getattr(self.plan, c)],

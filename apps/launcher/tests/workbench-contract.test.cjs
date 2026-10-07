@@ -298,3 +298,54 @@ test('workbench copy follows selected language and non-GUI calibration keeps fea
     assert.doesNotMatch(content, /\bv?0\.5\.\d+\b/);
   }
 });
+
+test('launcher starts from lifecycle entrances and Profile Library only manages references', () => {
+  const app = read('apps/launcher/renderer/app.js');
+  const backend = read('apps/launcher/backend/profile_library.py');
+  const main = read('apps/launcher/desktop/main.cjs');
+  const architecture = read('docs/architecture.md');
+  const cli = read('tools/profile_workspace_cli.py');
+
+  assert.match(app, /page:\s*'start'/);
+  assert.match(app, /option\('description','newDescription'/);
+  assert.match(app, /option\('continue','continueProfile'/);
+  assert.match(app, /option\('use','useProfile'/);
+  assert.match(app, /profile_library_register/);
+  assert.match(app, /description_create_profile/);
+  assert.match(app, /readiness_mark/);
+  assert.match(app, /description-browse-dir/);
+  assert.match(main, /launcher:select-description/);
+  assert.match(main, /launcher:select-profile-package/);
+  assert.match(backend, /profile-library\.yaml/);
+  assert.match(backend, /def create_profile/);
+  assert.match(backend, /'write_enabled':False/);
+  assert.match(backend, /def remove\(self, entry_id\)/);
+  assert.doesNotMatch(backend, /def remove\(self, entry_id\)[\s\S]{0,600}rmtree/);
+  assert.match(architecture, /Profile Library/);
+  assert.match(architecture, /Description[\s\S]*Profile Setup[\s\S]*Model Check[\s\S]*Hardware Bring-up/);
+  assert.match(cli, /inspect-description/);
+  assert.match(cli, /create-profile/);
+  assert.match(cli, /import-profile/);
+  assert.match(cli, /remove-profile/);
+});
+
+test('launcher navigation and primary interactions use visible spring motion without blocking Profile selection', () => {
+  const app = read('apps/launcher/renderer/app.js');
+  const css = read('apps/launcher/renderer/styles.css');
+  const backend = read('apps/launcher/backend/profile_library.py');
+
+  assert.match(app, /state\.page === 'settings'[\s\S]{0,220}state\.previousPage !== 'settings'/);
+  assert.match(app, /const found = await blockingOperation\([\s\S]{0,180}profile_source_inspect/);
+  assert.doesNotMatch(app, /正在检查并导入 Profile[\s\S]{0,160}importProfileSource/);
+  assert.match(backend, /def _builtin_readiness\(/);
+  assert.match(backend, /'state':'ready'/);
+  assert.match(backend, /ignored=\{'.git','build','install','log','logs','node_modules'/);
+
+  assert.match(css, /@keyframes page-spring-in/);
+  assert.match(css, /@keyframes start-choice-spring/);
+  assert.match(css, /@keyframes operation-window-spring/);
+  assert.match(css, /@keyframes dialog-spring-in/);
+  assert.match(css, /\.button:not\(:disabled\):active\{[^}]*scale\(\.935\)/);
+  assert.match(css, /\.start-choice:hover\{[^}]*translateY\(-7px\)[^}]*scale\(1\.025\)/);
+  assert.match(css, /@media\(prefers-reduced-motion:reduce\)[\s\S]*animation:none!important/);
+});

@@ -71,20 +71,24 @@ async function start() {
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });
   win.once('ready-to-show', () => win.show());
-  const methods = new Set(['status', 'profiles', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'start', 'input', 'resize', 'stop']);
+  const methods = new Set(['status', 'profiles', 'profile_library', 'profile_source_inspect', 'profile_library_register', 'profile_library_remove', 'description_inspect', 'description_create_profile', 'readiness', 'readiness_mark', 'profile_editor_load', 'profile_editor_save', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'model_calibration_load', 'model_calibration_preview_save', 'model_calibration_save', 'model_calibration_restore_config', 'model_calibration_export_urdf', 'model_calibration_recompute', 'start', 'input', 'resize', 'stop']);
   ipcMain.handle('launcher:request', async (event, method, params = {}) => {
     trusted(event);
     if (method === 'logs') return bridge.output;
     if (!methods.has(method)) throw new Error('Unknown launcher request');
     const result = await bridge.request(method, params);
-    if (method === 'model') {
-      allowedModelResources = new Set((result?.mesh_files || []).map(file => path.resolve(file)));
+    if (method === 'model' || method === 'description_inspect') {
+      const meshFiles = method === 'description_inspect' ? (result?.preview?.mesh_files || []) : (result?.mesh_files || []);
+      allowedModelResources = new Set(meshFiles.map(file => path.resolve(file)));
     }
     return result;
   });
   ipcMain.handle('launcher:prefs', event => { trusted(event); return {...readPrefs(), language: readPrefs().language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en')}; });
   ipcMain.handle('launcher:save-prefs', (event, values) => { trusted(event); return savePrefs(values); });
   ipcMain.handle('launcher:select-profile', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'Robot Profiles', extensions: ['yaml', 'yml']}]}); return result.canceled ? '' : result.filePaths[0]; });
+  ipcMain.handle('launcher:select-description', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'SerialArm Description', extensions: ['zip', 'urdf', 'xacro']}]}); return result.canceled ? '' : result.filePaths[0]; });
+  ipcMain.handle('launcher:select-profile-package', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openDirectory']}); return result.canceled ? '' : result.filePaths[0]; });
+  ipcMain.handle('launcher:select-destination', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openDirectory', 'createDirectory']}); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('launcher:select-resources', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openDirectory']}); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('launcher:clipboard', (event, action, text) => {
     trusted(event);

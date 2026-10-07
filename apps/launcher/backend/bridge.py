@@ -13,6 +13,7 @@ from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
 from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
+from profile_library import ProfileLibrary
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
@@ -29,6 +30,7 @@ def main():
     manager = Supervisor(emit, lock_dir)
     native = NativeSession(emit, lock_dir)
     model_runtime = ModelRuntime()
+    profile_library = ProfileLibrary(ROOT, inspector)
     def stop(signum, frame): raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -45,6 +47,16 @@ def main():
                     session = native_status if native_status.get('state') in ('running', 'stopping') else manager.status()
                     result = {**inspector.status(), 'session': session, 'workbench': native_status}
                 elif method == 'profiles': result = inspector.profiles(params)
+                elif method == 'profile_library': result = profile_library.list()
+                elif method == 'profile_source_inspect': result = profile_library.discover_profile_source(params.get('source', ''))
+                elif method == 'profile_library_register': result = profile_library.register(params.get('profile_file', ''), params.get('profile', ''), params.get('resource_paths', ''), params.get('policy', 'error'))
+                elif method == 'profile_library_remove': result = profile_library.remove(params.get('id', ''))
+                elif method == 'description_inspect': result = profile_library.inspect_description(params.get('source', ''))
+                elif method == 'description_create_profile': result = profile_library.create_profile(params)
+                elif method == 'readiness': result = profile_library._readiness(config_values(params.get('config', params)))
+                elif method == 'readiness_mark': result = profile_library.mark_stage(config_values(params.get('config', {})), params.get('stage', ''), params.get('confirmed', True) is True)
+                elif method == 'profile_editor_load': result = profile_library.profile_editor_load(config_values(params.get('config', params)))
+                elif method == 'profile_editor_save': result = profile_library.profile_editor_save(config_values(params.get('config', {})), params.get('payload', {}))
                 elif method == 'inspect': result = inspector.inspect(params)
                 elif method == 'model': result = model_runtime.model(inspector, params.get('config', params), params.get('positions'))
                 elif method == 'model_preview': result = model_runtime.preview(inspector, params.get('config', params), params.get('positions'))

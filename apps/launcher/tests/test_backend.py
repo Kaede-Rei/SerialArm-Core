@@ -12,6 +12,7 @@ from profiles import Inspector, command_for
 from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
+from profile_library import ProfileLibrary
 
 
 class ProfileTests(unittest.TestCase):
@@ -178,6 +179,57 @@ for line in sys.stdin:
         self.wait(lambda: self.native.status()['state'] == 'exited')
         self.assertEqual(self.native.status()['exit_code'], 0)
         second.start([sys.executable, '-c', 'pass'], dict(os.environ), ['/dev/native-test'], 'hardware')
+
+
+class ProfileLibraryTests(unittest.TestCase):
+    def make_description(self, root):
+        package = root / 'sample_description'
+        package.mkdir(parents=True)
+        (package / 'package.xml').write_text('<package><name>sample_description</name></package>')
+        (package / 'robot.urdf').write_text("""<robot name="sample">
+<link name="base"><visual><geometry><box size="0.1 0.1 0.1"/></geometry></visual><inertial><mass value="1"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial></link>
+<link name="link1"><visual><geometry><box size="0.1 0.1 0.2"/></geometry></visual><inertial><mass value="1"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial></link>
+<link name="tool0"/>
+<joint name="joint1" type="revolute"><parent link="base"/><child link="link1"/><origin xyz="0 0 0.1"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="5" velocity="2"/></joint>
+<joint name="tool0_joint" type="fixed"><parent link="link1"/><child link="tool0"/><origin xyz="0 0 0.2"/></joint>
+</robot>""")
+        return package
+
+    def test_description_to_profile_library_lifecycle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            source = self.make_description(temp / 'source')
+            root = ROOT
+            inspector = Inspector(root)
+            old = os.environ.get('SERIAL_ARM_PROFILE_LIBRARY')
+            os.environ['SERIAL_ARM_PROFILE_LIBRARY'] = str(temp / 'profile-library.yaml')
+            try:
+                library = ProfileLibrary(root, inspector)
+                description = library.inspect_description(str(source))
+                self.assertEqual(description['roots'], ['base'])
+                self.assertEqual(description['preview']['native']['config']['tool_frame'], 'tool0')
+                created = library.create_profile({
+                    'source': str(source), 'profile': 'sample', 'destination': str(temp / 'profiles'),
+                    'base_frame': 'base', 'tool_frame': 'tool0', 'joint_names': ['joint1'],
+                    'hardware_plugin': 'serial_arm_hardware_damiao', 'bus': 'main_can',
+                    'device': '/dev/ttyACM0', 'baudrate': '921600',
+                    'actuators': [{'name': 'actuator1', 'motor_id': 1, 'master_id': 0, 'motor_type': 'DM4310'}],
+                })
+                self.assertTrue(Path(created['profile_file']).is_file())
+                info = inspector.inspect(created['config'])
+                self.assertFalse(info['write_enabled'])
+                registered = library.register(created['profile_file'], 'sample', created['resource_paths'], 'suffix')
+                self.assertEqual(registered['id'], 'user:sample')
+                listing = library.list()
+                external = next(x for x in listing['profiles'] if x['id'] == 'user:sample')
+                self.assertEqual(external['readiness']['state'], 'pending_validation')
+                updated = library.mark_stage(created['config'], 'model_check', True)
+                self.assertEqual(updated['checks']['model_check'], 'verified')
+                library.remove('user:sample')
+                self.assertFalse(any(x['id'] == 'user:sample' for x in library.list()['profiles']))
+            finally:
+                if old is None: os.environ.pop('SERIAL_ARM_PROFILE_LIBRARY', None)
+                else: os.environ['SERIAL_ARM_PROFILE_LIBRARY'] = old
 
 
 class RuntimeTests(unittest.TestCase):

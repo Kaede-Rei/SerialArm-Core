@@ -4,6 +4,9 @@ contextBridge.exposeInMainWorld('serialArm', {
   prefs: () => ipcRenderer.invoke('launcher:prefs'),
   savePrefs: values => ipcRenderer.invoke('launcher:save-prefs', values),
   selectProfile: () => ipcRenderer.invoke('launcher:select-profile'),
+  selectDescription: () => ipcRenderer.invoke('launcher:select-description'),
+  selectProfilePackage: () => ipcRenderer.invoke('launcher:select-profile-package'),
+  selectDestination: () => ipcRenderer.invoke('launcher:select-destination'),
   selectResources: () => ipcRenderer.invoke('launcher:select-resources'),
   window: action => ipcRenderer.invoke('launcher:window', action),
   clipboard: {
