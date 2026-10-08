@@ -1,0 +1,243 @@
+model:
+  urdf_path: ../../urdf/tomato_picker.urdf
+  joint_names:
+  - joint1
+  - joint2
+  - joint3
+  - joint4
+  - joint5
+  - joint6
+  base_frame: base_link
+  tool_frame: tool0
+  gravity:
+  - 0.0
+  - 0.0
+  - -9.81
+  gravity_scale: &id006
+    joint1: 1.0
+    joint2: 1.0
+    joint3: 1.0
+    joint4: 1.0
+    joint5: 1.0
+    joint6: 1.0
+calibration:
+  joints:
+    joint1:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+    joint2:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+    joint3:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+    joint4:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+    joint5:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+    joint6:
+      direction: 1.0
+      pos_ratio: 1.0
+      tor_ratio: 1.0
+      joint_zero_offset: 0.0
+      actuator_zero_offset: 0.0
+control:
+  runtime:
+    ctrl_frequency_hz: 200.0
+    joint_acc_filter_alpha: 0.2
+    write_enabled: true
+    model_feedforward_mode: GRAVITY
+    tracking_impedance_mode: COMPLIANT_TRACKING
+  controller:
+    allow_full_cmd: false
+    rigid_hold:
+      kp: &id001
+        joint1: 20.0
+        joint2: 20.0
+        joint3: 20.0
+        joint4: 20.0
+        joint5: 20.0
+        joint6: 20.0
+      kd: &id002
+        joint1: 0.5
+        joint2: 0.5
+        joint3: 0.5
+        joint4: 0.5
+        joint5: 0.5
+        joint6: 0.5
+    rigid_tracking:
+      kp: *id001
+      kd: *id002
+    compliant_hold:
+      kp: &id004
+        joint1: 3.0
+        joint2: 3.0
+        joint3: 3.0
+        joint4: 3.0
+        joint5: 3.0
+        joint6: 3.0
+      kd: &id003
+        joint1: 0.1
+        joint2: 0.1
+        joint3: 0.1
+        joint4: 0.1
+        joint5: 0.1
+        joint6: 0.1
+    compliant_drag:
+      kp: &id005
+        joint1: 0.0
+        joint2: 0.0
+        joint3: 0.0
+        joint4: 0.0
+        joint5: 0.0
+        joint6: 0.0
+      kd: *id003
+    compliant_tracking:
+      kp: *id004
+      kd: *id003
+safety_policy:
+  position_margin: 0.0
+  cmd_vel_scale: 0.25
+  state_vel_scale: 1.0
+  max_acc:
+    joint1: 2.0
+    joint2: 2.0
+    joint3: 2.0
+    joint4: 2.0
+    joint5: 2.0
+    joint6: 2.0
+  max_kp_override:
+    joint1: 50.0
+    joint2: 50.0
+    joint3: 50.0
+    joint4: 50.0
+    joint5: 50.0
+    joint6: 50.0
+  max_kd_override:
+    joint1: 2.0
+    joint2: 2.0
+    joint3: 2.0
+    joint4: 2.0
+    joint5: 2.0
+    joint6: 2.0
+  max_dt_s: 0.02
+  state_timeout_s: 0.05
+  cmd_timeout_s: 0.1
+  require_all_actuators_online: true
+  require_all_actuators_enabled: true
+  reject_motor_error: true
+  require_continuous_cmd: false
+  fault_recovery:
+    default_mode: rigid_hold
+    allow_compliant_recovery: true
+    require_operator_request: true
+    gravity_model_validated: false
+    recovery_timeout_s: 30.0
+    compliant_recovery:
+      kp: *id004
+      kd: *id003
+      max_vel:
+        joint1: 0.5
+        joint2: 0.5
+        joint3: 0.5
+        joint4: 0.5
+        joint5: 0.5
+        joint6: 0.5
+      effort_scale: 0.5
+shutdown:
+  park_before_disable: true
+  park_pos:
+    joint1: 0.0
+    joint2: 0.0
+    joint3: 0.0
+    joint4: 0.0
+    joint5: 0.0
+    joint6: 0.0
+  speed_scale: 0.05
+  position_tolerance: 0.05
+  velocity_tolerance: 0.05
+  settle_time_s: 0.25
+  relaxed_tolerance_ratio: 2.0
+  timeout_s: 10.0
+capability:
+  admittance:
+    enabled: false
+    joint_enabled:
+      joint1: true
+      joint2: true
+      joint3: true
+      joint4: true
+      joint5: true
+      joint6: true
+    observer:
+      mode: MOMENTUM
+      momentum_gain:
+        joint1: 25.0
+        joint2: 25.0
+        joint3: 25.0
+        joint4: 25.0
+        joint5: 25.0
+        joint6: 25.0
+    calibration:
+      torque_bias: *id005
+      torque_threshold:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05
+      friction:
+        enabled: false
+        velocity_transition: 0.03
+        positive_coulomb: *id005
+        positive_viscous: *id005
+        negative_coulomb: *id005
+        negative_viscous: *id005
+    controller:
+      mass: *id006
+      damping:
+        joint1: 5.5
+        joint2: 5.5
+        joint3: 5.5
+        joint4: 5.5
+        joint5: 5.5
+        joint6: 5.5
+      stiffness:
+        joint1: 15.0
+        joint2: 15.0
+        joint3: 15.0
+        joint4: 15.0
+        joint5: 15.0
+        joint6: 15.0
+      max_delta_q:
+        joint1: 0.5
+        joint2: 0.5
+        joint3: 0.5
+        joint4: 0.5
+        joint5: 0.5
+        joint6: 0.5
+      max_delta_q_dot:
+        joint1: 1.0
+        joint2: 1.0
+        joint3: 1.0
+        joint4: 1.0
+        joint5: 1.0
+        joint6: 1.0

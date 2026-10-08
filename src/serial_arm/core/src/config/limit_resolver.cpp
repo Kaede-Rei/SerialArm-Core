@@ -111,6 +111,14 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
     cfg.require_all_actuators_enabled = resolved.require_all_actuators_enabled;
     cfg.reject_motor_error = resolved.reject_motor_error;
     cfg.require_continuous_cmd = resolved.require_continuous_cmd;
+    // Safety stores a scalar ratio relative to the command velocity limit.
+    // Both resolved limits are derived from the same URDF joint velocity and
+    // global policy scales; preserving their ratio prevents cmd_vel_scale from
+    // unintentionally lowering the measured-state hard-fault threshold.
+    if(!resolved.joints.empty()) {
+        cfg.state_vel_fault_ratio = resolved.joints.front().max_state_vel /
+            resolved.joints.front().max_cmd_vel;
+    }
     cfg.fault_recovery.compliant_recovery.kp.assign(resolved.joints.size(), 0.0);
     cfg.fault_recovery.compliant_recovery.kd.assign(resolved.joints.size(), 0.0);
     cfg.fault_recovery.compliant_recovery.max_vel.reserve(resolved.joints.size());

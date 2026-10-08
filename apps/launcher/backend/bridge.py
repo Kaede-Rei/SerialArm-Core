@@ -13,6 +13,7 @@ from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
 from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
+from full_inertial import export_full_inertial_candidate
 from profile_library import ProfileLibrary
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -86,7 +87,7 @@ def main():
                     result = native.start(argv, env, info['devices'] if info['write_enabled'] is not False else [])
                 elif method == 'workbench_request':
                     native_method = params.get('method')
-                    result = native.request(native_method, params.get('params', {}), timeout=120 if native_method == 'park' else 8)
+                    result = native.request(native_method, params.get('params', {}), timeout=120 if native_method == 'park' else (45 if native_method in ('model_calibration_teach_stop','model_calibration_import_trajectory') else 8))
                 elif method == 'workbench_stop':
                     result = native.stop(params.get('force') is True)
                 elif method == 'workbench_config_preview':
@@ -140,6 +141,12 @@ def main():
                     except (json.JSONDecodeError, IndexError):
                         raise ValueError('candidate URDF verification returned invalid JSON')
                     result['verification'] = update_candidate_urdf_verification(Path(result['candidate_urdf']).parent, verified)
+                elif method == 'model_calibration_export_full_inertial':
+                    # Offline file generation only; never apply to the running robot.
+                    directory = params.get('directory', '')
+                    if not directory and native.status().get('state') == 'running':
+                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
+                    result = export_full_inertial_candidate(directory, params.get('destination') or None)
                 elif method == 'model_calibration_recompute':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)

@@ -415,8 +415,12 @@ TEST(ModelLoaderLimitResolver, ContinuousJointResolvesWithoutPositionLimits) {
     ASSERT_TRUE(resolved);
     EXPECT_FALSE(resolved->joints[1].has_position_limit);
 
+    // The state velocity fault threshold must retain the resolved policy,
+    // rather than silently using SafetyCfg's default 1.5x multiplier.
+    const auto safety_cfg = to_safety_cfg(*resolved);
+    EXPECT_NEAR(safety_cfg.state_vel_fault_ratio, policy.state_vel_scale / policy.cmd_vel_scale, 1e-12);
     Safety safety;
-    ASSERT_TRUE(safety.configure(to_safety_cfg(*resolved)));
+    ASSERT_TRUE(safety.configure(safety_cfg));
 
     JointState state = joint_state(names.size());
     ActuatorState actuators = actuator_state(names.size());

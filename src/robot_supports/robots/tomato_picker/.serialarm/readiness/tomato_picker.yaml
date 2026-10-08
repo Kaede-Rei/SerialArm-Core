@@ -1,0 +1,16 @@
+profile: tomato_picker
+managed_by_launcher: true
+source_urdf_fingerprint: 49c3e74495421f69565ace5d96dc316fd70aa7ae92363991b31c0145b4abef53
+stages:
+  model_check:
+    confirmed: true
+    fingerprint: 636c1387e6a764f13ccb8d2943a0228629abaf9fe33c7f9bcd3cca725d98f003
+  bringup:
+    confirmed: true
+    fingerprint: 636c1387e6a764f13ccb8d2943a0228629abaf9fe33c7f9bcd3cca725d98f003
+  mapping_calibration:
+    confirmed: true
+    fingerprint: 636c1387e6a764f13ccb8d2943a0228629abaf9fe33c7f9bcd3cca725d98f003
+  geometry_calibration:
+    confirmed: true
+    fingerprint: 636c1387e6a764f13ccb8d2943a0228629abaf9fe33c7f9bcd3cca725d98f003

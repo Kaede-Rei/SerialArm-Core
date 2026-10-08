@@ -1,0 +1,295 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="Tomato-Picker">
+    <!-- Runtime model based on the latest TRLC-DK1-Follower_v0.1 SolidWorks export. -->
+    <!-- Project corrections: joint5 velocity=5.4; joint7-2 travel normalized to [0, 0.042]. -->
+    <!-- SerialArm-Core controls joint1..joint6 only; joint7/joint7-1/joint7-2 remain true EEF joints in the robot description. -->
+    <link name="base_link">
+        <inertial>
+            <origin xyz="-2.11501490959799E-05 -0.00144740826715667 0.0322476465058773" rpy="0 0 0" />
+            <mass value="0.415436775501409" />
+            <inertia ixx="0.000171085646208579" ixy="6.22226960350973E-08" ixz="-6.93646963143285E-08" iyy="0.000239490231216667" iyz="-3.147142084145E-07" izz="0.000246021017490432" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/base_link.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/base_link.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <link name="Link1">
+        <inertial>
+            <origin xyz="0.00013120256340471 -0.00462996763909915 0.0160551324398064" rpy="0 0 0" />
+            <mass value="0.0898108036954061" />
+            <inertia ixx="3.01458023182251E-05" ixy="-3.08627645782109E-13" ixz="5.74928138135833E-14" iyy="9.43703947705632E-05" iyz="7.14014503783573E-06" izz="8.98769673066995E-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link1.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link1.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint1" type="revolute">
+        <origin xyz="0 0 0.0583" rpy="0 0 0" />
+        <parent link="base_link" />
+        <child link="Link1" />
+        <axis xyz="0 0 1" />
+        <limit lower="-2.0944" upper="2.0944" effort="100" velocity="5.4" />
+    </joint>
+    <link name="Link2">
+        <inertial>
+            <origin xyz="-0.130492286618881 0.000407835462289008 -0.0275973532245003" rpy="0 0 0" />
+            <mass value="1.07002287894776" />
+            <inertia ixx="0.00039425233326595" ixy="-4.3083225875181E-05" ixz="-8.72337224304882E-10" iyy="0.00265034639626371" iyz="1.3874667646348E-07" izz="0.00274195695947805" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link2.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link2.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint2" type="revolute">
+        <origin xyz="-0.03165 -0.02 0.0385" rpy="1.5708 0 -1.5708" />
+        <parent link="Link1" />
+        <child link="Link2" />
+        <axis xyz="0 0 -1" />
+        <limit lower="-0.087266" upper="3.1416" effort="100" velocity="5.4" />
+    </joint>
+    <link name="Link3">
+        <inertial>
+            <origin xyz="0.185431979030311 0.0568085470529543 -0.0343115814536119" rpy="0 0 0" />
+            <mass value="0.610419134840687" />
+            <inertia ixx="0.00018272687511835" ixy="-2.07251991293774E-05" ixz="1.71553098185024E-09" iyy="0.000929390568352284" iyz="1.22228764877407E-07" izz="0.00101290819920923" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link3.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link3.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint3" type="revolute">
+        <origin xyz="-0.264 0 0.005" rpy="0 0 0" />
+        <parent link="Link2" />
+        <child link="Link3" />
+        <axis xyz="0 0 1" />
+        <limit lower="-0.087266" upper="4.7124" effort="100" velocity="5.4" />
+    </joint>
+    <link name="Link4">
+        <inertial>
+            <origin xyz="0.0564499043576966 0.0570692664532358 -0.0330551416377494" rpy="0 0 0" />
+            <mass value="0.345655632636913" />
+            <inertia ixx="0.000136025053273045" ixy="-1.03835224722586E-05" ixz="6.66423885846155E-08" iyy="0.000174765863062957" iyz="6.24564278353378E-08" izz="0.000116240155814676" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link4.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link4.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint4" type="revolute">
+        <origin xyz="0.244 0.06 -0.00365" rpy="0 0 0" />
+        <parent link="Link3" />
+        <child link="Link4" />
+        <axis xyz="0 0 1" />
+        <limit lower="-1.95" upper="1.5708" effort="20" velocity="5.4" />
+    </joint>
+    <link name="Link5">
+        <inertial>
+            <origin xyz="-7.24577946950743E-05 -0.00748437321301255 0.0351576574526748" rpy="0 0 0" />
+            <mass value="0.373823984061805" />
+            <inertia ixx="9.19669607945633E-05" ixy="1.22227734964862E-07" ixz="7.94676694571831E-08" iyy="0.000127034350650999" iyz="-8.23091733611208E-07" izz="9.03001414231924E-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link5.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link5.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint5" type="revolute">
+        <origin xyz="0.0619999999999999 0.036 -0.0330000000000007" rpy="1.5707963267949 -1.5707963267949 0" />
+        <parent link="Link4" />
+        <child link="Link5" />
+        <axis xyz="0 0 1" />
+        <limit lower="-1.5708" upper="1.5708" effort="20" velocity="5.4" />
+    </joint>
+    <link name="Link6">
+        <inertial>
+            <origin xyz="-0.000485908838923044 0.00835307348685735 0.0378063045460189" rpy="0 0 0" />
+            <mass value="0.785649631359557" />
+            <inertia ixx="0.000125066292327439" ixy="1.64279447954322E-06" ixz="-5.35093272842772E-06" iyy="0.000594493708836635" iyz="5.93121308364284E-07" izz="0.000638314910848172" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link6.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link6.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint6" type="revolute">
+        <origin xyz="0 -0.035 0.036" rpy="-1.5708 0 3.1416" />
+        <parent link="Link5" />
+        <child link="Link6" />
+        <axis xyz="0 0 -1" />
+        <limit lower="-2.0944" upper="2.0944" effort="20" velocity="5.4" />
+    </joint>
+    <link name="tool0" />
+    <joint name="tool0_joint" type="fixed">
+        <origin xyz="0 0 0.051" rpy="0 0 0" />
+        <parent link="Link6" />
+        <child link="tool0" />
+    </joint>
+    <link name="Link7">
+        <inertial>
+            <origin xyz="7.37257477290143E-17 -3.88578058618805E-16 0.00328598692804025" rpy="0 0 0" />
+            <mass value="0.00643315957914466" />
+            <inertia ixx="3.53348528818677E-07" ixy="-5.93152738510624E-23" ixz="-6.12950015022911E-22" iyy="3.53348528818676E-07" iyz="2.75012621945132E-22" izz="6.37853660720428E-07" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="1 1 1 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint7" type="revolute">
+        <origin xyz="0 0 0.051" rpy="0 0 0" />
+        <parent link="Link6" />
+        <child link="Link7" />
+        <axis xyz="0 0 -1" />
+        <limit lower="0" upper="9.7674" effort="20" velocity="5.4" />
+    </joint>
+    <link name="Link7-1">
+        <inertial>
+            <origin xyz="0.0214114983616174 -0.0213844568962843 -0.0178005213090296" rpy="0 0 0" />
+            <mass value="0.0946406383916538" />
+            <inertia ixx="3.65759984292604E-05" ixy="5.58767011345612E-06" ixz="-4.39180078308887E-08" iyy="1.7153718468295E-05" iyz="9.52553839575001E-07" izz="3.54005904231885E-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7-1.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7-1.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint7-1" type="prismatic">
+        <origin xyz="-0.068092 0.019092 0.068" rpy="-1.5708 0 0" />
+        <parent link="Link6" />
+        <child link="Link7-1" />
+        <axis xyz="-1 0 0" />
+        <limit lower="0" upper="0.042" effort="20" velocity="0.02322" />
+    </joint>
+    <link name="Link7-2">
+        <inertial>
+            <origin xyz="0.022383049367254 0.02134017927956 -0.019540160279556" rpy="0 0 0" />
+            <mass value="0.0949054800343942" />
+            <inertia ixx="3.73735382445307E-05" ixy="-5.50196271440212E-06" ixz="9.55698005262612E-08" iyy="1.68112601539753E-05" iyz="-6.63336745217433E-07" izz="3.68673276070041E-05" />
+        </inertial>
+        <visual>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7-2.STL" />
+            </geometry>
+            <material name="">
+                <color rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0 0 0" rpy="0 0 0" />
+            <geometry>
+                <mesh filename="package://tomato_picker_description/meshes/solidworks/Link7-2.STL" />
+            </geometry>
+        </collision>
+    </link>
+    <joint name="joint7-2" type="prismatic">
+        <origin xyz="0.0686415494309188 0.0190915494308821 0.0695000000001406" rpy="1.5707963267949 0 -3.14159265358979" />
+        <parent link="Link6" />
+        <child link="Link7-2" />
+        <axis xyz="-1 0 0" />
+        <limit lower="0" upper="0.042" effort="20" velocity="0.02322" />
+    </joint>
+</robot>

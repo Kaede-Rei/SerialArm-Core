@@ -1,0 +1,46 @@
+buses:
+  main_can:
+    type: can
+    backend: damiao_usb2can
+    device: /dev/ttyACM0
+    baudrate: 921600
+damiao:
+  bus: main_can
+  refresh_state_in_read: false
+  feedback_timeout_s: 0.05
+  activation_retries: 3
+  startup_read_cycles: 5
+  stop_kp: 10.0
+  stop_kd: 0.15
+  stop_cycles: 5
+  actuators:
+    joint1:
+      name: actuator1
+      motor_id: 1
+      master_id: 0
+      motor_type: DM4340
+    joint2:
+      name: actuator2
+      motor_id: 2
+      master_id: 0
+      motor_type: DM4340
+    joint3:
+      name: actuator3
+      motor_id: 3
+      master_id: 0
+      motor_type: DM4340
+    joint4:
+      name: actuator4
+      motor_id: 4
+      master_id: 0
+      motor_type: DM4310
+    joint5:
+      name: actuator5
+      motor_id: 5
+      master_id: 0
+      motor_type: DM4310
+    joint6:
+      name: actuator6
+      motor_id: 6
+      master_id: 0
+      motor_type: DM4310

@@ -20,8 +20,8 @@ const words = {
     controlTab: ['控制', 'Control'], tuningTab: ['调参', 'Tuning'], calibrationTab: ['标定', 'Calibration'], runtimeDiagTab: ['诊断', 'Diagnostics'], startWorkbench: ['连接工作台', 'Connect workspace'], stopWorkbench: ['停放并断开', 'Park & disconnect'], activateRobot: ['使能', 'Activate'], deactivateRobot: ['立即失能', 'Immediate disable'], holdRobot: ['当前位置保持', 'Hold current'], parkRobot: ['停放并失能', 'Park & disable'], clearFault: ['清除故障', 'Clear fault'], compliantRecovery: ['柔性恢复', 'Compliant recovery'], rigidRecovery: ['返回刚性保持', 'Return rigid hold'], apply: ['应用', 'Apply'], reset: ['重置', 'Reset'], previewSave: ['预览保存差异', 'Preview save diff'], saveConfig: ['确认保存', 'Save confirmed changes'], exportData: ['导出会话数据', 'Export session data'], actual: ['实际', 'Actual'], target: ['目标', 'Target'], delta: ['相对增量', 'Relative delta'], speedScale: ['速度比例', 'Speed scale'], executeAbsolute: ['执行绝对目标', 'Execute absolute target'], executeRelative: ['执行相对目标', 'Execute relative target'], observerMode: ['Observer 模式', 'Observer mode'], staticCalibration: ['静态残差标定', 'Static residual calibration'], staticValidation: ['独立静态验证', 'Independent static validation'], frictionCalibration: ['双向摩擦标定', 'Bidirectional friction calibration'], capturePose: ['采集当前姿态', 'Capture current pose'], finishFit: ['完成拟合', 'Finish fit'], cancelTask: ['取消任务', 'Cancel task'], startRecording: ['开始示教记录', 'Start demonstration'], stopRecording: ['结束示教记录', 'Stop demonstration'], startReplay: ['确认安全并开始回放', 'Confirm safety & replay'], feedbackAge: ['反馈年龄', 'Feedback age'], commandState: ['命令状态', 'Command state'],
     modelCalibration: ['重力模型校正', 'Gravity model calibration'], modelCalibrationDesc: ['一次拖动示教后自动完成静态采样、重力校正与摩擦验证', 'One demonstration drives automatic static sampling, gravity calibration, and friction validation'], modelCalibrationStart: ['开始拖动示教', 'Start demonstration'], modelCalibrationStopTeach: ['结束示教', 'Stop demonstration'], modelCalibrationConfirmReplay: ['确认松手并开始自动回放', 'Confirm release and start replay'], pauseTask: ['暂停', 'Pause'], resumeTask: ['继续', 'Resume'], applyCandidate: ['应用候选重力', 'Apply candidate gravity'], restoreCandidate: ['恢复校正前运行配置', 'Restore pre-calibration runtime configuration'], saveCandidate: ['保存候选', 'Save candidate'], exportCandidate: ['导出候选 URDF', 'Export candidate URDF'], loadRecord: ['加载任务记录', 'Load task record'], recomputeRecord: ['离线重算', 'Recompute offline'],
     impedanceMode: ['阻抗模式', 'Impedance mode'], modelFeedforward: ['模型前馈', 'Model feedforward'], jointCommand: ['关节命令', 'Joint command'], joint: ['关节', 'Joint'], admittanceParameters: ['导纳 M / D / K', 'Admittance M / D / K'], gravityScale: ['重力补偿比例', 'Gravity scale'], noChanges: ['没有变化', 'No changes'],
-    sourceLive: ['在线会话', 'Live session'], sourceOffline: ['离线记录', 'Offline record'], sourceWaiting: ['离线', 'Offline'], poseBudget: ['姿态数量上限', 'Pose budget'], validationFraction: ['留出验证比例', 'Validation fraction'], comOffsetBound: ['COM 最大偏移 (m)', 'COM offset bound (m)'], regularizationStrength: ['正则化强度', 'Regularization strength'], svdRelativeThreshold: ['SVD 相对阈值', 'SVD relative threshold'], minimumInformationScore: ['最小信息量', 'Minimum information score'], maximumTaskDuration: ['最长任务时间 (s)', 'Maximum task duration (s)'], taskIdentifier: ['任务标识', 'Task identifier'], progressLabel: ['任务进度', 'Progress'], trajectorySamples: ['轨迹采样点', 'Trajectory samples'], trainingValidationGroups: ['训练 / 留出姿态组', 'Training / validation groups'], validStaticSamples: ['有效静态样本', 'Valid static samples'], acceptedDroppedFrames: ['已接收 / 丢弃原始帧', 'Accepted / dropped raw frames'],
-    currentUrdfRms: ['当前 URDF RMS', 'Current URDF RMS'], currentScaleRms: ['当前 gravity_scale RMS', 'Current gravity_scale RMS'], candidateRms: ['候选 RMS', 'Candidate RMS'], candidateP99: ['候选 P99', 'Candidate P99'], candidateMaximum: ['候选最大误差', 'Candidate maximum'], noiseRms: ['噪声 RMS', 'Noise RMS'], staticPassed: ['静态验证通过', 'Static validation passed'], staticFailed: ['静态验证未通过', 'Static validation failed'], frictionPassed: ['摩擦验证通过', 'Friction validation passed'], frictionFailed: ['摩擦验证未通过', 'Friction validation failed'], dynamicsNotIdentified: ['质量矩阵 / 科氏项未辨识', 'Mass matrix / Coriolis terms not identified'], numericalRank: ['数值秩', 'Numerical rank'], candidateComparison: ['候选模型比较', 'Candidate model comparison'], candidateScope: ['仅校正静态重力 · 质量与质心处惯量保持先验 · 质量矩阵与科氏项不替换', 'Static gravity correction only · mass and inertia-at-COM remain priors · mass matrix and Coriolis terms are not replaced'], fixedMass: ['固定质量', 'Fixed mass'], currentCom: ['当前 COM', 'Current COM'], candidateCom: ['候选 COM', 'Candidate COM'], comOffset: ['偏移', 'Offset'], observableAxes: ['可观测轴', 'Observable axes'], restoreSavedConfig: ['恢复校正前保存配置', 'Restore configuration from before calibration save'], taskDirectory: ['任务目录', 'Task directory'], singleCalibrationTools: ['单项标定工具', 'Individual calibration tools'], staticCalibrationDesc: ['逐姿态采集并拟合静态残差', 'Capture poses and fit static residuals'], start: ['开始', 'Start'], startValidation: ['开始验证', 'Start validation'], taskType: ['任务类型', 'Task type'], taskPhase: ['任务阶段', 'Task phase'], errorLabel: ['错误', 'Error'], replayReadyHint: ['示教路径已冻结', 'Demonstration path is frozen'], samplePoints: ['采样姿态', 'Sampling poses'], replayRate: ['回放速度比例', 'Replay rate'], estimatedDuration: ['预计自动阶段', 'Estimated automatic stage'], durationLimit: ['任务上限', 'Task limit'], releaseSafetyHint: ['请检查机械臂路径、负载、线缆和周围空间，并完全松手后确认回放', 'Check the robot path, load, cables, and surrounding space, then fully release the robot before confirming replay'],
+    sourceLive: ['在线会话', 'Live session'], sourceOffline: ['离线记录', 'Offline record'], sourceWaiting: ['离线', 'Offline'], poseBudget: ['姿态数量上限', 'Pose budget'], validationFraction: ['留出验证比例', 'Validation fraction'], comOffsetBound: ['COM 最大偏移 (m)', 'COM offset bound (m)'], regularizationStrength: ['正则化强度', 'Regularization strength'], svdRelativeThreshold: ['SVD 相对阈值', 'SVD relative threshold'], minimumInformationScore: ['最小信息量', 'Minimum information score'], taskIdentifier: ['任务标识', 'Task identifier'], progressLabel: ['任务进度', 'Progress'], trajectorySamples: ['轨迹采样点', 'Trajectory samples'], trainingValidationGroups: ['训练 / 留出姿态组', 'Training / validation groups'], validStaticSamples: ['有效静态样本', 'Valid static samples'], acceptedDroppedFrames: ['已接收 / 丢弃原始帧', 'Accepted / dropped raw frames'],
+    currentUrdfRms: ['当前 URDF RMS', 'Current URDF RMS'], currentScaleRms: ['当前 gravity_scale RMS', 'Current gravity_scale RMS'], candidateRms: ['候选 RMS', 'Candidate RMS'], candidateP99: ['候选 P99', 'Candidate P99'], candidateMaximum: ['候选最大误差', 'Candidate maximum'], noiseRms: ['噪声 RMS', 'Noise RMS'], staticPassed: ['静态验证通过', 'Static validation passed'], staticFailed: ['静态验证未通过', 'Static validation failed'], frictionPassed: ['摩擦验证通过', 'Friction validation passed'], frictionFailed: ['摩擦验证未通过', 'Friction validation failed'], dynamicsNotIdentified: ['完整惯性参数尚未验证', 'Full inertial parameters not yet validated'], numericalRank: ['数值秩', 'Numerical rank'], candidateComparison: ['候选模型比较', 'Candidate model comparison'], candidateScope: ['仅校正静态重力 · 质量与质心处惯量保持先验 · 质量矩阵与科氏项不替换', 'Static gravity correction only · mass and inertia-at-COM remain priors · mass matrix and Coriolis terms are not replaced'], fixedMass: ['固定质量', 'Fixed mass'], currentCom: ['当前 COM', 'Current COM'], candidateCom: ['候选 COM', 'Candidate COM'], comOffset: ['偏移', 'Offset'], observableAxes: ['可观测轴', 'Observable axes'], restoreSavedConfig: ['恢复校正前保存配置', 'Restore configuration from before calibration save'], taskDirectory: ['任务目录', 'Task directory'], singleCalibrationTools: ['单项标定工具', 'Individual calibration tools'], staticCalibrationDesc: ['逐姿态采集并拟合静态残差', 'Capture poses and fit static residuals'], start: ['开始', 'Start'], startValidation: ['开始验证', 'Start validation'], taskType: ['任务类型', 'Task type'], taskPhase: ['任务阶段', 'Task phase'], errorLabel: ['错误', 'Error'], replayReadyHint: ['示教路径已冻结', 'Demonstration path is frozen'], samplePoints: ['采样姿态', 'Sampling poses'], replayRate: ['回放速度比例', 'Replay rate'], estimatedDuration: ['预计自动阶段', 'Estimated automatic stage'], durationLimit: ['任务上限', 'Task limit'], releaseSafetyHint: ['请检查机械臂路径、负载、线缆和周围空间，并完全松手后确认回放', 'Check the robot path, load, cables, and surrounding space, then fully release the robot before confirming replay'],
     telemetryTitle: ['实时遥测', 'Live telemetry'], frameTitle: ['坐标系', 'Frame'], dynamicsTitle: ['动力学', 'Dynamics'], jointActuatorTitle: ['关节 / 执行器', 'Joint / actuator'], onlineLabel: ['在线', 'Online'], enabledLabel: ['使能', 'Enabled'], positionLabel: ['位置', 'Position'], quaternionLabel: ['四元数 xyzw', 'Quaternion xyzw'], gravityLabel: ['重力项', 'Gravity'], gravityCompLabel: ['重力补偿', 'Gravity compensation'], coriolisLabel: ['科氏项', 'Coriolis'], inverseDynamicsLabel: ['逆动力学', 'Inverse dynamics'], actualTelemetry: ['实际状态 · 实时反馈', 'Actual state · live telemetry'], offlineWaiting: ['离线状态 · 等待工作台连接', 'Offline · waiting for workspace connection'], modelNotLoaded: ['模型尚未加载', 'Model is not loaded'], processing: ['正在处理...', 'Processing...'], stopTeaching: ['结束示教', 'Stop demonstration'],
     modelLoad: ['加载模型', 'Load model'], modelReload: ['重新加载', 'Reload'], modelTree: ['模型树', 'Model tree'], modelViewport: ['模型视图', 'Model view'], modelInspector: ['参数检查器', 'Inspector'],
     visualLayer: ['Visual', 'Visual'], collisionLayer: ['Collision', 'Collision'], linkFrameLayer: ['Link Frame', 'Link frames'], jointAxisLayer: ['Joint Axis', 'Joint axes'], comLayer: ['质心', 'COM'], inertiaLayer: ['惯性', 'Inertia'], labelsLayer: ['标签', 'Labels'], allLayers: ['全选图层', 'All layers'], noLayers: ['全不选', 'Clear layers'], showAllObjects: ['全部显示', 'Show all'], hideAllObjects: ['全部隐藏', 'Hide all'], resetView: ['复位视角', 'Reset view'],
@@ -45,7 +45,7 @@ const paths = { workbench: '<path d="M4 5h16v14H4zM8 9h8M8 13h5M6 3v4M18 3v4"/>'
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationSaved: null, modelCalibrationOptions: { pose_budget: 8, validation_fraction: 0.25, max_com_offset_m: 0.05, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001, max_task_duration_s: 600 } };
+let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationSaved: null, modelCalibrationInertialExport: null, modelCalibrationOptions: { pose_budget: 8, validation_fraction: 0.25, max_com_offset_m: 0.05, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -69,7 +69,105 @@ function calibrationTaskPhaseText(value) {
     const text = labels[value] || [value || '—', value || '—'];
     return state.language === 'en' ? text[1] : text[0];
 }
-function toast(message, error = false) { const node = document.createElement('div'); node.className = 'toast' + (error ? ' error' : ''); node.textContent = message; $('toasts').append(node); setTimeout(() => node.remove(), 8000); }
+const priorityErrorQueue = [];
+let priorityErrorOpen = false;
+let activePriorityError = null;
+let lastRuntimeFaultKey = '';
+const reportedCalibrationErrors = new Set();
+function showNextPriorityError() {
+    const layer = $('priority-error-overlay');
+    if (!layer || priorityErrorOpen || !priorityErrorQueue.length) return;
+    activePriorityError = priorityErrorQueue.shift();
+    priorityErrorOpen = true;
+    paintPriorityError();
+}
+function paintPriorityError() {
+    const entry = activePriorityError;
+    if (!entry || !$('priority-error-overlay')) return;
+    const layer = $('priority-error-overlay');
+    const confirm = $('confirm-dialog');
+    if (confirm?.open) confirm.close(); // A safety error outranks any confirmation dialog.
+    setOperationOverlay(''); // A critical alert preempts every visual busy layer.
+    const calibrationOverlay = $('model-calibration-overlay');
+    if (calibrationOverlay) { calibrationOverlay.hidden = true; calibrationOverlay.setAttribute('aria-hidden', 'true'); }
+    $('priority-error-title').textContent = entry.kind === 'fault' ? busyText('机械臂安全故障', 'Robot safety fault') : t('error');
+    $('priority-error-detail').textContent = entry.message;
+    $('priority-error-guidance').textContent = entry.kind === 'fault'
+        ? busyText('机器人已进入 FAULT；请先检查故障原因和机械臂状态，再在控制工作台手动清除故障；关闭此提示不会清除故障或恢复运动',
+            'The robot is in FAULT. Inspect its state and cause before manually clearing the fault. Dismissing does not recover motion.')
+        : busyText('该任务可能未成功完成；关闭提示仅确认已阅读，不会自动重试或恢复机械臂',
+            'This operation may have failed. Dismissing does not retry or recover the robot.');
+    // CSS z-index cannot outrank another native showModal() dialog.
+    // A modal <dialog> enters Chromium's top layer and traps focus correctly.
+    if (!layer.open) layer.showModal();
+    layer.setAttribute('aria-hidden', 'false');
+    $('priority-error-ack').focus();
+}
+function showPriorityError(message, kind = 'operation') {
+    const text = String(message || 'Unknown error').trim();
+    if (!text) return;
+    // Hardware FAULT must interrupt even an already-visible noncritical alert.
+    if (kind === 'fault' && activePriorityError?.kind !== 'fault') {
+        if (activePriorityError) priorityErrorQueue.unshift(activePriorityError);
+        activePriorityError = { message: text, kind };
+        priorityErrorOpen = true;
+        paintPriorityError();
+        return;
+    }
+    if (activePriorityError?.message === text) return;
+    const top = priorityErrorQueue[priorityErrorQueue.length - 1];
+    if (top?.message !== text) {
+        if (kind === 'fault') priorityErrorQueue.unshift({ message: text, kind });
+        else priorityErrorQueue.push({ message: text, kind });
+    }
+    showNextPriorityError();
+}
+function acknowledgePriorityError() {
+    const layer = $('priority-error-overlay');
+    if (!layer) return;
+    if (layer.open) layer.close();
+    layer.setAttribute('aria-hidden', 'true');
+    priorityErrorOpen = false;
+    activePriorityError = null;
+    showNextPriorityError();
+    if (!priorityErrorOpen) updateModelCalibrationTaskOverlay();
+}
+function toast(message, error = false) {
+    if (error) { showPriorityError(message); return; }
+    const node = document.createElement('div'); node.className = 'toast'; node.textContent = message;
+    $('toasts').append(node); setTimeout(() => node.remove(), 8000);
+}
+function describeRuntimeFault(snapshot) {
+    const f = snapshot?.fault || {};
+    const name = f.joint_name || (Number.isInteger(f.joint_index) ? `joint ${f.joint_index}` : '');
+    const isCycleDeadline = f.safety_code === 'INVALID_DT';
+    const value = Number.isFinite(f.value) ? (isCycleDeadline ? `, actual=${(Number(f.value) * 1000).toFixed(2)} ms` : `, value=${Number(f.value).toFixed(4)}`) : '';
+    const limit = Number.isFinite(f.limit) ? (isCycleDeadline ? `, maximum=${(Number(f.limit) * 1000).toFixed(2)} ms` : `, limit=${Number(f.limit).toFixed(4)}`) : '';
+    const suffix = ['JOINT_VEL_LIMIT', 'CMD_VEL_LIMIT'].includes(f.safety_code) ? ' rad/s' : '';
+    const effective = snapshot?.safety_limits || {};
+    const i = Number.isInteger(f.joint_index) ? f.joint_index : (snapshot?.joint_names || []).indexOf(name);
+    const cmd = Number(effective.max_cmd_vel?.[i]);
+    const measured = Number(effective.max_state_vel?.[i]);
+    const bounds = Number.isFinite(cmd) && Number.isFinite(measured) && i >= 0
+        ? `\n${busyText('实际生效命令/状态速度上限', 'Effective command/state velocity limits')}: ${cmd.toFixed(4)} / ${measured.toFixed(4)} rad/s` : '';
+    return `${f.code || snapshot?.last_fault || 'FAULT'}${f.safety_code ? ' / ' + f.safety_code : ''}${name ? ' / ' + name : ''}${value}${limit}${suffix}${bounds}`;
+}
+function checkRuntimeAlerts(snapshot) {
+    if (snapshot?.robot_state === 'FAULT') {
+        const key = JSON.stringify(snapshot.fault || snapshot.last_fault || 'FAULT');
+        if (key !== lastRuntimeFaultKey) { lastRuntimeFaultKey = key; showPriorityError(describeRuntimeFault(snapshot), 'fault'); }
+    } else lastRuntimeFaultKey = '';
+    const cal = snapshot?.model_calibration;
+    if (cal?.phase === 'failed' && cal.error) {
+        const key = `${cal.task_id || 'unknown'}:${cal.error}`;
+        if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); showPriorityError(cal.error); }
+    }
+    const singleCal = snapshot?.calibration;
+    if (singleCal?.phase === 'failed' && singleCal.error) {
+        const key = `single:${singleCal.kind}:${singleCal.error}`;
+        if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); showPriorityError(singleCal.error); }
+    }
+}
 const button = (id, key, ico, cls = '') => `<button id="${id}" class="button ${cls}">${ico ? icon(ico) : ''}${t(key)}</button>`;
 const card = (title, sub, ico, body) => `<section class="card"><div class="card-head">${icon(ico)}<div><h3>${t(title)}</h3><p>${t(sub)}</p></div></div><div class="card-body">${body}</div></section>`;
 function pageHead(title, desc, action = '') { return `<header class="page-head"><div><div class="eyebrow">SERIALARM · WORKSPACE</div><h2>${t(title)}</h2><p>${t(desc)}</p></div>${action}</header>`; }
@@ -99,11 +197,12 @@ async function switchTheme(nextTheme, event = null, rerender = false) {
     await save();
 }
 function shell() {
+    // A new Shell intentionally preserves the pending fault alert, if any.
     const onboarding = ['start', 'library', 'description'].includes(state.page) || (state.page === 'settings' && !state.config.profile);
     const quickTheme = onboarding ? '' : `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${icon('robot')}SerialArm Launcher</div><div class="title-center">${onboarding ? 'SerialArm' : esc(state.config.profile || t('workspace'))}</div><div class="title-actions"><button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button>${quickTheme}<button id="win-min" class="title-button" aria-label="Minimize">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="Maximize">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="Close">${icon('close')}</button></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div class="priority-error-kicker">SAFETY / ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><p id="priority-error-guidance"></p><div class="actions"><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
     if (onboarding) {
         $('app').innerHTML = `<div class="shell onboarding-shell">${titlebar}<div class="onboarding-body"><main class="onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div></div>${overlays}`;
     } else {
@@ -128,6 +227,9 @@ function shell() {
     if ($('model-calibration-task-cancel')) $('model-calibration-task-cancel').onclick = () => modelCalibrationQuick('model_calibration_cancel');
     if ($('model-calibration-task-disable')) $('model-calibration-task-disable').onclick = () => modelCalibrationQuick('deactivate');
     mountTerminal(); render();
+    if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
+    if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
+    if (activePriorityError) paintPriorityError();
 }
 function mountTerminal() {
     if (typeof Terminal !== 'undefined') {
@@ -200,7 +302,7 @@ async function resetToStart() {
 }
 function startPage() {
     const option = (intent, title, desc, ico) => `<button class="start-choice" data-start-intent="${intent}"><span class="start-choice-icon">${icon(ico)}</span><span><b>${t(title)}</b><small>${t(desc)}</small></span><span class="choice-arrow">›</span></button>`;
-    return `<section class="start-hero"><div class="eyebrow">SERIALARM · WORKSPACE</div><h1>${t('startQuestion')}</h1><p>${t('startDesc')}</p></section><div class="start-choice-grid">${option('description','newDescription','newDescriptionDesc','model')}${option('continue','continueProfile','continueProfileDesc','robot')}${option('use','useProfile','useProfileDesc','run')}</div>`;
+    return `<section class="start-hero"><div class="eyebrow">SERIALARM · WORKSPACE</div><h1>${t('startQuestion')}</h1><p>${t('startDesc')}</p></section><div class="start-choice-grid">${option('description', 'newDescription', 'newDescriptionDesc', 'model')}${option('continue', 'continueProfile', 'continueProfileDesc', 'robot')}${option('use', 'useProfile', 'useProfileDesc', 'run')}</div>`;
 }
 function libraryStateClass(value) { return value === 'ready' ? 'ready' : value === 'needs_revalidation' ? 'warning' : value === 'configuring' ? 'muted' : 'pending'; }
 function libraryPage() {
@@ -317,8 +419,9 @@ function modelCalibrationModelBinding() {
 function modelCalibrationPhaseText(phase) {
     const labels = {
         idle: ['未启动', 'Idle'], teaching: ['拖动示教中', 'Teaching'], waiting_replay_confirmation: ['等待松手与回放确认', 'Waiting for replay confirmation'],
-        static_reverse: ['反向静态停留采样', 'Reverse static sampling'], static_forward: ['正向静态停留采样', 'Forward static sampling'], gravity_fitting: ['拟合候选重力模型', 'Fitting gravity candidate'],
-        friction_reverse_slow: ['低速反向摩擦采集', 'Slow reverse friction sampling'], friction_forward_slow: ['低速正向摩擦采集', 'Slow forward friction sampling'], friction_reverse_fast: ['高速反向摩擦采集', 'Fast reverse friction sampling'], friction_forward_fast: ['高速正向摩擦采集', 'Fast forward friction sampling'],
+        recorded_only: ['已录制轨迹 · 未标定', 'Recorded · Not calibrated'],
+        static_reverse: ['反向回放 · 重力姿态及动力学数据', 'Reverse replay · gravity and dynamic data'], static_forward: ['正向静态停留采样', 'Forward static sampling'], gravity_fitting: ['拟合候选重力模型', 'Fitting gravity candidate'],
+        friction_reverse_slow: ['低速反向摩擦采集', 'Slow reverse friction sampling'], friction_forward_slow: ['低速正向摩擦采集', 'Slow forward friction sampling'], friction_reverse_fast: ['高速反向摩擦采集', 'Fast reverse friction sampling'], friction_forward_fast: ['正向回放 · 动力学采集', 'Forward dynamic sampling'],
         friction_fitting: ['拟合并验证摩擦模型', 'Fitting and validating friction'], paused: ['已暂停并保持当前位置', 'Paused and holding'], complete: ['任务完成', 'Complete'], cancelled: ['任务已取消', 'Cancelled'], failed: ['任务失败', 'Failed'],
     };
     const value = labels[phase] || [phase || '—', phase || '—']; return state.language === 'en' ? value[1] : value[0];
@@ -344,6 +447,33 @@ function modelCalibrationCandidateTable(status) {
     }).join('');
     return `<div class="table-scroll"><table class="workspace-table"><thead><tr><th>Link</th><th>${t('fixedMass')}</th><th>${t('currentCom')}</th><th>${t('candidateCom')}</th><th>${t('comOffset')}</th><th>${t('observableAxes')}</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+// The view mirrors Core's hard replay preflight, but never substitutes for it.
+function calibrationAlignment(status = currentModelCalibration(), telemetry = state.telemetry) {
+    const target = status?.replay_start_joint_positions;
+    const pos = telemetry?.joint?.pos;
+    const vel = telemetry?.joint?.vel;
+    const age = Number(telemetry?.feedback_age_ms);
+    const valid = !!status?.source_task_id && Array.isArray(target) && target.length > 0 &&
+        Array.isArray(pos) && pos.length === target.length &&
+        Array.isArray(vel) && vel.length === target.length &&
+        telemetry?.robot_state === 'ACTIVE' && telemetry?.valid === true &&
+        Number.isFinite(age) && age >= 0 && age <= 500 &&
+        [...target, ...pos, ...vel].every(x => Number.isFinite(Number(x)));
+    if (!valid) return { valid: false, aligned: false, maxError: Infinity, maxSpeed: Infinity, rows: [] };
+    const rows = target.map((q, i) => ({ name: (status.joint_names || telemetry.joint_names || [])[i] || `joint${i + 1}`, now: Number(pos[i]), goal: Number(q), delta: Number(q) - Number(pos[i]), speed: Number(vel[i]) }));
+    const maxError = Math.max(...rows.map(x => Math.abs(x.delta)));
+    const maxSpeed = Math.max(...rows.map(x => Math.abs(x.speed)));
+    return {
+        valid: true, aligned: maxError <= 0.08 && maxSpeed <= 0.05 && !status.alignment_active,
+        maxError, maxSpeed, rows
+    };
+}
+function calibrationAlignmentStatus(align, manual) {
+    if (!align.valid) return state.language === 'en' ? 'Waiting for fresh robot feedback (max 500 ms)' : '等待新鲜关节反馈（最大 500 ms）';
+    if (manual) return state.language === 'en' ? 'Guided drag active; support arm and move slowly' : '手动拖拽引导中：请支撑机械臂缓慢调整';
+    if (align.aligned) return state.language === 'en' ? 'Ready for separate replay confirmation' : '姿态已对齐，可以再次确认自动回放';
+    return state.language === 'en' ? 'Pose not aligned; replay blocked' : '姿态尚未对齐，暂不允许自动回放';
+}
 function modelCalibrationPanelHtml() {
     const status = currentModelCalibration() || { phase: 'idle', progress: 0, recorder: {} }; const live = !state.modelCalibrationOffline;
     const phase = status.phase || 'idle'; const result = status.gravity_result || null; const taskActive = modelCalibrationActive(status); const robotActive = state.telemetry?.robot_state === 'ACTIVE'; const robotInactive = state.telemetry?.robot_state === 'INACTIVE';
@@ -351,20 +481,54 @@ function modelCalibrationPanelHtml() {
     const directory = status.directory || state.modelCalibrationDirectory || state.modelCalibrationOffline?.directory || '';
     const optionsDisabled = live && !['idle', 'complete', 'cancelled', 'failed'].includes(phase);
     const options = state.modelCalibrationOptions;
+    const alignment = calibrationAlignment(status);
     const sourceTag = state.modelCalibrationOffline ? `<span class="result-badge neutral">${t('sourceOffline')}</span>` : `<span class="result-badge ${workbenchConnected() ? 'pass' : 'neutral'}">${t(workbenchConnected() ? 'sourceLive' : 'sourceWaiting')}</span>`;
     const actions = [];
+    if (!live) actions.push(`<button id="model-calibration-back-live" class="button">${state.language === 'en' ? 'Back to live task' : '返回实时任务'}</button>`);
     const activeTitle = robotActive ? '' : (state.language === 'en' ? 'Activate the robot before starting the demonstration' : '请先使能机械臂再开始示教');
     if (live && ['idle', 'complete', 'cancelled', 'failed'].includes(phase)) actions.push(`<button id="model-calibration-teach-start" class="button primary" ${robotActive ? '' : 'disabled'} title="${activeTitle}">${t('modelCalibrationStart')}</button>`);
     if (live && phase === 'teaching') actions.push(`<button id="model-calibration-teach-stop" class="button primary">${t('modelCalibrationStopTeach')}</button>`);
-    if (live && phase === 'waiting_replay_confirmation') actions.push(`<button id="model-calibration-replay-confirm" class="button danger">${t('modelCalibrationConfirmReplay')}</button>`);
-    if (live && taskActive && phase !== 'paused' && phase !== 'teaching') actions.push(`<button id="model-calibration-pause" class="button">${t('pauseTask')}</button>`);
+    if (live && phase === 'waiting_replay_confirmation') {
+        if (status.source_task_id) {
+            actions.push(status.alignment_active
+                ? `<button id="model-calibration-alignment-finish" class="button primary">${state.language === 'en' ? 'Stop drag and hold here' : '结束引导并保持当前位置'}</button>`
+                : `<button id="model-calibration-alignment-begin" class="button" ${robotActive ? '' : 'disabled'}>${state.language === 'en' ? 'Guided manual return to replay start' : '引导返回回放起点（人工拖拽）'}</button>`);
+        }
+        actions.push(`<button id="model-calibration-replay-confirm" class="button danger" ${status.source_task_id && !alignment.aligned ? 'disabled' : ''}>${t('modelCalibrationConfirmReplay')}</button>`);
+    }
+    if (live && ['static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(phase)) actions.push(`<button id="model-calibration-pause" class="button">${t('pauseTask')}</button>`);
     if (live && phase === 'paused') actions.push(`<button id="model-calibration-resume" class="button primary">${t('resumeTask')}</button>`);
-    if (live && taskActive) actions.push(`<button id="model-calibration-cancel" class="button danger">${t('cancelTask')}</button>`);
+    if (live && (taskActive || phase === 'waiting_replay_confirmation')) actions.push(`<button id="model-calibration-cancel" class="button danger">${t('cancelTask')}</button>`);
+    if (!live && state.modelCalibrationOffline?.can_resume) {
+        const readyToImport = workbenchConnected() && robotActive && ['idle', 'complete', 'cancelled', 'failed'].includes(state.telemetry?.model_calibration?.phase || 'idle');
+        actions.push(`<button id="model-calibration-import-trajectory" class="button primary" ${readyToImport ? '' : 'disabled'} title="${state.language === 'en' ? 'Requires an active robot, idle calibration, and matching configuration' : '需要机械臂 ACTIVE、当前无标定任务、且配置匹配'}">${state.language === 'en' ? 'Reuse trajectory (no movement)' : '恢复轨迹到当前会话（不运动）'}</button>`);
+    }
     if (live && result?.static_pass) actions.push(`<button id="model-calibration-apply" class="button primary" ${robotInactive && !taskActive ? '' : 'disabled'}>${t('applyCandidate')}</button>`);
     if (live && status.candidate_applied) actions.push(`<button id="model-calibration-restore" class="button" ${robotInactive && !taskActive ? '' : 'disabled'}>${t('restoreCandidate')}</button>`);
-    const replayHint = phase === 'waiting_replay_confirmation' ? `<div class="callout">${t('replayReadyHint')} · ${t('samplePoints')} ${training + validation} · ${t('replayRate')} ${Number(status.replay_rate || 0).toFixed(4)} · ${t('estimatedDuration')} ${Number(status.estimated_duration_s || 0).toFixed(1)} s / ${t('durationLimit')} ${Number(status.max_task_duration_s || options.max_task_duration_s).toFixed(0)} s · ${t('releaseSafetyHint')}</div>` : '';
-    const resultBlock = result ? `<div class="candidate-compare-head"><h4>${t('candidateComparison')}</h4><span>${t('candidateScope')}</span></div>${modelCalibrationMetricTable(status)}${modelCalibrationCandidateTable(status)}<div class="workspace-actions"><button id="model-calibration-preview-save" class="button">${t('previewSave')}</button>${state.modelCalibrationSavePreview ? `<button id="model-calibration-save" class="button primary">${t('saveCandidate')}</button>` : ''}<button id="model-calibration-export" class="button">${t('exportCandidate')}</button>${state.modelCalibrationSaved ? `<button id="model-calibration-restore-config" class="button">${t('restoreSavedConfig')}</button>` : ''}</div>${state.modelCalibrationSavePreview ? `<div class="diff-box"><b>${esc(state.modelCalibrationSavePreview.path)}</b>${(state.modelCalibrationSavePreview.changes || []).map(x => `<div><del>${esc(x.before)}</del><ins>${esc(x.after)}</ins></div>`).join('') || `<p>${t('noChanges')}</p>`}</div>` : ''}${state.modelCalibrationExport ? `<div class="callout"><b>${t('exportCandidate')}</b><div class="path-chip">${esc(state.modelCalibrationExport.candidate_urdf || '')}</div>${state.modelCalibrationExport.verification ? `<div>gravity RMS ${Number(state.modelCalibrationExport.verification.gravity_rms_nm || 0).toExponential(3)} Nm · FK Δp ${Number(state.modelCalibrationExport.verification.fk_max_position_error_m || 0).toExponential(3)} m</div>` : ''}</div>` : ''}` : '';
-    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('comOffsetBound')}<input id="model-cal-com-bound" type="number" min="0.005" max="0.2" step="0.005" value="${Number(options.max_com_offset_m)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('maximumTaskDuration')}<input id="model-cal-max-duration" type="number" min="30" max="3600" step="30" value="${Number(options.max_task_duration_s)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button>${directory ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.error ? `<div class="callout error-callout">${esc(status.error)}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${replayHint}${resultBlock}${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
+    const estimate = Number(status.estimated_duration_s || 0);
+    const singlePass = Number(status.single_pass_duration_s || 0);
+    const groups = Array.isArray(status.pose_targets) ? status.pose_targets.length : 0;
+    const teaching = Number(status.teaching_wall_duration_s || 0);
+    const totalEstimate = Number(status.estimated_total_duration_s || teaching + estimate);
+    const recorded = Number(status.recorded_duration_s || 0);
+    const planningReady = live && phase === 'waiting_replay_confirmation' && status.planner_id === 'local_hermite' && status.calibration_strategy === 'two_pass_combined' && Number.isFinite(estimate) && estimate > 0 && singlePass > 0;
+    const replayHint = planningReady ? `<div class="callout"><b>${state.language === 'en' ? 'Online capture time estimate' : '已选示教轨迹 · 在线采集耗时预估'}</b>
+      <div>${state.language === 'en' ? 'Demonstration' : '自由示教'} ${teaching.toFixed(1)} s · ${state.language === 'en' ? 'Recorded track' : '原始轨迹'} ${recorded.toFixed(1)} s · ${state.language === 'en' ? 'Retimed one-way pass' : '优化后单程'} ${singlePass.toFixed(1)} s</div>
+      <div>${state.language === 'en' ? 'Parking now cancels the pending automatic replay; saved task records remain on disk.' : '此时选择停放会结束待确认的自动回放，已记录的任务数据仍保存在磁盘中'}</div>
+      <div>${state.language === 'en' ? 'Trajectory path' : '轨迹路径长度'} ${Number(status.joint_path_length_rad || 0).toFixed(2)} rad · ${state.language === 'en' ? 'Reduced waypoints' : '几何关键点'} ${Number(status.geometric_waypoints || 0)} / ${Number(status.original_samples || 0)} · ${state.language === 'en' ? 'Planner' : '规划器'} local_hermite</div>
+      <div>${state.language === 'en' ? 'Approx.' : '简式'}：T总 ≈ ${teaching.toFixed(1)} + 2 × ${singlePass.toFixed(1)} + 1.5 × ${groups} + 2 = <b>${totalEstimate.toFixed(1)} s</b> (${state.language === 'en' ? 'automatic phase' : '自动阶段'} ${estimate.toFixed(1)} s)</div>
+      <div>${totalEstimate <= 200 ? (state.language === 'en' ? 'Within the 200 s target (estimate only).' : '预计符合 200 s 目标，实际耗时取决于停稳、控制反馈与拟合') : (state.language === 'en' ? 'Over the 200 s target. You may still run; joint safety limits will not be raised.' : '预计超过 200 s 目标：可继续，但不会为了赶时间放宽关节安全限制')} ${state.language === 'en' ? 'Offline full inertial export is not included in this estimate.' : '注意：这不包含后续离线完整惯量候选计算与验证'} ${t('releaseSafetyHint')}</div></div>` : (phase === 'teaching' ? `<div class="callout">${state.language === 'en' ? 'Teaching is not time-limited.' : '示教时间不设上限，结束示教后根据轨迹运动量和关节安全限制计算自动回放时间'}</div>` : (phase === 'waiting_replay_confirmation' ? `<div class="callout error-callout">${state.language === 'en' ? 'Native Core is outdated; reinstall before automatic playback.' : '正在运行的 C++ Core 未加载新的轨迹规划器，请重新安装编译后再自动回放'}</div>` : ''));
+    const resumeSafetyHint = live && status.source_task_id ? `<div class="callout"><b>${state.language === 'en' ? 'Imported demonstration' : '已恢复历史轨迹'}：${esc(status.source_task_id)}</b>
+      <div>${status.original_start_selected ? (state.language === 'en' ? 'Current pose was closer to original FIRST pose: imported path was reversed. The same recorded path is replayed, without an extra move.' : '当前位置更接近原示教起点：已自动选择从这一端开始，沿原示教路径采集，无须额外归位') : (state.language === 'en' ? 'Current pose was closer to original LAST pose: standard reverse/forward collection.' : '当前位置更接近原示教终点：采用原反向／正向采集流程')}</div>
+      <div>${state.language === 'en' ? 'Target joint angles (rad)' : '回放起点关节角（rad）'}：${esc((status.replay_start_joint_positions || []).map(x => Number(x).toFixed(3)).join('，'))}</div>
+      <div id="model-calibration-align-status"><b>${esc(calibrationAlignmentStatus(alignment, status.alignment_active))}</b> ${alignment.valid ? `· Δmax ${alignment.maxError.toFixed(3)} rad · |dq|max ${alignment.maxSpeed.toFixed(3)} rad/s` : ''}</div>
+      <div class="table-scroll"><table class="workspace-table"><thead><tr><th>${state.language === 'en' ? 'Joint' : '关节'}</th><th>${state.language === 'en' ? 'Actual' : '当前'}</th><th>${state.language === 'en' ? 'Target' : '目标'}</th><th>Δ(rad)</th></tr></thead><tbody id="model-calibration-align-rows">${alignment.rows.map(x => `<tr><td>${esc(x.name)}</td><td>${x.now.toFixed(3)}</td><td>${x.goal.toFixed(3)}</td><td>${x.delta >= 0 ? '+' : ''}${x.delta.toFixed(3)}</td></tr>`).join('')}</tbody></table></div>
+      <div>${state.language === 'en' ? 'Limits: max |Δq| 0.08 rad, max |dq| 0.05 rad/s; live feedback age <= 500 ms.' : '门槛：最大关节误差 0.08 rad、最大关节速度 0.05 rad/s；反馈须在 500 ms 内'}</div>
+      <div>${state.language === 'en' ? 'No environment collision planner is available in standalone Core. Guided return is MANUAL: support the arm and check the workspace; the software never drives directly from park to target.' : 'Standalone Core 暂无环境碰撞规划器；这里只提供人工拖拽引导：支撑机械臂、确认周围空间后缓慢调整，不会自动从停放位向目标直线运动'}</div></div>` : '';
+    const offlineRecord = state.modelCalibrationOffline;
+    const offlineHint = offlineRecord ? `<div class="callout"><b>${esc(state.language === 'en' ? ({ teaching_only: 'Recorded demonstration', interrupted: 'Interrupted task', completed: 'Completed calibration' }[offlineRecord.record_kind] || 'Task record') : ({ teaching_only: '仅有示教轨迹', interrupted: '标定中断', completed: '标定已完成' }[offlineRecord.record_kind] || '任务记录'))}</b><div>${esc(offlineRecord.note || '')}</div><div>${state.language === 'en' ? 'Saved trajectory' : '保存的轨迹'}：${Number(offlineRecord.trajectory?.samples || 0)} ${state.language === 'en' ? 'samples' : '帧'} · ${Number(offlineRecord.trajectory?.duration_s || 0).toFixed(1)} s</div><div>${state.language === 'en' ? 'Reading a record never moves the robot. Importing creates a NEW task; replay always starts at the beginning and requires a second confirmation.' : '加载记录不会使机械臂运动；恢复会创建新任务，自动采集必须从头执行并再次确认，不能从中断点直接续动'}</div></div>` : '';
+    const resultBlock = result && result.static_pass && phase === 'complete' ? `<div class="candidate-compare-head"><h4>${t('candidateComparison')}</h4><span>${t('candidateScope')}</span></div>${modelCalibrationMetricTable(status)}${modelCalibrationCandidateTable(status)}<div class="workspace-actions"><button id="model-calibration-preview-save" class="button">${t('previewSave')}</button>${state.modelCalibrationSavePreview ? `<button id="model-calibration-save" class="button primary">${t('saveCandidate')}</button>` : ''}<button id="model-calibration-export" class="button">${t('exportCandidate')}</button><button id="model-calibration-export-inertial" class="button">${state.language === 'en' ? 'Inertial candidate (experimental)' : '完整惯量候选（实验）'}</button>${state.modelCalibrationSaved ? `<button id="model-calibration-restore-config" class="button">${t('restoreSavedConfig')}</button>` : ''}</div>${state.modelCalibrationSavePreview ? `<div class="diff-box"><b>${esc(state.modelCalibrationSavePreview.path)}</b>${(state.modelCalibrationSavePreview.changes || []).map(x => `<div><del>${esc(x.before)}</del><ins>${esc(x.after)}</ins></div>`).join('') || `<p>${t('noChanges')}</p>`}</div>` : ''}${state.modelCalibrationInertialExport ? `<div class="callout"><b>${state.language === 'en' ? 'Inertial candidate — offline, unverified on hardware' : '惯量候选 · 仅离线，未真机验证'}</b><div class="path-chip">${esc(state.modelCalibrationInertialExport.candidate_urdf || '')}</div><div>${state.language === 'en' ? 'Regressor rank' : '回归矩阵秩'} ${Number(state.modelCalibrationInertialExport.joint_regressor_rank)} / ${Number(state.modelCalibrationInertialExport.joint_regressor_columns)} · ${state.language === 'en' ? 'Holdout RMS' : '留出集 RMS'} ${Number(state.modelCalibrationInertialExport.validation_original_rms_nm).toFixed(3)} → ${Number(state.modelCalibrationInertialExport.validation_candidate_rms_nm).toFixed(3)} Nm</div><div>${state.language === 'en' ? 'Unidentifiable parameters retain CAD prior; do not deploy automatically.' : '不可辨识参数保留 CAD 先验；不会自动替换或用于真机控制'}</div></div>` : ''}${state.modelCalibrationExport ? `<div class="callout"><b>${t('exportCandidate')}</b><div class="path-chip">${esc(state.modelCalibrationExport.candidate_urdf || '')}</div>${state.modelCalibrationExport.verification ? `<div>gravity RMS ${Number(state.modelCalibrationExport.verification.gravity_rms_nm || 0).toExponential(3)} Nm · FK Δp ${Number(state.modelCalibrationExport.verification.fk_max_position_error_m || 0).toExponential(3)} m</div>` : ''}</div>` : ''}` : '';
+    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('comOffsetBound')}<input id="model-cal-com-bound" type="number" min="0.005" max="0.2" step="0.005" value="${Number(options.max_com_offset_m)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button>${directory && (!state.modelCalibrationOffline || state.modelCalibrationOffline.has_result) ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.error ? `<div class="callout error-callout">${esc(status.error)}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${replayHint}${resumeSafetyHint}${offlineHint}${resultBlock}${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
 }
 function singleCalibrationToolsHtml() {
     const c = state.telemetry?.calibration || { kind: 'none', phase: 'idle', captured: 0, expected: 0 }; const progress = c.expected ? `${c.captured}/${c.expected}` : '';
@@ -402,23 +566,32 @@ function updateModelCalibrationLive() {
     const poses = status.pose_targets || []; set('model-calibration-groups-inline', `${poses.filter(x => !x.validation).length} / ${poses.filter(x => x.validation).length}`);
     set('model-calibration-static-inline', status.valid_static_samples ?? '—');
     set('model-calibration-recorder-inline', `${status.recorder?.accepted ?? '—'} / ${status.recorder?.dropped ?? '—'}`);
+    if (status.source_task_id && status.phase === 'waiting_replay_confirmation') {
+        const aligned = calibrationAlignment(status);
+        const label = $('model-calibration-align-status');
+        if (label) label.textContent = `${calibrationAlignmentStatus(aligned, status.alignment_active)}${aligned.valid ? ` · Δmax ${aligned.maxError.toFixed(3)} rad · |dq|max ${aligned.maxSpeed.toFixed(3)} rad/s` : ''}`;
+        const body = $('model-calibration-align-rows');
+        if (body) body.innerHTML = aligned.rows.map(x => `<tr><td>${esc(x.name)}</td><td>${x.now.toFixed(3)}</td><td>${x.goal.toFixed(3)}</td><td>${x.delta >= 0 ? '+' : ''}${x.delta.toFixed(3)}</td></tr>`).join('');
+        const start = $('model-calibration-replay-confirm');
+        if (start) start.disabled = !aligned.aligned;
+    }
     updateModelCalibrationComparison();
 }
 function updateModelCalibrationTaskOverlay() {
     const overlay = $('model-calibration-overlay'); if (!overlay) return;
-    const status = state.telemetry?.model_calibration; const show = modelCalibrationLongRunning(status);
+    const status = state.telemetry?.model_calibration; const show = !priorityErrorOpen && modelCalibrationLongRunning(status) && state.telemetry?.robot_state !== 'FAULT';
     overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
     if (!show) return;
     const progress = Math.max(0, Math.min(1, Number(status.progress || 0)));
     $('model-calibration-task-title').textContent = modelCalibrationPhaseText(status.phase);
     $('model-calibration-task-progress-bar').style.width = `${Math.round(progress * 100)}%`;
-    $('model-calibration-task-progress').textContent = `${Math.round(progress * 100)}% · ${Number(status.completed || 0)}/${Number(status.total || 0)}`;
+    $('model-calibration-task-progress').textContent = status.phase === 'teaching' ? `${state.language === 'en' ? 'Free teaching' : '自由示教'} ${Number(status.teaching_wall_duration_s || 0).toFixed(1)} s · ${state.language === 'en' ? 'No duration cap' : '无时长上限'}` : `${Math.round(progress * 100)}% · ${Number(status.completed || 0)}/${Number(status.total || 0)}`;
     $('model-calibration-task-samples').textContent = `${t('acceptedDroppedFrames')} ${status.recorder?.accepted ?? '—'} / ${status.recorder?.dropped ?? '—'} · ${t('validStaticSamples')} ${status.valid_static_samples ?? '—'}`;
     $('model-calibration-task-feedback').textContent = `${t('feedbackAge')} ${Number.isFinite(state.telemetry?.feedback_age_ms) ? state.telemetry.feedback_age_ms.toFixed(0) + ' ms' : '—'}`;
     $('model-calibration-task-id').textContent = `${t('taskIdentifier')} ${status.task_id || '—'}`;
     $('model-calibration-task-error').textContent = status.error || (status.recorder?.data_gap ? (state.language === 'en' ? 'Recorded data contains gaps' : '记录数据存在缺口') : status.recorder?.write_failed ? (state.language === 'en' ? 'Raw data write failed' : '原始数据写入失败') : '');
     $('model-calibration-task-stop-teach').hidden = status.phase !== 'teaching';
-    $('model-calibration-task-pause').hidden = status.phase === 'paused' || status.phase === 'teaching';
+    $('model-calibration-task-pause').hidden = !['static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(status.phase);
     $('model-calibration-task-resume').hidden = status.phase !== 'paused';
     $('model-calibration-task-hold').disabled = state.telemetry?.robot_state !== 'ACTIVE';
     $('model-calibration-task-disable').disabled = state.telemetry?.robot_state === 'INACTIVE';
@@ -436,7 +609,18 @@ async function modelCalibrationQuick(method, params = {}) {
         if (result?.phase !== before && ['waiting_replay_confirmation', 'complete', 'cancelled', 'failed'].includes(result?.phase)) render();
         else { updateModelCalibrationTaskOverlay(); updateModelCalibrationLive(); }
         return result;
-    } catch (error) { toast(t('error') + ': ' + error.message, true); return null; }
+    } catch (error) {
+        // Refresh immediately: teach_stop can transition into FAILED before
+        // the next telemetry event. Never leave a stale teaching mask onscreen.
+        try {
+            const latest = await workbenchRequest('model_calibration_status', {});
+            if (latest && state.telemetry) state.telemetry.model_calibration = latest;
+        } catch { /* preserve the original request error */ }
+        showPriorityError(t('error') + ': ' + error.message);
+        updateModelCalibrationTaskOverlay();
+        updateModelCalibrationLive();
+        return null;
+    }
 }
 async function resumeModelCalibration() {
     try { return await modelCalibrationQuick('model_calibration_resume', { confirmed: false }); }
@@ -451,13 +635,20 @@ function captureModelCalibrationOptions() {
         regularization: read('model-cal-regularization', state.modelCalibrationOptions.regularization),
         svd_relative_threshold: read('model-cal-svd', state.modelCalibrationOptions.svd_relative_threshold),
         minimum_information_score: read('model-cal-information', state.modelCalibrationOptions.minimum_information_score),
-        max_task_duration_s: read('model-cal-max-duration', state.modelCalibrationOptions.max_task_duration_s),
     };
     return { ...state.modelCalibrationOptions };
 }
 function modelCalibrationReplayConfirm() {
     const dialog = $('confirm-dialog');
-    dialog.innerHTML = `<h3>${t('modelCalibration')}</h3><p>${state.language === 'en' ? 'Automatic replay follows the inspected demonstration path for bidirectional static holds and multi-speed friction acquisition' : '自动回放会沿已经检查的示教路径执行双向静态停留和多速度摩擦采集'}</p><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
+    const plan = currentModelCalibration() || {};
+    if (plan.source_task_id && !calibrationAlignment(plan).aligned) { showPriorityError(state.language === 'en' ? 'Replay start not aligned. Use guided alignment and wait for fresh feedback.' : '当前姿态与回放起点不匹配：请先完成引导对齐，并等待新鲜的关节反馈'); return; }
+    if (plan.planner_id !== 'local_hermite' || !(Number(plan.single_pass_duration_s) > 0)) { showPriorityError(state.language === 'en' ? 'Native Core was not rebuilt. Reinstall before replay.' : 'C++ Core 仍是旧版，请重新编译安装后再执行自动回放'); return; }
+    const estimate = Number(plan.estimated_duration_s || 0);
+    const teaching = Number(plan.teaching_wall_duration_s || 0);
+    const totalEstimate = Number(plan.estimated_total_duration_s || teaching + estimate);
+    const oneWay = Number(plan.single_pass_duration_s || 0);
+    const poses = Array.isArray(plan.pose_targets) ? plan.pose_targets.length : 0;
+    dialog.innerHTML = `<h3>${t('modelCalibration')}</h3><p>${state.language === 'en' ? 'Automatic capture reuses the checked trajectory for one reverse static/dynamic pass and one forward dynamic pass' : '自动采集将沿已检查轨迹完成一次反向静态/动态采集和一次正向动态采集'}</p><div class="callout"><b>${state.language === 'en' ? 'Estimated full calibration time' : '预计全流程时间'}：${Number.isFinite(totalEstimate) ? totalEstimate.toFixed(1) : '—'} s (${state.language === 'en' ? 'automatic' : '自动'} ${estimate.toFixed(1)} s)</b><div>${state.language === 'en' ? 'Approx.' : '简式'}：T总 ≈ ${teaching.toFixed(1)} + 2 × ${oneWay.toFixed(1)} + 1.5 × ${poses} + 2</div><div>${totalEstimate > 200 ? (state.language === 'en' ? 'Exceeds 200 s target; safety limits remain enforced.' : '预计超过 200s 目标，但仍允许启动，不会放宽安全限制') : (state.language === 'en' ? 'Estimate only; actual stabilizing and fitting may take longer.' : '这是估算值，实际停稳与拟合可能更久')}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
     dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked; $('model-calibration-confirm-cancel').onclick = () => dialog.close();
     $('model-calibration-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; render(); updateModelCalibrationTaskOverlay(); }); };
 }
@@ -576,6 +767,8 @@ function render() {
     const runtime = $('runtime-panel'); if (runtime) runtime.classList.toggle('is-hidden', state.page !== 'run' && !active());
     document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === state.page));
     statusUI(); bindPage();
+    if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
+    if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
     if (state.page === 'run') setTimeout(() => { try { fit?.fit(); } catch { } }, 50);
     if (state.page === 'model') setTimeout(() => operation(mountModelView), 0);
     if (state.page === 'workbench') setTimeout(() => operation(mountWorkbenchView), 0);
@@ -584,7 +777,7 @@ function render() {
 function capture() { for (const key of Object.keys(state.config)) { const element = $(key); if (element) state.config[key] = element.value; } if ($('profile-select')) state.config.profile = $('profile-select').value; }
 async function operation(fn) { try { return await fn(); } catch (error) { toast(t('error') + ': ' + error.message, true); return null; } }
 function busyText(zh, en) { return state.language === 'en' ? en : zh; }
-function setOperationOverlay(message = '') { const overlay = $('operation-overlay'); if (!overlay) return; const show = !!message; overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true'); const text = $('operation-message'); if (text && show) text.textContent = message; }
+function setOperationOverlay(message = '') { const overlay = $('operation-overlay'); if (!overlay) return; const show = !!message && !priorityErrorOpen; overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true'); const text = $('operation-message'); if (text && show) text.textContent = message; }
 async function blockingOperation(message, fn, minimumMs = 320) { if (state.blockingBusy) return null; state.blockingBusy = true; setOperationOverlay(message || busyText('正在处理...', 'Working...')); const started = performance.now(); try { return await fn(); } catch (error) { toast(t('error') + ': ' + error.message, true); return null; } finally { const remaining = minimumMs - (performance.now() - started); if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining)); state.blockingBusy = false; setOperationOverlay(''); } }
 function actionBusyMessage(action) { const labels = { activate: ['正在使能...', 'Activating...'], park: ['正在停放并失能...', 'Parking and disabling...'], deactivate: ['正在立即失能...', 'Disabling...'], hold: ['正在保持当前位置...', 'Holding current position...'], clear_fault: ['正在清除故障...', 'Clearing fault...'], fault_compliant: ['正在进入柔性恢复...', 'Entering compliant recovery...'], fault_rigid: ['正在返回刚性保持...', 'Returning to rigid hold...'] }; const value = labels[action] || ['正在处理...', 'Working...']; return busyText(value[0], value[1]); }
 async function refreshProfiles() {
@@ -693,7 +886,7 @@ function bindPage() {
         if ($('calibration-preview-save')) $('calibration-preview-save').onclick = () => blockingOperation(busyText('正在整理标定结果差异...', 'Preparing calibration result diff...'), async () => { state.admittance = await workbenchRequest('get_admittance'); state.savePreview = await api.request('workbench_config_preview', { config: state.config }); render(); });
         if ($('calibration-save-config')) $('calibration-save-config').onclick = () => blockingOperation(busyText('正在保存标定参数...', 'Saving calibration parameters...'), async () => { const result = await api.request('workbench_config_save', { config: state.config, expected_sha: state.savePreview.sha256 }); state.savePreview = null; toast(`Saved ${result.path}`); render(); });
         for (const id of ['model-cal-pose-budget', 'model-cal-validation', 'model-cal-com-bound', 'model-cal-regularization', 'model-cal-svd']) { const input = $(id); if (input) input.onchange = captureModelCalibrationOptions; }
-        if ($('model-calibration-teach-start')) $('model-calibration-teach-start').onclick = () => blockingOperation(busyText('正在启动拖动示教...', 'Starting demonstration...'), async () => { captureModelCalibrationOptions(); state.modelCalibrationOffline = null; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationSaved = null; const result = await workbenchRequest('model_calibration_teach_begin', state.modelCalibrationOptions); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || ''; render(); updateModelCalibrationTaskOverlay(); });
+        if ($('model-calibration-teach-start')) $('model-calibration-teach-start').onclick = () => blockingOperation(busyText('正在启动拖动示教...', 'Starting demonstration...'), async () => { captureModelCalibrationOptions(); state.modelCalibrationOffline = null; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationInertialExport = null; state.modelCalibrationSaved = null; const result = await workbenchRequest('model_calibration_teach_begin', state.modelCalibrationOptions); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || ''; render(); updateModelCalibrationTaskOverlay(); });
         if ($('model-calibration-teach-stop')) $('model-calibration-teach-stop').onclick = () => blockingOperation(busyText('正在结束示教并检查轨迹...', 'Stopping demonstration and checking path...'), async () => { const result = await workbenchRequest('model_calibration_teach_stop', modelCalibrationTaskParams()); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || state.modelCalibrationDirectory; render(); });
         if ($('model-calibration-replay-confirm')) $('model-calibration-replay-confirm').onclick = modelCalibrationReplayConfirm;
         if ($('model-calibration-pause')) $('model-calibration-pause').onclick = () => modelCalibrationQuick('model_calibration_pause');
@@ -701,12 +894,37 @@ function bindPage() {
         if ($('model-calibration-cancel')) $('model-calibration-cancel').onclick = () => modelCalibrationQuick('model_calibration_cancel');
         if ($('model-calibration-apply')) $('model-calibration-apply').onclick = () => blockingOperation(busyText('正在应用候选重力校正...', 'Applying candidate gravity correction...'), async () => { const result = await workbenchRequest('model_calibration_apply', modelCalibrationTaskParams()); if (state.telemetry) state.telemetry.model_calibration = result; render(); });
         if ($('model-calibration-restore')) $('model-calibration-restore').onclick = () => blockingOperation(busyText('正在恢复运行时原配置...', 'Restoring original runtime configuration...'), async () => { const result = await workbenchRequest('model_calibration_restore', modelCalibrationTaskParams()); if (state.telemetry) state.telemetry.model_calibration = result; render(); });
-        if ($('model-calibration-load-record')) $('model-calibration-load-record').onclick = () => blockingOperation(busyText('正在加载模型校正记录...', 'Loading model calibration record...'), async () => { const directory = await api.selectResources(); if (!directory) return; const loaded = await api.request('model_calibration_load', { directory }); state.modelCalibrationOffline = loaded; state.modelCalibrationDirectory = loaded.directory || directory; if (loaded.metadata?.calibration_options) state.modelCalibrationOptions = { ...state.modelCalibrationOptions, ...loaded.metadata.calibration_options }; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationSaved = null; render(); });
+        if ($('model-calibration-load-record')) $('model-calibration-load-record').onclick = () => blockingOperation(busyText('正在加载模型校正记录...', 'Loading model calibration record...'), async () => { const directory = await api.selectResources(); if (!directory) return; const loaded = await api.request('model_calibration_load', { directory }); state.modelCalibrationOffline = loaded; state.modelCalibrationDirectory = loaded.directory || directory; if (loaded.metadata?.calibration_options) state.modelCalibrationOptions = { ...state.modelCalibrationOptions, ...loaded.metadata.calibration_options }; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationInertialExport = null; state.modelCalibrationSaved = null; render(); });
+        if ($('model-calibration-back-live')) $('model-calibration-back-live').onclick = () => { state.modelCalibrationOffline = null; state.modelCalibrationDirectory = state.telemetry?.model_calibration?.directory || ''; render(); };
+        if ($('model-calibration-alignment-begin')) $('model-calibration-alignment-begin').onclick = () => {
+            const dialog = $('confirm-dialog');
+            dialog.innerHTML = `<h3>${state.language === 'en' ? 'Supervised manual alignment' : '人工引导返回回放起点'}</h3><p>${state.language === 'en' ? 'This does NOT command the robot to the target. The arm will enter compliant drag; gravity can cause it to move or sag. Support the robot physically, check load/cables and keep others clear.' : '这不会发送自动归位轨迹；机械臂将进入柔性拖拽，重力可能导致关节移动或下垂；请先支撑机械臂，检查负载、线缆和周围空间，禁止他人进入'}</p><label class="confirmation"><input type="checkbox" id="model-cal-alignment-supported"><span>${state.language === 'en' ? 'Arm is supported and manual dragging is safe in this area' : '机械臂已被支撑，周围允许安全地人工拖拽'}</span></label><div class="actions"><button id="model-cal-alignment-cancel" class="button">${t('cancel')}</button><button id="model-cal-alignment-accept" class="button danger" disabled>${state.language === 'en' ? 'Enter manual drag' : '确认进入柔性拖拽'}</button></div>`;
+            dialog.showModal();
+            $('model-cal-alignment-supported').onchange = () => { $('model-cal-alignment-accept').disabled = !$('model-cal-alignment-supported').checked; };
+            $('model-cal-alignment-cancel').onclick = () => dialog.close();
+            $('model-cal-alignment-accept').onclick = () => { dialog.close(); blockingOperation(busyText('正在进入引导拖拽...', 'Entering guided drag...'), async () => { const result = await workbenchRequest('model_calibration_alignment_begin', modelCalibrationTaskParams({ supported: true })); if (state.telemetry) state.telemetry.model_calibration = result; render(); }); };
+        };
+        if ($('model-calibration-alignment-finish')) $('model-calibration-alignment-finish').onclick = () => blockingOperation(busyText('正在保持当前姿态...', 'Holding current pose...'), async () => { const result = await workbenchRequest('model_calibration_alignment_finish', modelCalibrationTaskParams()); if (state.telemetry) state.telemetry.model_calibration = result; render(); });
+        if ($('model-calibration-import-trajectory')) $('model-calibration-import-trajectory').onclick = () => blockingOperation(busyText('正在检查并恢复示教轨迹...', 'Importing demonstrated trajectory...'), async () => {
+            const record = state.modelCalibrationOffline;
+            if (!record?.can_resume) throw new Error('该记录缺少可用于安全回放的 trajectory.csv；若故障发生在结束示教前，旧版本可能未保存中断前轨迹；可查看任务目录中的 frames.csv 进行离线诊断，但不能直接当作已验证的回放轨迹');
+            if (!workbenchConnected() || state.telemetry?.robot_state !== 'ACTIVE') throw new Error('恢复轨迹需要工作台已连接且机械臂 ACTIVE');
+            const current = state.telemetry?.model_calibration?.phase || 'idle';
+            if (!['idle', 'complete', 'cancelled', 'failed'].includes(current)) throw new Error('请先取消或结束当前标定任务');
+            // No motor movement: this only stages a checked copy of the trajectory.
+            const restored = await workbenchRequest('model_calibration_import_trajectory', { directory: record.directory, ...captureModelCalibrationOptions() });
+            if (state.telemetry) state.telemetry.model_calibration = restored;
+            state.modelCalibrationOffline = null;
+            state.modelCalibrationDirectory = restored.directory || '';
+            render();
+            toast(state.language === 'en' ? 'Trajectory imported. Confirm replay separately to move.' : '轨迹已恢复；机械臂尚未回放，请检查预计时间后单独确认');
+        });
         if ($('model-calibration-recompute')) $('model-calibration-recompute').onclick = () => blockingOperation(busyText('正在离线重算候选模型...', 'Recomputing candidate offline...'), async () => { if (!state.modelCalibrationDirectory) throw new Error('model calibration task directory is missing'); const recomputed = await api.request('model_calibration_recompute', { config: state.config, directory: state.modelCalibrationDirectory }); if (!state.modelCalibrationOffline) state.modelCalibrationOffline = { directory: state.modelCalibrationDirectory, metadata: {}, result: {} }; state.modelCalibrationOffline.result = { ...(state.modelCalibrationOffline.result || {}), gravity_result: recomputed.candidate, static_pass: !!recomputed.candidate?.static_pass }; render(); });
         if ($('model-calibration-preview-save')) $('model-calibration-preview-save').onclick = () => blockingOperation(busyText('正在准备候选保存差异...', 'Preparing candidate save diff...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); state.modelCalibrationSavePreview = await api.request('model_calibration_preview_save', { config: state.config, directory }); render(); });
         if ($('model-calibration-save')) $('model-calibration-save').onclick = () => blockingOperation(busyText('正在保存候选重力校正...', 'Saving candidate gravity correction...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory || !state.modelCalibrationSavePreview) throw new Error('save preview is required'); state.modelCalibrationSaved = await api.request('model_calibration_save', { config: state.config, directory, expected_sha: state.modelCalibrationSavePreview.sha256 }); state.modelCalibrationSavePreview = null; toast(`Saved ${state.modelCalibrationSaved.gravity_correction_path}`); render(); });
         if ($('model-calibration-restore-config')) $('model-calibration-restore-config').onclick = () => blockingOperation(busyText('正在恢复保存前配置...', 'Restoring pre-save configuration...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const result = await api.request('model_calibration_restore_config', { config: state.config, directory }); state.modelCalibrationSaved = null; state.modelCalibrationSavePreview = null; toast(`Restored ${result.core_path}`); render(); });
         if ($('model-calibration-export')) $('model-calibration-export').onclick = () => blockingOperation(busyText('正在导出并校验候选 URDF...', 'Exporting and verifying candidate URDF...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const destination = await api.selectResources(); if (!destination) return; state.modelCalibrationExport = await api.request('model_calibration_export_urdf', { config: state.config, directory, destination }); render(); });
+        if ($('model-calibration-export-inertial')) $('model-calibration-export-inertial').onclick = () => blockingOperation(busyText('正在辨识惯性参数并验证候选 URDF...', 'Identifying and validating an inertial URDF candidate...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const destination = await api.selectResources(); if (!destination) return; state.modelCalibrationInertialExport = await api.request('model_calibration_export_full_inertial', { directory, destination }); render(); });
         if (state.workbenchTab === 'diagnostics') setTimeout(drawWorkbenchChart, 0);
         setTimeout(updateWorkbenchControlState, 0);
     }
@@ -740,6 +958,7 @@ function onEvent(event) {
     if (event.event === 'telemetry') {
         const previousCalibrationPhase = state.telemetry?.model_calibration?.phase;
         state.telemetry = event.data; state.telemetryReceivedAt = Date.now(); state.telemetryHistory.push(event.data); if (state.telemetryHistory.length > 600) state.telemetryHistory.shift();
+        checkRuntimeAlerts(event.data);
         const calibration = event.data?.model_calibration; if (calibration?.directory) state.modelCalibrationDirectory = calibration.directory; if (calibration?.task_id && calibration.phase !== 'idle') state.modelCalibrationOffline = null;
         const phaseBoundary = calibration?.phase !== previousCalibrationPhase && ['waiting_replay_confirmation', 'complete', 'cancelled', 'failed'].includes(calibration?.phase);
         if (phaseBoundary && state.page === 'workbench' && state.workbenchTab === 'calibration') render(); else updateWorkbenchLive();
@@ -752,7 +971,9 @@ async function boot() {
     try {
         const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
         state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; state.source = 'builtin'; state.page = 'start';
-        applyTheme(); document.documentElement.lang = state.language; shell(); api.onEvent(onEvent);
+        applyTheme(); document.documentElement.lang = state.language; shell();
+        $('priority-error-ack').onclick = acknowledgePriorityError;
+        api.onEvent(onEvent);
         state.status = await api.request('status'); state.session = state.status.session || { state: 'idle' }; outputBuffer = await api.request('logs'); if (outputBuffer) term?.write(outputBuffer);
         await refreshLibrary(); render();
     } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(t('error') + ': ' + error.message, true); } }

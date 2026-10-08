@@ -219,11 +219,14 @@ test('model calibration wizard follows backend task state and keeps safety actio
   assert.match(terminal, /model_calibration_worker_=std::thread/);
   assert.match(terminal, /task_id/);
   assert.match(terminal, /model_calibration_require_task/);
+  assert.match(terminal, /if\(model_calibration_phase_\.load\(\) == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION\)\s*machine_model_calibration_cancel\(\)/);
+
   assert.match(terminal, /stale or missing model calibration task_id/);
   assert.match(app, /modelCalibrationTaskParams/);
   assert.match(app, /minimum_information_score/);
-  assert.match(app, /max_task_duration_s/);
-  assert.match(terminal, /estimated automatic calibration duration exceeds configured maximum/);
+  assert.doesNotMatch(app, /model-cal-max-duration/);
+  assert.match(terminal, /calibration_retime::plan/);
+  assert.match(terminal, /model_calibration_estimated_duration_s_ = 2\.0/);
   assert.match(terminal, /resume_confirmation_required/);
 });
 

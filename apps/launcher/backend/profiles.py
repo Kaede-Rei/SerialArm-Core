@@ -124,10 +124,12 @@ class Inspector:
     def machine_terminal(self):
         candidates = [
             os.environ.get('SERIAL_ARM_TERMINAL', ''),
-            shutil.which('serial_arm_terminal') or '',
+            # Use the local checked-out project's binary before an older
+            # global PATH installation. The explicit env override still wins.
             str(self.root / '.install/standalone/bin/serial_arm_terminal'),
             str(self.root / 'install/standalone/bin/serial_arm_terminal'),
             str(self.root / 'build/serial_arm_core/serial_arm_terminal'),
+            shutil.which('serial_arm_terminal') or '',
         ]
         for value in candidates:
             if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())

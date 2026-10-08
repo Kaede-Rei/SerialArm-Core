@@ -1,0 +1,13 @@
+profiles:
+  tomato_picker:
+    core:
+      package: tomato_picker_description
+      config: config/serialarm/core.yaml
+    hardware:
+      plugin: serial_arm_hardware_damiao
+      config_package: tomato_picker_description
+      config: config/serialarm/hardware.yaml
+    description:
+      package: tomato_picker_description
+      urdf: urdf/tomato_picker.urdf
+      ros2_control_xacro: urdf/tomato_picker.ros2_control.xacro

@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="Tomato-Picker">
+  <xacro:arg name="config_file" default=""/>
+  <xacro:arg name="hardware_plugin" default="serial_arm_hardware_damiao"/>
+  <xacro:arg name="hardware_config" default=""/>
+  <xacro:arg name="serial_port" default=""/>
+  <xacro:arg name="baudrate" default=""/>
+  <xacro:arg name="bus" default=""/>
+
+  <xacro:include filename="$(find tomato_picker_description)/urdf/tomato_picker.urdf.xacro"/>
+  <xacro:include filename="$(find serial_arm_ros2_control)/urdf/serial_arm_system.ros2_control.xacro"/>
+
+  <ros2_control name="tomato_picker_arm" type="system">
+    <xacro:serial_arm_ros2_control_hardware
+      config_file="$(arg config_file)"
+      hardware_plugin="$(arg hardware_plugin)"
+      hardware_config="$(arg hardware_config)"
+      serial_port="$(arg serial_port)"
+      baudrate="$(arg baudrate)"
+      bus="$(arg bus)"/>
+
+    <joint name="joint1">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint2">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint3">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint4">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint5">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+    <joint name="joint6">
+      <command_interface name="position"/>
+      <command_interface name="velocity"/>
+      <state_interface name="position"/>
+      <state_interface name="velocity"/>
+      <state_interface name="effort"/>
+    </joint>
+  </ros2_control>
+</robot>

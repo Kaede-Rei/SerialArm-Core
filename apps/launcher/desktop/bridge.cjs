@@ -42,7 +42,8 @@ class Bridge extends EventEmitter {
       const detail = this.stderr.trim();
       this._fail(new Error(`Backend exited (${code ?? signal})${detail ? `: ${detail}` : ''}`));
     });
-    this.child.stdin.on('error', error => this._fail(error));
+    this.child.stdin.on('error', error => this._fail(
+      error.code === 'EPIPE' ? new Error('Backend exited/unavailable: stdin closed (EPIPE)' + (this.stderr ? ': ' + this.stderr.trim() : '')) : error));
   }
   _fail(error) {
     if (this.dead) return;
@@ -59,7 +60,7 @@ class Bridge extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const id = ++this.seq;
-      const timeout = method === 'stop' || method === 'workbench_stop' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : 15000;
+      const timeout = method === 'stop' || method === 'workbench_stop' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 35000 : 15000);
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Backend request timed out')); }, timeout);
       this.pending.set(id, {resolve, reject, timer});
       this.child.stdin.write(JSON.stringify({id, method, params}) + '\n');

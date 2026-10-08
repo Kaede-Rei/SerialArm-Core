@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 import hashlib
+import csv
+import math
 import json
 import os
 from pathlib import Path
@@ -284,13 +286,72 @@ def save_gravity_correction(core_path, expected_sha, task_directory):
 
 
 def load_model_calibration_summary(directory):
-    directory, metadata, result = _load_model_calibration_task(directory)
-    return {
-        'directory': str(directory),
-        'metadata': metadata,
-        'result': result,
-        'task_id': result.get('task_id') or metadata.get('task_id', ''),
-    }
+    """Inspect a task without changing native state or opening any hardware.
+
+    Result files are optional: a demonstration becomes replayable as soon as
+    trajectory.csv has been written. Partial recordings remain inspectable.
+    """
+    if not directory:
+        raise ValueError('请选择标定任务文件夹')
+    folder = Path(directory).expanduser().resolve()
+    metadata_path = folder / 'metadata.json'
+    if not metadata_path.is_file():
+        raise ValueError('所选目录不是标定任务：缺少 metadata.json')
+    metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
+    task_id = metadata.get('task_id')
+    joint_names = metadata.get('joint_names')
+    if not isinstance(task_id, str) or not task_id or not isinstance(joint_names, list) or not joint_names or not all(isinstance(j, str) and j for j in joint_names) or len(set(joint_names)) != len(joint_names):
+        raise ValueError('任务元数据缺少有效任务编号或关节列表')
+    result_path = folder / 'result.json'
+    result = None
+    if result_path.is_file():
+        result = json.loads(result_path.read_text(encoding='utf-8'))
+        if result.get('task_id') != task_id:
+            raise ValueError('标定结果与任务记录编号不匹配')
+    trajectory_path = folder / 'trajectory.csv'
+    trajectory = {'valid': False, 'samples': 0, 'duration_s': None, 'sample_dt_s': None}
+    if trajectory_path.is_file():
+        with trajectory_path.open(encoding='utf-8', newline='') as stream:
+            reader = csv.reader(stream)
+            header = next(reader, [])
+            if len(header) != 2 or header[0] != 'sample_dt':
+                raise ValueError('示教轨迹格式错误：sample_dt')
+            dt = float(header[1])
+            if not math.isfinite(dt) or not 0 < dt <= 0.5:
+                raise ValueError('示教轨迹采样周期无效')
+            if next(reader, []) != ['index', *joint_names]:
+                raise ValueError('示教轨迹关节列与任务元数据不一致')
+            count = 0
+            for row in reader:
+                if len(row) != len(joint_names) + 1 or row[0] != str(count):
+                    raise ValueError(f'示教轨迹第 {count} 帧编号或列数无效')
+                if not all(math.isfinite(float(v)) for v in row[1:]):
+                    raise ValueError(f'示教轨迹第 {count} 帧存在非有限关节位置')
+                count += 1
+                if count > 300000:
+                    raise ValueError('轨迹帧数超过安全读取上限')
+            if count >= 20:
+                trajectory = {'valid': True, 'samples': count, 'duration_s': (count - 1) * dt, 'sample_dt_s': dt}
+    phase = str(result.get('phase', '')) if result else ''
+    if result and phase == 'complete':
+        record_kind = 'completed'
+    elif result or (folder / 'interrupted.txt').is_file():
+        record_kind = 'interrupted'
+    elif trajectory['valid']:
+        record_kind = 'teaching_only'
+    else:
+        record_kind = 'interrupted'
+    can_resume = trajectory['valid']
+    note = ('已完成标定，可查看结果或从原轨迹重新进行一次采集' if record_kind == 'completed' else
+            '仅有示教轨迹，可重新校验后从头开始自动采集' if record_kind == 'teaching_only' else
+            '此任务未完整结束；可用轨迹可从头重新采集，不能直接接着中断点运动' if can_resume else
+            '未发现完整轨迹，只能查看记录，无法恢复自动回放')
+    # Stored result is never a live session; the GUI must not infer that the
+    # playback is ready until the native process explicitly imports it.
+    display_result = result if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
+    return {'directory': str(folder), 'metadata': metadata, 'result': display_result,
+            'has_result': bool(result), 'record_kind': record_kind, 'can_resume': can_resume,
+            'trajectory': trajectory, 'note': note, 'task_id': task_id}
 
 
 def preview_gravity_correction(core_path, task_directory):
