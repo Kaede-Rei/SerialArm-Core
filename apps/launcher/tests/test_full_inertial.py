@@ -54,13 +54,19 @@ class ConservativeEstimatorTest(unittest.TestCase):
         class I:
             def toDynamicParameters(self):
                 return np.array([1.,0.,0.,0.,1.,0.,1.,0.,0.,1.])
+        class J:
+            nq=nv=1
+            idx_q=idx_v=0
         class M:
             njoints=2
-            nv=1
+            nq=nv=1
             names=['universe','joint1']
+            joints=[None,J()]
             inertias=[None,I()]
             def createData(self):return object()
         class P:
+            @staticmethod
+            def neutral(model):return np.zeros(model.nq)
             @staticmethod
             def computeJointTorqueRegressor(model,data,q,v,a):
                 return np.array([[q[0], v[0], a[0], q[0]*v[0], 1., q[0]**2, v[0]**2, q[0]*a[0], v[0]*a[0], a[0]**2]])

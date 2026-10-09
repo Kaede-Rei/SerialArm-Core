@@ -475,6 +475,8 @@ def export_candidate_urdf(task_directory, destination=None):
     root = tree.getroot()
     moments = payload['first_moments']
     changed = []
+    skipped_massless_links = []
+    review_warnings = []
     def local_name(node):
         return node.tag.rsplit('}', 1)[-1]
     links = [node for node in root.iter() if local_name(node) == 'link']
@@ -484,11 +486,24 @@ def export_candidate_urdf(task_directory, destination=None):
             continue
         inertial = next((node for node in list(link) if local_name(node) == 'inertial'), None)
         if inertial is None:
-            raise ValueError(f'candidate link has no inertial: {name}')
+            # A URDF frame such as tool0 is allowed to have no inertia at all
+            # It is a coordinate frame, not an identifiable rigid-body COM
+            skipped_massless_links.append(name)
+            if any(abs(float(v)) > 1e-9 for v in moments[name]):
+                review_warnings.append(f'{name}: 无惯量的坐标系存在非零拟合一阶矩，已保留原始 Link 并跳过反写，请人工核查')
+            continue
         mass_node = next((node for node in list(inertial) if local_name(node) == 'mass'), None)
         if mass_node is None:
             raise ValueError(f'candidate link has no mass: {name}')
         mass = float(mass_node.get('value'))
+        if not math.isfinite(mass):
+            raise ValueError(f'candidate link mass is non-finite: {name}')
+        if mass == 0:
+            # A zero-mass inertial placeholder must remain a placeholder
+            skipped_massless_links.append(name)
+            if any(abs(float(v)) > 1e-9 for v in moments[name]):
+                review_warnings.append(f'{name}: 零质量坐标系存在非零拟合一阶矩，已跳过反写，请人工核查')
+            continue
         if not mass > 0:
             raise ValueError(f'candidate link mass is invalid: {name}')
         com = [float(value) / mass for value in moments[name]]
@@ -526,6 +541,8 @@ def export_candidate_urdf(task_directory, destination=None):
         'source_urdf': str(source),
         'candidate_urdf': str(candidate),
         'changed_inertial_origins': changed,
+        'skipped_massless_links': skipped_massless_links,
+        'review_warnings': review_warnings,
         'mass_and_inertia_values_preserved': True,
         'joint_geometry_modified': False,
         'copied_relative_meshes': copied,
