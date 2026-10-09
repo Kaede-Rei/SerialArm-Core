@@ -24,7 +24,7 @@ def install_gui(runner):
     python = Path('/usr/bin/python3') if Path('/usr/bin/python3').exists() else Path(sys.executable)
     venv = runner.state / 'gui-venv'
     runner.run('gui-python-venv', [python, '-m', 'venv', '--system-site-packages', venv])
-    runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7'])
+    runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7', 'numpy>=1.21,<2'])
     runner.run('gui-npm', ['npm', '--prefix', app, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'])
     runner.run('gui-three-vendor', ['node', app / 'scripts/vendor-three.cjs'])
     electron = app / 'node_modules/electron/dist/electron'
@@ -38,5 +38,5 @@ def install_gui(runner):
             runner.run('gui-electron-official', ['node', app / 'node_modules/electron/install.js'], env=env)
     if not os.access(electron, os.X_OK): raise InstallError('Electron 可执行文件不可用')
     runner.run('gui-static-verify', ['node', app / 'scripts/verify.cjs'])
-    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', 'import sys; sys.path.insert(0, sys.argv[1]); import yaml, profiles, runtime, model_runtime', app / 'backend'])
+    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', 'import sys, numpy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, profiles, runtime, model_runtime', app / 'backend'])
     return {'gui': True, 'gui_status': 'ready', 'gui_path': str(app), 'gui_python': str(venv / 'bin/python')}

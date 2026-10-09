@@ -12,12 +12,39 @@ from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
-from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
-from full_inertial import export_full_inertial_candidate
+from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 from profile_library import ProfileLibrary
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
+
+
+def run_full_inertial_isolated(directory, destination=None, *, timeout=120):
+    """Never load optional native Pinocchio extensions in the live IPC process"""
+    argv = [sys.executable, str(Path(__file__).with_name('full_inertial_worker.py')),
+            str(Path(directory).expanduser().resolve()), str(destination or '')]
+    env = dict(os.environ)
+    # Avoid a user-site NumPy 2 overriding the ROS Humble NumPy 1 ABI
+    env['PYTHONNOUSERSITE'] = '1'
+    try:
+        completed = subprocess.run(argv, capture_output=True, text=True,
+                                   timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError('完整惯量候选计算超时，已终止独立计算进程，Launcher 可继续使用') from error
+    if completed.returncode != 0:
+        details = (completed.stderr or completed.stdout).strip()
+        numpy_abi = ('_ARRAY_API not found' in details or
+                     'A module that was compiled using NumPy 1.x' in details or
+                     'numpy.core.multiarray failed to import' in details)
+        if numpy_abi:
+            raise ValueError('Pinocchio 与 NumPy ABI 不兼容，当前候选计算已隔离终止，不影响机器人控制界面，请重新运行 ./install.sh 更新 GUI Python 环境中的 numpy<2')
+        if completed.returncode < 0:
+            raise ValueError(f'完整惯量计算子进程被信号 {-completed.returncode} 终止，Backend 未受影响，请检查 Python 原生依赖')
+        raise ValueError('完整惯量候选导出失败: ' + (details[-2000:] or f'退出码 {completed.returncode}'))
+    try:
+        return json.loads(completed.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError('完整惯量候选进程没有返回有效 JSON') from error
 
 
 def emit(data):
@@ -106,6 +133,8 @@ def main():
                     result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
                 elif method == 'model_calibration_load':
                     result = load_model_calibration_summary(params.get('directory', ''))
+                elif method == 'model_calibration_records':
+                    result = list_model_calibration_records(ROOT)
                 elif method == 'model_calibration_preview_save':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
@@ -129,24 +158,32 @@ def main():
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
                     result = export_candidate_urdf(directory, params.get('destination') or None)
-                    calibrator = inspector.model_calibrator()
-                    if not calibrator: raise ValueError('serial_arm_model_calibrator is not installed; candidate verification cannot run')
-                    config = config_values(params.get('config', {}))
-                    info = inspector.inspect(config)
-                    verification = subprocess.run([calibrator, '--config', info['resources']['core'], '--dataset', str(Path(directory).resolve()), '--verify-urdf', result['candidate_urdf']], text=True, capture_output=True, timeout=60)
-                    if verification.returncode != 0:
-                        raise ValueError((verification.stderr or verification.stdout or 'candidate URDF verification failed').strip())
+                    # Independent verification is informative for manual-review
+                    # candidates and must never abort the IPC loop
                     try:
+                        calibrator = inspector.model_calibrator()
+                        if not calibrator:
+                            raise ValueError('离线校验工具未安装，候选 URDF 已导出供人工审核')
+                        info = inspector.inspect(config_values(params.get('config', {})))
+                        verification = subprocess.run(
+                            [calibrator, '--config', info['resources']['core'],
+                             '--dataset', str(Path(directory).resolve()),
+                             '--verify-urdf', result['candidate_urdf']],
+                            text=True, capture_output=True, timeout=60)
+                        if verification.returncode != 0:
+                            raise ValueError((verification.stderr or verification.stdout or
+                                              '候选 URDF 离线验证失败').strip()[-1500:])
                         verified = json.loads(verification.stdout.strip().splitlines()[-1])
-                    except (json.JSONDecodeError, IndexError):
-                        raise ValueError('candidate URDF verification returned invalid JSON')
-                    result['verification'] = update_candidate_urdf_verification(Path(result['candidate_urdf']).parent, verified)
+                        result['verification'] = update_candidate_urdf_verification(
+                            Path(result['candidate_urdf']).parent, verified)
+                    except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError, KeyError) as error:
+                        result['verification_warning'] = str(error)
                 elif method == 'model_calibration_export_full_inertial':
                     # Offline file generation only; never apply to the running robot.
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = export_full_inertial_candidate(directory, params.get('destination') or None)
+                    result = run_full_inertial_isolated(directory, params.get('destination') or None)
                 elif method == 'model_calibration_recompute':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
@@ -161,7 +198,7 @@ def main():
                         candidate = json.loads(Path(output).read_text())
                     except (OSError, json.JSONDecodeError) as error:
                         raise ValueError(f'offline recalculation produced invalid candidate JSON: {error}')
-                    result = {'path': output, 'static_pass': completed.returncode == 0, 'candidate': candidate, 'output': completed.stdout.strip()}
+                    result = {'path': output, 'static_pass': bool(candidate.get('static_pass')), 'candidate': candidate, 'output': completed.stdout.strip()}
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')

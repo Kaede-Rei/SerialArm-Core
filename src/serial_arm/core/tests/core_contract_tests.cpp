@@ -3,6 +3,7 @@
 #include "serial_arm/config/robot_profile.hpp"
 #include "serial_arm/core/joint_actuator_mapper.hpp"
 #include "serial_arm/core/safety.hpp"
+#include "serial_arm/core/dt_overrun_watchdog.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
@@ -25,6 +26,29 @@
 namespace {
 
 using namespace serial_arm;
+
+TEST(DtOverrunWatchdog, RequiresThreeConsecutiveOverruns) {
+    DtOverrunWatchdog guard;
+    EXPECT_FALSE(guard.fault_required(0.021, 0.02));
+    EXPECT_FALSE(guard.fault_required(0.022, 0.02));
+    EXPECT_EQ(guard.consecutive(), 2u);
+    EXPECT_FALSE(guard.fault_required(0.020, 0.02));
+    EXPECT_EQ(guard.consecutive(), 0u);
+    EXPECT_FALSE(guard.fault_required(0.021, 0.02));
+    EXPECT_FALSE(guard.fault_required(0.023, 0.02));
+    EXPECT_TRUE(guard.fault_required(0.024, 0.02));
+    guard.reset();
+    EXPECT_EQ(guard.consecutive(), 0u);
+}
+
+TEST(DtOverrunWatchdog, InvalidDtNeverGetsThreeCycleGracePeriod) {
+    DtOverrunWatchdog guard;
+    EXPECT_TRUE(guard.fault_required(0.0, 0.02));
+    EXPECT_TRUE(guard.fault_required(-0.01, 0.02));
+    EXPECT_TRUE(guard.fault_required(std::numeric_limits<double>::quiet_NaN(), 0.02));
+    EXPECT_FALSE(guard.fault_required(0.021, 0.02));
+}
+
 namespace fs = std::filesystem;
 
 std::string fixture_path(const std::string& name) {
@@ -734,6 +758,56 @@ TEST(GravityCalibration, RepeatedPoseKeepsUnobservableFirstMomentsAtPrior) {
     for(std::size_t link = 0; link < regression->links.size(); ++link) {
         const Eigen::Vector3d prior = regression->links[link].mass * regression->links[link].center_of_mass;
         EXPECT_TRUE(result->first_moments[link].value.isApprox(prior, 1.0e-12));
+    }
+}
+
+TEST(GravityCalibration, SubNanoradianPoseJitterDoesNotCreateFakeObservability) {
+    const std::vector<std::string> names{ "joint1", "joint2", "joint3", "joint4" };
+    Dynamics dynamics;
+    ASSERT_TRUE(dynamics.configure(dynamics_cfg(names)));
+    const JointVector reference_q{ 0.2, -0.35, 0.25, -0.1 };
+    const auto prior = dynamics.get_gravity_regression(reference_q);
+    ASSERT_TRUE(prior);
+
+    std::vector<GravityCalibrationPoseGroup> groups;
+    for(std::size_t pose=0;pose<7;++pose) {
+        GravityCalibrationPoseGroup group;
+        group.pose_group=pose+1;
+        group.validation=pose>=5;
+        JointVector q=reference_q;
+        q[1]+=(static_cast<double>(pose)-3.0)*1.0e-12;
+        const auto regression=dynamics.get_gravity_regression(q);
+        ASSERT_TRUE(regression);
+        for(std::size_t sample=0;sample<8;++sample) {
+            ModelCalibrationFrame frame;
+            frame.position=q;
+            frame.velocity.assign(names.size(),0.0);
+            frame.acceleration.assign(names.size(),0.0);
+            frame.reference_position=q;
+            frame.reference_velocity.assign(names.size(),0.0);
+            frame.torque=regression->original_gravity;
+            for(std::size_t joint=0;joint<names.size();++joint)
+                frame.torque[joint]+=0.02*static_cast<double>(joint+1);
+            frame.valid=true;
+            frame.pose_group=group.pose_group;
+            frame.validation=group.validation;
+            frame.phase="static_forward";
+            group.samples.push_back(std::move(frame));
+        }
+        groups.push_back(std::move(group));
+    }
+
+    GravityCalibrationOptions options;
+    options.minimum_training_groups=5;
+    const auto result=fit_gravity_calibration(dynamics,groups,JointVector(names.size(),1.0),options);
+    ASSERT_TRUE(result) << result.error();
+    EXPECT_EQ(result->numerical_rank,0u);
+    EXPECT_FALSE(result->static_pass);
+    EXPECT_EQ(result->failure_reason,"gravity_parameters_unobservable");
+    ASSERT_EQ(result->first_moments.size(),prior->links.size());
+    for(std::size_t link=0;link<prior->links.size();++link) {
+        const Eigen::Vector3d original=prior->links[link].mass*prior->links[link].center_of_mass;
+        EXPECT_TRUE(result->first_moments[link].value.isApprox(original,1.0e-12));
     }
 }
 

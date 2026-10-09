@@ -351,18 +351,70 @@ void ModelCalibrationRecorder::writer_loop() {
     running_.store(false);
 }
 
-tl::expected<void, std::string> ModelCalibrationRecorder::write_trajectory(const std::vector<JointVector>& trajectory, double sample_dt) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if(directory_.empty()) return tl::make_unexpected(std::string("recorder has no task directory"));
-    std::ofstream out(directory_ / "trajectory.csv");
-    if(!out) return tl::make_unexpected(std::string("failed to open trajectory.csv"));
-    out << std::setprecision(17) << "sample_dt," << sample_dt << '\n';
-    out << "index";
-    for(const auto& name : metadata_.joint_names) out << ',' << name;
-    out << '\n';
-    for(std::size_t i=0;i<trajectory.size();++i){out<<i;for(double value:trajectory[i])out<<','<<value;out<<'\n';}
-    if(!out) return tl::make_unexpected(std::string("trajectory.csv write failed"));
+namespace {
+tl::expected<void, std::string> write_trajectory_atomically(
+    const std::filesystem::path& destination, const std::vector<std::string>& joints,
+    const std::vector<JointVector>& trajectory, double sample_dt) {
+    if(trajectory.size() < 20 || !std::isfinite(sample_dt) || sample_dt <= 0.0 || sample_dt > 0.5)
+        return tl::make_unexpected(std::string("trajectory is too short or has invalid sample interval"));
+    for(const auto& pose : trajectory)
+        if(pose.size() != joints.size() || !finite_vector(pose))
+            return tl::make_unexpected(std::string("trajectory contains invalid joint positions"));
+    const auto temp = std::filesystem::path(destination.string() + ".tmp");
+    {
+        std::ofstream out(temp, std::ios::trunc);
+        if(!out) return tl::make_unexpected(std::string("failed to open trajectory temporary file"));
+        out << std::setprecision(17) << "sample_dt," << sample_dt << '\n';
+        out << "index";
+        for(const auto& name : joints) out << ',' << name;
+        out << '\n';
+        for(std::size_t i=0;i<trajectory.size();++i) {
+            out << i;
+            for(double value:trajectory[i]) out << ',' << value;
+            out << '\n';
+        }
+        out.flush();
+        if(!out) {
+            std::error_code ignored;
+            std::filesystem::remove(temp, ignored);
+            return tl::make_unexpected(std::string("trajectory temporary write failed"));
+        }
+    }
+    std::error_code error;
+    std::filesystem::rename(temp, destination, error);
+    if(error) {
+        std::filesystem::remove(temp);
+        return tl::make_unexpected(std::string("trajectory atomic rename failed: ") + error.message());
+    }
     return {};
+}
+} // namespace
+
+tl::expected<void, std::string> ModelCalibrationRecorder::write_trajectory(
+    const std::vector<JointVector>& trajectory, double sample_dt) {
+    std::filesystem::path destination;
+    std::vector<std::string> joint_names;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(directory_.empty()) return tl::make_unexpected(std::string("recorder has no task directory"));
+        destination = directory_ / "trajectory.csv";
+        joint_names = metadata_.joint_names;
+    }
+    // Disk I/O must not hold the recorder lock used by the control cycle
+    return write_trajectory_atomically(destination, joint_names, trajectory, sample_dt);
+}
+
+tl::expected<void, std::string> ModelCalibrationRecorder::write_trajectory_checkpoint(
+    const std::vector<JointVector>& trajectory, double sample_dt) {
+    std::filesystem::path destination;
+    std::vector<std::string> joint_names;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(directory_.empty()) return tl::make_unexpected(std::string("recorder has no task directory"));
+        destination = directory_ / "trajectory.checkpoint.csv";
+        joint_names = metadata_.joint_names;
+    }
+    return write_trajectory_atomically(destination, joint_names, trajectory, sample_dt);
 }
 
 tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibration_frames(
@@ -432,7 +484,6 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
 
     Eigen::MatrixXd A = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(training_count*joints), static_cast<Eigen::Index>(params+joints));
     Eigen::VectorXd b = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(training_count*joints));
-    Eigen::MatrixXd gravity_only = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(training_count*joints), static_cast<Eigen::Index>(params));
     std::size_t row = 0;
     double reconstruction_sum = 0.0;
     std::size_t reconstruction_n = 0;
@@ -447,76 +498,146 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
             const double weight = 1.0 / sigma;
             A.block(static_cast<Eigen::Index>(row),0,1,static_cast<Eigen::Index>(params)) = weight * regression->first_moment_regressor.row(static_cast<Eigen::Index>(joint));
             A(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(params+joint)) = -weight;
-            gravity_only.row(static_cast<Eigen::Index>(row)) = A.block(static_cast<Eigen::Index>(row),0,1,static_cast<Eigen::Index>(params));
             b(static_cast<Eigen::Index>(row)) = weight * (pose.tau[joint] - regression->original_gravity[joint]);
         }
     }
 
-    // Remove per-joint constant directions before assessing gravity identifiability
+    // Fit from pose-to-pose torque variations.  Constant joint offsets are
+    // nuisance parameters; joint-centering removes them without consuming
+    // first-moment observability.  This also prevents a torque zero-offset
+    // from masquerading as a link COM displacement.
+    Eigen::MatrixXd centered = A.leftCols(static_cast<Eigen::Index>(params));
+    Eigen::VectorXd target = b;
+    // Retain the uncentered regressor energy as a numerical reference.  A
+    // column whose pose-to-pose variation is only roundoff is *not* an
+    // observable direction, no matter how large it becomes after scaling.
+    Eigen::VectorXd uncentered_energy = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
     for(std::size_t joint=0;joint<joints;++joint) {
-        Eigen::RowVectorXd mean = Eigen::RowVectorXd::Zero(static_cast<Eigen::Index>(params));
-        std::size_t count = 0;
-        for(std::size_t pose=0;pose<training_count;++pose){mean += gravity_only.row(static_cast<Eigen::Index>(pose*joints+joint));++count;}
-        if(count) mean /= static_cast<double>(count);
-        for(std::size_t pose=0;pose<training_count;++pose) gravity_only.row(static_cast<Eigen::Index>(pose*joints+joint)) -= mean;
-    }
+        for(std::size_t pose=0;pose<training_count;++pose) {
+            const Eigen::Index r=static_cast<Eigen::Index>(pose*joints+joint);
+            const double weight = -A(r,static_cast<Eigen::Index>(params+joint));
+            if(!(weight>0.0) || !std::isfinite(weight)) return tl::make_unexpected(std::string("invalid gravity regression weight"));
+            centered.row(r) /= weight;
+            target(r) /= weight;
+            uncentered_energy.array() += centered.row(r).transpose().array().square();
+        }
 
-    Eigen::VectorXd scales = Eigen::VectorXd::Ones(static_cast<Eigen::Index>(params));
-    for(std::size_t link=0;link<first->links.size();++link) {
-        const double scale = std::max(1.0e-4, first->links[link].mass * options.default_max_com_offset_m);
-        scales.segment<3>(static_cast<Eigen::Index>(3*link)).setConstant(scale);
-    }
-    Eigen::MatrixXd normalized = gravity_only;
-    for(std::size_t col=0;col<params;++col) normalized.col(static_cast<Eigen::Index>(col)) *= scales(static_cast<Eigen::Index>(col));
-    Eigen::JacobiSVD<Eigen::MatrixXd> svd(normalized, Eigen::ComputeThinV);
-    GravityCalibrationResult result;
-    result.regression_reconstruction_rms = reconstruction_n ? std::sqrt(reconstruction_sum/static_cast<double>(reconstruction_n)) : 0.0;
-    result.singular_values.resize(static_cast<std::size_t>(svd.singularValues().size()));
-    for(Eigen::Index i=0;i<svd.singularValues().size();++i) result.singular_values[static_cast<std::size_t>(i)] = svd.singularValues()[i];
-    const double max_sv = svd.singularValues().size() ? svd.singularValues()[0] : 0.0;
-    result.numerical_rank = 0;
-    for(Eigen::Index i=0;i<svd.singularValues().size();++i) if(max_sv > 0.0 && svd.singularValues()[i] >= options.svd_relative_threshold * max_sv) ++result.numerical_rank;
-    result.parameter_observable.assign(params, 0);
-    if(result.numerical_rank) {
-        const auto V = svd.matrixV();
-        for(std::size_t p=0;p<params;++p) {
-            double energy=0.0;
-            for(std::size_t k=0;k<result.numerical_rank;++k) energy += V(static_cast<Eigen::Index>(p),static_cast<Eigen::Index>(k))*V(static_cast<Eigen::Index>(p),static_cast<Eigen::Index>(k));
-            if(energy >= options.minimum_observable_energy) result.parameter_observable[p]=1;
+        // Subtract a reference pose before computing the mean.  Directly
+        // subtracting the mean of nearly identical nonzero rows introduces
+        // cancellation noise and used to give repeated poses a fake rank.
+        const Eigen::RowVectorXd reference = centered.row(static_cast<Eigen::Index>(joint));
+        const double target_reference = target(static_cast<Eigen::Index>(joint));
+        Eigen::RowVectorXd mean_delta = Eigen::RowVectorXd::Zero(static_cast<Eigen::Index>(params));
+        double target_mean_delta = 0.0;
+        for(std::size_t pose=0;pose<training_count;++pose) {
+            const Eigen::Index r=static_cast<Eigen::Index>(pose*joints+joint);
+            centered.row(r) -= reference;
+            target(r) -= target_reference;
+            mean_delta += centered.row(r);
+            target_mean_delta += target(r);
+        }
+        mean_delta /= static_cast<double>(training_count);
+        target_mean_delta /= static_cast<double>(training_count);
+        for(std::size_t pose=0;pose<training_count;++pose) {
+            const Eigen::Index r=static_cast<Eigen::Index>(pose*joints+joint);
+            centered.row(r) -= mean_delta;
+            target(r) -= target_mean_delta;
         }
     }
 
-    const std::size_t augmented_rows = static_cast<std::size_t>(A.rows()) + params;
-    Eigen::MatrixXd A_aug = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(augmented_rows), static_cast<Eigen::Index>(params+joints));
-    Eigen::VectorXd b_aug = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(augmented_rows));
-    A_aug.topRows(A.rows()) = A;
-    b_aug.head(b.size()) = b;
-    const double sqrt_lambda = std::sqrt(std::max(0.0, options.regularization));
-    for(std::size_t p=0;p<params;++p) A_aug(static_cast<Eigen::Index>(A.rows()+p),static_cast<Eigen::Index>(p)) = sqrt_lambda / scales(static_cast<Eigen::Index>(p));
-    Eigen::VectorXd solution = A_aug.colPivHouseholderQr().solve(b_aug);
-    if(result.numerical_rank < params) {
-        Eigen::VectorXd normalized_delta = solution.head(static_cast<Eigen::Index>(params));
-        for(std::size_t p=0;p<params;++p) normalized_delta(static_cast<Eigen::Index>(p)) /= scales(static_cast<Eigen::Index>(p));
-        const Eigen::MatrixXd observable_basis = svd.matrixV().leftCols(static_cast<Eigen::Index>(result.numerical_rank));
-        normalized_delta = observable_basis * (observable_basis.transpose() * normalized_delta);
-        for(std::size_t p=0;p<params;++p) solution(static_cast<Eigen::Index>(p)) = scales(static_cast<Eigen::Index>(p)) * normalized_delta(static_cast<Eigen::Index>(p));
+    // Normalize by observed regressor energy, NEVER by a COM offset bound.
+    // Tiny/zero columns are unobservable: they retain the source URDF prior.
+    Eigen::VectorXd column_scale(static_cast<Eigen::Index>(params));
+    Eigen::MatrixXd normalized=centered;
+    for(std::size_t col=0;col<params;++col) {
+        const double energy=centered.col(static_cast<Eigen::Index>(col)).squaredNorm()/static_cast<double>(centered.rows());
+        const double rms=std::sqrt(std::max(0.0,energy));
+        const double original_rms=std::sqrt(std::max(0.0,uncentered_energy(static_cast<Eigen::Index>(col))/static_cast<double>(centered.rows())));
+        // The relative term rejects floating-point cancellation, while the
+        // absolute floor avoids amplifying sub-picometre-equivalent columns.
+        // This is an observability check, NOT a COM-displacement constraint.
+        const double excitation_floor=std::max(1.0e-12,1.0e-9*original_rms);
+        if(!(rms>excitation_floor)) {
+            normalized.col(static_cast<Eigen::Index>(col)).setZero();
+            column_scale(static_cast<Eigen::Index>(col))=1.0;
+            continue;
+        }
+        const double inv=1.0/rms;
+        column_scale(static_cast<Eigen::Index>(col))=inv;
+        normalized.col(static_cast<Eigen::Index>(col))*=inv;
+    }
+    Eigen::JacobiSVD<Eigen::MatrixXd> base_svd(normalized,Eigen::ComputeThinU|Eigen::ComputeThinV);
+    GravityCalibrationResult result;
+    result.regression_reconstruction_rms=reconstruction_n?std::sqrt(reconstruction_sum/static_cast<double>(reconstruction_n)):0.0;
+    result.singular_values.resize(static_cast<std::size_t>(base_svd.singularValues().size()));
+    for(Eigen::Index i=0;i<base_svd.singularValues().size();++i)result.singular_values[static_cast<std::size_t>(i)]=base_svd.singularValues()[i];
+    const double max_sv=base_svd.singularValues().size()?base_svd.singularValues()[0]:0.0;
+    result.numerical_rank=0;
+    for(Eigen::Index i=0;i<base_svd.singularValues().size();++i)
+        if(max_sv>0.0 && base_svd.singularValues()[i]>max_sv*options.svd_relative_threshold)
+            ++result.numerical_rank;
+    result.parameter_observable.assign(params,0);
+    if(result.numerical_rank) {
+        const auto V=base_svd.matrixV();
+        for(std::size_t col=0;col<params;++col) {
+            double projection=0.0;
+            for(std::size_t k=0;k<result.numerical_rank;++k)
+                projection+=std::pow(V(static_cast<Eigen::Index>(col),static_cast<Eigen::Index>(k)),2);
+            if(projection>=options.minimum_observable_energy)result.parameter_observable[col]=1;
+        }
     }
 
+    // Robust iteratively reweighted SVD ridge in the observable subspace.
+    // Huber reweighting reduces the influence of transient torque spikes.
+    // Ridge is a soft numerical prior, not a hard COM or output constraint.
+    Eigen::VectorXd normalized_delta=Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
+    Eigen::VectorXd weights=Eigen::VectorXd::Ones(target.size());
+    for(std::size_t iter=0;iter<5 && result.numerical_rank>0;++iter) {
+        Eigen::MatrixXd weighted=normalized;
+        Eigen::VectorXd weighted_b=target;
+        for(Eigen::Index r=0;r<weighted.rows();++r) {
+            const double w=std::sqrt(weights[r]);
+            weighted.row(r)*=w;
+            weighted_b[r]*=w;
+        }
+        Eigen::JacobiSVD<Eigen::MatrixXd> fit_svd(weighted,Eigen::ComputeThinU|Eigen::ComputeThinV);
+        Eigen::VectorXd coeff=fit_svd.matrixU().transpose()*weighted_b;
+        const double largest=fit_svd.singularValues().size()?fit_svd.singularValues()[0]:0.0;
+        for(Eigen::Index k=0;k<coeff.size();++k) {
+            const double sigma=fit_svd.singularValues()[k];
+            if(sigma<=largest*options.svd_relative_threshold || sigma<=1.0e-12)coeff[k]=0.0;
+            else coeff[k]*=sigma/(sigma*sigma+std::max(0.0,options.regularization));
+        }
+        normalized_delta=fit_svd.matrixV()*coeff;
+        const Eigen::VectorXd residual=normalized*normalized_delta-target;
+        // Per-joint robust scale: do not downweight entire joint groups merely
+        // because their expected gravitational torque is larger.
+        for(std::size_t joint=0;joint<joints;++joint) {
+            std::vector<double> abs_residual;
+            for(std::size_t pose=0;pose<training_count;++pose)
+                abs_residual.push_back(std::abs(residual[static_cast<Eigen::Index>(pose*joints+joint)]));
+            const double mad=percentile_abs(abs_residual,0.5);
+            const double huber=std::max(0.05,1.345*1.4826*mad);
+            for(std::size_t pose=0;pose<training_count;++pose) {
+                const Eigen::Index r=static_cast<Eigen::Index>(pose*joints+joint);
+                weights[r]=std::min(1.0,huber/std::max(huber,std::abs(residual[r])));
+            }
+        }
+    }
+    const Eigen::VectorXd delta_h=column_scale.cwiseProduct(normalized_delta);
+    if(!delta_h.allFinite()) return tl::make_unexpected(std::string("gravity fit produced non-finite first moments"));
     result.first_moments.reserve(first->links.size());
-    result.constraints_ok = true;
-    std::unordered_map<std::string,Eigen::Vector3d> limits;
-    for(const auto& constraint:options.constraints) limits[constraint.link_name]=constraint.max_abs_offset.cwiseAbs();
+    result.constraints_ok = true; // Legacy result field: no COM displacement bound is enforced.
+    result.com_offsets_m.reserve(first->links.size());
     for(std::size_t link=0;link<first->links.size();++link) {
         const auto& info=first->links[link];
-        Eigen::Vector3d delta_h=solution.segment<3>(static_cast<Eigen::Index>(3*link));
-        Eigen::Vector3d delta_c=delta_h/info.mass;
-        const Eigen::Vector3d limit=limits.count(info.link_name)?limits[info.link_name]:Eigen::Vector3d::Constant(options.default_max_com_offset_m);
-        if((delta_c.cwiseAbs().array()>limit.array()).any()) result.constraints_ok=false;
-        result.first_moments.push_back(GravityFirstMoment{info.link_name,info.mass*info.center_of_mass+delta_h});
+        if(!(info.mass>0.0) || !std::isfinite(info.mass))
+            return tl::make_unexpected(std::string("invalid link mass for ")+info.link_name);
+        const Eigen::Vector3d shift=delta_h.segment<3>(static_cast<Eigen::Index>(3*link))/info.mass;
+        if(!shift.allFinite())return tl::make_unexpected(std::string("non-finite candidate COM for ")+info.link_name);
+        result.com_offsets_m.push_back(GravityFirstMoment{info.link_name,shift});
+        result.first_moments.push_back(GravityFirstMoment{info.link_name,info.mass*(info.center_of_mass+shift)});
     }
-    result.torque_bias.resize(joints);
-    for(std::size_t joint=0;joint<joints;++joint) result.torque_bias[joint]=solution(static_cast<Eigen::Index>(params+joint));
-
     const JointVector original_bias=estimate_model_bias(dynamics,poses,nullptr,nullptr);
     const JointVector scaled_bias=estimate_model_bias(dynamics,poses,nullptr,&original_gravity_scale);
     const JointVector candidate_bias=estimate_model_bias(dynamics,poses,&result.first_moments,nullptr);
@@ -532,7 +653,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     for(const auto& pose:poses){if(pose.validation)continue;++noise_count;for(std::size_t j=0;j<joints;++j)result.noise_rms[j]+=pose.tau_std[j]*pose.tau_std[j];}
     if(noise_count)for(double& value:result.noise_rms)value=std::sqrt(value/static_cast<double>(noise_count));
 
-    bool acceptable=result.constraints_ok && result.numerical_rank>0;
+    bool acceptable=result.numerical_rank>0;
     for(std::size_t j=0;j<joints && acceptable;++j) {
         const double original=result.validation_original.rms[j];
         const double candidate=result.validation_candidate.rms[j];
@@ -543,9 +664,8 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
         acceptable=improved&&not_degraded;
     }
     result.static_pass=acceptable;
-    if(!result.constraints_ok) {result.status="failed";result.failure_reason="center_of_mass_constraint_conflict";}
-    else if(result.numerical_rank==0) {result.status="failed";result.failure_reason="gravity_parameters_unobservable";}
-    else if(!result.static_pass) {result.status="failed";result.failure_reason="holdout_validation_not_improved";}
+    if(result.numerical_rank==0) {result.status="failed";result.failure_reason="gravity_parameters_unobservable";}
+    else if(!result.static_pass) {result.status="needs_review";result.failure_reason="holdout_validation_not_improved";}
     else {result.status="passed";}
     return result;
 }
@@ -560,6 +680,9 @@ std::string gravity_calibration_result_json(const GravityCalibrationResult& resu
     out << ",\"torque_bias\":";json_vector(out,result.torque_bias);
     out << ",\"first_moments\":[";
     for(std::size_t i=0;i<result.first_moments.size();++i){if(i)out<<',';const auto& item=result.first_moments[i];out<<"{\"link_name\":\""<<json_escape(item.link_name)<<"\",\"value\":["<<item.value.x()<<','<<item.value.y()<<','<<item.value.z()<<"]}";}out<<']';
+    out<<",\"com_offsets_m\":[";
+    for(std::size_t i=0;i<result.com_offsets_m.size();++i){if(i)out<<',';const auto& item=result.com_offsets_m[i];out<<"{\"link_name\":\""<<json_escape(item.link_name)<<"\",\"value\":["<<item.value.x()<<','<<item.value.y()<<','<<item.value.z()<<"]}";}out<<']';
+    out<<",\"solver\":\"robust_centered_svd_ridge_unbounded\"";
     auto metrics=[&](const char* name,const GravityValidationMetrics& m){out<<",\""<<name<<"\":{\"rms\":";json_vector(out,m.rms);out<<",\"p99\":";json_vector(out,m.p99);out<<",\"max\":";json_vector(out,m.maximum);out<<",\"bias\":";json_vector(out,m.bias);out<<'}';};
     metrics("training_original",result.training_original);metrics("training_scaled",result.training_scaled);metrics("training_candidate",result.training_candidate);metrics("validation_original",result.validation_original);metrics("validation_scaled",result.validation_scaled);metrics("validation_candidate",result.validation_candidate);
     out<<",\"noise_rms\":";json_vector(out,result.noise_rms);out<<'}';return out.str();

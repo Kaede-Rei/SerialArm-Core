@@ -13,6 +13,8 @@ import shutil
 
 import yaml
 
+from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
+
 
 def sha256_file(path):
     path = Path(path)
@@ -185,11 +187,15 @@ def _candidate_threshold(result, joints):
     return [max(0.02, 1.2 * float(p99[i]), 3.0 * float(noise[i])) for i in range(len(joints))]
 
 
-def build_gravity_correction_payload(directory):
+def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
+    if prefer_recomputed:
+        recomputed = directory / 'recomputed-candidate.json'
+        if recomputed.is_file():
+            gravity = json.loads(recomputed.read_text())
     joints = result.get('joint_names') or metadata.get('joint_names') or []
-    if result.get('phase') != 'complete' or not gravity.get('static_pass'):
+    if not allow_unvalidated and (result.get('phase') != 'complete' or not gravity.get('static_pass')):
         raise ValueError('model calibration task has no validated static candidate')
     if result.get('core_fingerprint') != metadata.get('core_fingerprint') or result.get('urdf_fingerprint') != metadata.get('urdf_fingerprint'):
         raise ValueError('task result fingerprint does not match recorded source')
@@ -204,11 +210,14 @@ def build_gravity_correction_payload(directory):
         'core_fingerprint': result['core_fingerprint'],
         'urdf_fingerprint': result['urdf_fingerprint'],
         'joint_names': joints,
-        'static_pass': True,
+        'static_pass': bool(gravity.get('static_pass')),
+        'candidate_review_required': not bool(gravity.get('static_pass')),
+        'candidate_quality_reason': gravity.get('failure_reason', ''),
         'friction_pass': bool(result.get('friction_pass')),
         'original_gravity_scale': result.get('original_gravity_scale') or metadata.get('original_gravity_scale'),
         'first_moments': first_moments,
-        'constraints': metadata.get('calibration_options', {}),
+        'constraints': {},
+        'fit_options': {k:v for k,v in (metadata.get('calibration_options') or {}).items() if k != 'max_com_offset_m'},
         'validation': {
             'numerical_rank': gravity.get('numerical_rank'),
             'constraints_ok': gravity.get('constraints_ok'),
@@ -247,8 +256,8 @@ def save_gravity_correction(core_path, expected_sha, task_directory):
     if sha256_file(core_path) != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
     directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
-    if sha256_file(metadata['urdf_path']) != metadata['urdf_fingerprint']:
-        raise ValueError('source URDF changed after model calibration')
+    if not matches_recorded_fingerprint(metadata['urdf_path'], metadata['urdf_fingerprint']):
+        raise ValueError('当前 URDF 与历史任务不一致，禁止应用参数，请先恢复对应模型')
     candidate_dir = directory / 'candidate'
     candidate_dir.mkdir(parents=True, exist_ok=True)
     correction_path = candidate_dir / 'gravity-correction.yaml'
@@ -308,8 +317,12 @@ def load_model_calibration_summary(directory):
         result = json.loads(result_path.read_text(encoding='utf-8'))
         if result.get('task_id') != task_id:
             raise ValueError('标定结果与任务记录编号不匹配')
-    trajectory_path = folder / 'trajectory.csv'
-    trajectory = {'valid': False, 'samples': 0, 'duration_s': None, 'sample_dt_s': None}
+    complete_path = folder / 'trajectory.csv'
+    checkpoint_path = folder / 'trajectory.checkpoint.csv'
+    trajectory_path = complete_path if complete_path.is_file() else checkpoint_path
+    trajectory = {'valid': False, 'samples': 0, 'duration_s': None, 'sample_dt_s': None,
+                  'source': 'trajectory.csv' if complete_path.is_file() else
+                            'trajectory.checkpoint.csv' if checkpoint_path.is_file() else ''}
     if trajectory_path.is_file():
         with trajectory_path.open(encoding='utf-8', newline='') as stream:
             reader = csv.reader(stream)
@@ -331,27 +344,51 @@ def load_model_calibration_summary(directory):
                 if count > 300000:
                     raise ValueError('轨迹帧数超过安全读取上限')
             if count >= 20:
-                trajectory = {'valid': True, 'samples': count, 'duration_s': (count - 1) * dt, 'sample_dt_s': dt}
+                trajectory = {'valid': True, 'samples': count, 'duration_s': (count - 1) * dt, 'sample_dt_s': dt, 'source': trajectory['source']}
     phase = str(result.get('phase', '')) if result else ''
     if result and phase == 'complete':
         record_kind = 'completed'
-    elif result or (folder / 'interrupted.txt').is_file():
+    elif result or (folder / 'interrupted.txt').is_file() or (trajectory['valid'] and trajectory['source'] == 'trajectory.checkpoint.csv'):
         record_kind = 'interrupted'
     elif trajectory['valid']:
         record_kind = 'teaching_only'
     else:
         record_kind = 'interrupted'
     can_resume = trajectory['valid']
+    files = {'metadata.json': metadata_path.is_file(), 'frames.csv': (folder/'frames.csv').is_file(),
+             'trajectory.csv': complete_path.is_file(),
+             'trajectory.checkpoint.csv': checkpoint_path.is_file(), 'result.json': result_path.is_file()}
     note = ('已完成标定，可查看结果或从原轨迹重新进行一次采集' if record_kind == 'completed' else
             '仅有示教轨迹，可重新校验后从头开始自动采集' if record_kind == 'teaching_only' else
             '此任务未完整结束；可用轨迹可从头重新采集，不能直接接着中断点运动' if can_resume else
-            '未发现完整轨迹，只能查看记录，无法恢复自动回放')
+            '未发现可用轨迹或检查点，只能查看记录，无法恢复自动回放')
     # Stored result is never a live session; the GUI must not infer that the
     # playback is ready until the native process explicitly imports it.
     display_result = result if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
+    if can_resume and trajectory['source'] == 'trajectory.checkpoint.csv':
+        note = '仅保存了示教检查点，属于中断片段，必须重新校验运动范围和真机起点，再人工确认回放'
     return {'directory': str(folder), 'metadata': metadata, 'result': display_result,
             'has_result': bool(result), 'record_kind': record_kind, 'can_resume': can_resume,
-            'trajectory': trajectory, 'note': note, 'task_id': task_id}
+            'files': files, 'trajectory': trajectory, 'note': note, 'task_id': task_id}
+
+
+def list_model_calibration_records(root, limit=30):
+    """Read-only inventory, always derived from disk rather than cached GUI state"""
+    parent = Path(root) / '.install' / 'model-calibration'
+    if not parent.is_dir():
+        return []
+    records = []
+    for folder in sorted((x for x in parent.iterdir() if x.is_dir() and x.name.startswith('model-calibration-')),
+                         key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
+        try:
+            records.append(load_model_calibration_summary(folder))
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            records.append({'directory': str(folder.resolve()), 'task_id': folder.name, 'can_resume': False,
+                            'record_kind': 'invalid', 'trajectory': {'valid': False, 'samples': 0},
+                            'files': {name: (folder/name).is_file() for name in
+                                      ('metadata.json', 'frames.csv', 'trajectory.csv', 'trajectory.checkpoint.csv', 'result.json')},
+                            'note': f'记录校验未通过: {exc}'})
+    return records
 
 
 def preview_gravity_correction(core_path, task_directory):
@@ -430,10 +467,8 @@ def update_candidate_urdf_verification(target_dir, verification):
 
 def export_candidate_urdf(task_directory, destination=None):
     import xml.etree.ElementTree as ET
-    directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
-    source = Path(metadata['urdf_path']).resolve()
-    if not source.is_file() or sha256_file(source) != metadata['urdf_fingerprint']:
-        raise ValueError('source URDF is missing or changed')
+    directory, metadata, result, payload = build_gravity_correction_payload(task_directory, allow_unvalidated=True, prefer_recomputed=True)
+    source = verified_source_urdf(directory, metadata)
     target_dir = Path(destination).expanduser().resolve() if destination else directory / 'candidate'
     target_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(source)
@@ -457,6 +492,8 @@ def export_candidate_urdf(task_directory, destination=None):
         if not mass > 0:
             raise ValueError(f'candidate link mass is invalid: {name}')
         com = [float(value) / mass for value in moments[name]]
+        if not all(math.isfinite(value) for value in com):
+            raise ValueError(f'candidate link COM is non-finite: {name}')
         origin = next((node for node in list(inertial) if local_name(node) == 'origin'), None)
         if origin is None:
             namespace = inertial.tag[:-len('inertial')] if inertial.tag.endswith('inertial') else ''
@@ -472,9 +509,9 @@ def export_candidate_urdf(task_directory, destination=None):
         filename = mesh.get('filename', '')
         if not filename or filename.startswith('package://') or Path(filename).is_absolute():
             continue
-        src = (source.parent / filename).resolve()
-        if not src.is_file():
-            raise ValueError(f'relative mesh is missing: {filename}')
+        src = resolve_relative_mesh(filename, source, metadata)
+        if src is None:
+            raise ValueError(f'缺少候选 URDF 引用的网格资源: {filename}')
         resources.mkdir(parents=True, exist_ok=True)
         dst = resources / f'{len(copied):03d}-{src.name}'
         shutil.copy2(src, dst)
@@ -492,7 +529,11 @@ def export_candidate_urdf(task_directory, destination=None):
         'mass_and_inertia_values_preserved': True,
         'joint_geometry_modified': False,
         'copied_relative_meshes': copied,
-        'scope': 'static gravity correction only',
+        'scope': 'static gravity correction only; original masses and inertias unchanged',
+        'review_required': True,
+        'holdout_pass': payload['static_pass'],
+        'quality_reason': payload['candidate_quality_reason'],
+        'candidate_solver': (json.loads((directory / 'recomputed-candidate.json').read_text()).get('solver', '') if (directory / 'recomputed-candidate.json').is_file() else (result.get('gravity_result') or {}).get('solver', '')),
     }
     (target_dir / 'candidate-urdf-verification.json').write_text(json.dumps(verification, ensure_ascii=False, indent=2))
     return verification

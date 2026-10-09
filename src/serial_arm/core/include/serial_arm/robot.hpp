@@ -7,6 +7,7 @@
 #include "serial_arm/core/joint_actuator_mapper.hpp"
 #include "serial_arm/core/joints_ctrller.hpp"
 #include "serial_arm/core/safety.hpp"
+#include "serial_arm/core/dt_overrun_watchdog.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/interaction/runtime/interaction_state.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
@@ -491,6 +492,7 @@ private:
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令
     bool admittance_suspended_{ false };            ///< 运行时临时挂起导纳，不改变静态配置
     FaultHoldMode fault_hold_mode_{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 内部保持模式
+    DtOverrunWatchdog dt_overrun_watchdog_;        ///< 三次连续过长周期触发 FAULT
     std::size_t clear_fault_valid_cycles_{ 0 };      ///< 清故障前连续有效周期数
 };
 

@@ -259,7 +259,8 @@ test('candidate persistence is fingerprint checked reversible and keeps full dyn
   assert.match(bridge, /model_calibration_preview_save/);
   assert.match(bridge, /model_calibration_restore_config/);
   assert.match(bridge, /model_calibration_export_urdf/);
-  assert.match(persistence, /source URDF changed after model calibration/);
+  assert.match(persistence, /verified_source_urdf/);
+  assert.match(persistence, /matches_recorded_fingerprint/);
   assert.match(persistence, /application\.json/);
   assert.match(persistence, /restore\.json/);
   assert.match(persistence, /candidate-urdf-verification\.json/);

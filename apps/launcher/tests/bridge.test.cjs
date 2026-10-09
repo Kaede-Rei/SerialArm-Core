@@ -23,3 +23,15 @@ test('pending requests fail promptly when backend exits', async () => {
   await assert.rejects(bridge.request('status'), /Backend exited|unavailable/);
   assert.equal(bridge.pending.size, 0);
 });
+
+
+test('optional Pinocchio failure stays isolated and later backend requests still work', async () => {
+  const bridge = new Bridge(python, script, {cwd: path.resolve(__dirname, '../../..')});
+  try {
+    await bridge.ready;
+    await assert.rejects(bridge.request('model_calibration_export_full_inertial', {directory: '/nonexistent/task'}), /完整惯量|NumPy|Pinocchio|FileNotFoundError|No module named/);
+    const next = await bridge.request('profiles');
+    assert.ok(next.profiles.some(p => p.name === 'dm_arm_gray'));
+    assert.equal(bridge.dead, false);
+  } finally {await bridge.close();}
+});

@@ -329,6 +329,44 @@ class ModelCalibrationPersistenceTests(unittest.TestCase):
             self.assertNotIn('gravity_correction_path:', core.read_text())
             self.assertEqual(sha256_file(core), restored['core_sha256'])
 
+    def test_unbounded_candidate_exports_when_holdout_fails_and_com_is_far(self):
+        from persistence import export_candidate_urdf, preview_gravity_correction
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as temp:
+            task, core, _ = self.make_task(temp)
+            saved = json.loads((task / 'result.json').read_text())
+            saved['phase'] = 'failed'
+            saved['gravity_result']['static_pass'] = False
+            saved['gravity_result']['constraints_ok'] = False  # legacy rejected model
+            saved['gravity_result']['failure_reason'] = 'center_of_mass_constraint_conflict'
+            saved['gravity_result']['first_moments'][0]['value'] = [3.0, 0.0, 0.0]
+            (task / 'result.json').write_text(json.dumps(saved))
+            # This unreviewed candidate must never enter the live applied correction.
+            with self.assertRaises(ValueError):
+                preview_gravity_correction(core, task)
+            out = export_candidate_urdf(task)
+            self.assertTrue(out['review_required'])
+            self.assertFalse(out['holdout_pass'])
+            link = ET.parse(out['candidate_urdf']).getroot().find("link[@name='link1']")
+            self.assertEqual(link.find('inertial/origin').get('xyz'), '1.5 0 0')
+            self.assertEqual(link.find('inertial/mass').get('value'), '2')
+
+    def test_offline_recompute_overrides_rejected_historical_first_moments(self):
+        from persistence import export_candidate_urdf
+        import xml.etree.ElementTree as ET
+        with tempfile.TemporaryDirectory() as temp:
+            task, _, _ = self.make_task(temp)
+            new_candidate = {'static_pass': False, 'solver': 'robust_centered_svd_ridge_unbounded',
+                'first_moments': [{'link_name': 'link1', 'value': [2.8, 0, 0]}],
+                'torque_bias': [0.0], 'failure_reason': 'holdout_validation_not_improved',
+                'validation_candidate': {'p99': [0.3]}, 'noise_rms': [0.01]}
+            (task / 'recomputed-candidate.json').write_text(json.dumps(new_candidate))
+            output = export_candidate_urdf(task)
+            self.assertTrue(output['review_required'])
+            self.assertEqual(output['candidate_solver'], 'robust_centered_svd_ridge_unbounded')
+            link = ET.parse(output['candidate_urdf']).getroot().find("link[@name='link1']")
+            self.assertEqual(link.find('inertial/origin').get('xyz'), '1.4 0 0')
+
     def test_candidate_urdf_changes_only_calibrated_inertial_origin(self):
         from persistence import export_candidate_urdf
         import xml.etree.ElementTree as ET

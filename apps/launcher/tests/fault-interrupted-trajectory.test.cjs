@@ -14,7 +14,7 @@ test('fault during demonstration stops sampling without discarding already captu
 });
 test('fault saves partial trajectory as file only, with no motion/fault clear', () => {
   const begin = src.slice(src.indexOf('void machine_model_calibration_teach_begin('), src.indexOf('std::vector<ModelCalibrationPoseTarget> model_calibration_select_pose_targets('));
-  assert.match(begin, /if\(machine_robot_state\(\) == RobotState::FAULT\)/);
+  assert.match(begin, /if\(machine_robot_state\(\) == RobotState::FAULT \|\| model_calibration_fault_interrupted_\.load\(\)\)/);
   assert.match(begin, /model_calibration_recorder_\.write_trajectory/);
   assert.match(begin, /interrupted\.txt/);
   assert.doesNotMatch(begin, /robot_\.clear_fault\(/);

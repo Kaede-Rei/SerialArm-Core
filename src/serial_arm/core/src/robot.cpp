@@ -225,6 +225,7 @@ tl::expected<void, RobotFault> Robot::activate() {
 
     has_state_ = true;
     has_completed_cycle_ = false;
+    dt_overrun_watchdog_.reset();
     has_external_cmd_ = false;
     has_last_joint_cmd_ = true;
 
@@ -389,6 +390,12 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
 
     const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
     const double dt = has_completed_cycle_ ? seconds_between(now, last_cycle_time_) : nominal_dt;
+    // The actual wall-clock dt is observed for the safety watchdog. When one or
+    // two consecutive cycles exceed the limit, advance the controller by the
+    // nominal dt, not by the delayed wall-clock interval. Command/state timeouts
+    // still use real timestamps and all other fault conditions stay immediate.
+    const bool dt_fault_required = dt_overrun_watchdog_.fault_required(dt, cfg_.safety.max_dt_s);
+    const double controller_dt = dt > cfg_.safety.max_dt_s ? nominal_dt : dt;
 
     const auto actuator_state = motor_bus_->read();
     if(!actuator_state) {
@@ -424,12 +431,19 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         }
     }
 
-    const JointVector joint_acc = estimate_joint_acc(joint_state.value(), dt);
+    if(dt_fault_required) {
+        const SafetyFault overdue{SafetyErr::INVALID_DT, std::numeric_limits<std::size_t>::max(), dt, cfg_.safety.max_dt_s};
+        const RobotFault fault = make_safety_fault(overdue);
+        enter_fault(fault, safety_.action_for(overdue.code));
+        return tl::make_unexpected(fault);
+    }
+
+    const JointVector joint_acc = estimate_joint_acc(joint_state.value(), controller_dt);
 
     JointCtrllerInput input;
     input.state = joint_state.value();
     input.model_feedforward.assign(cfg_.joint_names.size(), 0.0);
-    input.dt = dt;
+    input.dt = controller_dt;
 
     const auto ctrl_output = ctrller_.update(input);
     if(!ctrl_output) {
@@ -448,7 +462,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     std::vector<std::uint8_t> safety_velocity_margin_active;
     if(admittance_active) {
         const auto interaction_model_torque = compute_interaction_model_torque(
-            joint_state.value(), joint_acc, dt);
+            joint_state.value(), joint_acc, controller_dt);
         if(!interaction_model_torque) {
             enter_fault(interaction_model_torque.error(), SafetyAction::STOP_HOLD);
             return tl::make_unexpected(interaction_model_torque.error());
@@ -507,7 +521,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
                 enter_fault(fault, SafetyAction::STOP_HOLD);
                 return tl::make_unexpected(fault);
             }
-            const auto model_state = interaction_model_state_(joint_state.value(), dt);
+            const auto model_state = interaction_model_state_(joint_state.value(), controller_dt);
             if(!model_state) {
                 const RobotFault fault = make_model_fault(model_state.error());
                 enter_fault(fault, SafetyAction::STOP_HOLD);
@@ -518,14 +532,14 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             momentum_input.coriolis = model_state->coriolis;
             momentum_input.mass_matrix = model_state->mass_matrix;
             momentum_input.velocity = joint_state->vel;
-            momentum_input.dt = dt;
+            momentum_input.dt = controller_dt;
         }
 
         const auto interaction = interaction_controller_.update(InteractionInput{
             joint_state->tor,
             interaction_model_torque.value(),
             joint_cmd,
-            dt,
+            controller_dt,
             std::move(min_delta_q),
             std::move(max_delta_q),
             std::move(min_delta_q_dot),
@@ -547,9 +561,9 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     // while last_joint_cmd_ stores the previous accepted final command
     // Using final[k] - final[k-1] prevents FULL_INVERSE_DYNAMICS from interpreting
     // an admittance delta_q_dot as a large artificial acceleration pulse
-    const JointVector joint_ref_acc = estimate_joint_ref_acc(joint_cmd, dt);
+    const JointVector joint_ref_acc = estimate_joint_ref_acc(joint_cmd, controller_dt);
     const auto model_feedforward = compute_model_feedforward(
-        joint_state.value(), joint_acc, joint_ref_acc, dt);
+        joint_state.value(), joint_acc, joint_ref_acc, controller_dt);
     if(!model_feedforward) {
         enter_fault(model_feedforward.error(), SafetyAction::STOP_HOLD);
         return tl::make_unexpected(model_feedforward.error());
@@ -559,7 +573,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         joint_cmd.tor[i] += model_feedforward.value()[i];
     }
 
-    const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, dt);
+    const auto safe_cmd = safety_.check_joint_cmd(joint_state.value(), joint_cmd, controller_dt);
     if(!safe_cmd) {
         const RobotFault fault = make_safety_fault(safe_cmd.error());
         enter_fault(fault, safety_.action_for(safe_cmd.error().code));
@@ -771,6 +785,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     last_cmd_time_ = resumed_at;
     has_state_ = true;
     has_completed_cycle_ = false;
+    dt_overrun_watchdog_.reset();
     has_external_cmd_ = false;
     has_last_joint_cmd_ = true;
     fault_hold_active_ = false;
@@ -1022,6 +1037,7 @@ void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
     fault_hold_cmd_ = ActuatorCtrlCmd{};
     fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
     clear_fault_valid_cycles_ = 0;
+    dt_overrun_watchdog_.reset();
     if(action == SafetyAction::STOP_HOLD) {
         // FAULT 默认刚性保持：先清外部命令，再以最新合法实测位置建参考，避免旧轨迹在清故障后继续执行
         fault_hold_active_ = start_fault_hold_noexcept();
@@ -1252,6 +1268,7 @@ void Robot::clear_runtime_state() noexcept {
     actuator_state_ = ActuatorState{};
     has_state_ = false;
     has_completed_cycle_ = false;
+    dt_overrun_watchdog_.reset();
     has_external_cmd_ = false;
     has_last_joint_cmd_ = false;
     fault_hold_active_ = false;

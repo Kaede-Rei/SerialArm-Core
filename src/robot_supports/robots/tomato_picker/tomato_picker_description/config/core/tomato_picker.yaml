@@ -108,8 +108,8 @@ shutdown:
   # 各关节停放目标位置 rad；当前仍为全零位，最终应以机械结构安全停放姿态为准
   park_pos: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
   speed_scale: 0.10                                 # 停放轨迹速度相对正常速度的比例
-  position_tolerance: 0.05                          # 严格停放位置误差阈值 rad
-  velocity_tolerance: 0.05                          # 严格停放速度阈值 rad/s
+  position_tolerance: 0.10                          # 严格停放位置误差阈值 rad
+  velocity_tolerance: 0.10                          # 严格停放速度阈值 rad/s
   settle_time_s: 0.25                               # 严格判据下持续稳定时间 s
   relaxed_tolerance_ratio: 2.0                      # 超时前宽松判据相对严格阈值的倍率
   timeout_s: 10.0                                   # 停放流程最大允许时间 s

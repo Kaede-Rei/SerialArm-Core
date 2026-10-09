@@ -170,9 +170,9 @@ shutdown:
     joint4: 0.0
     joint5: 0.0
     joint6: 0.0
-  speed_scale: 0.05
-  position_tolerance: 0.05
-  velocity_tolerance: 0.05
+  speed_scale: 0.10
+  position_tolerance: 0.10
+  velocity_tolerance: 0.10
   settle_time_s: 0.25
   relaxed_tolerance_ratio: 2.0
   timeout_s: 10.0

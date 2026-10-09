@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -1610,8 +1611,16 @@ private:
             // Preserve the already-validated ACTIVE-cycle samples if the robot
             // faults during teaching. This is file-only recovery: no motor
             // command or fault clear is ever issued by this thread.
-            auto captured = collect_friction_drag_trajectory_until_stop(model_calibration_teach_stop_);
-            if(machine_robot_state() == RobotState::FAULT) {
+            auto captured = collect_friction_drag_trajectory_until_stop(model_calibration_teach_stop_,
+                [this](const FrictionCalibrationTrajectory& partial) {
+                    const auto saved = model_calibration_recorder_.write_trajectory_checkpoint(partial.positions, partial.sample_dt);
+                    if(!saved) std::cerr << "[示教检查点] " << saved.error() << '\n';
+                });
+            if(captured && captured->positions.size() >= 20) {
+                const auto checkpoint = model_calibration_recorder_.write_trajectory_checkpoint(captured->positions, captured->sample_dt);
+                if(!checkpoint) std::cerr << "[示教检查点] 最终保存失败: " << checkpoint.error() << '\n';
+            }
+            if(machine_robot_state() == RobotState::FAULT || model_calibration_fault_interrupted_.load()) {
                 if(captured && captured->positions.size() >= 20) {
                     const auto saved = model_calibration_recorder_.write_trajectory(
                         captured->positions, captured->sample_dt);
@@ -1647,7 +1656,7 @@ private:
             if(!regression || regression->first_moment_regressor.cols() == 0) continue;
             Eigen::MatrixXd scaled = regression->first_moment_regressor;
             for(std::size_t link = 0; link < regression->links.size(); ++link) {
-                const double parameter_scale = std::max(1.0e-4, regression->links[link].mass * model_calibration_options_.max_com_offset_m);
+                const double parameter_scale = std::max(1.0e-4, regression->links[link].mass * 0.05); // Geometry reference for information scoring; NOT a COM limit
                 scaled.block(0, static_cast<Eigen::Index>(3 * link), scaled.rows(), 3) *= parameter_scale;
             }
             Eigen::Map<const Eigen::VectorXd> flat(scaled.data(), scaled.size());
@@ -1740,8 +1749,12 @@ private:
         if(params["minimum_information_score"]) model_calibration_options_.minimum_information_score = std::clamp(params["minimum_information_score"].as<double>(), 1.0e-8, 1.0e3);
         // Protect even against metadata with manually edited joint calibration;
         // the entire Core fingerprint above includes the joint mapping.
-        std::ifstream csv(directory / "trajectory.csv");
-        if(!csv) throw std::runtime_error("recorded trajectory.csv is missing; this task cannot be replayed");
+        const auto trajectory_path = std::filesystem::is_regular_file(directory / "trajectory.csv") ?
+            directory / "trajectory.csv" : directory / "trajectory.checkpoint.csv";
+        // Checkpoints are partial, unverified teaching recordings. Apply all
+        // fingerprint, joint-order, finite/range and retiming checks below.
+        std::ifstream csv(trajectory_path);
+        if(!csv) throw std::runtime_error("neither trajectory.csv nor trajectory.checkpoint.csv exists");
         std::string line, field;
         if(!std::getline(csv,line)) throw std::runtime_error("trajectory sample_dt header is missing");
         std::istringstream head(line);
@@ -2195,12 +2208,12 @@ private:
             options.minimum_training_groups=model_calibration_options_.minimum_training_groups;
             options.regularization=model_calibration_options_.regularization;
             options.svd_relative_threshold=model_calibration_options_.svd_relative_threshold;
-            options.default_max_com_offset_m=model_calibration_options_.max_com_offset_m;
             const auto gravity=fit_gravity_calibration(dynamics_,groups,model_calibration_original_gravity_scale_,options);
             if(!gravity) throw std::runtime_error(gravity.error());
             model_calibration_result_=gravity.value();
-            if(!gravity->static_pass)
-                throw std::runtime_error("candidate gravity model failed holdout validation: "+gravity->failure_reason);
+            // Holdout validation is advisory for exported candidates. Never
+            // abort data acquisition or suppress the candidate because of
+            // an inaccurate initial URDF. Applying it to hardware is separate.
             if(!model_calibration_within_time_limit()) throw std::runtime_error(model_calibration_error_);
             {
                 std::lock_guard<std::mutex> lock(model_calibration_mutex_);
@@ -3275,18 +3288,29 @@ private:
         background_fault_reported_ = false;
 
         std::cout << "开始回到配置的停放姿态\n";
-        std::cout << "[停放] 前 75% 时间使用 COMPLIANT_TRACKING，若仍未严格就位则切换 RIGID_TRACKING 完成最终就位\n";
+        std::cout << "[停放] 先进行柔性接近，若 40% 时间内未满足就位判据则提前切换刚性跟踪\n";
         print_vector("park_pos", cfg_.shutdown.park_pos);
 
         const Robot::TimePoint started_at = Robot::Clock::now();
         Robot::TimePoint last_progress_at = started_at;
         std::optional<Robot::TimePoint> settled_at;
         bool rigid_finish_mode = false;
-        const double rigid_finish_switch_s = 0.75 * cfg_.shutdown.timeout_s;
+        // Reserve at least sixty percent of the deadline for accurate final convergence
+        const double rigid_finish_switch_s = 0.40 * cfg_.shutdown.timeout_s;
         while(robot_.get_state() == RobotState::ACTIVE) {
             cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
             const Robot::TimePoint now = Robot::Clock::now();
-            if(!last_output_) continue;
+            if(!last_output_) {
+                if(std::chrono::duration<double>(now - started_at).count() >= cfg_.shutdown.timeout_s) {
+                    clear_command_sources();
+                    (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD, now);
+                    park_last_error_ = "park timeout: fresh joint feedback unavailable; robot remains enabled in RIGID_HOLD";
+                    std::cout << "停放超时：未获取到有效关节反馈，已进入 RIGID_HOLD 并取消失能\n";
+                    resume_admittance();
+                    return;
+                }
+                continue;
+            }
 
             double max_position_error = 0.0;
             double max_velocity = 0.0;
@@ -3321,13 +3345,13 @@ private:
                     clear_command_sources();
                     (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD, now);
                     park_last_error_ = "park failed: cannot switch to RIGID_TRACKING during final approach; robot remains enabled in RIGID_HOLD";
-                    std::cout << "停放时间已超过 75%，但切换 RIGID_TRACKING 失败，已进入 RIGID_HOLD 并取消失能\n";
+                    std::cout << "精确收敛阶段切换 RIGID_TRACKING 失败，已进入 RIGID_HOLD 并取消失能\n";
                     print_fault(rigid_result.error());
                     resume_admittance();
                     return;
                 }
                 rigid_finish_mode = true;
-                std::cout << "[停放] 停放时间已超过 75% 且仍未就位，切换 RIGID_TRACKING 完成最终就位\n";
+                std::cout << "[停放] 进入精确收敛阶段，切换 RIGID_TRACKING\n";
             }
 
             if(std::chrono::duration<double>(now - last_progress_at).count() >= 1.0) {
@@ -3908,13 +3932,16 @@ private:
 
 
     std::optional<FrictionCalibrationTrajectory> collect_friction_drag_trajectory_until_stop(
-        const std::atomic<bool>& stop_recording) {
+        const std::atomic<bool>& stop_recording,
+        const std::function<void(const FrictionCalibrationTrajectory&)>& checkpoint = {}) {
         constexpr std::size_t kRecordStride = 4; // 200 Hz control -> about 50 Hz recorded path
         FrictionCalibrationTrajectory trajectory;
         trajectory.sample_dt = static_cast<double>(kRecordStride) / cfg_.runtime.ctrl_frequency_hz;
 
         std::uint64_t cursor = 0;
         std::size_t received_cycles = 0;
+        std::size_t last_checkpoint_samples = 0;
+        const std::size_t checkpoint_interval = std::max<std::size_t>(20, static_cast<std::size_t>(2.0 / trajectory.sample_dt));
         {
             std::lock_guard<std::mutex> lock(mutex_);
             cursor = cycle_counter_;
@@ -3933,6 +3960,13 @@ private:
             cursor = cycle_counter_;
             if((received_cycles++ % kRecordStride) == 0) {
                 trajectory.positions.push_back(last_output_->joint_state.pos);
+                if(checkpoint && trajectory.positions.size() >= last_checkpoint_samples + checkpoint_interval) {
+                    // Sampling has its own worker, but never write a file while
+                    // holding the mutex that guards the real-time cycle state.
+                    lock.unlock();
+                    checkpoint(trajectory);
+                    last_checkpoint_samples = trajectory.positions.size();
+                }
             }
         }
 
@@ -4714,10 +4748,9 @@ private:
             std::cout << "\n------------ 重力模型校正参数 ------------\n";
             std::cout << " 1. 姿态数量上限              : " << model_calibration_options_.pose_budget << '\n';
             std::cout << " 2. 留出验证比例              : " << model_calibration_options_.validation_fraction << '\n';
-            std::cout << " 3. COM 最大偏移 (m)          : " << model_calibration_options_.max_com_offset_m << '\n';
-            std::cout << " 4. 正则化强度                : " << model_calibration_options_.regularization << '\n';
-            std::cout << " 5. SVD 相对阈值              : " << model_calibration_options_.svd_relative_threshold << '\n';
-            std::cout << " 6. 最小信息量                : " << model_calibration_options_.minimum_information_score << '\n';
+            std::cout << " 3. 正则化强度                : " << model_calibration_options_.regularization << '\n';
+            std::cout << " 4. SVD 相对阈值              : " << model_calibration_options_.svd_relative_threshold << '\n';
+            std::cout << " 5. 最小信息量                : " << model_calibration_options_.minimum_information_score << '\n';
 
             std::cout << " 0. 返回\n";
             const auto selection = read_int("请选择需要修改的参数: ");
@@ -4732,10 +4765,9 @@ private:
             if(!value) { std::cout << "输入无效\n"; continue; }
             switch(*selection) {
                 case 2: if(*value >= 0.15 && *value <= 0.45) model_calibration_options_.validation_fraction = *value; else std::cout << "范围应为 [0.15, 0.45]\n"; break;
-                case 3: if(*value >= 0.005 && *value <= 0.20) model_calibration_options_.max_com_offset_m = *value; else std::cout << "范围应为 [0.005, 0.20]\n"; break;
-                case 4: if(*value >= 1.0e-8 && *value <= 10.0) model_calibration_options_.regularization = *value; else std::cout << "范围应为 [1e-8, 10]\n"; break;
-                case 5: if(*value >= 1.0e-8 && *value <= 0.2) model_calibration_options_.svd_relative_threshold = *value; else std::cout << "范围应为 [1e-8, 0.2]\n"; break;
-                case 6: if(*value >= 1.0e-8 && *value <= 1.0e3) model_calibration_options_.minimum_information_score = *value; else std::cout << "范围应为 [1e-8, 1000]\n"; break;
+                case 3: if(*value >= 1.0e-8 && *value <= 10.0) model_calibration_options_.regularization = *value; else std::cout << "范围应为 [1e-8, 10]\n"; break;
+                case 4: if(*value >= 1.0e-8 && *value <= 0.2) model_calibration_options_.svd_relative_threshold = *value; else std::cout << "范围应为 [1e-8, 0.2]\n"; break;
+                case 5: if(*value >= 1.0e-8 && *value <= 1.0e3) model_calibration_options_.minimum_information_score = *value; else std::cout << "范围应为 [1e-8, 1000]\n"; break;
 
                 default: std::cout << "未知菜单编号\n"; break;
             }

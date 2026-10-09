@@ -109,6 +109,7 @@ public:
     ModelCalibrationRecorderStatus status() const;
     std::vector<ModelCalibrationFrame> frames() const;
     tl::expected<void, std::string> write_trajectory(const std::vector<JointVector>& trajectory, double sample_dt);
+    tl::expected<void, std::string> write_trajectory_checkpoint(const std::vector<JointVector>& trajectory, double sample_dt);
 
 private:
     void writer_loop();
@@ -175,6 +176,7 @@ struct GravityValidationMetrics {
  */
 struct GravityCalibrationResult {
     std::vector<GravityFirstMoment> first_moments;
+    std::vector<GravityFirstMoment> com_offsets_m; // Per-link ΔCOM relative to source URDF, for human review
     JointVector torque_bias;
     std::vector<std::uint8_t> parameter_observable;
     std::vector<double> singular_values;
