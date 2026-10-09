@@ -2057,12 +2057,20 @@ private:
     }
 
     bool model_calibration_collect_static(const ModelCalibrationPoseTarget& target, const std::string& direction) {
-        model_calibration_pose_group_.store(target.pose_group);
-        model_calibration_validation_.store(target.validation);
+        // Pose tags identify measured static frames only, never settling transients
+        model_calibration_pose_group_.store(0);
+        model_calibration_validation_.store(false);
         model_calibration_direction_.store(direction == "reverse" ? -1 : 1);
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD) ||
             !wait_for_static_tuning_pose(model_calibration_options_.static_hold_s, model_calibration_options_.static_timeout_s,
                 model_calibration_options_.static_max_velocity, model_calibration_options_.static_max_acceleration)) return false;
+        model_calibration_pose_group_.store(target.pose_group);
+        model_calibration_validation_.store(target.validation);
+        struct StaticPoseTagGuard {
+            std::atomic<std::size_t>& group;
+            std::atomic<bool>& validation;
+            ~StaticPoseTagGuard() { group.store(0); validation.store(false); }
+        } tag_guard{model_calibration_pose_group_, model_calibration_validation_};
         const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(model_calibration_options_.static_sample_s));
         std::uint64_t cursor = 0;
         { std::lock_guard<std::mutex> lock(mutex_); cursor = cycle_counter_; }

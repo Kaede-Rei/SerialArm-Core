@@ -182,6 +182,8 @@ struct GravityCalibrationResult {
     std::vector<double> singular_values;
     std::size_t numerical_rank{ 0 };
     double regression_reconstruction_rms{ 0.0 };
+    double selected_regularization{ 0.0 };
+    bool prior_preferred{ false };
     bool constraints_ok{ false };
     bool static_pass{ false };
     std::string status;

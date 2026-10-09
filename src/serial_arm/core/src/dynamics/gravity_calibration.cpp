@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 
@@ -457,6 +458,25 @@ std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const s
         group.validation = frame.validation;
         group.samples.push_back(frame);
     }
+    // Earlier task records tagged the group before waiting for the robot to settle
+    // Select the final 0.70 s of each group, matching the historic sample window
+    // Fresh task records tag only the sample window and need no tail truncation
+    for(auto& pair : grouped) {
+        auto& samples = pair.second.samples;
+        if(samples.empty()) continue;
+        const auto last_ns = samples.back().monotonic_ns;
+        constexpr std::uint64_t sample_window_ns = 700000000ULL;
+        auto begin = std::lower_bound(samples.begin(), samples.end(),
+            last_ns > sample_window_ns ? last_ns - sample_window_ns : 0ULL,
+            [](const ModelCalibrationFrame& frame, std::uint64_t time) { return frame.monotonic_ns < time; });
+        if(begin != samples.begin()) samples.erase(samples.begin(), begin);
+        samples.erase(std::remove_if(samples.begin(), samples.end(), [](const ModelCalibrationFrame& frame) {
+            if(!frame.valid || !finite_vector(frame.position) || !finite_vector(frame.velocity) || !finite_vector(frame.torque)) return true;
+            // Quantized motor feedback can briefly exceed the settle velocity
+            // Exclude genuine moving frames; never fit them as static gravity
+            return std::any_of(frame.velocity.begin(), frame.velocity.end(), [](double speed) { return std::abs(speed) > 0.05; });
+        }), samples.end());
+    }
     std::vector<GravityCalibrationPoseGroup> result;
     result.reserve(grouped.size());
     for(auto& item : grouped) result.push_back(std::move(item.second));
@@ -587,12 +607,95 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
         }
     }
 
+    // Select ridge strength using ONLY the training pose groups
+    // Whole-pose leave-one-out avoids leaking any held-out evaluation poses
+    // The unchanged URDF is a valid model-selection baseline when excitation
+    // does not support a transferable correction
+    std::vector<Eigen::MatrixXd> pose_regressors(training_count,
+        Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(joints), static_cast<Eigen::Index>(params)));
+    std::vector<Eigen::VectorXd> pose_targets(training_count,
+        Eigen::VectorXd::Zero(static_cast<Eigen::Index>(joints)));
+    for(std::size_t pose=0;pose<training_count;++pose) {
+        for(std::size_t joint=0;joint<joints;++joint) {
+            const Eigen::Index index=static_cast<Eigen::Index>(pose*joints+joint);
+            const double w=-A(index,static_cast<Eigen::Index>(params+joint));
+            pose_regressors[pose].row(static_cast<Eigen::Index>(joint)) =
+                A.block(index,0,1,static_cast<Eigen::Index>(params))/w;
+            pose_targets[pose](static_cast<Eigen::Index>(joint))=b(index)/w;
+        }
+    }
+    const std::vector<double> candidate_lambdas{std::max(0.0,options.regularization),
+        std::max(0.1,options.regularization),std::max(1.0,options.regularization),
+        std::max(10.0,options.regularization),std::max(100.0,options.regularization),
+        std::max(1000.0,options.regularization)};
+    double best_cv_error=std::numeric_limits<double>::infinity();
+    double chosen_lambda=candidate_lambdas.front();
+    bool prefer_prior=true;
+    for(std::size_t setting=0;setting<=candidate_lambdas.size();++setting) {
+        const bool prior=setting==0;
+        const double lambda=prior?0.0:candidate_lambdas[setting-1];
+        double cv_error=0.0;
+        for(std::size_t held=0;held<training_count;++held) {
+            const Eigen::Index rows=static_cast<Eigen::Index>((training_count-1)*joints);
+            Eigen::MatrixXd sample_A=Eigen::MatrixXd::Zero(rows,static_cast<Eigen::Index>(params));
+            Eigen::VectorXd sample_b=Eigen::VectorXd::Zero(rows);
+            Eigen::MatrixXd mean_Y=Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(joints),static_cast<Eigen::Index>(params));
+            Eigen::VectorXd mean_b=Eigen::VectorXd::Zero(static_cast<Eigen::Index>(joints));
+            for(std::size_t p=0;p<training_count;++p) {
+                if(p==held)continue;
+                mean_Y+=pose_regressors[p];
+                mean_b+=pose_targets[p];
+            }
+            mean_Y/=static_cast<double>(training_count-1);
+            mean_b/=static_cast<double>(training_count-1);
+            Eigen::Index offset=0;
+            for(std::size_t p=0;p<training_count;++p) {
+                if(p==held)continue;
+                sample_A.middleRows(offset,static_cast<Eigen::Index>(joints))=pose_regressors[p]-mean_Y;
+                sample_b.segment(offset,static_cast<Eigen::Index>(joints))=pose_targets[p]-mean_b;
+                offset+=static_cast<Eigen::Index>(joints);
+            }
+            Eigen::VectorXd fold_delta=Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
+            if(!prior) {
+                Eigen::VectorXd scaling=Eigen::VectorXd::Ones(static_cast<Eigen::Index>(params));
+                for(std::size_t c=0;c<params;++c) {
+                    const Eigen::Index col=static_cast<Eigen::Index>(c);
+                    const double rms=sample_A.col(col).norm()/std::sqrt(static_cast<double>(rows));
+                    const double reference=pose_regressors[0].col(col).norm()/std::sqrt(static_cast<double>(joints));
+                    if(rms>std::max(1.0e-12,1.0e-9*reference)) {
+                        sample_A.col(col)/=rms;
+                        scaling[col]=1.0/rms;
+                    } else sample_A.col(col).setZero();
+                }
+                Eigen::JacobiSVD<Eigen::MatrixXd> fold_svd(sample_A,Eigen::ComputeThinU|Eigen::ComputeThinV);
+                Eigen::VectorXd coeff=fold_svd.matrixU().transpose()*sample_b;
+                const double largest=fold_svd.singularValues().size()?fold_svd.singularValues()[0]:0.0;
+                for(Eigen::Index k=0;k<coeff.size();++k) {
+                    const double sigma=fold_svd.singularValues()[k];
+                    if(sigma<=largest*options.svd_relative_threshold || sigma<=1.0e-12) coeff[k]=0.0;
+                    else coeff[k]*=sigma/(sigma*sigma+lambda);
+                }
+                fold_delta=scaling.cwiseProduct(fold_svd.matrixV()*coeff);
+            }
+            const Eigen::VectorXd error=(pose_regressors[held]-mean_Y)*fold_delta-
+                (pose_targets[held]-mean_b);
+            cv_error+=error.squaredNorm();
+        }
+        if(cv_error+1.0e-10<best_cv_error) {
+            best_cv_error=cv_error;
+            chosen_lambda=lambda;
+            prefer_prior=prior;
+        }
+    }
+    result.selected_regularization=chosen_lambda;
+    result.prior_preferred=prefer_prior;
+
     // Robust iteratively reweighted SVD ridge in the observable subspace.
     // Huber reweighting reduces the influence of transient torque spikes.
     // Ridge is a soft numerical prior, not a hard COM or output constraint.
     Eigen::VectorXd normalized_delta=Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
     Eigen::VectorXd weights=Eigen::VectorXd::Ones(target.size());
-    for(std::size_t iter=0;iter<5 && result.numerical_rank>0;++iter) {
+    for(std::size_t iter=0;iter<5 && result.numerical_rank>0 && !prefer_prior;++iter) {
         Eigen::MatrixXd weighted=normalized;
         Eigen::VectorXd weighted_b=target;
         for(Eigen::Index r=0;r<weighted.rows();++r) {
@@ -606,7 +709,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
         for(Eigen::Index k=0;k<coeff.size();++k) {
             const double sigma=fit_svd.singularValues()[k];
             if(sigma<=largest*options.svd_relative_threshold || sigma<=1.0e-12)coeff[k]=0.0;
-            else coeff[k]*=sigma/(sigma*sigma+std::max(0.0,options.regularization));
+            else coeff[k]*=sigma/(sigma*sigma+chosen_lambda);
         }
         normalized_delta=fit_svd.matrixV()*coeff;
         const Eigen::VectorXd residual=normalized*normalized_delta-target;
@@ -653,18 +756,24 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     for(const auto& pose:poses){if(pose.validation)continue;++noise_count;for(std::size_t j=0;j<joints;++j)result.noise_rms[j]+=pose.tau_std[j]*pose.tau_std[j];}
     if(noise_count)for(double& value:result.noise_rms)value=std::sqrt(value/static_cast<double>(noise_count));
 
+    // Holdout quality is advisory but must be honest: low absolute RMS is NOT
+    // permission to worsen an already-good model by a large relative factor
+    // Per-axis sensor resolution gives a small tolerance for numerical noise
     bool acceptable=result.numerical_rank>0;
-    for(std::size_t j=0;j<joints && acceptable;++j) {
+    double original_squared=0.0;
+    double candidate_squared=0.0;
+    for(std::size_t j=0;j<joints;++j) {
         const double original=result.validation_original.rms[j];
         const double candidate=result.validation_candidate.rms[j];
-        const double noise=j<result.noise_rms.size()?result.noise_rms[j]:0.0;
-        const bool already_quiet=original<=std::max(options.absolute_rms_target_nm,2.0*noise);
-        const bool improved=candidate<=options.absolute_rms_target_nm || original-candidate>=options.minimum_rms_improvement_nm || already_quiet;
-        const bool not_degraded=candidate<=original+options.maximum_joint_degradation_nm || already_quiet;
-        acceptable=improved&&not_degraded;
+        const double permitted=std::max(0.005,0.05*original);
+        if(!std::isfinite(candidate) || candidate>original+permitted) acceptable=false;
+        original_squared+=original*original;
+        candidate_squared+=candidate*candidate;
     }
-    result.static_pass=acceptable;
+    if(candidate_squared>original_squared+1.0e-12) acceptable=false;
+    result.static_pass=acceptable && !result.prior_preferred;
     if(result.numerical_rank==0) {result.status="failed";result.failure_reason="gravity_parameters_unobservable";}
+    else if(result.prior_preferred) {result.status="needs_review";result.failure_reason="training_pose_cross_validation_prefers_urdf_prior";}
     else if(!result.static_pass) {result.status="needs_review";result.failure_reason="holdout_validation_not_improved";}
     else {result.status="passed";}
     return result;
@@ -674,6 +783,7 @@ std::string gravity_calibration_result_json(const GravityCalibrationResult& resu
     std::ostringstream out;
     out << std::setprecision(17) << "{\"status\":\"" << json_escape(result.status) << "\",\"failure_reason\":\"" << json_escape(result.failure_reason) << "\"";
     out << ",\"static_pass\":" << (result.static_pass?"true":"false") << ",\"constraints_ok\":" << (result.constraints_ok?"true":"false") << ",\"numerical_rank\":" << result.numerical_rank;
+    out << ",\"selected_regularization\":" << result.selected_regularization << ",\"prior_preferred\":" << (result.prior_preferred?"true":"false");
     out << ",\"regression_reconstruction_rms\":" << result.regression_reconstruction_rms << ",\"singular_values\":[";
     for(std::size_t i=0;i<result.singular_values.size();++i){if(i)out<<',';out<<result.singular_values[i];} out<<']';
     out << ",\"parameter_observable\":[";for(std::size_t i=0;i<result.parameter_observable.size();++i){if(i)out<<',';out<<static_cast<int>(result.parameter_observable[i]);}out<<']';

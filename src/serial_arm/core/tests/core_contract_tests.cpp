@@ -656,6 +656,41 @@ TEST(GravityCalibration, SyntheticFirstMomentFitImprovesHeldOutGravityPrediction
     fs::remove_all(temp_root);
 }
 
+TEST(GravityCalibration, HistoricPoseGroupingKeepsOnlySettledSamplingWindow) {
+    std::vector<ModelCalibrationFrame> frames;
+    for(std::size_t i=0;i<300;++i) {
+        ModelCalibrationFrame frame;
+        frame.monotonic_ns = static_cast<std::uint64_t>(i)*5000000ULL;
+        frame.phase="static_reverse";
+        frame.pose_group=1;
+        frame.validation=false;
+        frame.valid=true;
+        frame.position={0.1,0.2};
+        frame.velocity={i<160 ? 0.2 : 0.01,0.0};
+        frame.torque={i<160 ? 99.0 : 1.0, 2.0};
+        frames.push_back(frame);
+    }
+    const auto groups=group_static_calibration_frames(frames);
+    ASSERT_EQ(groups.size(),1u);
+    ASSERT_EQ(groups[0].samples.size(),140u);
+    for(const auto& frame:groups[0].samples) {
+        EXPECT_LT(std::abs(frame.velocity[0]),0.05);
+        EXPECT_DOUBLE_EQ(frame.torque[0],1.0);
+    }
+}
+
+TEST(GravityCalibration, PureDemonstrationDoesNotBecomeStaticTrainingData) {
+    ModelCalibrationFrame frame;
+    frame.monotonic_ns=1;
+    frame.phase="waiting_replay_confirmation";
+    frame.pose_group=0;
+    frame.valid=true;
+    frame.position={0.1};
+    frame.velocity={0.0};
+    frame.torque={0.1};
+    EXPECT_TRUE(group_static_calibration_frames({frame}).empty());
+}
+
 TEST(GravityCalibrationRecorder, ReportsBoundedBufferDropAndReloadsWrittenFrames) {
     const fs::path directory = fs::path(SERIAL_ARM_TEST_TMP_DIR) / "gravity_recorder_contract";
     fs::remove_all(directory);

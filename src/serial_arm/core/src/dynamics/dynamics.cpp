@@ -56,7 +56,8 @@ struct Dynamics::Impl {
     Eigen::MatrixXd frame_jacobian_model;           ///< 完整模型 Frame Jacobian 临时缓存
     std::vector<Eigen::Isometry3d> frame_poses;     ///< 所有 Frame 位姿缓存
     std::vector<Eigen::MatrixXd> frame_jacobians;   ///< 所有 Frame Jacobian 缓存
-    std::vector<GravityLinkParameterInfo> gravity_links; ///< 原始 URDF Link 重力参数
+    std::vector<GravityLinkParameterInfo> gravity_links; ///< 可辨识的受控关节 Link 参数
+    std::vector<GravityLinkParameterInfo> gravity_reference_links; ///< 全部真实 Link 用于回归重建核对
     std::unordered_map<std::string, std::size_t> gravity_link_index; ///< Link 名称到参数索引
     std::vector<GravityFirstMoment> gravity_override; ///< 当前候选一阶矩
     bool gravity_override_active{ false }; ///< 是否启用候选重力覆盖
@@ -480,13 +481,33 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     }
 
     impl_->gravity_links.clear();
+    impl_->gravity_reference_links.clear();
     impl_->gravity_link_index.clear();
+    // Fit only inertial links attached directly to a sampled controlled joint
+    // Fixed coordinates and unsampled auxiliary joints keep the recorded URDF prior
+    const std::string urdf_xml = read_text_file(cfg.urdf_path);
+    std::unordered_set<std::string> identifiable_links;
+    const std::regex joint_pattern(R"(<joint\b([^>]*)>([\s\S]*?)</joint\s*>)", std::regex::icase);
+    const std::regex child_pattern(R"(<child\b([^>]*)/?>)", std::regex::icase);
+    for(std::sregex_iterator it(urdf_xml.begin(), urdf_xml.end(), joint_pattern), end; it != end; ++it) {
+        const auto name = xml_attribute((*it)[1].str(), "name");
+        if(!name || controlled.find(*name) == controlled.end()) continue;
+        std::smatch child;
+        const std::string body = (*it)[2].str();
+        if(std::regex_search(body, child, child_pattern)) {
+            const auto link = xml_attribute(child[1].str(), "link");
+            if(link) identifiable_links.insert(*link);
+        }
+    }
     for(auto info : parse_urdf_gravity_links(cfg.urdf_path)) {
         if(!impl_->model.existFrame(info.link_name)) continue;
         const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(info.link_name);
         if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
-        impl_->gravity_link_index.emplace(info.link_name, impl_->gravity_links.size());
-        impl_->gravity_links.push_back(std::move(info));
+        if(identifiable_links.find(info.link_name) != identifiable_links.end()) {
+            impl_->gravity_link_index.emplace(info.link_name, impl_->gravity_links.size());
+            impl_->gravity_links.push_back(info);
+        }
+        impl_->gravity_reference_links.push_back(std::move(info));
     }
     impl_->gravity_override.clear();
     impl_->gravity_override_active = false;
@@ -795,8 +816,8 @@ tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regress
         Eigen::VectorXd reconstructed = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(impl_->info.joints_count));
         const Eigen::Vector3d gravity_world = impl_->model.gravity.linear();
         Eigen::MatrixXd jacobian_model = Eigen::MatrixXd::Zero(6, impl_->model.nv);
-        for(std::size_t link_index = 0; link_index < result.links.size(); ++link_index) {
-            const auto& link = result.links[link_index];
+        for(const auto& link : impl_->gravity_reference_links) {
+            const auto fit_index = impl_->gravity_link_index.find(link.link_name);
             const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(link.link_name);
             if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
             jacobian_model.setZero();
@@ -811,12 +832,14 @@ tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regress
                 const Eigen::Vector3d linear = jacobian.block<3,1>(0, static_cast<Eigen::Index>(joint));
                 const Eigen::Vector3d angular = jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint));
                 reconstructed(static_cast<Eigen::Index>(joint)) += -linear.dot(force) + angular.dot(gravity_world.cross(rotation * h));
-                for(int axis = 0; axis < 3; ++axis) {
-                    const Eigen::Vector3d basis = rotation.col(axis);
-                    result.first_moment_regressor(
-                        static_cast<Eigen::Index>(joint),
-                        static_cast<Eigen::Index>(3 * link_index + static_cast<std::size_t>(axis))) =
-                        angular.dot(gravity_world.cross(basis));
+                if(fit_index != impl_->gravity_link_index.end()) {
+                    for(int axis = 0; axis < 3; ++axis) {
+                        const Eigen::Vector3d basis = rotation.col(axis);
+                        result.first_moment_regressor(
+                            static_cast<Eigen::Index>(joint),
+                            static_cast<Eigen::Index>(3 * fit_index->second + static_cast<std::size_t>(axis))) =
+                            angular.dot(gravity_world.cross(basis));
+                    }
                 }
             }
         }
