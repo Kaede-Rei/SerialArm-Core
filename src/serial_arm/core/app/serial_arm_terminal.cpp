@@ -32,6 +32,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -186,6 +187,8 @@ struct ModelCalibrationTaskOptions {
     double max_com_offset_m{ 0.05 };
     double regularization{ 1.0e-2 };
     double svd_relative_threshold{ 1.0e-4 };
+    std::string identification_mode{ "global" };
+    std::vector<std::string> locked_links;
 
 };
 
@@ -790,6 +793,9 @@ public:
     tl::expected<void, std::string> initialize() {
         const auto dynamics_result = dynamics_.configure(cfg_.dynamics);
         if(!dynamics_result) return tl::make_unexpected("Dynamics configure() 失败: " + to_string(dynamics_result.error()));
+        model_calibration_links_cache_.clear();
+        if(const auto links=dynamics_.get_gravity_regression(JointVector(cfg_.joint_names.size(),0.0)); links)
+            model_calibration_links_cache_=links->links;
 
         RobotCfg robot_cfg = cfg_;
         if(!cfg_.dynamics.gravity_correction_path.empty()) {
@@ -1504,6 +1510,9 @@ private:
         metadata.regularization = model_calibration_options_.regularization;
         metadata.svd_relative_threshold = model_calibration_options_.svd_relative_threshold;
         metadata.minimum_information_score = model_calibration_options_.minimum_information_score;
+        metadata.identification_mode = model_calibration_options_.identification_mode;
+        metadata.locked_links = model_calibration_options_.locked_links;
+        for(const auto& link:model_calibration_links_cache_) metadata.identifiable_links.push_back(link.link_name);
         metadata.max_task_duration_s = 0.0; // 0: no user-configurable task deadline
         return metadata;
     }
@@ -1564,6 +1573,18 @@ private:
         if(params && params["regularization"]) model_calibration_options_.regularization = std::clamp(params["regularization"].as<double>(), 1.0e-8, 10.0);
         if(params && params["svd_relative_threshold"]) model_calibration_options_.svd_relative_threshold = std::clamp(params["svd_relative_threshold"].as<double>(), 1.0e-8, 0.2);
         if(params && params["minimum_information_score"]) model_calibration_options_.minimum_information_score = std::clamp(params["minimum_information_score"].as<double>(), 1.0e-8, 1.0e3);
+        if(params && params["mode"]) model_calibration_options_.identification_mode=params["mode"].as<std::string>();
+        if(params && params["locked_links"]) model_calibration_options_.locked_links=params["locked_links"].as<std::vector<std::string>>();
+        if(model_calibration_options_.identification_mode!="global" && model_calibration_options_.identification_mode!="local") throw std::runtime_error("invalid identification mode");
+        if(model_calibration_options_.identification_mode=="global") model_calibration_options_.locked_links.clear();
+        if(model_calibration_links_cache_.empty()) throw std::runtime_error("no identifiable gravity links");
+        std::set<std::string> choices;
+        for(const auto& item:model_calibration_links_cache_) choices.insert(item.link_name);
+        std::set<std::string> unique;
+        for(const auto& name:model_calibration_options_.locked_links) {
+            if(!choices.count(name) || !unique.insert(name).second) throw std::runtime_error("unknown or duplicate locked gravity link: "+name);
+        }
+        if(choices.size()<=unique.size()) throw std::runtime_error("at least one identifiable gravity link must remain unlocked");
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -1655,6 +1676,11 @@ private:
             const auto regression = dynamics_.get_gravity_regression(q);
             if(!regression || regression->first_moment_regressor.cols() == 0) continue;
             Eigen::MatrixXd scaled = regression->first_moment_regressor;
+            if(model_calibration_options_.identification_mode=="local") {
+                for(std::size_t link=0;link<regression->links.size();++link)
+                    if(std::find(model_calibration_options_.locked_links.begin(),model_calibration_options_.locked_links.end(),regression->links[link].link_name)!=model_calibration_options_.locked_links.end())
+                        scaled.block(0,static_cast<Eigen::Index>(3*link),scaled.rows(),3).setZero();
+            }
             for(std::size_t link = 0; link < regression->links.size(); ++link) {
                 const double parameter_scale = std::max(1.0e-4, regression->links[link].mass * 0.05); // Geometry reference for information scoring; NOT a COM limit
                 scaled.block(0, static_cast<Eigen::Index>(3 * link), scaled.rows(), 3) *= parameter_scale;
@@ -1747,6 +1773,18 @@ private:
         if(params["regularization"]) model_calibration_options_.regularization = std::clamp(params["regularization"].as<double>(), 1.0e-8, 10.0);
         if(params["svd_relative_threshold"]) model_calibration_options_.svd_relative_threshold = std::clamp(params["svd_relative_threshold"].as<double>(), 1.0e-8, 0.2);
         if(params["minimum_information_score"]) model_calibration_options_.minimum_information_score = std::clamp(params["minimum_information_score"].as<double>(), 1.0e-8, 1.0e3);
+        if(params["mode"]) model_calibration_options_.identification_mode=params["mode"].as<std::string>();
+        if(params["locked_links"]) model_calibration_options_.locked_links=params["locked_links"].as<std::vector<std::string>>();
+        if(model_calibration_options_.identification_mode!="global" && model_calibration_options_.identification_mode!="local") throw std::runtime_error("invalid identification mode");
+        if(model_calibration_options_.identification_mode=="global") model_calibration_options_.locked_links.clear();
+        if(model_calibration_links_cache_.empty()) throw std::runtime_error("no identifiable gravity links");
+        std::set<std::string> choices;
+        for(const auto& item:model_calibration_links_cache_) choices.insert(item.link_name);
+        std::set<std::string> unique;
+        for(const auto& name:model_calibration_options_.locked_links) {
+            if(!choices.count(name) || !unique.insert(name).second) throw std::runtime_error("unknown or duplicate locked gravity link: "+name);
+        }
+        if(choices.size()<=unique.size()) throw std::runtime_error("at least one identifiable gravity link must remain unlocked");
         // Protect even against metadata with manually edited joint calibration;
         // the entire Core fingerprint above includes the joint mapping.
         const auto trajectory_path = std::filesystem::is_regular_file(directory / "trajectory.csv") ?
@@ -2216,6 +2254,8 @@ private:
             options.minimum_training_groups=model_calibration_options_.minimum_training_groups;
             options.regularization=model_calibration_options_.regularization;
             options.svd_relative_threshold=model_calibration_options_.svd_relative_threshold;
+            options.identification_mode=model_calibration_options_.identification_mode;
+            options.locked_links=model_calibration_options_.locked_links;
             const auto gravity=fit_gravity_calibration(dynamics_,groups,model_calibration_original_gravity_scale_,options);
             if(!gravity) throw std::runtime_error(gravity.error());
             model_calibration_result_=gravity.value();
@@ -2474,6 +2514,14 @@ private:
         out<<",\"recorder\":{\"accepted\":"<<recorder.accepted_frames<<",\"written\":"<<recorder.written_frames<<",\"dropped\":"<<recorder.dropped_frames<<",\"data_gap\":"<<(recorder.data_gap?"true":"false")<<",\"write_failed\":"<<(recorder.write_failed?"true":"false")<<"}";
         if(!model_calibration_error_.empty())out<<",\"error\":\""<<machine_json_escape(model_calibration_error_)<<"\"";
         if(model_calibration_trajectory_)out<<",\"trajectory_samples\":"<<model_calibration_trajectory_->positions.size()<<",\"replay_rate\":"<<model_calibration_replay_rate_;
+        out<<",\"identification_mode\":\""<<machine_json_escape(model_calibration_options_.identification_mode)<<"\",\"locked_links\":[";
+        for(std::size_t i=0;i<model_calibration_options_.locked_links.size();++i){if(i)out<<',';out<<'"'<<machine_json_escape(model_calibration_options_.locked_links[i])<<'"';}
+        out<<"],\"identifiable_links\":[";
+        for(std::size_t i=0;i<model_calibration_links_cache_.size();++i){
+            if(i)out<<','; const auto& info=model_calibration_links_cache_[i];
+            out<<"{\"name\":\""<<machine_json_escape(info.link_name)<<"\",\"joint\":\""<<machine_json_escape(info.joint_name)<<"\",\"mass\":"<<info.mass<<",\"com\":["<<info.center_of_mass.x()<<","<<info.center_of_mass.y()<<","<<info.center_of_mass.z()<<"]}";
+        }
+        out<<']';
         out<<",\"planner_id\":\"local_hermite\",\"calibration_strategy\":\"two_pass_combined\"";
         out<<",\"alignment_active\":"<<(model_calibration_alignment_active_.load()?"true":"false");
         if(!model_calibration_source_task_id_.empty()) out<<",\"original_start_selected\":"<<(model_calibration_source_reversed_.load()?"true":"false");
@@ -5343,6 +5391,7 @@ private:
     HardwareConnectionSummary connection_summary_;
     std::string robot_profile_;
     Dynamics dynamics_;
+    std::vector<GravityLinkParameterInfo> model_calibration_links_cache_;
     HardwareLoader hardware_loader_;
     Robot robot_;
     HardwareCapabilities actuator_info_;

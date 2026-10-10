@@ -47,6 +47,7 @@ struct DynamicsInertiaInfo {
  * @brief 原始 URDF Link 的重力校正参数
  */
 struct GravityLinkParameterInfo {
+    std::string joint_name;                                  ///< 原始 URDF 中直接关联的受控 Joint
     std::string link_name;                                  ///< 原始 URDF Link 名称
     double mass{ 0.0 };                                      ///< 原始质量 kg
     Eigen::Vector3d center_of_mass{ Eigen::Vector3d::Zero() }; ///< 原始质心，位于 Link 坐标系 m

@@ -187,7 +187,20 @@ def _candidate_threshold(result, joints):
     return [max(0.02, 1.2 * float(p99[i]), 3.0 * float(noise[i])) for i in range(len(joints))]
 
 
-def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
+def _same_gravity_candidate(a, b):
+    """Exact physical parameter comparison independent of JSON field ordering"""
+    def moments(result):
+        return {item['link_name']: tuple(float(x) for x in item['value']) for item in (result.get('first_moments') or [])}
+    left, right = moments(a), moments(b)
+    return bool(left) and left.keys() == right.keys() and all(
+        all(math.isclose(x, y, abs_tol=1e-11, rel_tol=1e-10) for x, y in zip(left[name], right[name]))
+        for name in left
+    ) and all(math.isclose(float(x), float(y), abs_tol=1e-11, rel_tol=1e-10)
+              for x, y in zip(a.get('torque_bias') or [], b.get('torque_bias') or [])) and \
+        len(a.get('torque_bias') or []) == len(b.get('torque_bias') or [])
+
+
+def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=True):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
     if prefer_recomputed:
@@ -197,6 +210,38 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
     joints = result.get('joint_names') or metadata.get('joint_names') or []
     if not allow_unvalidated and (result.get('phase') != 'complete' or not gravity.get('static_pass')):
         raise ValueError('model calibration task has no validated static candidate')
+    recomputed_used = gravity is not result.get('gravity_result')
+    friction_matches = not recomputed_used or _same_gravity_candidate(gravity, result.get('gravity_result') or {})
+    friction_pass = bool(result.get('friction_pass')) and friction_matches
+    source_id = 'recomputed-candidate.json' if recomputed_used else 'result.json'
+    lock_names = list(gravity.get('locked_links') or []) if gravity.get('identification_mode', 'global') == 'local' else []
+    fitted_names = list(gravity.get('fitted_links') or [])
+    if not fitted_names:
+        fitted_names = [x['link_name'] for x in gravity.get('first_moments', []) if x['link_name'] not in lock_names]
+    if len(fitted_names) != len(set(fitted_names)) or len(lock_names) != len(set(lock_names)) or set(lock_names) & set(fitted_names):
+        raise ValueError('candidate fitted/locked Link lists overlap or contain duplicates')
+    if gravity.get('identification_mode', 'global') not in ('global', 'local'):
+        raise ValueError('candidate identification mode is invalid')
+    if gravity.get('identification_mode', 'global') == 'local':
+        candidates = _identifiable_links_from_snapshot(directory, metadata)
+        allowed = {item['name'] for item in candidates}
+        if not allowed or set(fitted_names) | set(lock_names) != allowed or not set(fitted_names) or set(fitted_names) & set(lock_names):
+            raise ValueError('local identification Link selection differs from the recorded model')
+        import xml.etree.ElementTree as ET
+        root = ET.parse(verified_source_urdf(directory, metadata)).getroot()
+        link_map = {link.get('name'): link for link in root.findall('link')}
+        candidate_moments = {item['link_name']: item['value'] for item in gravity.get('first_moments') or []}
+        for name in lock_names:
+            link = link_map[name]
+            inertial = link.find('inertial')
+            mass = float(inertial.find('mass').get('value'))
+            origin = inertial.find('origin')
+            com = [float(x) for x in origin.get('xyz', '0 0 0').split()] if origin is not None else [0.0]*3
+            values = candidate_moments.get(name)
+            if values is None or len(values) != 3 or len(com) != 3 or not all(
+                math.isclose(float(value), mass*coord, abs_tol=1e-9, rel_tol=1e-9)
+                for value, coord in zip(values, com)):
+                raise ValueError(f'locked Link first moments were modified: {name}')
     if result.get('core_fingerprint') != metadata.get('core_fingerprint') or result.get('urdf_fingerprint') != metadata.get('urdf_fingerprint'):
         raise ValueError('task result fingerprint does not match recorded source')
     moments = gravity.get('first_moments') or []
@@ -213,7 +258,13 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
         'static_pass': bool(gravity.get('static_pass')),
         'candidate_review_required': not bool(gravity.get('static_pass')),
         'candidate_quality_reason': gravity.get('failure_reason', ''),
-        'friction_pass': bool(result.get('friction_pass')),
+        'friction_pass': friction_pass,
+        'friction_matches_gravity': friction_matches,
+        'friction_status': 'validated' if friction_pass else 'requires_refit_or_review',
+        'candidate_source': source_id,
+        'identification_mode': gravity.get('identification_mode', 'global'),
+        'locked_links': lock_names,
+        'fitted_links': fitted_names,
         'original_gravity_scale': result.get('original_gravity_scale') or metadata.get('original_gravity_scale'),
         'first_moments': first_moments,
         'constraints': {},
@@ -233,10 +284,10 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             'torque_threshold': _candidate_threshold(result, joints),
             'friction': {
                 'velocity_transition': 0.03,
-                'positive_coulomb': friction.get('positive_coulomb', [0.0] * len(joints)),
-                'positive_viscous': friction.get('positive_viscous', [0.0] * len(joints)),
-                'negative_coulomb': friction.get('negative_coulomb', [0.0] * len(joints)),
-                'negative_viscous': friction.get('negative_viscous', [0.0] * len(joints)),
+                'positive_coulomb': friction.get('positive_coulomb', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
+                'positive_viscous': friction.get('positive_viscous', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
+                'negative_coulomb': friction.get('negative_coulomb', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
+                'negative_viscous': friction.get('negative_viscous', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
             },
         },
         'source': {
@@ -292,6 +343,38 @@ def save_gravity_correction(core_path, expected_sha, task_directory):
     return application
 
 
+
+
+def _identifiable_links_from_snapshot(directory, metadata):
+    """Reconstruct link ownership for old datasets without treating fixed frames as masses"""
+    import xml.etree.ElementTree as ET
+    try:
+        source = verified_source_urdf(directory, metadata)
+        root = ET.parse(source).getroot()
+    except (OSError, ValueError, ET.ParseError):
+        return []
+    controlled = set(metadata.get('joint_names') or [])
+    link_nodes = {node.get('name'): node for node in root.findall('link')}
+    found = []
+    for joint in root.findall('joint'):
+        joint_name = joint.get('name')
+        child = joint.find('child')
+        if joint_name not in controlled or child is None:
+            continue
+        link_name = child.get('link')
+        link = link_nodes.get(link_name)
+        inertial = link.find('inertial') if link is not None else None
+        mass_node = inertial.find('mass') if inertial is not None else None
+        if mass_node is None:
+            continue
+        try:
+            mass = float(mass_node.get('value', ''))
+        except (ValueError, TypeError):
+            continue
+        if not math.isfinite(mass) or mass <= 0:
+            continue
+        found.append({'name': link_name, 'joint': joint_name, 'mass': mass})
+    return found
 
 
 def load_model_calibration_summary(directory):
@@ -364,10 +447,17 @@ def load_model_calibration_summary(directory):
             '未发现可用轨迹或检查点，只能查看记录，无法恢复自动回放')
     # Stored result is never a live session; the GUI must not infer that the
     # playback is ready until the native process explicitly imports it.
-    display_result = result if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
+    display_result = dict(result) if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
+    if result and (folder / 'recomputed-candidate.json').is_file():
+        candidate = json.loads((folder / 'recomputed-candidate.json').read_text())
+        display_result['gravity_result'] = candidate
+        display_result['friction_pass'] = bool(result.get('friction_pass')) and _same_gravity_candidate(candidate, result.get('gravity_result') or {})
+        display_result['friction_status'] = 'validated' if display_result['friction_pass'] else 'requires_refit_or_review'
     if can_resume and trajectory['source'] == 'trajectory.checkpoint.csv':
         note = '仅保存了示教检查点，属于中断片段，必须重新校验运动范围和真机起点，再人工确认回放'
+    selectable_links = _identifiable_links_from_snapshot(folder, metadata)
     return {'directory': str(folder), 'metadata': metadata, 'result': display_result,
+            'identifiable_links': selectable_links,
             'has_result': bool(result), 'record_kind': record_kind, 'can_resume': can_resume,
             'files': files, 'trajectory': trajectory, 'note': note, 'task_id': task_id}
 
@@ -415,8 +505,10 @@ def preview_gravity_correction(core_path, task_directory):
         'changes': changes,
         'changed': before != after,
         'task_id': result.get('task_id', ''),
-        'static_pass': bool((result.get('gravity_result') or {}).get('static_pass')),
-        'friction_pass': bool(result.get('friction_pass')),
+        'static_pass': bool(payload['static_pass']),
+        'friction_pass': bool(payload['friction_pass']),
+        'friction_status': payload.get('friction_status', 'requires_refit_or_review'),
+        'candidate_source': payload.get('candidate_source', 'result.json'),
     }
 
 
@@ -465,6 +557,52 @@ def update_candidate_urdf_verification(target_dir, verification):
     path.write_text(json.dumps(existing, ensure_ascii=False, indent=2))
     return existing
 
+
+def export_friction_candidate(task_directory, destination=None):
+    """Produce a review-only friction artifact, tied to the gravity model it was fitted against
+
+    Unlike gravity-correction.yaml this is not a runtime application package
+    """
+    directory, metadata, result = _load_model_calibration_task(task_directory)
+    fitted_gravity = result.get('gravity_result') or {}
+    original_friction = result.get('friction') or {}
+    if not original_friction:
+        raise ValueError('task has no completed friction fit')
+    _, _, _, active = build_gravity_correction_payload(directory, allow_unvalidated=True)
+    joint_names = result.get('joint_names') or metadata.get('joint_names') or []
+    if not joint_names:
+        raise ValueError('friction candidate is missing sampled joints')
+    verified = bool(result.get('friction_pass'))
+    data = {
+        'schema': 'serial_arm_friction_candidate_review',
+        'task_id': result.get('task_id'),
+        'core_fingerprint': metadata.get('core_fingerprint'),
+        'urdf_fingerprint': metadata.get('urdf_fingerprint'),
+        'joint_names': joint_names,
+        'gravity_fit_source': 'result.json',
+        'gravity_fit_fingerprint': hashlib.sha256(json.dumps({
+            'first_moments': fitted_gravity.get('first_moments'),
+            'torque_bias': fitted_gravity.get('torque_bias')}, sort_keys=True).encode()).hexdigest(),
+        'matches_current_candidate': bool(active['friction_matches_gravity']),
+        'friction_validation_pass': verified,
+        'can_apply_directly': False,
+        'warning': '人工审核文件，不可直接作为 Core 运行配置，如重算过重力模型须重新匹配摩擦残差',
+        'torque_bias': fitted_gravity.get('torque_bias'),
+        'positive_coulomb': original_friction.get('positive_coulomb'),
+        'negative_coulomb': original_friction.get('negative_coulomb'),
+        'positive_viscous': original_friction.get('positive_viscous'),
+        'negative_viscous': original_friction.get('negative_viscous'),
+    }
+    dest = Path(destination).expanduser().resolve() if destination else directory / 'candidate' / 'friction-candidate.yaml'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    temporary = dest.with_suffix(dest.suffix + '.tmp')
+    temporary.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding='utf-8')
+    yaml.safe_load(temporary.read_text(encoding='utf-8'))
+    temporary.replace(dest)
+    return {'path': str(dest), 'friction_validation_pass': verified,
+            'matches_current_candidate': data['matches_current_candidate'],
+            'can_apply_directly': False, 'gravity_fit_source': 'result.json'}
+
 def export_candidate_urdf(task_directory, destination=None):
     import xml.etree.ElementTree as ET
     directory, metadata, result, payload = build_gravity_correction_payload(task_directory, allow_unvalidated=True, prefer_recomputed=True)
@@ -473,7 +611,8 @@ def export_candidate_urdf(task_directory, destination=None):
     target_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(source)
     root = tree.getroot()
-    moments = payload['first_moments']
+    moments = {name: values for name, values in payload['first_moments'].items()
+               if name in (payload.get('fitted_links') or payload['first_moments'].keys())}
     changed = []
     skipped_massless_links = []
     review_warnings = []
@@ -544,6 +683,10 @@ def export_candidate_urdf(task_directory, destination=None):
         'skipped_massless_links': skipped_massless_links,
         'review_warnings': review_warnings,
         'mass_and_inertia_values_preserved': True,
+        'locked_links_preserved': payload.get('locked_links', []),
+        'identification_mode': payload.get('identification_mode', 'global'),
+        'candidate_source': payload.get('candidate_source', 'result.json'),
+        'friction_status': payload.get('friction_status', 'requires_refit_or_review'),
         'joint_geometry_modified': False,
         'copied_relative_meshes': copied,
         'scope': 'static gravity correction only; original masses and inertias unchanged',

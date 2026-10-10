@@ -68,6 +68,9 @@ struct ModelCalibrationMetadata {
     std::string velocity_unit{ "rad/s" };
     std::string torque_unit{ "Nm" };
     std::string load_description;
+    std::string identification_mode{ "global" };
+    std::vector<std::string> locked_links;
+    std::vector<std::string> identifiable_links;
     std::size_t pose_budget{ 8 };
     double validation_fraction{ 0.30 };
     double max_com_offset_m{ 0.05 };
@@ -159,6 +162,8 @@ struct GravityCalibrationOptions {
     double minimum_rms_improvement_nm{ 0.03 };
     double maximum_joint_degradation_nm{ 0.03 };
     std::vector<GravityCalibrationLinkConstraint> constraints;
+    std::string identification_mode{ "global" };
+    std::vector<std::string> locked_links;
 };
 
 /**
@@ -184,6 +189,9 @@ struct GravityCalibrationResult {
     double regression_reconstruction_rms{ 0.0 };
     double selected_regularization{ 0.0 };
     bool prior_preferred{ false };
+    std::string identification_mode{ "global" };
+    std::vector<std::string> locked_links;
+    std::vector<std::string> fitted_links;
     bool constraints_ok{ false };
     bool static_pass{ false };
     std::string status;

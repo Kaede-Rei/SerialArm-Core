@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iomanip>
 #include <numeric>
+#include <set>
 #include <limits>
 #include <sstream>
 #include <unordered_map>
@@ -294,7 +295,11 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << ",\"joint_zero_offset\":"; json_vector(out, metadata_.mapping_joint_zero_offset);
     out << ",\"actuator_zero_offset\":"; json_vector(out, metadata_.mapping_actuator_zero_offset); out << "},\n";
     out << "  \"original_gravity_scale\":"; json_vector(out, metadata_.original_gravity_scale); out << ",\n";
-    out << "  \"calibration_options\":{\"pose_budget\":" << metadata_.pose_budget
+    out << "  \"calibration_options\":{\"mode\":\"" << json_escape(metadata_.identification_mode) << "\",\"locked_links\":[";
+    for(std::size_t i=0;i<metadata_.locked_links.size();++i){if(i)out<<',';out<<'"'<<json_escape(metadata_.locked_links[i])<<'"';}
+    out << "],\"identifiable_links\":[";
+    for(std::size_t i=0;i<metadata_.identifiable_links.size();++i){if(i)out<<',';out<<'"'<<json_escape(metadata_.identifiable_links[i])<<'"';}
+    out << "],\"pose_budget\":" << metadata_.pose_budget
         << ",\"validation_fraction\":" << metadata_.validation_fraction
         << ",\"max_com_offset_m\":" << metadata_.max_com_offset_m
         << ",\"regularization\":" << metadata_.regularization
@@ -499,8 +504,28 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     const auto first = dynamics.get_gravity_regression(poses.front().q);
     if(!first) return tl::make_unexpected(std::string("gravity regression failed"));
     const std::size_t joints = first->original_gravity.size();
-    const std::size_t params = static_cast<std::size_t>(first->first_moment_regressor.cols());
-    if(joints == 0 || params == 0) return tl::make_unexpected(std::string("gravity regression has no parameters"));
+    const std::size_t total_params = static_cast<std::size_t>(first->first_moment_regressor.cols());
+    if(joints == 0 || total_params == 0 || total_params != first->links.size()*3)
+        return tl::make_unexpected(std::string("gravity regression has invalid parameter dimensions"));
+    if(options.identification_mode != "global" && options.identification_mode != "local")
+        return tl::make_unexpected(std::string("unknown gravity identification mode"));
+    if(options.identification_mode == "global" && !options.locked_links.empty())
+        return tl::make_unexpected(std::string("global identification cannot specify locked links"));
+    std::set<std::string> locked(options.locked_links.begin(), options.locked_links.end());
+    if(locked.size() != options.locked_links.size())
+        return tl::make_unexpected(std::string("duplicate locked link"));
+    std::vector<Eigen::Index> active_columns;
+    std::vector<std::string> fitted_links;
+    for(std::size_t i=0;i<first->links.size();++i) {
+        const auto& name=first->links[i].link_name;
+        if(locked.erase(name) == 0) {
+            fitted_links.push_back(name);
+            for(std::size_t axis=0;axis<3;++axis)active_columns.push_back(static_cast<Eigen::Index>(3*i+axis));
+        }
+    }
+    if(!locked.empty())return tl::make_unexpected(std::string("locked link does not belong to current identifiable model: ")+*locked.begin());
+    if(active_columns.empty())return tl::make_unexpected(std::string("all identifiable links are locked"));
+    const std::size_t params = active_columns.size();
 
     Eigen::MatrixXd A = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(training_count*joints), static_cast<Eigen::Index>(params+joints));
     Eigen::VectorXd b = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(training_count*joints));
@@ -510,13 +535,13 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     for(const auto& pose : poses) {
         if(pose.validation) continue;
         const auto regression = dynamics.get_gravity_regression(pose.q);
-        if(!regression || static_cast<std::size_t>(regression->first_moment_regressor.cols()) != params) return tl::make_unexpected(std::string("gravity regression shape changed"));
+        if(!regression || static_cast<std::size_t>(regression->first_moment_regressor.cols()) != total_params) return tl::make_unexpected(std::string("gravity regression shape changed"));
         reconstruction_sum += regression->reconstruction_rms * regression->reconstruction_rms;
         ++reconstruction_n;
         for(std::size_t joint=0;joint<joints;++joint,++row) {
             const double sigma = std::max(0.01, pose.tau_std[joint]);
             const double weight = 1.0 / sigma;
-            A.block(static_cast<Eigen::Index>(row),0,1,static_cast<Eigen::Index>(params)) = weight * regression->first_moment_regressor.row(static_cast<Eigen::Index>(joint));
+            for(std::size_t col=0;col<params;++col) A(static_cast<Eigen::Index>(row),static_cast<Eigen::Index>(col)) = weight * regression->first_moment_regressor(static_cast<Eigen::Index>(joint),active_columns[col]);
             A(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(params+joint)) = -weight;
             b(static_cast<Eigen::Index>(row)) = weight * (pose.tau[joint] - regression->original_gravity[joint]);
         }
@@ -596,14 +621,17 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     for(Eigen::Index i=0;i<base_svd.singularValues().size();++i)
         if(max_sv>0.0 && base_svd.singularValues()[i]>max_sv*options.svd_relative_threshold)
             ++result.numerical_rank;
-    result.parameter_observable.assign(params,0);
+    result.identification_mode=options.identification_mode;
+    result.locked_links=options.locked_links;
+    result.fitted_links=fitted_links;
+    result.parameter_observable.assign(total_params,0);
     if(result.numerical_rank) {
         const auto V=base_svd.matrixV();
         for(std::size_t col=0;col<params;++col) {
             double projection=0.0;
             for(std::size_t k=0;k<result.numerical_rank;++k)
                 projection+=std::pow(V(static_cast<Eigen::Index>(col),static_cast<Eigen::Index>(k)),2);
-            if(projection>=options.minimum_observable_energy)result.parameter_observable[col]=1;
+            if(projection>=options.minimum_observable_energy)result.parameter_observable[static_cast<std::size_t>(active_columns[col])]=1;
         }
     }
 
@@ -732,11 +760,16 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     result.first_moments.reserve(first->links.size());
     result.constraints_ok = true; // Legacy result field: no COM displacement bound is enforced.
     result.com_offsets_m.reserve(first->links.size());
+    std::size_t active_link=0;
     for(std::size_t link=0;link<first->links.size();++link) {
         const auto& info=first->links[link];
         if(!(info.mass>0.0) || !std::isfinite(info.mass))
             return tl::make_unexpected(std::string("invalid link mass for ")+info.link_name);
-        const Eigen::Vector3d shift=delta_h.segment<3>(static_cast<Eigen::Index>(3*link))/info.mass;
+        Eigen::Vector3d shift=Eigen::Vector3d::Zero();
+        if(std::find(fitted_links.begin(),fitted_links.end(),info.link_name)!=fitted_links.end()) {
+            shift=delta_h.segment<3>(static_cast<Eigen::Index>(3*active_link))/info.mass;
+            ++active_link;
+        }
         if(!shift.allFinite())return tl::make_unexpected(std::string("non-finite candidate COM for ")+info.link_name);
         result.com_offsets_m.push_back(GravityFirstMoment{info.link_name,shift});
         result.first_moments.push_back(GravityFirstMoment{info.link_name,info.mass*(info.center_of_mass+shift)});
@@ -783,7 +816,11 @@ std::string gravity_calibration_result_json(const GravityCalibrationResult& resu
     std::ostringstream out;
     out << std::setprecision(17) << "{\"status\":\"" << json_escape(result.status) << "\",\"failure_reason\":\"" << json_escape(result.failure_reason) << "\"";
     out << ",\"static_pass\":" << (result.static_pass?"true":"false") << ",\"constraints_ok\":" << (result.constraints_ok?"true":"false") << ",\"numerical_rank\":" << result.numerical_rank;
-    out << ",\"selected_regularization\":" << result.selected_regularization << ",\"prior_preferred\":" << (result.prior_preferred?"true":"false");
+    out << ",\"identification_mode\":\"" << json_escape(result.identification_mode) << "\",\"locked_links\":[";
+    for(std::size_t i=0;i<result.locked_links.size();++i){if(i)out<<',';out<<'"'<<json_escape(result.locked_links[i])<<'"';}
+    out << "],\"fitted_links\":[";
+    for(std::size_t i=0;i<result.fitted_links.size();++i){if(i)out<<',';out<<'"'<<json_escape(result.fitted_links[i])<<'"';}
+    out << "],\"selected_regularization\":" << result.selected_regularization << ",\"prior_preferred\":" << (result.prior_preferred?"true":"false");
     out << ",\"regression_reconstruction_rms\":" << result.regression_reconstruction_rms << ",\"singular_values\":[";
     for(std::size_t i=0;i<result.singular_values.size();++i){if(i)out<<',';out<<result.singular_values[i];} out<<']';
     out << ",\"parameter_observable\":[";for(std::size_t i=0;i<result.parameter_observable.size();++i){if(i)out<<',';out<<static_cast<int>(result.parameter_observable[i]);}out<<']';

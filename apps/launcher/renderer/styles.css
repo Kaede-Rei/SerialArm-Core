@@ -264,3 +264,13 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .calibration-com-unchanged input{accent-color:#38bdf8}
 .calibration-com-hint{max-width:270px;color:#94a3b8;font-size:10px}
 @media(max-width:700px){.calibration-com-overlay{top:8px;left:8px;padding:8px;max-width:calc(100% - 16px);font-size:10px}.calibration-com-legend{gap:5px}}
+
+/* Gravity identification scope and read-only Link metadata */
+.model-calibration-identification{display:flex;flex-direction:column;gap:9px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--subtle)}
+.model-calibration-identification .mode-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.model-calibration-identification .hint{margin:0}
+.calibration-link-picker{max-height:min(48vh,420px);overflow:auto;display:grid;gap:7px;padding:8px 0;margin:10px 0}
+.calibration-link-option{display:flex;align-items:center;gap:12px;padding:9px 12px;border:1px solid var(--line);border-radius:9px;background:var(--subtle);cursor:pointer}
+.calibration-link-option span{flex:1;min-width:0;font-weight:600}
+.calibration-link-option small{color:var(--muted);font-size:11px}
+.calibration-link-option input{accent-color:var(--accent, #df7800)}

@@ -21,12 +21,17 @@ int main(int argc, char** argv) {
         std::string dataset_path;
         std::string output_path;
         std::string verify_urdf_path;
+        std::string requested_mode;
+        std::vector<std::string> requested_locked_links;
+        bool locked_override=false;
         for(int i=1;i<argc;++i) {
             const std::string arg=argv[i];
             if(arg=="--config"&&i+1<argc) config_path=argv[++i];
             else if(arg=="--dataset"&&i+1<argc) dataset_path=argv[++i];
             else if(arg=="--output"&&i+1<argc) output_path=argv[++i];
             else if(arg=="--verify-urdf"&&i+1<argc) verify_urdf_path=argv[++i];
+            else if(arg=="--mode"&&i+1<argc) requested_mode=argv[++i];
+            else if(arg=="--lock-link"&&i+1<argc) {requested_locked_links.push_back(argv[++i]);locked_override=true;}
             else if(arg=="--help"||arg=="-h") {
                 std::cout << "Usage: serial_arm_model_calibrator --config <core.yaml> --dataset <task-dir> [--output candidate.json] [--verify-urdf candidate.urdf]\n";
                 return EXIT_SUCCESS;
@@ -75,7 +80,13 @@ int main(int argc, char** argv) {
             const YAML::Node saved=metadata["calibration_options"];
             if(saved["regularization"])options.regularization=saved["regularization"].as<double>();
             if(saved["svd_relative_threshold"])options.svd_relative_threshold=saved["svd_relative_threshold"].as<double>();
+            if(saved["mode"])options.identification_mode=saved["mode"].as<std::string>();
+            if(saved["locked_links"])options.locked_links=saved["locked_links"].as<std::vector<std::string>>();
         }
+        if(!requested_mode.empty()) {
+            options.identification_mode=requested_mode;
+            options.locked_links=locked_override?requested_locked_links:std::vector<std::string>{};
+        } else if(locked_override) throw std::runtime_error("--lock-link requires --mode local");
         const auto result=serial_arm::fit_gravity_calibration(dynamics,groups,cfg_result->gravity_scale,options);
         if(!result) throw std::runtime_error(result.error());
         if(!verify_urdf_path.empty()) {

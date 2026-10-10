@@ -486,7 +486,7 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     // Fit only inertial links attached directly to a sampled controlled joint
     // Fixed coordinates and unsampled auxiliary joints keep the recorded URDF prior
     const std::string urdf_xml = read_text_file(cfg.urdf_path);
-    std::unordered_set<std::string> identifiable_links;
+    std::unordered_map<std::string,std::string> identifiable_links;
     const std::regex joint_pattern(R"(<joint\b([^>]*)>([\s\S]*?)</joint\s*>)", std::regex::icase);
     const std::regex child_pattern(R"(<child\b([^>]*)/?>)", std::regex::icase);
     for(std::sregex_iterator it(urdf_xml.begin(), urdf_xml.end(), joint_pattern), end; it != end; ++it) {
@@ -496,14 +496,15 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
         const std::string body = (*it)[2].str();
         if(std::regex_search(body, child, child_pattern)) {
             const auto link = xml_attribute(child[1].str(), "link");
-            if(link) identifiable_links.insert(*link);
+            if(link) identifiable_links.emplace(*link,*name);
         }
     }
     for(auto info : parse_urdf_gravity_links(cfg.urdf_path)) {
         if(!impl_->model.existFrame(info.link_name)) continue;
         const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(info.link_name);
         if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
-        if(identifiable_links.find(info.link_name) != identifiable_links.end()) {
+        if(const auto owner=identifiable_links.find(info.link_name); owner != identifiable_links.end()) {
+            info.joint_name=owner->second;
             impl_->gravity_link_index.emplace(info.link_name, impl_->gravity_links.size());
             impl_->gravity_links.push_back(info);
         }

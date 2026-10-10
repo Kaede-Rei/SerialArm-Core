@@ -12,7 +12,7 @@ from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
 from machine import NativeSession
 from model_runtime import ModelRuntime
-from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
+from persistence import (export_friction_candidate, export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 from profile_library import ProfileLibrary
 from model_calibration_alignment import compare_calibration_urdfs
 
@@ -159,6 +159,11 @@ def main():
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     result = restore_gravity_correction(info['resources']['core'], params.get('directory', ''))
+                elif method == 'model_calibration_export_friction':
+                    directory = params.get('directory', '')
+                    if not directory and native.status().get('state') == 'running':
+                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
+                    result = export_friction_candidate(directory, params.get('destination') or None)
                 elif method == 'model_calibration_export_urdf':
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
@@ -198,7 +203,16 @@ def main():
                     directory = str(Path(params.get('directory', '')).expanduser().resolve())
                     if not Path(directory).is_dir(): raise ValueError('model calibration task directory is missing')
                     output = str(Path(directory) / 'recomputed-candidate.json')
-                    completed = subprocess.run([calibrator, '--config', info['resources']['core'], '--dataset', directory, '--output', output], text=True, capture_output=True, timeout=60)
+                    mode = params.get('mode', 'global')
+                    if mode not in ('global', 'local'):
+                        raise ValueError('invalid calibration identification mode')
+                    locked = params.get('locked_links', []) if mode == 'local' else []
+                    if not isinstance(locked, list) or not all(isinstance(x, str) and x for x in locked) or len(set(locked)) != len(locked):
+                        raise ValueError('locked_links must be a unique Link name list')
+                    command = [calibrator, '--config', info['resources']['core'], '--dataset', directory, '--output', output, '--mode', mode]
+                    for link in locked:
+                        command.extend(['--lock-link', link])
+                    completed = subprocess.run(command, text=True, capture_output=True, timeout=60)
                     if completed.returncode not in (0, 3): raise ValueError((completed.stderr or completed.stdout or 'offline recalculation failed').strip())
                     try:
                         candidate = json.loads(Path(output).read_text())
