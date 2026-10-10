@@ -14,6 +14,7 @@ from machine import NativeSession
 from model_runtime import ModelRuntime
 from persistence import (export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 from profile_library import ProfileLibrary
+from model_calibration_alignment import compare_calibration_urdfs
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
@@ -133,6 +134,11 @@ def main():
                     result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
                 elif method == 'model_calibration_load':
                     result = load_model_calibration_summary(params.get('directory', ''))
+                elif method == 'model_calibration_model_alignment':
+                    directory = params.get('directory', '')
+                    summary = load_model_calibration_summary(directory)
+                    current_model = model_runtime.model(inspector, params.get('config', {}))
+                    result = compare_calibration_urdfs(summary['directory'], summary['metadata'], current_model['urdf'])
                 elif method == 'model_calibration_records':
                     result = list_model_calibration_records(ROOT)
                 elif method == 'model_calibration_preview_save':

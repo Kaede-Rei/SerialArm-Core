@@ -2,6 +2,7 @@ import * as THREE from './vendor/three/build/three.module.js';
 import {OrbitControls} from './vendor/three/jsm/controls/OrbitControls.js';
 import {STLLoader} from './vendor/three/jsm/loaders/STLLoader.js';
 import {GLTFLoader} from './vendor/three/jsm/loaders/GLTFLoader.js';
+import {gravityComMarkers} from './gravity-com-geometry.mjs';
 
 const decode = value => {
   const raw = atob(value);
@@ -263,23 +264,50 @@ export class SerialArmModelView {
     this.comparisonGroups=[];
   }
 
-  setGravityComparison(result) {
+  makeComparisonLabel(text, position) {
+    const canvas=document.createElement('canvas');
+    const ctx=canvas.getContext('2d');ctx.font='600 32px sans-serif';
+    const width=Math.min(620,Math.ceil(ctx.measureText(text).width+44));
+    canvas.width=width;canvas.height=104;
+    ctx.fillStyle='rgba(9,25,40,.92)';ctx.fillRect(0,4,width,94);
+    ctx.fillStyle='#38bdf8';ctx.fillRect(0,4,7,94);
+    ctx.font='600 32px sans-serif';ctx.fillStyle='#f0f9ff';ctx.fillText(text,22,66);
+    const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
+    const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false}));
+    sprite.position.set(...position);sprite.scale.set(Math.max(width/1700,0.11),0.035,1);
+    sprite.renderOrder=75;sprite.userData.layer='candidate';sprite.userData.texture=texture;
+    return sprite;
+  }
+
+  setGravityComparison(result, options = {}) {
     this.clearGravityComparison();
-    if(!result?.first_moments?.length||!this.payload)return;
-    const links=new Map((this.payload.model?.links||[]).map(link=>[link.name,link]));
-    for(const item of result.first_moments){
-      const link=links.get(item.link_name),holder=this.linkGroups.get(item.link_name);
-      const mass=Number(link?.inertial?.mass||0);
-      if(!holder||!(mass>0)||!Array.isArray(item.value)||item.value.length!==3)continue;
-      const original=(link.inertial?.origin?.xyz||[0,0,0]).map(Number);
-      const candidate=item.value.map(value=>Number(value)/mass);
-      if(candidate.some(value=>!Number.isFinite(value)))continue;
-      const group=new THREE.Group();group.userData.layer='candidate';
-      const originalPoint=new THREE.Mesh(new THREE.SphereGeometry(0.012,18,12),new THREE.MeshBasicMaterial({color:0xff4f87,depthTest:false,depthWrite:false}));originalPoint.position.set(...original);originalPoint.renderOrder=60;group.add(originalPoint);
-      const candidatePoint=new THREE.Mesh(new THREE.SphereGeometry(0.015,18,12),new THREE.MeshBasicMaterial({color:0x22c7e8,depthTest:false,depthWrite:false}));candidatePoint.position.set(...candidate);candidatePoint.renderOrder=61;group.add(candidatePoint);
-      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...original),new THREE.Vector3(...candidate)]),new THREE.LineBasicMaterial({color:0x22c7e8,transparent:true,opacity:0.95,depthTest:false,depthWrite:false}));line.renderOrder=60;group.add(line);
-      const label=this.makeLabel(`${item.link_name} candidate`,[candidate[0]+0.018,candidate[1]+0.018,candidate[2]+0.018],['candidate']);label.scale.multiplyScalar(0.82);group.add(label);
-      holder.add(group);this.comparisonGroups.push(group);
+    if (!this.payload || !result?.first_moments?.length) return;
+    const scale=options.displayScale??1;
+    const markers=gravityComMarkers(this.payload.model?.links,result.first_moments,scale,options.showUnchanged===true,options.sourceInertials??null);
+    let index=0;
+    for(const item of markers){
+      const holder=this.linkGroups.get(item.linkName);
+      if(!holder)continue;
+      const group=new THREE.Group();group.userData.layer='candidate';group.userData.ownerKind='links';group.userData.ownerName=item.linkName;
+      const pink=0xff4f87,blue=0x38bdf8;
+      const original=new THREE.Vector3(...item.originalCom),candidate=new THREE.Vector3(...item.displayCom);
+      const originalPoint=new THREE.Mesh(new THREE.SphereGeometry(0.009,18,14),new THREE.MeshBasicMaterial({color:pink,depthTest:false,depthWrite:false}));
+      originalPoint.position.copy(original);originalPoint.renderOrder=66;group.add(originalPoint);
+      const originalHalo=new THREE.Mesh(new THREE.SphereGeometry(0.015,16,12),new THREE.MeshBasicMaterial({color:pink,transparent:true,opacity:0.24,depthTest:false,depthWrite:false}));
+      originalHalo.position.copy(original);originalHalo.renderOrder=65;group.add(originalHalo);
+      const candidatePoint=new THREE.Mesh(new THREE.SphereGeometry(0.009,18,14),new THREE.MeshBasicMaterial({color:blue,depthTest:false,depthWrite:false}));
+      candidatePoint.position.copy(candidate);candidatePoint.renderOrder=69;group.add(candidatePoint);
+      // Line and visible markers use the same visualization scale; the label always reports the true displacement
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([original,candidate]),new THREE.LineBasicMaterial({color:blue,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
+      line.renderOrder=67;group.add(line);
+      const labelOffset=new THREE.Vector3(0.063,(index%2?-.052:.052),0.025);
+      const anchor=candidate.clone().add(labelOffset);
+      const leaderEnd=anchor.clone().add(new THREE.Vector3(-0.04,0,0));
+      const leader=new THREE.Line(new THREE.BufferGeometry().setFromPoints([candidate,leaderEnd]),new THREE.LineBasicMaterial({color:blue,transparent:true,opacity:0.6,depthTest:false,depthWrite:false}));
+      leader.renderOrder=68;group.add(leader);
+      const label=this.makeComparisonLabel(`${item.linkName}  Δ${item.offsetMm.toFixed(2)} mm`,anchor.toArray());
+      group.add(label);
+      holder.add(group);this.comparisonGroups.push(group);index++;
     }
     this.refreshVisibility();
   }

@@ -242,11 +242,12 @@ test('model calibration records control-cycle data and supports offline recomput
   assert.match(bridge, /model_calibration_recompute/);
   assert.match(bridge, /candidate = json\.loads\(Path\(output\)\.read_text\(\)\)/);
   assert.match(app, /setGravityComparison/);
-  assert.match(model, /setGravityComparison\(result\)/);
+  assert.match(model, /setGravityComparison\(result(?:, options = \{\})?\)/);
   assert.match(model, /candidatePoint/);
   assert.match(model, /originalPoint/);
   assert.match(app, /modelCalibrationModelBinding/);
-  assert.match(app, /当前可视模型与记录数据的 URDF 指纹不一致/);
+  assert.match(app, /模型指纹变化，正在核对历史快照与当前模型的兼容性/);
+  assert.match(app, /model_calibration_model_alignment/);
   const probe = read('src/serial_arm/core/app/serial_arm_model_probe.cpp');
   assert.match(probe, /urdf_fingerprint/);
   assert.match(probe, /model_calibration_file_fingerprint/);

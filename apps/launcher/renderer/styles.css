@@ -247,3 +247,20 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .priority-error-overlay[open] .priority-error-card{animation:dialog-spring-in .36s var(--spring-ui) both}
 @media(prefers-reduced-motion:reduce){.priority-error-overlay[open] .priority-error-card{animation:none!important}}
 
+/* Read-only original/candidate COM visualization in the calibration workbench */
+.calibration-com-overlay{position:absolute;z-index:4;top:12px;left:12px;width:max-content;max-width:calc(100% - 24px);padding:11px 13px;border:1px solid rgba(148,163,184,.27);border-radius:12px;background:rgba(15,23,42,.89);color:#f8fafc;box-shadow:0 5px 20px rgba(0,0,0,.12);font-size:11px;line-height:1.5}
+.calibration-com-heading{font-size:12px;font-weight:700;margin-bottom:6px}
+.calibration-com-legend{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-bottom:7px;color:#e2e8f0}
+.calibration-com-legend span{display:inline-flex;align-items:center;gap:5px}
+.com-swatch{display:inline-block;width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 2px rgba(255,255,255,.13)}
+.com-swatch.original{background:#ff4f87}
+.com-swatch.candidate{background:#38bdf8}
+.calibration-com-legend .com-connector{color:#38bdf8;font-size:16px;line-height:10px}
+.calibration-com-scale{display:flex;align-items:center;gap:6px;margin:6px 0}
+.calibration-com-scale button{font:inherit;color:#e2e8f0;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.15);border-radius:6px;cursor:pointer;padding:3px 8px}
+.calibration-com-scale button.active{border-color:#38bdf8;background:rgba(56,189,248,.22);color:#e0f2fe}
+.calibration-com-scale button:focus-visible{outline:2px solid #38bdf8;outline-offset:2px}
+.calibration-com-unchanged{display:flex;align-items:center;gap:6px;color:#cbd5e1;cursor:pointer;margin:7px 0 3px}
+.calibration-com-unchanged input{accent-color:#38bdf8}
+.calibration-com-hint{max-width:270px;color:#94a3b8;font-size:10px}
+@media(max-width:700px){.calibration-com-overlay{top:8px;left:8px;padding:8px;max-width:calc(100% - 16px);font-size:10px}.calibration-com-legend{gap:5px}}
