@@ -60,7 +60,7 @@ class Bridge extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const id = ++this.seq;
-      const timeout = method === 'model_calibration_export_full_inertial' ? 150000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' ? 90000 : method === 'stop' || method === 'workbench_stop' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 35000 : 15000);
+      const timeout = (method === 'model_calibration_export_full_inertial' || method === 'model_calibration_advanced') ? 150000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' ? 90000 : method === 'stop' || method === 'workbench_stop' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 35000 : 15000);
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Backend request timed out')); }, timeout);
       this.pending.set(id, {resolve, reject, timer});
       this.child.stdin.write(JSON.stringify({id, method, params}) + '\n');

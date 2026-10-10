@@ -274,3 +274,50 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .calibration-link-option span{flex:1;min-width:0;font-weight:600}
 .calibration-link-option small{color:var(--muted);font-size:11px}
 .calibration-link-option input{accent-color:var(--accent, #df7800)}
+
+/* Unified calibration entry points and scoped offline candidates */
+.calibration-entry-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.calibration-entry{display:flex;flex-direction:column;align-items:flex-start;gap:9px;text-align:left;padding:17px;min-width:0;border-radius:13px;border:1px solid var(--line);background:var(--card);color:inherit;font:inherit;cursor:pointer}
+.calibration-entry.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+.calibration-entry:disabled{cursor:not-allowed;opacity:.55}
+.calibration-entry-title{font-weight:700;font-size:15px}
+.calibration-entry>span:last-child{font-size:12px;opacity:.74;line-height:1.6}
+.calibration-advanced-card{display:flex;flex-direction:column;gap:12px}
+.calibration-capability-grid,.calibration-result-stages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.calibration-capability-grid>div,.calibration-result-stages>div{padding:12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}
+.calibration-capability-grid b{font-size:21px}
+.calibration-capability-grid small{opacity:.7}
+.calibration-advanced-target-label{display:flex;flex-direction:column;align-items:stretch;gap:8px}
+.calibration-advanced-target-label select{max-width:100%;padding:9px;border-radius:7px}
+.calibration-locks{padding:12px;border:1px solid var(--line);border-radius:9px}
+.calibration-locks summary{cursor:pointer;font-weight:600}
+.calibration-advanced-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px;margin-top:12px}
+.calibration-advanced-link{display:flex;align-items:center;gap:7px;padding:6px}
+.calibration-results-card{display:flex;flex-direction:column;gap:10px}
+@media(max-width:760px){.calibration-entry-grid,.calibration-capability-grid,.calibration-result-stages{grid-template-columns:1fr}}
+
+/* Calibration forms follow the available panel width rather than viewport width */
+.model-calibration-card,.calibration-advanced-card{container-type:inline-size;min-width:0}
+.model-calibration-options{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;align-items:stretch}
+.model-calibration-options label{grid-template-rows:minmax(34px,auto) 36px;align-items:end;min-width:0;overflow-wrap:anywhere;line-height:1.5;font-size:11px}
+.model-calibration-options input{height:36px;align-self:end}
+.model-calibration-card .workspace-actions,.calibration-advanced-card .workspace-actions{min-width:0;align-items:center}
+.model-calibration-card .workspace-actions .button,.calibration-advanced-card .workspace-actions .button{white-space:normal;text-align:center;line-height:1.4}
+.gravity-export-hint{flex-basis:100%;font-size:10px;line-height:1.6;color:var(--muted)}
+.model-calibration-card .path-chip,.calibration-advanced-card .path-chip{max-width:100%;overflow-wrap:anywhere}
+.model-calibration-card .task-directory{min-width:0}
+.calibration-advanced-link{min-width:0;overflow-wrap:anywhere;cursor:pointer}
+.calibration-advanced-links{grid-template-columns:repeat(auto-fit,minmax(min(100%,136px),1fr))}
+@container (min-width:970px){.model-calibration-options{grid-template-columns:repeat(5,minmax(0,1fr))}}
+@container (max-width:550px){
+ .model-calibration-options{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .model-calibration-summary,.calibration-capability-grid,.calibration-result-stages{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .candidate-compare-head{align-items:flex-start;flex-direction:column}
+ .candidate-compare-head span{text-align:left}
+ .model-calibration-card .workspace-actions .button,.calibration-advanced-card .workspace-actions .button{flex:1 1 135px}
+}
+@container (max-width:345px){
+ .model-calibration-options,.model-calibration-summary,.calibration-capability-grid,.calibration-result-stages{grid-template-columns:minmax(0,1fr)}
+ .model-calibration-options label{grid-template-rows:auto 36px}
+ .task-directory{grid-template-columns:minmax(0,1fr)}
+}

@@ -28,8 +28,10 @@ test('full inertia candidate stays opt-in and cannot be applied by a launcher co
   assert.match(main, /'model_calibration_export_full_inertial'/);
   assert.match(bridge, /run_full_inertial_isolated/);
   assert.match(bridge, /full_inertial_worker\.py/);
-  assert.match(read('apps/launcher/backend/full_inertial_worker.py'), /export_full_inertial_candidate/);
-  assert.match(app, /model-calibration-export-inertial/);
+  assert.match(read('apps/launcher/backend/full_inertial_worker.py'), /run_advanced/);
+  assert.doesNotMatch(app, /id="model-calibration-export-inertial"/);
+  assert.match(app, /id="model-calibration-export"/);
+  assert.match(app, /model_calibration_advanced/);
   assert.match(tool, /all_parameters_identifiable/);
   assert.match(tool, /physical_inertia/);
   assert.doesNotMatch(tool, /robot\.set_cmd/);

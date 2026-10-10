@@ -9,10 +9,11 @@ import sys
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise ValueError('候选参数导出参数不完整')
-    from full_inertial import export_full_inertial_candidate
-    result = export_full_inertial_candidate(sys.argv[1], sys.argv[2] or None)
+    if len(sys.argv) != 5:
+        raise ValueError('请选择高级动力学辨识目标与可信 Link 后生成候选模型')
+    from advanced_identification import run_advanced
+    locked = json.loads(sys.argv[4])
+    result = run_advanced(sys.argv[1], sys.argv[3], sys.argv[2] or None, locked)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

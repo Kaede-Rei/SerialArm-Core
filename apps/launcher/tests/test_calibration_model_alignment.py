@@ -81,7 +81,18 @@ class ModelAlignmentTests(unittest.TestCase):
         result = compare_calibration_urdfs(record, metadata, current)
         self.assertTrue(result['comparable'])
         self.assertEqual(result['changed_links'], ['Link6'])
-        self.assertTrue(any('正定性' in w for w in result['warnings']))
+        # The user's current URDF may have a corrected positive definite
+        # Link6; only require a warning when this actual tensor is nonphysical
+        from xml.etree import ElementTree as ET
+        import numpy as np
+        link = next(x for x in ET.parse(current).getroot().findall('link') if x.get('name') == 'Link6')
+        inertia = link.find('inertial/inertia')
+        mat = np.array([[float(inertia.get('ixx')), float(inertia.get('ixy')), float(inertia.get('ixz'))],
+                        [float(inertia.get('ixy')), float(inertia.get('iyy')), float(inertia.get('iyz'))],
+                        [float(inertia.get('ixz')), float(inertia.get('iyz')), float(inertia.get('izz'))]])
+        eig = np.linalg.eigvalsh(mat)
+        nonphysical = eig[0] <= 0 or eig[2] > eig[0] + eig[1] + 1e-9
+        self.assertEqual(any('正定性' in w for w in result['warnings']), bool(nonphysical))
 
 
 if __name__ == '__main__':

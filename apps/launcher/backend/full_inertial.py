@@ -151,12 +151,21 @@ def _extract_rows(csvpath, joints, limit=500):
     if set(item[0] for item in valid) != {'static_reverse','friction_forward_fast'}:
         raise ValueError('缺少反向或正向回放数据，无法做双向辨识')
     if len(valid) > limit:
-        stride = len(valid) / limit
-        valid = [valid[min(len(valid)-1,int(i*stride))] for i in range(limit)]
+        # Preserve both replay directions and spread samples over each phase.
+        # Excessive sequential samples can make a large CSV look informative
+        # even though the dynamic regressor is nearly rank deficient.
+        by_phase = {phase: [item for item in valid if item[0] == phase]
+                    for phase in ('static_reverse', 'friction_forward_fast')}
+        sampled = []
+        for phase, segment in by_phase.items():
+            count = min(len(segment), limit // 2)
+            sampled.extend(segment[min(len(segment) - 1, int(k * len(segment) / count))]
+                           for k in range(count))
+        valid = sampled
     return valid
 
 
-def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
+def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, active_parameters=None, locked_links=None):
     import numpy as np
     data=model.createData()
     nj=len(moving_joints)
@@ -166,6 +175,11 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
                                for j in range(1,model.njoints)])
     prior=full_prior[param_indices]
     nparam=len(prior)
+    active_indices = [10*k+i for k, (_, name, _) in enumerate(moving_joints)
+                      if name not in (locked_links or ())
+                      for i in (active_parameters if active_parameters is not None else range(10))]
+    if not active_indices:
+        raise ValueError('没有可辨识的未锁定惯性参数')
     # Neutral is used ONLY for unsampled joints; do not pretend their motion
     # was measured, and do not overwrite their original URDF inertias
     neutral=np.asarray(pin.neutral(model),dtype=float)
@@ -183,7 +197,9 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
         if full_Y.shape!=(nv,len(full_prior)):
             raise ValueError('Pinocchio 力矩回归矩阵维度不匹配')
         measured_Y=full_Y[v_indices,:]
-        Y=measured_Y[:,param_indices]
+        original_Y=measured_Y[:,param_indices]
+        Y=np.zeros_like(original_Y)
+        Y[:,active_indices]=original_Y[:,active_indices]
         # Known contributions of unmeasured auxiliary branches are subtracted
         # They are retained unchanged in the exported source URDF
         fixed_torque=measured_Y@full_prior - Y@prior
@@ -209,11 +225,16 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
     V=X[val_indices];t=y[val_indices]
     colnorm=np.linalg.norm(A,axis=0)
     scale=np.maximum(colnorm,1e-10)
-    dynamic=A[:,:nparam]
+    dynamic=A[:,:nparam][:,active_indices]
     friction=A[:,nparam:]
     cleaned=dynamic-friction@np.linalg.lstsq(friction,dynamic,rcond=1e-9)[0]
     clean_scale=np.maximum(np.linalg.norm(cleaned,axis=0),1e-10)
     rank=int(np.linalg.matrix_rank(cleaned/clean_scale,tol=1e-3))
+    # The fit may only change directions supported by the available motion
+    # after eliminating friction/bias columns, not arbitrary nullspace terms.
+    observable, singular_values, vt = np.linalg.svd(cleaned / clean_scale, full_matrices=False)
+    singular_cutoff = max(1e-3 * (singular_values[0] if len(singular_values) else 0), 1e-9)
+    rank = int(np.count_nonzero(singular_values > singular_cutoff))
     nuisance=np.zeros(5*nj)
     xprior=np.concatenate((prior,nuisance))
     A2=A/scale
@@ -230,9 +251,16 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
         z=np.linalg.lstsq(np.vstack((A2*root[:,None],np.diag(reg))),
                           np.concatenate((rhs*root,np.zeros(len(reg)))),rcond=1e-9)[0]
     delta=z/scale
+    if rank < len(active_indices):
+        standardized_delta = delta[active_indices] * clean_scale
+        supported = vt[:rank, :] if rank else np.zeros((0, len(active_indices)))
+        delta[active_indices] = ((supported.T @ (supported @ standardized_delta))
+                                 / clean_scale if rank else np.zeros(len(active_indices)))
     return {
         'prior':prior,'candidate':prior+delta[:nparam], 'nuisance':delta[nparam:],
-        'rank':rank,'degrees':nparam,'train':(A,b), 'validation':(V,t),
+        'singular_values':singular_values.tolist(),
+        'nullspace_directions':len(active_indices)-rank,
+        'rank':rank,'degrees':len(active_indices),'train':(A,b), 'validation':(V,t),
         'X':X,'full_prior':xprior,'full_model_prior':full_prior,'sampled_joints':[name for _,name,_ in moving_joints],
     }
 

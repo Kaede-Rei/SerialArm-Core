@@ -20,10 +20,11 @@ ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
 
 
-def run_full_inertial_isolated(directory, destination=None, *, timeout=120):
+def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode=None, locked_links=None):
     """Never load optional native Pinocchio extensions in the live IPC process"""
     argv = [sys.executable, str(Path(__file__).with_name('full_inertial_worker.py')),
             str(Path(directory).expanduser().resolve()), str(destination or '')]
+    argv.extend([mode or 'full', json.dumps(locked_links or [])])
     env = dict(os.environ)
     # Avoid a user-site NumPy 2 overriding the ROS Humble NumPy 1 ABI
     env['PYTHONNOUSERSITE'] = '1'
@@ -189,12 +190,31 @@ def main():
                             Path(result['candidate_urdf']).parent, verified)
                     except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError, KeyError) as error:
                         result['verification_warning'] = str(error)
-                elif method == 'model_calibration_export_full_inertial':
-                    # Offline file generation only; never apply to the running robot.
+                elif method == 'model_calibration_assess':
+                    if native.status().get('state') in ('running', 'stopping'):
+                        raise ValueError('请先安全停放并断开机器人工作台，再对历史标定执行离线数据分析')
+                    from advanced_identification import assess_record
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = run_full_inertial_isolated(directory, params.get('destination') or None)
+                    result = assess_record(directory)
+                elif method == 'model_calibration_advanced':
+                    from advanced_identification import MODES
+                    if native.status().get('state') in ('running', 'stopping'):
+                        raise ValueError('高级离线辨识需要先安全停放并断开机器人工作台，避免长时间计算阻塞控制请求')
+                    directory = params.get('directory', '')
+                    mode = params.get('mode', '')
+                    if mode not in MODES:
+                        raise ValueError('未知的高级辨识目标')
+                    locked = params.get('locked_links', [])
+                    if not isinstance(locked,list) or any(not isinstance(x,str) or not x for x in locked) or len(set(locked))!=len(locked):
+                        raise ValueError('需要不重复的 Link 名称清单')
+                    if not directory or not Path(directory).expanduser().is_dir():
+                        raise ValueError('请选择已保存并完成标定的历史任务')
+                    result = run_full_inertial_isolated(directory, params.get('destination') or None,
+                        mode=mode, locked_links=locked)
+                elif method == 'model_calibration_export_full_inertial':
+                    raise ValueError('完整惯量候选已归入高级动力学辨识，请选择目标参数与可信 Link 后再执行离线辨识')
                 elif method == 'model_calibration_recompute':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
