@@ -60,7 +60,7 @@ test('calibration workspace enables legend controls and redraws after remount',(
   assert.match(css,/\.com-swatch\.candidate\{background:#38bdf8/);
 });
 
-test('historical candidate COM uses recorded mass, while the pink COM uses current inertial',async()=>{
+test('historical candidate COM uses recorded mass and recorded source COM',async()=>{
   const build=await calculate();
   const current=[{name:'Link6',inertial:{valid:false,mass:0.774251897736,origin:{xyz:[0.000949845843049,-0.00724726249031,0.0280370075459]}}}];
   const history={Link6:{mass:0.785649631359557,com:[-0.000485908838923044,0.00835307348685735,0.0378063045460189]}};
@@ -69,7 +69,7 @@ test('historical candidate COM uses recorded mass, while the pink COM uses curre
   assert.equal(markers.length,1);
   const a=markers[0];
   assert.equal(a.linkName,'Link6');
-  assert.deepEqual(a.originalCom,current[0].inertial.origin.xyz);
+  assert.deepEqual(a.originalCom,history.Link6.com);
   for(let i=0;i<3;i++) assert.ok(Math.abs(a.candidateCom[i]-[0.00340,0.00791,0.03531][i])<1e-12);
   assert.ok(a.offsetMm>1);
   assert.equal(build(current,fitted,12,false,{}).length,0);
@@ -84,4 +84,16 @@ test('read-only fingerprint reconciliation is registered end to end',()=>{
   assert.match(app,/alignHistoricalCalibrationPreview/);
   assert.match(app,/sourceInertials: binding.historical/);
   assert.match(app,/历史模型对照 · 仅预览/);
+});
+
+test('offline mass change uses fitted mass instead of the original model mass',async()=>{
+  const build=await calculate();
+  const link=[{name:'Link6',inertial:{mass:0.8,origin:{xyz:[0,0.01,0.03]}}}];
+  const com=[0.002,-0.007,0.028];
+  const moments=[{link_name:'Link6',value:com.map(v=>v*0.77)}];
+  const fitted=build(link,moments,1,false,null,{Link6:0.77});
+  assert.equal(fitted.length,1);
+  for(let i=0;i<3;i++) assert.ok(Math.abs(fitted[0].candidateCom[i]-com[i])<1e-12);
+  const wrong=build(link,moments);
+  assert.ok(Math.abs(wrong[0].candidateCom[2]-com[2])>1e-4);
 });

@@ -351,7 +351,7 @@ class ModelCalibrationPersistenceTests(unittest.TestCase):
             self.assertEqual(link.find('inertial/origin').get('xyz'), '1.5 0 0')
             self.assertEqual(link.find('inertial/mass').get('value'), '2')
 
-    def test_offline_recompute_overrides_rejected_historical_first_moments(self):
+    def test_online_export_never_uses_legacy_or_stale_offline_candidate(self):
         from persistence import export_candidate_urdf
         import xml.etree.ElementTree as ET
         with tempfile.TemporaryDirectory() as temp:
@@ -363,9 +363,10 @@ class ModelCalibrationPersistenceTests(unittest.TestCase):
             (task / 'recomputed-candidate.json').write_text(json.dumps(new_candidate))
             output = export_candidate_urdf(task)
             self.assertTrue(output['review_required'])
-            self.assertEqual(output['candidate_solver'], 'robust_centered_svd_ridge_unbounded')
+            self.assertEqual(output['candidate_source'], 'result.json')
+            self.assertNotEqual(output['candidate_solver'], 'robust_centered_svd_ridge_unbounded')
             link = ET.parse(output['candidate_urdf']).getroot().find("link[@name='link1']")
-            self.assertEqual(link.find('inertial/origin').get('xyz'), '1.4 0 0')
+            self.assertEqual(link.find('inertial/origin').get('xyz'), '0.12 0 0')
 
     def test_candidate_urdf_changes_only_calibrated_inertial_origin(self):
         from persistence import export_candidate_urdf

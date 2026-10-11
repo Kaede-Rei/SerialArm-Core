@@ -240,7 +240,8 @@ test('model calibration records control-cycle data and supports offline recomput
   assert.match(calibration, /frames\.csv/);
   assert.match(calibration, /calibration_options/);
   assert.match(bridge, /model_calibration_recompute/);
-  assert.match(bridge, /candidate = json\.loads\(Path\(output\)\.read_text\(\)\)/);
+  assert.match(bridge, /legacy_gravity_recompute/);
+  assert.match(bridge, /candidate_source/);
   assert.match(app, /setGravityComparison/);
   assert.match(model, /setGravityComparison\(result(?:, options = \{\})?\)/);
   assert.match(model, /candidatePoint/);

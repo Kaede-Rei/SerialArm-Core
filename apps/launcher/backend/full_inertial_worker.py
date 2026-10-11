@@ -11,9 +11,17 @@ import sys
 def main():
     if len(sys.argv) != 5:
         raise ValueError('请选择高级动力学辨识目标与可信 Link 后生成候选模型')
-    from advanced_identification import run_advanced
     locked = json.loads(sys.argv[4])
-    result = run_advanced(sys.argv[1], sys.argv[3], sys.argv[2] or None, locked)
+    if sys.argv[3] == 'legacy_gravity_recompute':
+        from gravity_legacy import recompute
+        settings = locked
+        result = recompute(sys.argv[1], settings.get('mode', 'global'), settings.get('locked_links', []))
+    elif sys.argv[3] == 'legacy_gravity_export':
+        from gravity_legacy import export_recomputed
+        result = export_recomputed(sys.argv[1], sys.argv[2] or None)
+    else:
+        from advanced_identification import run_advanced
+        result = run_advanced(sys.argv[1], sys.argv[3], sys.argv[2] or None, locked)
     print(json.dumps(result, ensure_ascii=False), flush=True)
 
 

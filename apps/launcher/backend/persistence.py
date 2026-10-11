@@ -200,7 +200,7 @@ def _same_gravity_candidate(a, b):
         len(a.get('torque_bias') or []) == len(b.get('torque_bias') or [])
 
 
-def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=True):
+def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
     if prefer_recomputed:
@@ -448,11 +448,6 @@ def load_model_calibration_summary(directory):
     # Stored result is never a live session; the GUI must not infer that the
     # playback is ready until the native process explicitly imports it.
     display_result = dict(result) if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
-    if result and (folder / 'recomputed-candidate.json').is_file():
-        candidate = json.loads((folder / 'recomputed-candidate.json').read_text())
-        display_result['gravity_result'] = candidate
-        display_result['friction_pass'] = bool(result.get('friction_pass')) and _same_gravity_candidate(candidate, result.get('gravity_result') or {})
-        display_result['friction_status'] = 'validated' if display_result['friction_pass'] else 'requires_refit_or_review'
     if can_resume and trajectory['source'] == 'trajectory.checkpoint.csv':
         note = '仅保存了示教检查点，属于中断片段，必须重新校验运动范围和真机起点，再人工确认回放'
     selectable_links = _identifiable_links_from_snapshot(folder, metadata)
@@ -605,9 +600,9 @@ def export_friction_candidate(task_directory, destination=None):
 
 def export_candidate_urdf(task_directory, destination=None):
     import xml.etree.ElementTree as ET
-    directory, metadata, result, payload = build_gravity_correction_payload(task_directory, allow_unvalidated=True, prefer_recomputed=True)
+    directory, metadata, result, payload = build_gravity_correction_payload(task_directory, allow_unvalidated=True, prefer_recomputed=False)
     source = verified_source_urdf(directory, metadata)
-    target_dir = Path(destination).expanduser().resolve() if destination else directory / 'candidate'
+    target_dir = Path(destination).expanduser().resolve() / 'online' if destination else directory / 'candidate' / 'online'
     target_dir.mkdir(parents=True, exist_ok=True)
     tree = ET.parse(source)
     root = tree.getroot()
@@ -671,8 +666,8 @@ def export_candidate_urdf(task_directory, destination=None):
         shutil.copy2(src, dst)
         mesh.set('filename', dst.relative_to(target_dir).as_posix())
         copied.append(str(dst))
-    candidate = target_dir / 'candidate.urdf'
-    temp = target_dir / 'candidate.urdf.tmp'
+    candidate = target_dir / 'candidate-online.urdf'
+    temp = target_dir / 'candidate-online.urdf.tmp'
     tree.write(temp, encoding='utf-8', xml_declaration=True)
     ET.parse(temp)
     temp.replace(candidate)
@@ -693,7 +688,7 @@ def export_candidate_urdf(task_directory, destination=None):
         'review_required': True,
         'holdout_pass': payload['static_pass'],
         'quality_reason': payload['candidate_quality_reason'],
-        'candidate_solver': (json.loads((directory / 'recomputed-candidate.json').read_text()).get('solver', '') if (directory / 'recomputed-candidate.json').is_file() else (result.get('gravity_result') or {}).get('solver', '')),
+        'candidate_solver': (result.get('gravity_result') or {}).get('solver', ''),
     }
     (target_dir / 'candidate-urdf-verification.json').write_text(json.dumps(verification, ensure_ascii=False, indent=2))
     return verification

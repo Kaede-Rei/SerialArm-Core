@@ -63,24 +63,26 @@ class LocalProvenanceTests(unittest.TestCase):
 
     def test_local_export_only_changes_unlocked_link_and_stales_friction(self):
         self.local()
-        payload = build_gravity_correction_payload(self.task, allow_unvalidated=True)[3]
+        payload = build_gravity_correction_payload(self.task, allow_unvalidated=True, prefer_recomputed=True)[3]
         self.assertEqual(payload['locked_links'], ['Link2'])
         self.assertEqual(payload['fitted_links'], ['Link6'])
         self.assertFalse(payload['friction_pass'])
         self.assertEqual(payload['candidate_source'], 'recomputed-candidate.json')
         path = export_candidate_urdf(self.task)
-        self.assertEqual(path['changed_inertial_origins'], ['Link6'])
+        self.assertEqual(path['candidate_source'], 'result.json')
+        self.assertEqual(path['changed_inertial_origins'], ['Link2', 'Link6'])
         root = ET.parse(path['candidate_urdf']).getroot()
         self.assertEqual(root.find("./link[@name='Link2']/inertial/origin").get('xyz'), '0.1 0 0')
-        self.assertEqual(root.find("./link[@name='Link6']/inertial/origin").get('xyz'), '0.015 0.02 0')
+        self.assertEqual(root.find("./link[@name='Link6']/inertial/origin").get('xyz'), '0.01 0.02 0')
         friction = export_friction_candidate(self.task)
-        self.assertFalse(friction['matches_current_candidate'])
+        self.assertTrue(friction['matches_current_candidate'])
         self.assertFalse(friction['can_apply_directly'])
 
     def test_locked_link_tampering_is_rejected(self):
         self.local(tamper=True)
         with self.assertRaisesRegex(ValueError, 'locked Link'):
-            export_candidate_urdf(self.task)
+            build_gravity_correction_payload(self.task, allow_unvalidated=True, prefer_recomputed=True)
+        self.assertEqual(export_candidate_urdf(self.task)['candidate_source'], 'result.json')
 
     def test_original_friction_export_is_separate_and_review_only(self):
         friction = export_friction_candidate(self.task)
@@ -96,7 +98,7 @@ class LocalProvenanceTests(unittest.TestCase):
         data['locked_links']=['tool0']
         p.write_text(json.dumps(data))
         with self.assertRaisesRegex(ValueError, 'Link selection'):
-            export_candidate_urdf(self.task)
+            build_gravity_correction_payload(self.task, allow_unvalidated=True, prefer_recomputed=True)
 
 
 if __name__=='__main__':

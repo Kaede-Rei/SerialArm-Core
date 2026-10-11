@@ -283,7 +283,7 @@ export class SerialArmModelView {
     this.clearGravityComparison();
     if (!this.payload || !result?.first_moments?.length) return;
     const scale=options.displayScale??1;
-    const markers=gravityComMarkers(this.payload.model?.links,result.first_moments,scale,options.showUnchanged===true,options.sourceInertials??null);
+    const markers=gravityComMarkers(this.payload.model?.links,result.first_moments,scale,options.showUnchanged===true,options.sourceInertials??null,options.candidateMasses??null);
     let index=0;
     for(const item of markers){
       const holder=this.linkGroups.get(item.linkName);

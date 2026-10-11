@@ -169,10 +169,21 @@ def main():
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = export_candidate_urdf(directory, params.get('destination') or None)
+                    source = params.get('candidate_source', 'online')
+                    if source == 'offline':
+                        if native.status().get('state') in ('running', 'stopping'):
+                            raise ValueError('离线候选导出前请先断开工作台')
+                        result = run_full_inertial_isolated(directory, params.get('destination') or None,
+                            mode='legacy_gravity_export')
+                    elif source == 'online':
+                        result = export_candidate_urdf(directory, params.get('destination') or None)
+                    else:
+                        raise ValueError('未知候选来源')
                     # Independent verification is informative for manual-review
                     # candidates and must never abort the IPC loop
                     try:
+                        # Verify the exact exported URDF for both candidate sources
+                        # without re-fitting, applying commands or inheriting the online pass state
                         calibrator = inspector.model_calibrator()
                         if not calibrator:
                             raise ValueError('离线校验工具未安装，候选 URDF 已导出供人工审核')
@@ -216,29 +227,20 @@ def main():
                 elif method == 'model_calibration_export_full_inertial':
                     raise ValueError('完整惯量候选已归入高级动力学辨识，请选择目标参数与可信 Link 后再执行离线辨识')
                 elif method == 'model_calibration_recompute':
-                    config = config_values(params.get('config', {}))
-                    info = inspector.inspect(config)
-                    calibrator = inspector.model_calibrator()
-                    if not calibrator: raise ValueError('serial_arm_model_calibrator is not installed')
-                    directory = str(Path(params.get('directory', '')).expanduser().resolve())
-                    if not Path(directory).is_dir(): raise ValueError('model calibration task directory is missing')
-                    output = str(Path(directory) / 'recomputed-candidate.json')
+                    if native.status().get('state') in ('running', 'stopping'):
+                        raise ValueError('离线重算前请先安全断开机器人工作台')
+                    directory = params.get('directory', '')
+                    if not directory or not Path(directory).expanduser().is_dir():
+                        raise ValueError('请选择完整的标定任务目录')
                     mode = params.get('mode', 'global')
                     if mode not in ('global', 'local'):
-                        raise ValueError('invalid calibration identification mode')
+                        raise ValueError('未知的辨识模式')
                     locked = params.get('locked_links', []) if mode == 'local' else []
-                    if not isinstance(locked, list) or not all(isinstance(x, str) and x for x in locked) or len(set(locked)) != len(locked):
-                        raise ValueError('locked_links must be a unique Link name list')
-                    command = [calibrator, '--config', info['resources']['core'], '--dataset', directory, '--output', output, '--mode', mode]
-                    for link in locked:
-                        command.extend(['--lock-link', link])
-                    completed = subprocess.run(command, text=True, capture_output=True, timeout=60)
-                    if completed.returncode not in (0, 3): raise ValueError((completed.stderr or completed.stdout or 'offline recalculation failed').strip())
-                    try:
-                        candidate = json.loads(Path(output).read_text())
-                    except (OSError, json.JSONDecodeError) as error:
-                        raise ValueError(f'offline recalculation produced invalid candidate JSON: {error}')
-                    result = {'path': output, 'static_pass': bool(candidate.get('static_pass')), 'candidate': candidate, 'output': completed.stdout.strip()}
+                    if (not isinstance(locked, list) or len(set(locked)) != len(locked)
+                            or any(not isinstance(x, str) or not x for x in locked)):
+                        raise ValueError('可信 Link 列表无效')
+                    result = run_full_inertial_isolated(directory, mode='legacy_gravity_recompute',
+                        locked_links={'mode': mode, 'locked_links': locked})
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')
