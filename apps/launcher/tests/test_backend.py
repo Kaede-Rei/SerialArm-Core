@@ -195,6 +195,60 @@ class ProfileLibraryTests(unittest.TestCase):
 </robot>""")
         return package
 
+    def test_profile_creation_uses_authored_robot_config_instead_of_low_gain_defaults(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = self.make_description(root / 'source')
+            authored = source / 'config/core/sample.yaml'
+            authored.parent.mkdir(parents=True)
+            authored.write_text("""model:
+  urdf_path: ../../robot.urdf
+  joint_names: [joint1]
+  base_frame: base
+  tool_frame: tool0
+control:
+  runtime: {write_enabled: true}
+  controller:
+    rigid_hold: {kp: {joint1: 200.0}, kd: {joint1: 4.0}}
+    compliant_tracking: {kp: {joint1: 10.0}, kd: {joint1: 0.2}}
+""")
+            library = ProfileLibrary(ROOT, Inspector(ROOT))
+            created = library.create_profile({
+                'source': str(source), 'profile': 'sample',
+                'destination': str(root / 'profiles'),
+                'base_frame': 'base', 'tool_frame': 'tool0',
+                'joint_names': ['joint1'], 'hardware_plugin': '',
+            })
+            metadata = yaml.safe_load(Path(created['profile_file']).read_text())
+            self.assertEqual(metadata['profiles']['sample']['core']['config'], 'config/core/sample.yaml')
+            from profiles import read_yaml
+            resolved = read_yaml(root / 'profiles/sample/sample_description/config/core/sample.yaml')
+            self.assertEqual(resolved['control']['controller']['rigid_hold']['kp']['joint1'], 200.0)
+            self.assertEqual(resolved['control']['controller']['compliant_tracking']['kp']['joint1'], 10.0)
+            self.assertFalse((root / 'profiles/sample/sample_description/config/serialarm/core.yaml').exists())
+
+    def test_tomato_profile_uses_gray_control_gains_from_authored_config(self):
+        from profiles import read_yaml
+        gray = read_yaml(ROOT / 'src/robot_supports/robots/dm_arm/description/config/core/gray.yaml')
+        package = ROOT / 'src/robot_supports/robots/tomato_picker'
+        profile = read_yaml(package / 'robot_profiles.yaml')['profiles']['tomato_picker']
+        self.assertEqual(profile['core']['config'], 'config/core/tomato_picker.yaml')
+        authored = read_yaml(package / 'tomato_picker_description/config/core/tomato_picker.yaml')
+        compatibility = read_yaml(package / 'tomato_picker_description/config/serialarm/core.yaml')
+        self.assertEqual(authored, compatibility)
+        self.assertEqual(authored['control'], gray['control'])
+        for key in ('max_kp_override', 'max_kd_override', 'max_acc'):
+            self.assertEqual(authored['safety_policy'][key], gray['safety_policy'][key])
+        self.assertEqual(authored['safety_policy']['fault_recovery']['compliant_recovery'],
+                         gray['safety_policy']['fault_recovery']['compliant_recovery'])
+        # Distinct robot identity, shutdown schedule and unvalidated gravity
+        # must not be silently replaced by the DM-Arm Gray's calibration state.
+        self.assertEqual(authored['model']['gravity_scale']['joint5'], 1.0)
+        self.assertFalse(authored['safety_policy']['fault_recovery']['gravity_model_validated'])
+        self.assertFalse(authored['capability']['admittance']['enabled'])
+        self.assertEqual(authored['shutdown']['compliant_phase_ratio'], 0.75)
+
     def test_description_to_profile_library_lifecycle(self):
         with tempfile.TemporaryDirectory() as temp:
             temp = Path(temp)

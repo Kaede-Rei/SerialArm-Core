@@ -442,6 +442,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
             cfg.shutdown.position_tolerance = require_as<double>(shutdown, "position_tolerance", "shutdown");
             cfg.shutdown.velocity_tolerance = require_as<double>(shutdown, "velocity_tolerance", "shutdown");
             cfg.shutdown.settle_time_s = require_as<double>(shutdown, "settle_time_s", "shutdown");
+            cfg.shutdown.compliant_phase_ratio = shutdown["compliant_phase_ratio"] ? require_as<double>(shutdown, "compliant_phase_ratio", "shutdown") : 0.75;
             cfg.shutdown.relaxed_tolerance_ratio = shutdown["relaxed_tolerance_ratio"] ? require_as<double>(shutdown, "relaxed_tolerance_ratio", "shutdown") : 2.0;
             cfg.shutdown.timeout_s = require_as<double>(shutdown, "timeout_s", "shutdown");
         }
@@ -636,7 +637,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
         reject_unknown_keys(control_node, "control", { "runtime", "controller" });
         reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
-        reject_unknown_keys(shutdown_node, "shutdown", { "park_before_disable", "park_pos", "speed_scale", "position_tolerance", "velocity_tolerance", "settle_time_s", "relaxed_tolerance_ratio", "timeout_s" });
+        reject_unknown_keys(shutdown_node, "shutdown", { "park_before_disable", "park_pos", "speed_scale", "position_tolerance", "velocity_tolerance", "settle_time_s", "relaxed_tolerance_ratio", "compliant_phase_ratio", "timeout_s" });
 
         RobotCfg cfg;
         cfg.joint_names = require_as<std::vector<std::string>>(model_node, "joint_names", "model");
@@ -717,6 +718,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.shutdown.position_tolerance = require_as<double>(shutdown_node, "position_tolerance", "shutdown");
         cfg.shutdown.velocity_tolerance = require_as<double>(shutdown_node, "velocity_tolerance", "shutdown");
         cfg.shutdown.settle_time_s = require_as<double>(shutdown_node, "settle_time_s", "shutdown");
+        cfg.shutdown.compliant_phase_ratio = shutdown_node["compliant_phase_ratio"] ? require_as<double>(shutdown_node, "compliant_phase_ratio", "shutdown") : 0.75;
         cfg.shutdown.relaxed_tolerance_ratio = require_as<double>(shutdown_node, "relaxed_tolerance_ratio", "shutdown");
         cfg.shutdown.timeout_s = require_as<double>(shutdown_node, "timeout_s", "shutdown");
 
@@ -764,10 +766,13 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     }
     if(!finite_vector(cfg.shutdown.park_pos) || !std::isfinite(cfg.shutdown.speed_scale) ||
         !std::isfinite(cfg.shutdown.position_tolerance) || !std::isfinite(cfg.shutdown.velocity_tolerance) ||
-        !std::isfinite(cfg.shutdown.settle_time_s) || !std::isfinite(cfg.shutdown.relaxed_tolerance_ratio) || !std::isfinite(cfg.shutdown.timeout_s) ||
+        !std::isfinite(cfg.shutdown.settle_time_s) || !std::isfinite(cfg.shutdown.relaxed_tolerance_ratio) ||
+        !std::isfinite(cfg.shutdown.compliant_phase_ratio) || !std::isfinite(cfg.shutdown.timeout_s) ||
         cfg.shutdown.speed_scale <= 0.0 || cfg.shutdown.speed_scale > 1.0 ||
         cfg.shutdown.position_tolerance <= 0.0 || cfg.shutdown.velocity_tolerance <= 0.0 ||
-        cfg.shutdown.settle_time_s < 0.0 || cfg.shutdown.relaxed_tolerance_ratio < 1.0 || cfg.shutdown.timeout_s <= 0.0) {
+        cfg.shutdown.settle_time_s < 0.0 || cfg.shutdown.relaxed_tolerance_ratio < 1.0 ||
+        cfg.shutdown.compliant_phase_ratio <= 0.0 || cfg.shutdown.compliant_phase_ratio >= 1.0 ||
+        cfg.shutdown.timeout_s <= 0.0) {
         return fail(ConfigErr::INVALID_VALUE, "invalid shutdown configuration");
     }
     if(!size_is_n(limits.min_pos) || !size_is_n(limits.max_pos) ||
@@ -1008,7 +1013,9 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         add("capability.admittance");
     }
     if(lhs->shutdown.park_before_disable != rhs->shutdown.park_before_disable || lhs->shutdown.park_pos != rhs->shutdown.park_pos ||
-        lhs->shutdown.speed_scale != rhs->shutdown.speed_scale || lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
+        lhs->shutdown.speed_scale != rhs->shutdown.speed_scale ||
+        lhs->shutdown.compliant_phase_ratio != rhs->shutdown.compliant_phase_ratio ||
+        lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
     return diffs;
 }
 

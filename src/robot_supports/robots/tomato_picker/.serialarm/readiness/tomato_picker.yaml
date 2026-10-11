@@ -4,13 +4,13 @@ source_urdf_fingerprint: 49c3e74495421f69565ace5d96dc316fd70aa7ae92363991b31c014
 stages:
   model_check:
     confirmed: true
-    fingerprint: 59e9fe2db9fc938db5dee1c0964fb05e8688ad87b576db3f88689ae6ef82d1dc
+    fingerprint: a7a3b3eeb649ddff160ce4810d58c5f0232855d1b3e71185ef65987de4518c72
   bringup:
     confirmed: true
-    fingerprint: 59e9fe2db9fc938db5dee1c0964fb05e8688ad87b576db3f88689ae6ef82d1dc
+    fingerprint: a7a3b3eeb649ddff160ce4810d58c5f0232855d1b3e71185ef65987de4518c72
   mapping_calibration:
     confirmed: true
-    fingerprint: 59e9fe2db9fc938db5dee1c0964fb05e8688ad87b576db3f88689ae6ef82d1dc
+    fingerprint: a7a3b3eeb649ddff160ce4810d58c5f0232855d1b3e71185ef65987de4518c72
   geometry_calibration:
     confirmed: true
-    fingerprint: 59e9fe2db9fc938db5dee1c0964fb05e8688ad87b576db3f88689ae6ef82d1dc
+    fingerprint: a7a3b3eeb649ddff160ce4810d58c5f0232855d1b3e71185ef65987de4518c72

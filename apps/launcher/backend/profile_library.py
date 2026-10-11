@@ -291,7 +291,31 @@ class ProfileLibrary:
           'shutdown':{'park_before_disable':True,'park_pos':zeros,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
           'capability':{'admittance':{'enabled':False,'joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
         }
-        _atomic_yaml(config_dir/'core.yaml',core)
+        # If the Description already supplies a robot-specific Core config,
+        # use it as the authoritative profile configuration. In particular,
+        # do not silently replace validated joint-specific gains by the generic
+        # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults.
+        authored_config = copied / 'config' / 'core' / f'{profile}.yaml'
+        if authored_config.is_file():
+            authored_core = read_yaml(authored_config)
+            authored_model = authored_core.get('model') or {}
+            if (authored_model.get('joint_names') != joints or
+                authored_model.get('base_frame') != base or
+                authored_model.get('tool_frame') != tool):
+                raise ValueError('Description 自带 Core 配置的关节或坐标系与当前 Profile 不匹配，请核对后再导入')
+            authored_urdf = (authored_config.parent / str(authored_model.get('urdf_path', ''))).resolve()
+            expected_urdf = (copied / analysis['urdf_relative']).resolve()
+            if authored_urdf != expected_urdf or not authored_urdf.is_file():
+                raise ValueError('Description 自带 Core 配置中的 URDF 路径与所选模型不匹配')
+            core_config_relative = f'config/core/{profile}.yaml'
+            # Keep an already included legacy copy consistent, for consumers
+            # still accessing config/serialarm/core.yaml directly.
+            legacy_copy = config_dir / 'core.yaml'
+            if legacy_copy.is_file():
+                legacy_copy.write_bytes(authored_config.read_bytes())
+        else:
+            core_config_relative = 'config/serialarm/core.yaml'
+            _atomic_yaml(config_dir/'core.yaml',core)
         hardware_plugin=text(options.get('hardware_plugin'))
         hardware={}
         actuators=options.get('actuators') or []
@@ -300,7 +324,7 @@ class ProfileLibrary:
             bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
             hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id')),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
         _atomic_yaml(config_dir/'hardware.yaml',hardware)
-        entry={'core':{'package':analysis['package_name'],'config':'config/serialarm/core.yaml'},'hardware':{'plugin':hardware_plugin if complete else '','config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
+        entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin if complete else '','config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
         if analysis['ros2_control_xacro']:
             entry['description']['ros2_control_xacro']=str(Path(analysis['ros2_control_xacro']).relative_to(analysis['package_root'])).replace('\\','/')
         profile_file=package_dir/'robot_profiles.yaml'; _atomic_yaml(profile_file,{'profiles':{profile:entry}})
@@ -337,6 +361,14 @@ class ProfileLibrary:
         core.setdefault('control',{}).setdefault('runtime',{})['write_enabled']=bool(payload.get('write_enabled'))
         park=payload.get('park_pos') or {}; core.setdefault('shutdown',{})['park_pos']={j:float(park.get(j,0.0)) for j in joints}
         _atomic_yaml(core_path,core)
+        # A profile imported with its own config/core/<profile>.yaml may
+        # contain a legacy config/serialarm/core.yaml compatibility copy.
+        # The copy is never authoritative, but keep it in sync after edits so
+        # old integrations cannot silently run low-gain creation defaults.
+        if core_path.parent.name == 'core' and core_path.parent.parent.name == 'config':
+            compatibility = core_path.parent.parent / 'serialarm' / 'core.yaml'
+            if compatibility.is_file():
+                compatibility.write_bytes(core_path.read_bytes())
         requested_plugin=text(payload.get('hardware_plugin')) or info.get('hardware_plugin','')
         if requested_plugin and requested_plugin != info.get('hardware_plugin',''):
             profile_file=Path(info['profile_file']); profile_data=read_yaml(profile_file); entry=(profile_data.get('profiles') or {}).get(info['profile'])

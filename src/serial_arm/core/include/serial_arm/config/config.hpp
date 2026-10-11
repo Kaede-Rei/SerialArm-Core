@@ -93,6 +93,7 @@ struct ShutdownCfg {
     double speed_scale{ 0.1 };                 ///< 停放轨迹速度比例
     double position_tolerance{ 0.03 };         ///< 停放姿态位置误差阈值
     double velocity_tolerance{ 0.05 };         ///< 停放姿态速度阈值
+    double compliant_phase_ratio{ 0.75 };  ///< 自动停放柔性阶段所占总时间比例
     double settle_time_s{ 0.25 };              ///< 严格判据下持续稳定时间
     double relaxed_tolerance_ratio{ 2.0 };     ///< 超时前允许使用的宽松判据倍率
     double timeout_s{ 15.0 };                  ///< 停放流程最大允许时间

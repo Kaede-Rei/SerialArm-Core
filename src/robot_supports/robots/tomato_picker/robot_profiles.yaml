@@ -2,7 +2,7 @@ profiles:
   tomato_picker:
     core:
       package: tomato_picker_description
-      config: config/serialarm/core.yaml
+      config: config/core/tomato_picker.yaml
     hardware:
       plugin: serial_arm_hardware_damiao
       config_package: tomato_picker_description

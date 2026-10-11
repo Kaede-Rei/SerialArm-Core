@@ -24,14 +24,25 @@ test('Teaching checkpoints are atomic, fault retains valid samples and never tri
   assert.match(terminal, /if\(robot_\.get_state\(\) != RobotState::ACTIVE\) break/);
 });
 
-test('Tomato park uses configurable faster acceleration-bounded tracking and earlier final hold', () => {
-  const config = src('src/robot_supports/robots/tomato_picker/tomato_picker_description/config/serialarm/core.yaml');
+test('Tomato park runs timed 75 percent compliant then safely rebased rigid finish', () => {
+  const generated = src('src/robot_supports/robots/tomato_picker/tomato_picker_description/config/serialarm/core.yaml');
+  const authored = src('src/robot_supports/robots/tomato_picker/tomato_picker_description/config/core/tomato_picker.yaml');
   const terminal = src('src/serial_arm/core/app/serial_arm_terminal.cpp');
-  assert.match(config, /speed_scale: 0\.10\s/);
-  assert.match(terminal, /rigid_finish_switch_s = 0\.40 \* cfg_\.shutdown\.timeout_s/);
-  assert.match(terminal, /cfg_\.safety\.limits\.max_vel\[i\] \* stream_\.speed_scale/);
+  const gate = src('src/serial_arm/core/include/serial_arm/core/park_policy.hpp');
+  assert.match(generated, /speed_scale: 0\.30\s/);
+  assert.match(authored, /speed_scale: 0\.30\s/);
+  assert.match(generated, /compliant_phase_ratio: 0\.75/);
+  assert.match(authored, /compliant_phase_ratio: 0\.75/);
+  assert.match(terminal, /park_time_to_rigid/);
+  assert.match(terminal, /park_safe_for_timed_rigid/);
+  assert.doesNotMatch(terminal, /approach_ready_at|park_ready_for_rigid/);
+  assert.match(terminal, /park_reference_speed_fraction/);
+  assert.match(terminal, /stream_\.ref_pos = actual_pos/);
+  assert.match(terminal, /stream_\.ref_vel\.assign\(cfg_\.joint_names\.size\(\), 0\.0\)/);
   assert.match(terminal, /const double max_acc = cfg_\.safety\.limits\.max_acc\[i\]/);
   assert.match(terminal, /park timeout: fresh joint feedback unavailable/);
+  assert.match(gate, /std::abs\(measured\[i\]-target\[i\]\)>pos_bound/);
+  assert.doesNotMatch(gate, /reference\[i\]-measured\[i\]/);
 });
 
 test('Record load and restore reread disk instead of relying on stale UI state', () => {
