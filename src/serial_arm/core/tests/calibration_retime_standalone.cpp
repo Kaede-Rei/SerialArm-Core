@@ -32,7 +32,7 @@ int main() {
         std::cout<<label<<" samples="<<input.size()<<" scheduled_samples="<<p.positions.size()
                  <<" one_way="<<p.single_pass_s<<" total="<<estimated
                  <<" velocity_fraction="<<worst_velocity<<" acceleration_fraction="<<worst_acceleration<<'\n';
-        assert(worst_velocity<0.801 && worst_acceleration<0.801);
+        assert(worst_velocity<0.951 && worst_acceleration<0.951);
         if(expect_target) assert(estimated<200.0);
     };
     std::vector<std::vector<double>> gentle;
@@ -72,4 +72,20 @@ int main() {
         corner.push_back({x,0.3*x,0.4*x,0.25*x,0.1*x,0.12*x});
     }
     verify(corner,"one_corner",true);
+    // A sampled stationary calibration target must not force an abrupt
+    // speed switch when the controller changes from tracking to hold.
+    const auto stopped = plan(gentle, vmax, amax, 200.0, .003,
+                              {gentle[1000]});
+    assert(stopped.single_pass_s >= plan(gentle,vmax,amax,200.0).single_pass_s);
+    auto nearest = std::min_element(stopped.positions.begin(), stopped.positions.end(),
+        [&](const auto& a, const auto& b) {
+            auto distance = [&](const auto& q) { double d=0;for(std::size_t j=0;j<6;++j) d=std::max(d,std::abs(q[j]-gentle[1000][j]));return d;};
+            return distance(a)<distance(b);
+        });
+    assert(nearest != stopped.positions.end());
+    const auto index = std::distance(stopped.positions.begin(),nearest);
+    assert(index > 0 && static_cast<std::size_t>(index)+1<stopped.positions.size());
+    const auto at = interpolate(stopped.positions,double(index),stopped.sample_dt,1.0);
+    for(const auto v:at.velocity) assert(std::abs(v)<.10);
+
 }

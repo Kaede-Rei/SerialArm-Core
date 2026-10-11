@@ -34,7 +34,7 @@ def _dynamic_prior_with_unchanged_com_tensor(prior, proposal):
 
 
 def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
-                        mass_fraction=0.25, static_weight=0.35):
+                        mass_fraction=0.25, static_weight=0.75):
     """Directly identify bounded mass/first moments without fitting inertia
 
     Parameters
@@ -134,8 +134,8 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
     # absorbing every physical mass and moment signal
     nuisance_penalty=0.005*np.eye(nfric)
     candidates=[]
-    # Joint validation: same moving-trajectory holdout for data fit, independent
-    # static pose holdout for final pure-gravity model
+    # Validation targets pure gravity; static holdout is used to choose the
+    # regularization and is not an independent final generalization test
     for ridge in (0.002,0.01,0.04,0.12):
         z=np.zeros(len(inds))
         u=np.zeros(nfric)
@@ -178,18 +178,20 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
         def scored(Y,tt,F,model_params,fric):
             return float(np.sqrt(np.mean((tt-Y@model_params-F@fric)**2)))
         dynamic_error=scored(Yval,vb,Fval,physical,u)
-        # Refit *only nuisance bias* against the static training poses, so the
-        # held-out static score cannot leak validation poses into training
+        # Evaluate the *deployed URDF* using only gravity. A fitted torque
+        # bias is not included in the exported URDF and must not make the
+        # candidate appear better than it would be on the robot
         def static_score(p):
-            res=bs-Ys@p
-            bias=res.reshape(-1,nj).mean(axis=0)
-            held=bhold-Yhold@p-np.tile(bias,len(bhold)//nj)
-            return float(np.sqrt(np.mean((held.reshape(-1,nj)/sigma)**2)))
-        static_error=static_score(physical)
-        static_baseline=static_score(prior)
-        # Physical change must also perform on gravity-only data; avoid a
-        # dynamic RMS improvement bought with worse static compensation
-        metric=dynamic_error/max(float(np.median(sigma)),.035)+static_error
+            held=(bhold-Yhold@p).reshape(-1,nj)/sigma
+            rms=float(np.sqrt(np.mean(held**2)))
+            worst_joint=float(np.max(np.sqrt(np.mean(held**2,axis=0))))
+            return rms,worst_joint
+        static_error,static_worst=static_score(physical)
+        static_baseline,_=static_score(prior)
+        # Prefer generalization across all observed joints, not only average
+        # moving-trajectory accuracy, and penalize large per-joint residuals
+        metric=(2.0*static_error + 0.4*static_worst
+                + 0.25*dynamic_error/max(float(np.median(sigma)),.035))
         candidates.append((metric,ridge,candidate,physical,z,u,dynamic_error,
                            static_error,static_baseline))
     if not candidates:

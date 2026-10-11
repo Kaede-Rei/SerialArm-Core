@@ -175,11 +175,11 @@ GravityCorrectionPackage load_gravity_correction_package(
 }
 
 struct ModelCalibrationTaskOptions {
-    std::size_t pose_budget{ 8 };
+    std::size_t pose_budget{ 12 };
     std::size_t minimum_training_groups{ 4 };
     double validation_fraction{ 0.30 };
-    double static_hold_s{ 0.30 };
-    double static_sample_s{ 0.70 };
+    double static_hold_s{ 0.20 };
+    double static_sample_s{ 0.45 };
     double static_timeout_s{ 5.0 };
     double static_max_velocity{ 0.03 };
     double static_max_acceleration{ 1.5 };
@@ -1658,6 +1658,32 @@ private:
         });
     }
 
+    std::vector<ModelCalibrationPoseTarget> model_calibration_remap_targets(
+        const FrictionCalibrationTrajectory& retimed,
+        const std::vector<JointVector>& stop_positions,
+        const std::vector<ModelCalibrationPoseTarget>& targets) const {
+        if(stop_positions.size() != targets.size()) throw std::runtime_error("invalid calibration stops");
+        std::vector<ModelCalibrationPoseTarget> result = targets;
+        std::size_t previous = 0;
+        for(std::size_t i=0;i<targets.size();++i) {
+            std::size_t best = previous+1;
+            double best_distance = std::numeric_limits<double>::infinity();
+            // Targets are ordered in their original demonstrated path direction
+            // so do not mistake a later revisited configuration for this stop
+            for(std::size_t k=previous+1;k+1<retimed.positions.size();++k) {
+                double distance = 0.0;
+                for(std::size_t j=0;j<stop_positions[i].size();++j)
+                    distance = std::max(distance,std::abs(stop_positions[i][j]-retimed.positions[k][j]));
+                if(distance<best_distance) {best_distance=distance;best=k;}
+            }
+            if(best_distance>0.025 || best <= previous || best+1 >= retimed.positions.size())
+                throw std::runtime_error("unable to preserve calibration stop on retimed path");
+            result[i].trajectory_index=best;
+            previous=best;
+        }
+        return result;
+    }
+
     std::vector<ModelCalibrationPoseTarget> model_calibration_select_pose_targets(const FrictionCalibrationTrajectory& trajectory) {
         struct Candidate { std::size_t index; JointVector q; Eigen::VectorXd feature; double norm; };
         std::vector<Candidate> candidates;
@@ -1695,18 +1721,26 @@ private:
         chosen.reserve(desired);
         auto first = std::max_element(candidates.begin(), candidates.end(), [](const auto& a, const auto& b){ return a.norm < b.norm; });
         chosen.push_back(static_cast<std::size_t>(std::distance(candidates.begin(), first)));
+        // Pivoted feature novelty: select poses that add independent gravity
+        // information rather than only distant points in joint coordinates
         while(chosen.size() < desired) {
-            double best = -1.0;
-            std::size_t best_index = 0;
-            for(std::size_t i = 0; i < candidates.size(); ++i) {
-                if(std::find(chosen.begin(), chosen.end(), i) != chosen.end()) continue;
-                double min_distance = std::numeric_limits<double>::infinity();
-                for(const auto selected : chosen) {
-                    min_distance = std::min(min_distance, (candidates[i].feature - candidates[selected].feature).norm());
-                }
-                if(min_distance > best) { best = min_distance; best_index = i; }
+            std::vector<Eigen::VectorXd> basis;
+            for(const auto selected:chosen) {
+                Eigen::VectorXd v=candidates[selected].feature;
+                for(const auto& b:basis) v-=b.dot(v)*b;
+                const double length=v.norm();
+                if(length>1e-12) basis.push_back(v/length);
             }
-            if(best <= model_calibration_options_.minimum_information_score) break;
+            double best=-1.0;
+            std::size_t best_index=0;
+            for(std::size_t i=0;i<candidates.size();++i) {
+                if(std::find(chosen.begin(),chosen.end(),i)!=chosen.end()) continue;
+                Eigen::VectorXd v=candidates[i].feature;
+                for(const auto& b:basis) v-=b.dot(v)*b;
+                const double novelty=v.norm();
+                if(novelty>best) {best=novelty;best_index=i;}
+            }
+            if(best<=model_calibration_options_.minimum_information_score) break;
             chosen.push_back(best_index);
         }
         if(chosen.size() < model_calibration_options_.minimum_training_groups + 1) return {};
@@ -1850,8 +1884,14 @@ private:
         // Always retime with *current* safety limits; never trust timestamps in
         // an imported CSV as a guarantee of velocity/acceleration feasibility.
         const double recorded_duration = candidate.sample_dt * static_cast<double>(candidate.positions.size()-1);
+        const auto selected = model_calibration_select_pose_targets(candidate);
+        if(selected.size() < model_calibration_options_.minimum_training_groups + 1)
+            throw std::runtime_error("imported trajectory does not provide enough independent gravity poses");
+        std::vector<JointVector> stop_positions;
+        for(const auto& target:selected) stop_positions.push_back(candidate.positions[target.trajectory_index]);
         const auto planned = serial_arm::calibration_retime::plan(candidate.positions,
-            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,cfg_.runtime.ctrl_frequency_hz);
+            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,cfg_.runtime.ctrl_frequency_hz,
+            0.003,stop_positions);
         candidate.positions = planned.positions;
         candidate.sample_dt = planned.sample_dt;
         if(!friction_trajectory_inside_safe_replay_range(candidate))
@@ -1865,7 +1905,7 @@ private:
         sampled.positions.push_back(candidate.positions.back());
         if(!friction_trajectory_inside_safe_replay_range(sampled))
             throw std::runtime_error("interpolated trajectory violates joint position margins");
-        const auto targets = model_calibration_select_pose_targets(candidate);
+        const auto targets = model_calibration_remap_targets(candidate,stop_positions,selected);
         if(targets.size() < model_calibration_options_.minimum_training_groups + 1)
             throw std::runtime_error("saved trajectory does not contain enough independent gravity poses");
         // Validation succeeded: create a distinct writable task, preserving
@@ -1965,11 +2005,17 @@ private:
         model_calibration_original_duration_s_ = model_calibration_trajectory_->sample_dt *
             static_cast<double>(model_calibration_trajectory_->positions.size() - 1);
         try {
+            const auto selected = model_calibration_select_pose_targets(*model_calibration_trajectory_);
+            if(selected.size() < model_calibration_options_.minimum_training_groups + 1)
+                throw std::runtime_error("demonstration does not contain enough independent gravity poses");
+            std::vector<JointVector> stop_positions;
+            for(const auto& target:selected)
+                stop_positions.push_back(model_calibration_trajectory_->positions[target.trajectory_index]);
             const auto planned = serial_arm::calibration_retime::plan(
                 model_calibration_trajectory_->positions,
                 cfg_.safety.limits.max_vel,
                 cfg_.safety.limits.max_acc,
-                cfg_.runtime.ctrl_frequency_hz);
+                cfg_.runtime.ctrl_frequency_hz,0.003,stop_positions);
             {
                 std::lock_guard<std::mutex> lock(model_calibration_mutex_);
                 model_calibration_path_length_rad_ = planned.joint_path_length_rad;
@@ -1978,6 +2024,8 @@ private:
             }
             model_calibration_trajectory_->positions = planned.positions;
             model_calibration_trajectory_->sample_dt = planned.sample_dt;
+            model_calibration_pose_targets_ = model_calibration_remap_targets(
+                *model_calibration_trajectory_,stop_positions,selected);
             // The newly time-parameterized trajectory is safe at rate 1.0.
             // The two slow friction passes use rate 0.5, with extra margin.
             model_calibration_replay_rate_ = 1.0;
@@ -2003,7 +2051,6 @@ private:
             model_calibration_restore_runtime_hold();
             throw std::runtime_error(model_calibration_error_);
         }
-        model_calibration_pose_targets_ = model_calibration_select_pose_targets(*model_calibration_trajectory_);
         if(model_calibration_pose_targets_.size() < model_calibration_options_.minimum_training_groups + 1) {
             model_calibration_set_phase(ModelCalibrationPhase::FAILED);
             model_calibration_error_ = "demonstration does not provide enough independent gravity information";
@@ -2091,7 +2138,30 @@ private:
         const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
             return model_calibration_cancel_.load() || cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
         });
-        return updated && !model_calibration_cancel_.load() && robot_.get_state() == RobotState::ACTIVE && cycle_counter_ > cursor;
+        if(!updated || model_calibration_cancel_.load() || robot_.get_state()!=RobotState::ACTIVE || cycle_counter_<=cursor)
+            return false;
+        if(last_output_ && last_output_->joint_state.pos.size()==ref_pos.size()) {
+            for(std::size_t i=0;i<ref_pos.size();++i) {
+                const double error=std::abs(ref_pos[i]-last_output_->joint_state.pos[i]);
+                const double limit=std::clamp(cfg_.safety.limits.max_vel[i]*0.10,0.035,0.14);
+                if(error>limit) {
+                    // Do not allow an open-loop reference to outrun the actual arm
+                    // The command stays at the latest reference while feedback catches up
+                    const auto deadline=Robot::Clock::now()+std::chrono::milliseconds(1200);
+                    while(Robot::Clock::now()<deadline && !model_calibration_cancel_.load()) {
+                        if(!cycle_cv_.wait_for(lock,std::chrono::milliseconds(25),[&]{return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE;}))continue;
+                        if(robot_.get_state()!=RobotState::ACTIVE)return false;
+                        cursor=cycle_counter_;
+                        if(last_output_ && std::abs(ref_pos[i]-last_output_->joint_state.pos[i])<=limit)break;
+                    }
+                    if(!last_output_ || std::abs(ref_pos[i]-last_output_->joint_state.pos[i])>limit) {
+                        model_calibration_error_="calibration tracking error exceeded safe following limit";
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     bool model_calibration_collect_static(const ModelCalibrationPoseTarget& target, const std::string& direction) {
@@ -2149,7 +2219,9 @@ private:
         while(progress < static_cast<double>(ordered.size() - 1)) {
             const auto phase = reverse ? ModelCalibrationPhase::STATIC_REVERSE : ModelCalibrationPhase::STATIC_FORWARD;
             if(!model_calibration_wait_if_paused(phase)) return false;
-            const double next_progress = std::min(static_cast<double>(ordered.size() - 1), progress + step);
+            double next_progress = std::min(static_cast<double>(ordered.size() - 1), progress + step);
+            if(next_target < target_list.size())
+                next_progress=std::min(next_progress,static_cast<double>(target_list[next_target].first));
             const auto reference=serial_arm::calibration_retime::interpolate(
                 ordered,next_progress,trajectory.sample_dt,model_calibration_replay_rate_);
             if(!model_calibration_send_reference(reference.position,reference.velocity)) return false;

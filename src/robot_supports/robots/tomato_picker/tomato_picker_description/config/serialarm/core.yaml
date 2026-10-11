@@ -114,15 +114,15 @@ control:
       kd: *id003
 safety_policy:
   position_margin: 0.0
-  cmd_vel_scale: 0.25
+  cmd_vel_scale: 1.0
   state_vel_scale: 1.0
   max_acc:
-    joint1: 2.0
-    joint2: 2.0
-    joint3: 2.0
-    joint4: 2.0
-    joint5: 2.0
-    joint6: 2.0
+    joint1: 10.8
+    joint2: 10.8
+    joint3: 10.8
+    joint4: 10.8
+    joint5: 10.8
+    joint6: 10.8
   max_kp_override:
     joint1: 50.0
     joint2: 50.0

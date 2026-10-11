@@ -27,7 +27,8 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
                  const std::vector<double>& max_vel,
                  const std::vector<double>& max_acc,
                  double ctrl_frequency_hz,
-                 double tolerance_rad = 0.003) {
+                 double tolerance_rad = 0.003,
+                 const std::vector<std::vector<double>>& static_stops = {}) {
     const std::size_t joints = max_vel.size();
     if(input.size() < 20 || joints == 0 || max_acc.size() != joints ||
        !std::isfinite(ctrl_frequency_hz) || ctrl_frequency_hz <= 0.0)
@@ -115,16 +116,16 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
     for(std::size_t k=1;k+1<count;++k) for(std::size_t j=0;j<joints;++j)
         curvature[k][j] = (tangent[k+1][j]-tangent[k-1][j])/(2.0*ds);
-    // Conservative path-velocity bound allocates half of each joint's
-    // acceleration to curvature, half to advancing/braking along the path.
+    // Allow higher speed on smooth segments while retaining explicit joint
+    // limits, curve-aware braking and the final spline-extrema verification.
     std::vector<double> speed(count,std::numeric_limits<double>::infinity());
     std::vector<double> accel(count,std::numeric_limits<double>::infinity());
     for(std::size_t k=0;k<count;++k) for(std::size_t j=0;j<joints;++j) {
         const double slope=std::abs(tangent[k][j]);
         const double bend=std::abs(curvature[k][j]);
-        speed[k]=std::min(speed[k],0.75*max_vel[j]/std::max(slope,1.0e-8));
-        speed[k]=std::min(speed[k],std::sqrt(0.45*max_acc[j]/std::max(bend,1.0e-8)));
-        accel[k]=std::min(accel[k],0.45*max_acc[j]/std::max(slope,1.0e-8));
+        speed[k]=std::min(speed[k],0.90*max_vel[j]/std::max(slope,1.0e-8));
+        speed[k]=std::min(speed[k],std::sqrt(0.70*max_acc[j]/std::max(bend,1.0e-8)));
+        accel[k]=std::min(accel[k],0.70*max_acc[j]/std::max(slope,1.0e-8));
     }
     // Apply bounds for the actual cubic geometry between each pair of knots:
     // finite-difference curvature at knots alone misses sharp intermediate
@@ -134,12 +135,29 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         const double m0=tangent[k][j]*ds, m1=tangent[k+1][j]*ds;
         const double max_d1=std::max({std::abs(m0), std::abs(3*d-m0-m1),std::abs(m1)})/ds;
         const double max_d2=std::max(std::abs(6*d-4*m0-2*m1),std::abs(-6*d+2*m0+4*m1))/(ds*ds);
-        const double v_speed=0.75*max_vel[j]/std::max(max_d1,1e-8);
-        const double v_accel=std::sqrt(0.45*max_acc[j]/std::max(max_d2,1e-8));
+        const double v_speed=0.90*max_vel[j]/std::max(max_d1,1e-8);
+        const double v_accel=std::sqrt(0.70*max_acc[j]/std::max(max_d2,1e-8));
         speed[k]=std::min({speed[k],v_speed,v_accel});
         speed[k+1]=std::min({speed[k+1],v_speed,v_accel});
-        accel[k]=std::min(accel[k],0.45*max_acc[j]/std::max(max_d1,1e-8));
-        accel[k+1]=std::min(accel[k+1],0.45*max_acc[j]/std::max(max_d1,1e-8));
+        accel[k]=std::min(accel[k],0.70*max_acc[j]/std::max(max_d1,1e-8));
+        accel[k+1]=std::min(accel[k+1],0.70*max_acc[j]/std::max(max_d1,1e-8));
+    }
+    // Plan static collection points as genuine zero-speed boundary conditions.
+    // Zero speed at a curve knot is handled by the same forward/backward braking
+    // passes as path endpoints; the reverse traversal inherits these stops.
+    for(const auto& stop : static_stops) {
+        if(stop.size() != joints) throw std::invalid_argument("invalid calibration stop dimension");
+        std::size_t best_index = 0;
+        double best_distance = std::numeric_limits<double>::infinity();
+        for(std::size_t k=0;k<count;++k) {
+            double distance = 0.0;
+            for(std::size_t j=0;j<joints;++j) distance = std::max(distance, std::abs(geometry[k][j]-stop[j]));
+            if(distance < best_distance) { best_distance = distance; best_index = k; }
+        }
+        if(best_distance > 0.03)
+            throw std::invalid_argument("calibration stop is outside the demonstrated path");
+        // The beginning and end are already zero-speed boundary conditions
+        if(best_index > 0 && best_index + 1 < count) speed[best_index] = 0.0;
     }
     speed.front()=0.0;
     speed.back()=0.0;
@@ -190,8 +208,8 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         const double d=p1-p0;
         const double d1=std::max({std::abs(m0),std::abs(3*d-m0-m1),std::abs(m1)});
         const double d2=std::max(std::abs(6*d-4*m0-2*m1),std::abs(-6*d+2*m0+4*m1));
-        slowdown=std::max({slowdown,d1/(0.75*max_vel[j]*result.sample_dt),
-            std::sqrt(d2/(0.75*max_acc[j]*result.sample_dt*result.sample_dt))});
+        slowdown=std::max({slowdown,d1/(0.90*max_vel[j]*result.sample_dt),
+            std::sqrt(d2/(0.85*max_acc[j]*result.sample_dt*result.sample_dt))});
     }
     result.sample_dt*=slowdown;
     result.single_pass_s=result.sample_dt*static_cast<double>(samples-1);
