@@ -94,6 +94,43 @@ class LegacyRawCandidateTests(unittest.TestCase):
 
 
 class GlobalCandidateStabilityTests(unittest.TestCase):
+    def test_static_base_parameters_remove_unobserved_torque_bias_and_directions(self):
+        from gravity_mass_com import observable_gravity_basis
+        # The constant column is inseparable from a motor torque zero offset;
+        # the second column changes with posture and must remain observable
+        poses = np.array([[1.,-2.,0.], [1.,-1.,0.], [1.,1.,0.], [1.,2.,0.]])
+        basis, singular, rank = observable_gravity_basis(poses, 1, np.ones(1))
+        self.assertEqual(rank, 1)
+        self.assertEqual(len(singular), 3)
+        self.assertAlmostEqual(abs(basis[1,0]), 1.0, places=10)
+        self.assertAlmostEqual(basis[0,0], 0.0, places=10)
+        self.assertAlmostEqual(basis[2,0], 0.0, places=10)
+
+    def test_dynamic_trajectory_cannot_change_static_unobservable_com(self):
+        from gravity_mass_com import fit_global_mass_com, _dynamic_prior_with_unchanged_com_tensor
+        rng = np.random.default_rng(40)
+        prior = np.asarray([1.,0.,0.,0.,.02,0.,.025,0.,0.,.03])
+        true = prior.copy(); true[1] = .012
+        spurious = true.copy(); spurious[2] = .035
+        def moving(count):
+            q = rng.uniform(-1,1,count)
+            Y = np.zeros((count,10)); Y[:,1]=q; Y[:,2]=np.cos(2*q)
+            F = np.zeros((count,5)); F[:,0]=1.0
+            return np.c_[Y,F], Y@spurious + 0.02
+        def poses(qs):
+            rows=[]
+            for q in qs:
+                Y=np.zeros((1,10)); Y[0,1]=q
+                rows.append((Y,np.zeros(1),np.asarray([q*.012+0.02])))
+            return rows
+        fit={'prior':prior, 'train':moving(90), 'validation':moving(30)}
+        result=fit_global_mass_com(fit,poses(np.linspace(-1,1,16)),poses([-.8,.8]))
+        self.assertEqual(result['static_gravity_rank'],1)
+        self.assertAlmostEqual(result['candidate'][1], .012, delta=.006)
+        self.assertAlmostEqual(result['candidate'][2], 0.0, delta=1e-10)
+        self.assertAlmostEqual(result['candidate'][0], 1.0, delta=1e-10)
+        self.assertEqual(result['static_gravity_nullity'], 3)
+
     def test_direct_mass_moment_solver_on_rank_deficient_synthetic_data(self):
         from gravity_mass_com import fit_global_mass_com, _dynamic_prior_with_unchanged_com_tensor
         rng = np.random.default_rng(10)
@@ -233,6 +270,7 @@ class ExportSourceTests(unittest.TestCase):
             return {'solver':'bounded_direct_mass_first_moment',
                     'candidate':direct.copy(),'exported':direct.copy(),
                     'nuisance':np.zeros(10), 'active_regressor_rank':8,
+                    'static_gravity_rank':5, 'static_gravity_nullity':3,
                     'mass_moment_columns':8, 'constraints':{'mass_fraction':.25,'max_com_offset_m':.05},
                     'regularization':.01,'dynamic_holdout_rms':.1,
                     'static_holdout_scaled_rms':.1,'static_prior_scaled_rms':.2,
@@ -254,6 +292,7 @@ class ExportSourceTests(unittest.TestCase):
         self.assertIn('Link1', written['raw_link_review'])
         self.assertNotIn('Link1', written['link_review'])
         self.assertTrue(written['constraints_ok'])
+        self.assertEqual(written['numerical_rank'],5)
         self.assertEqual(written['global_selection']['Link1']['source'],'bounded_direct_mass_first_moment')
         self.assertEqual(json.loads((self.task/'result.json').read_text()),result)
         output=export_recomputed(self.task)

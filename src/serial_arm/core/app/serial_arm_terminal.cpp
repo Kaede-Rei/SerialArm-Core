@@ -12,6 +12,7 @@
 #include "serial_arm/robot.hpp"
 
 #include <yaml-cpp/yaml.h>
+#include <Eigen/Cholesky>
 
 #include <algorithm>
 #include <atomic>
@@ -1685,7 +1686,7 @@ private:
     }
 
     std::vector<ModelCalibrationPoseTarget> model_calibration_select_pose_targets(const FrictionCalibrationTrajectory& trajectory) {
-        struct Candidate { std::size_t index; JointVector q; Eigen::VectorXd feature; double norm; };
+        struct Candidate { std::size_t index; JointVector q; Eigen::MatrixXd feature; double norm; };
         std::vector<Candidate> candidates;
         if(trajectory.positions.empty()) return {};
         const std::size_t stride = std::max<std::size_t>(1, trajectory.positions.size() / 48);
@@ -1711,37 +1712,46 @@ private:
                 const double parameter_scale = std::max(1.0e-4, regression->links[link].mass * 0.05); // Geometry reference for information scoring; NOT a COM limit
                 scaled.block(0, static_cast<Eigen::Index>(3 * link), scaled.rows(), 3) *= parameter_scale;
             }
-            Eigen::Map<const Eigen::VectorXd> flat(scaled.data(), scaled.size());
-            Candidate item{index, q, flat, flat.norm()};
+            Candidate item{index, q, scaled, scaled.norm()};
             if(std::isfinite(item.norm) && item.norm >= model_calibration_options_.minimum_information_score) candidates.push_back(std::move(item));
         }
         if(candidates.size() < model_calibration_options_.minimum_training_groups + 1) return {};
         const std::size_t desired = std::min(model_calibration_options_.pose_budget, candidates.size());
         std::vector<std::size_t> chosen;
         chosen.reserve(desired);
-        auto first = std::max_element(candidates.begin(), candidates.end(), [](const auto& a, const auto& b){ return a.norm < b.norm; });
-        chosen.push_back(static_cast<std::size_t>(std::distance(candidates.begin(), first)));
-        // Pivoted feature novelty: select poses that add independent gravity
-        // information rather than only distant points in joint coordinates
-        while(chosen.size() < desired) {
-            std::vector<Eigen::VectorXd> basis;
-            for(const auto selected:chosen) {
-                Eigen::VectorXd v=candidates[selected].feature;
-                for(const auto& b:basis) v-=b.dot(v)*b;
-                const double length=v.norm();
-                if(length>1e-12) basis.push_back(v/length);
-            }
-            double best=-1.0;
-            std::size_t best_index=0;
+        // Greedy D-optimal experimental design. A single stationary pose
+        // contributes an entire multi-joint regression BLOCK, rather than one
+        // flattened vector. Accumulating G(q)^T G(q) correctly captures the
+        // information on every observable gravity-parameter combination.
+        const Eigen::Index columns=candidates.front().feature.cols();
+        double typical_energy=0.0;
+        for(const auto& pose:candidates) typical_energy+=pose.feature.squaredNorm();
+        typical_energy/=static_cast<double>(candidates.size()) * static_cast<double>(columns);
+        const double regularizer=std::max(1e-12,1e-2*typical_energy);
+        Eigen::MatrixXd information=regularizer*Eigen::MatrixXd::Identity(columns,columns);
+        auto information_logdet = [](const Eigen::MatrixXd& gram) {
+            Eigen::LLT<Eigen::MatrixXd> chol(gram);
+            if(chol.info()!=Eigen::Success) return -std::numeric_limits<double>::infinity();
+            const Eigen::MatrixXd lower=chol.matrixL();
+            double value=0.0;
+            for(Eigen::Index j=0;j<lower.rows();++j) value+=2.0*std::log(lower(j,j));
+            return value;
+        };
+        double previous_logdet=information_logdet(information);
+        while(chosen.size()<desired) {
+            double best_gain=-std::numeric_limits<double>::infinity();
+            std::size_t best_index=candidates.size();
             for(std::size_t i=0;i<candidates.size();++i) {
                 if(std::find(chosen.begin(),chosen.end(),i)!=chosen.end()) continue;
-                Eigen::VectorXd v=candidates[i].feature;
-                for(const auto& b:basis) v-=b.dot(v)*b;
-                const double novelty=v.norm();
-                if(novelty>best) {best=novelty;best_index=i;}
+                const Eigen::MatrixXd updated=information
+                    +candidates[i].feature.transpose()*candidates[i].feature;
+                const double gain=information_logdet(updated)-previous_logdet;
+                if(std::isfinite(gain) && gain>best_gain) {best_gain=gain;best_index=i;}
             }
-            if(best<=model_calibration_options_.minimum_information_score) break;
+            if(best_index==candidates.size() || best_gain<1e-7) break;
             chosen.push_back(best_index);
+            information.noalias()+=candidates[best_index].feature.transpose()*candidates[best_index].feature;
+            previous_logdet+=best_gain;
         }
         if(chosen.size() < model_calibration_options_.minimum_training_groups + 1) return {};
         std::sort(chosen.begin(), chosen.end(), [&](std::size_t a, std::size_t b){ return candidates[a].index < candidates[b].index; });

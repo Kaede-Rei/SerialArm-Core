@@ -268,6 +268,8 @@ def recompute(directory, mode='global', locked_links=None):
             'mass_fraction': model_fit['constraints']['mass_fraction'],
             'max_com_offset_m': model_fit['constraints']['max_com_offset_m'],
             'regularization': model_fit['regularization'],
+            'observable_gravity_rank': model_fit['static_gravity_rank'],
+            'unobservable_parameters': model_fit['static_gravity_nullity'],
         }
         # Raw ten-parameter dynamic regression is *diagnostic only*.
         max_review = max_shift
@@ -337,7 +339,7 @@ def recompute(directory, mode='global', locked_links=None):
         'raw_dynamic_parameters': np.asarray(old_fit['candidate'], dtype=float).tolist(),
         'scoped_dynamic_parameters': raw.tolist(),
         'selected_dynamic_parameters': exported.tolist() if exported is not None else None,
-        'numerical_rank': (model_fit['active_regressor_rank'] if model_fit else fit['rank']),
+        'numerical_rank': (model_fit['static_gravity_rank'] if model_fit else fit['rank']),
         'regressor_columns': (model_fit['mass_moment_columns'] if model_fit else fit['degrees']),
         'legacy_full_inertia_rank': fit['rank'],
         'legacy_full_inertia_columns': fit['degrees'],

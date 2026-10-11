@@ -123,9 +123,9 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     for(std::size_t k=0;k<count;++k) for(std::size_t j=0;j<joints;++j) {
         const double slope=std::abs(tangent[k][j]);
         const double bend=std::abs(curvature[k][j]);
-        speed[k]=std::min(speed[k],0.90*max_vel[j]/std::max(slope,1.0e-8));
-        speed[k]=std::min(speed[k],std::sqrt(0.70*max_acc[j]/std::max(bend,1.0e-8)));
-        accel[k]=std::min(accel[k],0.70*max_acc[j]/std::max(slope,1.0e-8));
+        speed[k]=std::min(speed[k],0.94*max_vel[j]/std::max(slope,1.0e-8));
+        speed[k]=std::min(speed[k],std::sqrt(0.80*max_acc[j]/std::max(bend,1.0e-8)));
+        accel[k]=std::min(accel[k],0.80*max_acc[j]/std::max(slope,1.0e-8));
     }
     // Apply bounds for the actual cubic geometry between each pair of knots:
     // finite-difference curvature at knots alone misses sharp intermediate
@@ -135,12 +135,12 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         const double m0=tangent[k][j]*ds, m1=tangent[k+1][j]*ds;
         const double max_d1=std::max({std::abs(m0), std::abs(3*d-m0-m1),std::abs(m1)})/ds;
         const double max_d2=std::max(std::abs(6*d-4*m0-2*m1),std::abs(-6*d+2*m0+4*m1))/(ds*ds);
-        const double v_speed=0.90*max_vel[j]/std::max(max_d1,1e-8);
-        const double v_accel=std::sqrt(0.70*max_acc[j]/std::max(max_d2,1e-8));
+        const double v_speed=0.94*max_vel[j]/std::max(max_d1,1e-8);
+        const double v_accel=std::sqrt(0.80*max_acc[j]/std::max(max_d2,1e-8));
         speed[k]=std::min({speed[k],v_speed,v_accel});
         speed[k+1]=std::min({speed[k+1],v_speed,v_accel});
-        accel[k]=std::min(accel[k],0.70*max_acc[j]/std::max(max_d1,1e-8));
-        accel[k+1]=std::min(accel[k+1],0.70*max_acc[j]/std::max(max_d1,1e-8));
+        accel[k]=std::min(accel[k],0.80*max_acc[j]/std::max(max_d1,1e-8));
+        accel[k+1]=std::min(accel[k+1],0.80*max_acc[j]/std::max(max_d1,1e-8));
     }
     // Plan static collection points as genuine zero-speed boundary conditions.
     // Zero speed at a curve knot is handled by the same forward/backward braking
@@ -208,8 +208,8 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         const double d=p1-p0;
         const double d1=std::max({std::abs(m0),std::abs(3*d-m0-m1),std::abs(m1)});
         const double d2=std::max(std::abs(6*d-4*m0-2*m1),std::abs(-6*d+2*m0+4*m1));
-        slowdown=std::max({slowdown,d1/(0.90*max_vel[j]*result.sample_dt),
-            std::sqrt(d2/(0.85*max_acc[j]*result.sample_dt*result.sample_dt))});
+        slowdown=std::max({slowdown,d1/(0.94*max_vel[j]*result.sample_dt),
+            std::sqrt(d2/(0.90*max_acc[j]*result.sample_dt*result.sample_dt))});
     }
     result.sample_dt*=slowdown;
     result.single_pass_s=result.sample_dt*static_cast<double>(samples-1);

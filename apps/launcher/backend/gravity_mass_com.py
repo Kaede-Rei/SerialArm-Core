@@ -33,6 +33,33 @@ def _dynamic_prior_with_unchanged_com_tensor(prior, proposal):
     return out
 
 
+def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=1e-3):
+    """Configuration-dependent gravity combinations observable from static poses.
+
+    Per-joint centering projects out unknown constant torque offsets before the
+    SVD. Unobservable combinations are pinned to the trusted prior, not filled
+    by the dynamic trajectory or arbitrary individual-link parameter changes.
+    """
+    G = np.asarray(regressor, dtype=float)
+    sigma = np.asarray(noise_scale, dtype=float)
+    if G.ndim != 2 or joints < 1 or G.shape[0] % joints or G.shape[0] < 2*joints:
+        raise ValueError('静态重力回归矩阵需要多个完整姿态')
+    if sigma.shape != (joints,) or np.any(sigma <= 0) or not np.isfinite(G).all():
+        raise ValueError('静态重力回归或噪声尺度无效')
+    # Unknown motor offsets are indistinguishable from columns that do not
+    # vary with configuration. The centering must be done per joint.
+    poses = G.reshape(-1, joints, G.shape[1])
+    centered = poses - np.mean(poses, axis=0, keepdims=True)
+    weighted = (centered / sigma[None, :, None]).reshape(-1, G.shape[1])
+    _, singular, right = np.linalg.svd(weighted, full_matrices=True)
+    if not len(singular) or singular[0] <= 1e-12:
+        raise ValueError('示教轨迹静态姿态不足以辨识重力参数')
+    rank = int(np.sum(singular > max(1e-10, relative_threshold*singular[0])))
+    if rank == 0:
+        raise ValueError('静态重力回归矩阵没有可辨识参数')
+    return right[:rank, :].T, singular, rank
+
+
 def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
                         mass_fraction=0.25, static_weight=0.75):
     """Directly identify bounded mass/first moments without fitting inertia
@@ -89,9 +116,20 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
     Yhold, bhold, Fhold=pose_matrix(heldout)
     if not len(Ys) or not len(Yhold):
         raise ValueError('缺少独立的静态训练与留出姿态')
+    # Per-joint scale is measured only from *training* residuals
+    base=(b-A[:,:len(prior)]@prior).reshape(-1,nj)
+    sigma=np.maximum(np.median(np.abs(base-np.median(base,axis=0)),axis=0)*1.4826,.035)
     Gs=Ys[:,inds]*units
-    z0=np.zeros(len(inds))
-    nuisance=np.zeros(nfric)
+    # The basis is derived exclusively from stationary training poses;
+    # dynamic acceleration/friction data may refine these combinations but
+    # cannot invent values in the static gravity nullspace.
+    basis, gravity_singular, gravity_rank = observable_gravity_basis(Gs, nj, sigma)
+    active = basis.shape[1]
+    # Exactly enforce z = basis @ alpha throughout constrained optimization.
+    # This is distinct from rejecting or clipping an unconstrained fit after it
+    # has already assigned arbitrary COM changes to the links.
+    reduced_dynamic = Gdyn @ basis
+    reduced_static = Gs @ basis
     # Explicit mass and COM *joint* cone constraint, not independent Cartesian
     # clips which can admit a COM outside the radius
     def feasible(z):
@@ -116,18 +154,23 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
         grad[4*k]=2*units[4*k]*(max_shift**2*m+np.dot(d,origin_com[k]))
         grad[4*k+1:4*k+4]=-2*d*units[4*k+1:4*k+4]
         return grad
-    constraints=[{'type':'ineq','fun':lambda z,k=k:cone(z,k),
-                  'jac':lambda z,k=k:cone_grad(z,k)} for k in range(count)]
-    bounds=[(-1.,1.) if k%4==0 else (-1.5,1.5) for k in range(len(inds))]
-    # Per-joint scale is measured only from *training* residuals
-    base=(b-A[:,:len(prior)]@prior).reshape(-1,nj)
-    sigma=np.maximum(np.median(np.abs(base-np.median(base,axis=0)),axis=0)*1.4826,.035)
+    constraints=[{'type':'ineq', 'fun':lambda a,k=k:cone(basis@a,k),
+                  'jac':lambda a,k=k:cone_grad(basis@a,k)@basis}
+                 for k in range(count)]
+    limits = np.asarray([1.0 if k%4==0 else 1.5 for k in range(len(inds))])
+    constraints.extend([
+        {'type':'ineq', 'fun':lambda a: limits-basis@a,
+         'jac':lambda a: -basis},
+        {'type':'ineq', 'fun':lambda a: limits+basis@a,
+         'jac':lambda a: basis},
+    ])
     scale_dyn=np.tile(1./sigma,len(b)//nj)
     scale_static=np.tile(1./sigma,len(bs)//nj)
     # Static and moving segments each contribute a well-defined fraction
     w_dyn=scale_dyn*np.sqrt((1-static_weight)/max(len(b),1))
     w_static=scale_static*np.sqrt(static_weight/max(len(bs),1))
-    Gw=np.vstack([Gdyn*w_dyn[:,None],Gs*w_static[:,None]])
+    Gw=np.vstack([reduced_dynamic*w_dyn[:,None],
+                  reduced_static*w_static[:,None]])
     Fw=np.vstack([Fdyn*w_dyn[:,None],Fs*w_static[:,None]])
     bprior=np.concatenate([b-Ydyn@prior,bs-Ys@prior])
     # Damping on friction nuisance prevents the bias terms from arbitrarily
@@ -137,10 +180,11 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
     # Validation targets pure gravity; static holdout is used to choose the
     # regularization and is not an independent final generalization test
     for ridge in (0.002,0.01,0.04,0.12):
-        z=np.zeros(len(inds))
+        alpha=np.zeros(active)
         u=np.zeros(nfric)
         ok=True
         for iteration in range(3):
+            z=basis@alpha
             parameters=prior.copy(); parameters[inds]+=z*units
             converted=_dynamic_prior_with_unchanged_com_tensor(prior,parameters)
             extra=converted-prior
@@ -149,7 +193,7 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
             r=(bprior-offset)*np.concatenate([w_dyn,w_static])
             # Independent per-observation Huber weighting
             if iteration:
-                residual=r-Gw@z-Fw@u
+                residual=r-Gw@alpha-Fw@u
                 threshold=max(.02,float(np.median(np.abs(residual)))*2.5)
                 robust=np.sqrt(np.minimum(1.,threshold/np.maximum(np.abs(residual),1e-12)))
             else:
@@ -160,19 +204,20 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
             K=F.T@F+nuisance_penalty
             Kfg=np.linalg.solve(K,F.T@G)
             Kft=np.linalg.solve(K,F.T@target)
-            H=G.T@(G-F@Kfg)+ridge*np.eye(len(inds))
+            H=G.T@(G-F@Kfg)+ridge*np.eye(active)
             H=(H+H.T)*.5
             f=G.T@(target-F@Kft)
-            sol=minimize(lambda x:float(.5*x@H@x-f@x),z,
-                         jac=lambda x:H@x-f,method='SLSQP',bounds=bounds,
+            sol=minimize(lambda x:float(.5*x@H@x-f@x),alpha,
+                         jac=lambda x:H@x-f,method='SLSQP',
                          constraints=constraints,
                          options={'maxiter':250,'ftol':1e-10})
-            if not sol.success or not feasible(sol.x):
+            if not sol.success or not feasible(basis@sol.x):
                 ok=False
                 break
-            z=np.asarray(sol.x)
-            u=np.linalg.solve(K,F.T@(target-G@z))
+            alpha=np.asarray(sol.x)
+            u=np.linalg.solve(K,F.T@(target-G@alpha))
         if not ok: continue
+        z=basis@alpha
         candidate=prior.copy();candidate[inds]+=z*units
         physical=_dynamic_prior_with_unchanged_com_tensor(prior,candidate)
         def scored(Y,tt,F,model_params,fric):
@@ -219,6 +264,10 @@ def fit_global_mass_com(old_fit, training, heldout, max_shift=0.05,
         'static_prior_scaled_rms':sbase,
         'mass_moment_columns':len(inds),
         'active_regressor_rank':effective_rank,
+        'static_gravity_rank':gravity_rank,
+        'static_gravity_parameter_count':len(inds),
+        'static_gravity_singular_values':gravity_singular.tolist(),
+        'static_gravity_nullity':len(inds)-gravity_rank,
         'joint_noise_scale_nm':sigma.tolist(),
         'solver':'bounded_direct_mass_first_moment',
         'constraints':{'mass_fraction':mass_fraction,'max_com_offset_m':max_shift},
