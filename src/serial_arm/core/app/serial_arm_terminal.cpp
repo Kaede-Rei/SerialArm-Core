@@ -4,6 +4,9 @@
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/dynamics/calibration_retime.hpp"
 #include "serial_arm/dynamics/calibration_measurement_quality.hpp"
+#include "serial_arm/dynamics/calibration_auto_gain.hpp"
+#include "serial_arm/dynamics/calibration_reference_watchdog.hpp"
+#include "serial_arm/dynamics/calibration_replay_supervisor.hpp"
 #include "serial_arm/dynamics/calibration_recovery_alignment.hpp"
 #include "serial_arm/core/park_policy.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
@@ -1516,10 +1519,12 @@ private:
         metadata.identification_mode = model_calibration_options_.identification_mode;
         metadata.locked_links = model_calibration_options_.locked_links;
         for(const auto& link : model_calibration_links_cache_) metadata.identifiable_links.push_back(link.link_name);
-        metadata.measurement_hold_kp = model_calibration_measurement_gains().kp;
-        metadata.measurement_hold_kd = model_calibration_measurement_gains().kd;
-        metadata.measurement_tracking_kp = model_calibration_replay_gains().kp;
-        metadata.measurement_tracking_kd = model_calibration_replay_gains().kd;
+        // Runtime model-based/adaptive gains are pose-dependent. The actual
+        // commanded Kp/Kd are recorded per-frame, not guessed at task start.
+        metadata.measurement_hold_kp.clear();
+        metadata.measurement_hold_kd.clear();
+        metadata.measurement_tracking_kp.clear();
+        metadata.measurement_tracking_kd.clear();
         metadata.max_task_duration_s = 0.0; // 0: no user-configurable task deadline
         return metadata;
     }
@@ -1528,6 +1533,8 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         robot_.clear_calibration_hold_gains();
         robot_.clear_calibration_tracking_gains();
+        model_calibration_active_tracking_gains_.reset();
+        model_calibration_last_replay_gain_revision_.reset();
         robot_.set_admittance_suspended(model_calibration_original_suspended_);
         last_output_.reset();
     }
@@ -2148,62 +2155,180 @@ private:
     }
 
     bool model_calibration_send_reference(const JointVector& ref_pos, const JointVector& ref_vel) {
-        std::uint64_t cursor = 0;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if(robot_.get_state() != RobotState::ACTIVE) return false;
-            cursor = cycle_counter_;
-            const auto command = robot_.set_cmd(JointPosVelCmd{ ref_pos, ref_vel }, Robot::Clock::now());
-            if(!command) return false;
-        }
+        // Keep the demonstrated path.  Supervise EACH replay point using live
+        // feedback; when catching up, position reference is frozen AND target
+        // velocity becomes ZERO.  Holding a nonzero target velocity was able to
+        // drive a Damiao MIT motor beyond a frozen position reference.
+        using serial_arm::calibration_reference_watchdog::Heartbeat;
+        using serial_arm::calibration_replay_supervisor::evaluate;
+        using serial_arm::calibration_replay_supervisor::State;
+        const auto started=Robot::Clock::now();
+        Heartbeat heartbeat(started);
         std::unique_lock<std::mutex> lock(mutex_);
-        const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
-            return model_calibration_cancel_.load() || cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
-            });
-        if(!updated || model_calibration_cancel_.load() || robot_.get_state() != RobotState::ACTIVE || cycle_counter_ <= cursor)
-            return false;
-        if(last_output_ && last_output_->joint_state.pos.size() == ref_pos.size()) {
-            for(std::size_t i = 0; i < ref_pos.size(); ++i) {
-                const double error = std::abs(ref_pos[i] - last_output_->joint_state.pos[i]);
-                const double limit = std::clamp(cfg_.safety.limits.max_vel[i] * 0.10, 0.035, 0.14);
-                if(error > limit) {
-                    // Do not allow an open-loop reference to outrun the actual arm
-                    // The command stays at the latest reference while feedback catches up
-                    const auto deadline = Robot::Clock::now() + std::chrono::milliseconds(1200);
-                    while(Robot::Clock::now() < deadline && !model_calibration_cancel_.load()) {
-                        if(!cycle_cv_.wait_for(lock, std::chrono::milliseconds(25), [&] {return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE; }))continue;
-                        if(robot_.get_state() != RobotState::ACTIVE)return false;
-                        cursor = cycle_counter_;
-                        if(last_output_ && std::abs(ref_pos[i] - last_output_->joint_state.pos[i]) <= limit)break;
-                    }
-                    if(!last_output_ || std::abs(ref_pos[i] - last_output_->joint_state.pos[i]) > limit) {
-                        model_calibration_error_ = "calibration tracking error exceeded safe following limit";
-                        return false;
-                    }
-                }
+        if(robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load() ||
+           ref_pos.size()!=cfg_.joint_names.size() || ref_vel.size()!=ref_pos.size()) return false;
+        std::uint64_t cursor=cycle_counter_;
+        bool braking=false;
+        const auto issue_reference=[&](bool hold) {
+            const JointPosVelCmd cmd{ref_pos,
+                serial_arm::calibration_replay_supervisor::command_velocity(ref_vel,hold)};
+            const auto sent=robot_.set_cmd(cmd,Robot::Clock::now());
+            if(!sent) {
+                model_calibration_error_="calibration replay reference command rejected";
+                return false;
             }
+            heartbeat.command_sent(Robot::Clock::now());
+            return true;
+        };
+        if(!issue_reference(false)) return false;
+        while(!model_calibration_cancel_.load()) {
+            const bool updated=cycle_cv_.wait_for(lock,Heartbeat::poll_interval,[&] {
+                return model_calibration_cancel_.load() || cycle_counter_>cursor ||
+                       robot_.get_state()!=RobotState::ACTIVE;
+            });
+            if(model_calibration_cancel_.load() || robot_.get_state()!=RobotState::ACTIVE)return false;
+            const auto now=Robot::Clock::now();
+            if(updated && cycle_counter_>cursor) {
+                cursor=cycle_counter_;
+                heartbeat.control_cycle_received(now);
+            }
+            if(heartbeat.feedback_stalled(now)) {
+                model_calibration_error_="calibration replay control feedback stalled";
+                return false;
+            }
+            if(heartbeat.feedback_received() && last_output_ &&
+               last_output_->joint_state.pos.size()==ref_pos.size() &&
+               last_output_->joint_state.vel.size()==ref_pos.size()) {
+                const auto& actual=last_output_->joint_state.pos;
+                const auto& velocity=last_output_->joint_state.vel;
+                const auto status=evaluate(ref_pos,actual,velocity,cfg_.safety.limits.max_vel);
+                if(!status.valid) {
+                    model_calibration_error_="calibration replay feedback is invalid";
+                    return false;
+                }
+                if(status.state==State::FOLLOWING && !braking) return true;
+                if(status.state!=State::FOLLOWING && !braking) {
+                    braking=true;
+                    // A paused trajectory MUST NOT keep the previous nonzero
+                    // MIT velocity setpoint. Brake immediately at the SAME q.
+                    if(!issue_reference(true))return false;
+                }
+                if(braking && status.state==State::FOLLOWING &&
+                   status.peak_velocity<=status.recovery_velocity_limit) return true;
+                if(!model_calibration_active_tracking_gains_) {
+                    model_calibration_error_="automatic calibration replay gains are unavailable";
+                    return false;
+                }
+                // Only a real, fresh feedback response can trigger a revision.
+                // Never use the user's configured rigidity as a calibration
+                // target: the safety bounds are solely hard actuator ceilings.
+                if(model_calibration_last_replay_gain_revision_ &&
+                   now-*model_calibration_last_replay_gain_revision_>=std::chrono::milliseconds(120) &&
+                   (braking || status.state!=State::FOLLOWING)) {
+                    auto revised=serial_arm::calibration_auto_gain::Gains{
+                        model_calibration_active_tracking_gains_->kp,
+                        model_calibration_active_tracking_gains_->kd};
+                    const bool changed=serial_arm::calibration_replay_supervisor::revise_tracking(
+                        revised.kp,revised.kd,status,ref_pos,actual,velocity,
+                        cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd);
+                    if(changed) {
+                        JointImpedanceGains next{revised.kp,revised.kd};
+                        if(!robot_.set_calibration_tracking_gains(next)) {
+                            model_calibration_error_="calibration replay gain revision rejected by safety limits";
+                            return false;
+                        }
+                        model_calibration_active_tracking_gains_=std::move(next);
+                    }
+                    model_calibration_last_replay_gain_revision_=now;
+                }
+                if(heartbeat.catchup_expired(now)) {
+                    std::ostringstream diagnostic;
+                    diagnostic<<std::fixed<<std::setprecision(4)
+                        <<"calibration tracking error exceeded safe following limit: "
+                        <<cfg_.joint_names[status.worst_joint]
+                        <<" actual="<<actual[status.worst_joint]
+                        <<" reference="<<ref_pos[status.worst_joint]
+                        <<" error="<<status.max_error
+                        <<" soft_limit="<<status.soft_limit[status.worst_joint]
+                        <<" safety_follow_limit="<<status.hard_limit[status.worst_joint]
+                        <<" kp="<<last_output_->joint_cmd.kp[status.worst_joint]
+                        <<" kd="<<last_output_->joint_cmd.kd[status.worst_joint];
+                    model_calibration_error_=diagnostic.str();
+                    return false;
+                }
+            } else if(heartbeat.catchup_expired(now)) {
+                model_calibration_error_="calibration replay did not receive fresh control feedback";
+                return false;
+            }
+            // The reference stays live for the native 100 ms CMD_TIMEOUT even
+            // when path time is paused. A genuinely stalled cycle still faults.
+            if(heartbeat.refresh_due(now) && !issue_reference(braking))return false;
         }
-        return true;
+        return false;
     }
 
-    // Standardized model-identification gains derive from actuator safety
-    // capability, NEVER the user's normal RIGID_HOLD/COMPLIANT_HOLD tuning.
+    // The URDF inertia and gravity gradient define physical gains in real
+    // units, not a percentage of any user-supplied gain or safety ceiling.
+    // Safety ceilings ONLY constrain commands.  The real robot response then
+    // decides whether a pose is usable and whether the controller needs revision.
+    JointImpedanceGains model_calibration_physical_gains(double frequency) const {
+        const std::size_t n=cfg_.joint_names.size();
+        if(!dynamics_.is_updated())throw std::runtime_error("calibration requires an updated dynamics model");
+        const auto& M=dynamics_.get_mass_matrix();
+        const auto& q=robot_.get_joint_state().pos;
+        if(M.rows()!=static_cast<Eigen::Index>(n)||M.cols()!=static_cast<Eigen::Index>(n) || q.size()!=n)
+            throw std::runtime_error("calibration inertia/state dimension mismatch");
+        std::vector<double> inertia(n),gradient(n);
+        for(std::size_t i=0;i<n;++i){
+            inertia[i]=M(static_cast<Eigen::Index>(i),static_cast<Eigen::Index>(i));
+            JointVector plus=q,minus=q;
+            plus[i]+=0.005; minus[i]-=0.005;
+            const auto a=dynamics_.get_gravity_regression(plus);
+            const auto b=dynamics_.get_gravity_regression(minus);
+            if(!a||!b||a->original_gravity.size()!=n||b->original_gravity.size()!=n)
+                throw std::runtime_error("calibration cannot estimate gravity stiffness");
+            gradient[i]=std::abs(a->original_gravity[i]-b->original_gravity[i])/0.01;
+        }
+        const auto computed=serial_arm::calibration_auto_gain::from_model(inertia,gradient,
+            cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,frequency);
+        return JointImpedanceGains{computed.kp,computed.kd};
+    }
+
     JointImpedanceGains model_calibration_replay_gains() const {
-        JointImpedanceGains gain;
-        for(std::size_t i=0;i<cfg_.joint_names.size();++i) {
-            gain.kp.push_back(cfg_.safety.limits.max_kp[i]*0.65);
-            gain.kd.push_back(cfg_.safety.limits.max_kd[i]*0.55);
-        }
-        return gain;
+        return model_calibration_physical_gains(8.0);
+    }
+    JointImpedanceGains model_calibration_measurement_gains() const {
+        return model_calibration_physical_gains(5.0);
     }
 
-    JointImpedanceGains model_calibration_measurement_gains() const {
-        JointImpedanceGains gain;
-        for(std::size_t i=0; i<cfg_.joint_names.size(); ++i) {
-            gain.kp.push_back(cfg_.safety.limits.max_kp[i]*0.35);
-            gain.kd.push_back(cfg_.safety.limits.max_kd[i]*0.30);
-        }
-        return gain;
+    // The background recorder keeps all cycles untagged. This snapshot is
+    // copied ONLY into an in-memory candidate window, never accepted early.
+    ModelCalibrationFrame model_calibration_static_frame(const RobotCycleOutput& output,
+                                                          Robot::TimePoint now,
+                                                          const ModelCalibrationPoseTarget& target) const {
+        ModelCalibrationFrame f;
+        f.monotonic_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
+        f.cycle=cycle_counter_;
+        f.position=output.joint_state.pos;f.velocity=output.joint_state.vel;f.torque=output.joint_state.tor;
+        f.acceleration=output.joint_acc;f.reference_position=output.joint_cmd.pos;
+        f.reference_velocity=output.joint_cmd.vel;
+        f.command_kp=output.joint_cmd.kp;f.command_kd=output.joint_cmd.kd;
+        f.model_feedforward=output.model_feedforward;
+        f.acceleration_source="robot_joint_acc_filter";
+        f.impedance_mode=to_string(robot_.get_impedance_mode());
+        f.feedback_age_ms=0.0;
+        f.phase=to_string(model_calibration_phase_.load());
+        f.direction=model_calibration_direction_.load()<0?"reverse":"forward";
+        f.speed_tier="fast";f.pose_group=target.pose_group;
+        f.validation=target.validation;
+        const auto good=[&](const JointVector& x){
+            return x.size()==cfg_.joint_names.size() &&
+                std::all_of(x.begin(),x.end(),[](double v){return std::isfinite(v);});
+        };
+        f.valid=good(f.position)&&good(f.velocity)&&good(f.torque)&&good(f.acceleration)&&
+            good(f.reference_position)&&good(f.reference_velocity)&&good(f.command_kp)&&good(f.command_kd)&&
+            good(f.model_feedforward);
+        return f;
     }
 
     bool model_calibration_collect_static(const ModelCalibrationPoseTarget& target, const std::string& direction) {
@@ -2211,92 +2336,120 @@ private:
         using serial_arm::calibration_measurement::StableWindow;
         model_calibration_pose_group_.store(0);
         model_calibration_validation_.store(false);
-        model_calibration_direction_.store(direction == "reverse" ? -1 : 1);
-        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return false;
+        model_calibration_direction_.store(direction=="reverse"?-1:1);
+        JointImpedanceGains gains;
+        std::vector<double> inertia;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if(!robot_.set_calibration_hold_gains(model_calibration_measurement_gains())) {
-                model_calibration_error_ = "static measurement gain override rejected by safety limits";
+            try {
+                gains=model_calibration_measurement_gains();
+                const auto& M=dynamics_.get_mass_matrix();
+                for(std::size_t i=0;i<cfg_.joint_names.size();++i)
+                    inertia.push_back(M(static_cast<Eigen::Index>(i),static_cast<Eigen::Index>(i)));
+            } catch(const std::exception& e) {
+                model_calibration_error_=e.what();return false;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!robot_.begin_calibration_hold(gains)) {
+                model_calibration_error_="could not safely switch to model-based calibration hold";
                 return false;
             }
+            last_output_.reset();
         }
-        // Restoring the tracking mode also clears the temporary gains.  All
-        // exits (including cancellation, timeout and failure) go through here.
-        auto finish = [&]() {
-            model_calibration_pose_group_.store(0);
-            model_calibration_validation_.store(false);
-            if(robot_.get_state() != RobotState::ACTIVE) return false;
+        auto finish=[&](){
+            if(robot_.get_state()!=RobotState::ACTIVE)return false;
             return set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING);
         };
-        // Check gross motion first, then check actual feedback torque and
-        // position stability.  A quiet encoder alone is not a torque sample.
-        if(!wait_for_static_tuning_pose(model_calibration_options_.static_hold_s,
-                model_calibration_options_.static_timeout_s,
-                model_calibration_options_.static_max_velocity,
-                model_calibration_options_.static_max_acceleration)) {
-            (void)finish();
-            model_calibration_error_ = "stationary pose did not settle within safe time";
-            return false;
-        }
+        // Minimum initial ramp must complete before a sample is even considered.
+        // No fixed Kp/Kd ratio and no assumption that a quiet encoder is enough.
         StableWindow window;
-        std::size_t accepted = 0;
-        bool collecting = false;
+        std::vector<ModelCalibrationFrame> candidate;
         std::optional<Robot::TimePoint> good_started;
-        const auto deadline = Robot::Clock::now() +
-            std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(
-                model_calibration_options_.static_timeout_s + model_calibration_options_.static_sample_s));
-        std::uint64_t cursor = 0;
-        {std::lock_guard<std::mutex> lock(mutex_); cursor = cycle_counter_;}
-        while(Robot::Clock::now() < deadline) {
-            if(model_calibration_cancel_.load() || !model_calibration_within_time_limit()) {
-                (void)finish(); return false;
+        auto adjustment_started=Robot::Clock::now();
+        auto last_revision=adjustment_started;
+        unsigned revisions=0;
+        std::uint64_t cursor=0;
+        {std::lock_guard<std::mutex> lock(mutex_);cursor=cycle_counter_;}
+        const auto deadline=Robot::Clock::now()+std::chrono::duration_cast<Robot::Clock::duration>(
+            std::chrono::duration<double>(model_calibration_options_.static_timeout_s+2.0));
+        while(Robot::Clock::now()<deadline){
+            if(model_calibration_cancel_.load()||!model_calibration_within_time_limit()) {
+                (void)finish();return false;
             }
             const auto phase=model_calibration_phase_.load();
-            if(model_calibration_pause_.load()) {
-                model_calibration_pose_group_.store(0);
-                model_calibration_validation_.store(false);
-                window.clear();good_started.reset();collecting=false;accepted=0;
+            if(model_calibration_pause_.load()){
+                window.clear();candidate.clear();good_started.reset();
+                adjustment_started=Robot::Clock::now();last_revision=adjustment_started;
             }
-            if(!model_calibration_wait_if_paused(phase)) {(void)finish();return false;}
+            if(!model_calibration_wait_if_paused(phase)){(void)finish();return false;}
             std::unique_lock<std::mutex> lock(mutex_);
-            const bool updated=cycle_cv_.wait_for(lock,std::chrono::milliseconds(100), [&]{
-                return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load();
+            const bool updated=cycle_cv_.wait_for(lock,std::chrono::milliseconds(100),[&]{
+                return cycle_counter_>cursor||robot_.get_state()!=RobotState::ACTIVE||model_calibration_cancel_.load();
             });
-            if(robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load()) {
+            if(robot_.get_state()!=RobotState::ACTIVE||model_calibration_cancel_.load()){
                 lock.unlock();(void)finish();return false;
             }
-            if(!updated || cycle_counter_<=cursor || !last_output_) continue;
+            if(!updated||cycle_counter_<=cursor||!last_output_)continue;
             cursor=cycle_counter_;
-            const auto& output=*last_output_;
             const auto now=Robot::Clock::now();
-            window.push(Observation{std::chrono::duration<double>(now.time_since_epoch()).count(),
-                output.joint_state.pos, output.joint_state.vel, output.joint_state.tor});
-            const bool stable=window.stable(model_calibration_options_.static_max_velocity);
+            const auto frame=model_calibration_static_frame(*last_output_,now,target);
+            Observation obs{std::chrono::duration<double>(now.time_since_epoch()).count(),
+                frame.position,frame.velocity,frame.torque};
             lock.unlock();
-            if(stable) {
-                if(!good_started)good_started=now;
-                // Current cycle was already recorded with the old tag by the
-                // worker.  Begin tagging from the NEXT cycle only.
-                model_calibration_pose_group_.store(target.pose_group);
-                model_calibration_validation_.store(target.validation);
-                collecting=true;
-                ++accepted;
-                ++model_calibration_valid_static_samples_;
-                if(accepted >= 18 &&
-                    std::chrono::duration<double>(now-*good_started).count()>=model_calibration_options_.static_sample_s)
-                    return finish();
-            } else {
-                model_calibration_pose_group_.store(0);
-                model_calibration_validation_.store(false);
-                good_started.reset();
-                if(collecting) accepted=0;
-                collecting=false;
+            const double since_adjustment=std::chrono::duration<double>(now-adjustment_started).count();
+            if(since_adjustment<0.43){window.clear();candidate.clear();good_started.reset();continue;}
+            window.push(std::move(obs));
+            const bool stable=window.stable(model_calibration_options_.static_max_velocity);
+            if(stable && frame.valid){
+                if(!good_started){good_started=now;candidate.clear();}
+                candidate.push_back(frame);
+                if(candidate.size()>=35 && std::chrono::duration<double>(now-*good_started).count()>=
+                    model_calibration_options_.static_sample_s){
+                    // Final check is across the WHOLE accepted window, not
+                    // a handful of individually quiet 0.18 s slices.
+                    StableWindow complete(model_calibration_options_.static_sample_s);
+                    for(const auto& row:candidate)
+                        complete.push(Observation{row.monotonic_ns*1e-9,row.position,row.velocity,row.torque});
+                    if(complete.stable(model_calibration_options_.static_max_velocity)){
+                        if(!model_calibration_recorder_.approve_static_group(candidate)){
+                            model_calibration_error_="verified static group could not be committed";
+                            (void)finish();return false;
+                        }
+                        model_calibration_valid_static_samples_+=candidate.size();
+                        return finish();
+                    }
+                    candidate.clear();good_started.reset();
+                }
+            }else{
+                good_started.reset();candidate.clear();
+            }
+            // Revision only after a genuinely observed response window.
+            // Limit both count and cadence; all commands remain under the
+            // existing motor safety limits. No user-provided tuning assumptions.
+            if(!stable && window.full() && revisions<3 &&
+               std::chrono::duration<double>(now-last_revision).count()>0.90){
+                std::vector<double> std_tau,drift,peak;
+                window.motion_metrics(std_tau,drift,peak);
+                serial_arm::calibration_auto_gain::Gains proposal{gains.kp,gains.kd};
+                if(serial_arm::calibration_auto_gain::revise(proposal,inertia,
+                    cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,std_tau,drift,peak)){
+                    JointImpedanceGains next{proposal.kp,proposal.kd};
+                    std::lock_guard<std::mutex> guard(mutex_);
+                    if(!robot_.set_calibration_hold_gains(next)){
+                        model_calibration_error_="automatic calibration gain revision rejected";
+                        return false;
+                    }
+                    gains=std::move(next);adjustment_started=now;
+                    window.clear();candidate.clear();good_started.reset();
+                    ++revisions;
+                }
+                last_revision=now;
             }
         }
-        // One low-quality stop should not force a second human demonstration.
-        // Ignore it and let the normal minimum train/holdout group checks
-        // reject the entire fit if enough independent positions were lost.
-        if(accepted < 31) ++model_calibration_rejected_static_groups_;
+        ++model_calibration_rejected_static_groups_;
+        // A failed pose is NEVER added to the online/offline dataset.
         return finish();
     }
 
@@ -2416,8 +2569,10 @@ private:
         try {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if(!robot_.set_calibration_tracking_gains(model_calibration_replay_gains()))
+                model_calibration_active_tracking_gains_=model_calibration_replay_gains();
+                if(!robot_.set_calibration_tracking_gains(*model_calibration_active_tracking_gains_))
                     throw std::runtime_error("calibration tracking gains were rejected by safety limits");
+                model_calibration_last_replay_gain_revision_=Robot::Clock::now();
             }
             // Keep the original demonstrated path and its retimed safety limits.
             // Reuse the reverse traversal for gravity holds AND friction data.
@@ -2430,7 +2585,7 @@ private:
             const auto recorder_status = model_calibration_recorder_.status();
             if(recorder_status.data_gap || recorder_status.write_failed)
                 throw std::runtime_error(recorder_status.error.empty() ? "model calibration raw data contains a recording gap" : recorder_status.error);
-            const auto groups = group_static_calibration_frames(model_calibration_recorder_.frames(), 30);
+            const auto groups = group_static_calibration_frames(model_calibration_recorder_.approved_static_frames(), 30);
             GravityCalibrationOptions options;
             options.minimum_training_groups = model_calibration_options_.minimum_training_groups;
             options.regularization = model_calibration_options_.regularization;
@@ -5693,6 +5848,8 @@ private:
     std::optional<FrictionCalibrationTrajectory> model_calibration_trajectory_;
     std::vector<ModelCalibrationPoseTarget> model_calibration_pose_targets_;
     double model_calibration_replay_rate_{ 0.0 };
+    std::optional<JointImpedanceGains> model_calibration_active_tracking_gains_;
+    std::optional<Robot::TimePoint> model_calibration_last_replay_gain_revision_;
     double model_calibration_estimated_duration_s_{ 0.0 };
     double model_calibration_original_duration_s_{ 0.0 };
     double model_calibration_path_length_rad_{ 0.0 };

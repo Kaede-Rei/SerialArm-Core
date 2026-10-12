@@ -20,7 +20,7 @@ struct Observation {
 // All criteria operate on a recent window, never a single quiet velocity frame.
 class StableWindow {
 public:
-    explicit StableWindow(double seconds=0.18): seconds_(seconds) {}
+    explicit StableWindow(double seconds=0.42): seconds_(seconds) {}
     void clear() { rows_.clear(); }
     void push(Observation row) {
         if(!valid(row)) {clear();return;}
@@ -31,7 +31,7 @@ public:
         while(rows_.size()>1 && rows_.back().time_s-rows_.front().time_s > seconds_+0.02)
             rows_.pop_front();
     }
-    bool stable(double max_velocity=0.03, double max_drift=0.008) const {
+    bool stable(double max_velocity=0.020, double max_drift=0.003) const {
         if(rows_.size()<12 || rows_.back().time_s-rows_.front().time_s<seconds_*0.80) return false;
         const std::size_t n=rows_.size(), joints=rows_.front().q.size();
         for(std::size_t j=0;j<joints;++j) {
@@ -47,13 +47,27 @@ public:
             if(maxq-minq>max_drift) return false;
             const double mean=sum/static_cast<double>(n);
             const double stddev=std::sqrt(std::max(0.0,sumsq/n-mean*mean));
-            const double max_std=std::max(0.10,0.035*std::abs(mean));
+            const double max_std=std::max(0.033,0.020*std::abs(mean));
             const double half_diff=std::abs(first/(n/2)-second/(n-n/2));
-            if(stddev>max_std || half_diff>std::max(0.12,0.05*std::abs(mean))) return false;
+            if(stddev>max_std || half_diff>std::max(0.037,0.020*std::abs(mean))) return false;
         }
         return true;
     }
     std::size_t size() const {return rows_.size();}
+    bool full() const {return rows_.size()>=12 && rows_.back().time_s-rows_.front().time_s>=seconds_*0.80;}
+    void motion_metrics(std::vector<double>& std_tau,std::vector<double>& drift,std::vector<double>& peak_vel) const {
+        if(rows_.empty())return;
+        const auto n=rows_.size();
+        const auto joints=rows_.front().q.size();
+        std_tau.assign(joints,0);drift.assign(joints,0);peak_vel.assign(joints,0);
+        for(std::size_t j=0;j<joints;++j){
+            double sum=0,squared=0,minq=rows_.front().q[j],maxq=minq;
+            for(const auto& r:rows_){sum+=r.tau[j];squared+=r.tau[j]*r.tau[j];
+                minq=std::min(minq,r.q[j]);maxq=std::max(maxq,r.q[j]);peak_vel[j]=std::max(peak_vel[j],std::abs(r.dq[j]));}
+            const double mean=sum/n;
+            std_tau[j]=std::sqrt(std::max(0.0,squared/n-mean*mean));drift[j]=maxq-minq;
+        }
+    }
 private:
     static bool valid(const Observation& r) {
         if(r.q.empty() || r.q.size()!=r.dq.size() || r.q.size()!=r.tau.size() || !std::isfinite(r.time_s)) return false;

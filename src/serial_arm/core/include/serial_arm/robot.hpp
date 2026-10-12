@@ -196,6 +196,7 @@ public:
      * They never modify the robot configuration or other impedance modes.
      * The override is cleared on leaving RIGID_HOLD and on deactivation.
      */
+    bool begin_calibration_hold(const JointImpedanceGains& gains);
     bool set_calibration_hold_gains(const JointImpedanceGains& gains);
     void clear_calibration_hold_gains() noexcept;
     bool set_calibration_tracking_gains(const JointImpedanceGains& gains);
@@ -506,7 +507,9 @@ private:
     bool has_last_joint_cmd_{ false };              ///< 是否已有合法关节控制命令
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令
     std::optional<JointImpedanceGains> calibration_hold_gains_;
+    std::optional<JointImpedanceGains> calibration_hold_source_;
     std::optional<JointImpedanceGains> calibration_tracking_gains_;
+    std::optional<JointImpedanceGains> calibration_tracking_source_;
     std::optional<TimePoint> park_rigid_ramp_started_;
     double park_rigid_ramp_duration_s_{0.65};
     TimePoint calibration_tracking_started_{};

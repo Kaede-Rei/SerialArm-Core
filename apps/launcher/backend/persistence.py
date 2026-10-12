@@ -439,6 +439,7 @@ def load_model_calibration_summary(directory):
         record_kind = 'interrupted'
     can_resume = trajectory['valid']
     files = {'metadata.json': metadata_path.is_file(), 'frames.csv': (folder/'frames.csv').is_file(),
+             'accepted_static.csv': (folder/'accepted_static.csv').is_file(),
              'trajectory.csv': complete_path.is_file(),
              'trajectory.checkpoint.csv': checkpoint_path.is_file(), 'result.json': result_path.is_file()}
     note = ('已完成标定，可查看结果或从原轨迹重新进行一次采集' if record_kind == 'completed' else

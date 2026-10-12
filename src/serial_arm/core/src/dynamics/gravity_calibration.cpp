@@ -215,6 +215,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
         directory_ = std::filesystem::absolute(directory);
         queue_.clear();
         frames_.clear();
+        approved_static_frames_.clear();
         status_ = {};
         status_.directory = directory_.string();
         stop_requested_.store(false);
@@ -232,6 +233,15 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
             return tl::make_unexpected(result.error());
         }
     }
+    {
+        std::ofstream accepted(directory_ / "accepted_static.csv",std::ios::trunc);
+        if(!accepted){running_.store(false);return tl::make_unexpected(std::string("failed to create accepted_static.csv"));}
+        accepted << "monotonic_ns,cycle,phase,direction,speed_tier,pose_group,validation,valid,feedback_age_ms,acceleration_source,impedance_mode";
+        for(const char* prefix:{"q","dq","tau","acc","ref_q","ref_dq","cmd_kp","cmd_kd","model_ff"})
+            for(const auto& name:metadata_.joint_names) accepted << ',' << prefix << ':' << name;
+        accepted << '\n';
+        if(!accepted){running_.store(false);return tl::make_unexpected(std::string("failed to write accepted_static.csv header"));}
+    }
     writer_ = std::thread([this]() { writer_loop(); });
     return {};
 }
@@ -247,6 +257,33 @@ void ModelCalibrationRecorder::push(ModelCalibrationFrame frame) {
     }
     queue_.push_back(std::move(frame));
     cv_.notify_one();
+}
+
+bool ModelCalibrationRecorder::approve_static_group(const std::vector<ModelCalibrationFrame>& group) {
+    if(group.size()<30)return false;
+    const auto id=group.front().pose_group;
+    if(id==0 || std::any_of(group.begin(),group.end(),[&](const auto& f){
+        return !f.valid || f.pose_group!=id || f.validation!=group.front().validation;
+    }))return false;
+    for(std::size_t i=1;i<group.size();++i)
+        if(group[i].cycle<=group[i-1].cycle || group[i].monotonic_ns<=group[i-1].monotonic_ns ||
+           group[i].monotonic_ns-group[i-1].monotonic_ns>30000000ULL)return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!running_.load() || status_.write_failed || status_.data_gap)return false;
+    if(std::any_of(approved_static_frames_.begin(),approved_static_frames_.end(),
+                   [&](const auto& f){return f.pose_group==id;}))return false;
+    std::ofstream out(directory_/"accepted_static.csv",std::ios::app);
+    if(!out){status_.write_failed=true;status_.error="accepted static file open failed";return false;}
+    for(const auto& f:group)out<<frame_line(f)<<'\n';
+    out.flush();
+    if(!out){status_.write_failed=true;status_.error="accepted static group write failed";return false;}
+    approved_static_frames_.insert(approved_static_frames_.end(),group.begin(),group.end());
+    return true;
+}
+
+std::vector<ModelCalibrationFrame> ModelCalibrationRecorder::approved_static_frames() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return approved_static_frames_;
 }
 
 void ModelCalibrationRecorder::stop() {
@@ -295,7 +332,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << ",\"joint_zero_offset\":"; json_vector(out, metadata_.mapping_joint_zero_offset);
     out << ",\"actuator_zero_offset\":"; json_vector(out, metadata_.mapping_actuator_zero_offset); out << "},\n";
     out << "  \"original_gravity_scale\":"; json_vector(out, metadata_.original_gravity_scale); out << ",\n";
-    out << "  \"measurement_policy\":{\"type\":\"capability_derived_static_hold\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"hold_kp\":";
+    out << "  \"measurement_policy\":{\"type\":\"model_initialized_response_adaptive\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"static_source\":\"accepted_static.csv\",\"gain_values_recorded_in_frames\":true,\"hold_kp\":";
     json_vector(out,metadata_.measurement_hold_kp);
     out << ",\"hold_kd\":"; json_vector(out,metadata_.measurement_hold_kd);
     out << ",\"tracking_kp\":";json_vector(out,metadata_.measurement_tracking_kp);

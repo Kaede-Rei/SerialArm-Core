@@ -281,6 +281,26 @@ tl::expected<void, RobotFault> Robot::set_full_cmd(const JointCtrlCmd& cmd, Time
 /**
  * @brief 切换阻抗模式
  */
+bool Robot::begin_calibration_hold(const JointImpedanceGains& gains) {
+    const auto n=cfg_.joint_names.size();
+    if(state_!=RobotState::ACTIVE || gains.kp.size()!=n || gains.kd.size()!=n ||
+       last_joint_cmd_.kp.size()!=n || last_joint_cmd_.kd.size()!=n)return false;
+    for(std::size_t i=0;i<n;++i){
+        if(!std::isfinite(gains.kp[i])||!std::isfinite(gains.kd[i]) ||
+           gains.kp[i]<0||gains.kd[i]<0||
+           gains.kp[i]>cfg_.safety.limits.max_kp[i] || gains.kd[i]>cfg_.safety.limits.max_kd[i])return false;
+    }
+    // Capture the ACTUAL previous control effort before changing mode.
+    // No cycle should briefly revert to the user's RIGID_HOLD Kp/Kd.
+    JointImpedanceGains origin{last_joint_cmd_.kp,last_joint_cmd_.kd};
+    const auto switched=set_impedance_mode(JointImpedanceMode::RIGID_HOLD,Clock::now());
+    if(!switched)return false;
+    calibration_hold_source_=std::move(origin);
+    calibration_hold_gains_=gains;
+    calibration_hold_started_=Clock::now();
+    return true;
+}
+
 bool Robot::set_calibration_hold_gains(const JointImpedanceGains& gains) {
     const std::size_t count = cfg_.joint_names.size();
     if(state_ != RobotState::ACTIVE || ctrller_.get_impedance_mode() != JointImpedanceMode::RIGID_HOLD ||
@@ -291,13 +311,26 @@ bool Robot::set_calibration_hold_gains(const JointImpedanceGains& gains) {
             gains.kp[i] > cfg_.safety.limits.max_kp[i] ||
             gains.kd[i] > cfg_.safety.limits.max_kd[i]) return false;
     }
+    const auto now=Clock::now();
+    JointImpedanceGains source=cfg_.ctrller.rigid_hold_gains;
+    if(calibration_hold_gains_ && calibration_hold_source_) {
+        const double elapsed=std::chrono::duration<double>(now-calibration_hold_started_).count();
+        const double x=std::clamp(elapsed/0.30,0.0,1.0);
+        const double blend=x*x*(3.0-2.0*x);
+        for(std::size_t i=0;i<count;++i){
+            source.kp[i]=calibration_hold_source_->kp[i]+blend*(calibration_hold_gains_->kp[i]-calibration_hold_source_->kp[i]);
+            source.kd[i]=calibration_hold_source_->kd[i]+blend*(calibration_hold_gains_->kd[i]-calibration_hold_source_->kd[i]);
+        }
+    }
+    calibration_hold_source_=std::move(source);
     calibration_hold_gains_ = gains;
-    calibration_hold_started_ = Clock::now();
+    calibration_hold_started_ = now;
     return true;
 }
 
 void Robot::clear_calibration_hold_gains() noexcept {
     calibration_hold_gains_.reset();
+    calibration_hold_source_.reset();
 }
 
 bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
@@ -309,12 +342,31 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
             gains.kp[i]>cfg_.safety.limits.max_kp[i] ||
             gains.kd[i]>cfg_.safety.limits.max_kd[i]) return false;
     }
+    const auto now=Clock::now();
+    // Revisions start at the CURRENT blended gains, never jump back to the
+    // user's rigid tracking gains on each automatic adjustment.
+    JointImpedanceGains source=cfg_.ctrller.rigid_tracking_gains;
+    if(calibration_tracking_gains_ && calibration_tracking_source_) {
+        const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
+        const double x=std::clamp(elapsed/0.12,0.0,1.0);
+        const double blend=x*x*(3.0-2.0*x);
+        for(std::size_t i=0;i<count;++i){
+            source.kp[i]=calibration_tracking_source_->kp[i]+blend*(calibration_tracking_gains_->kp[i]-calibration_tracking_source_->kp[i]);
+            source.kd[i]=calibration_tracking_source_->kd[i]+blend*(calibration_tracking_gains_->kd[i]-calibration_tracking_source_->kd[i]);
+        }
+    } else if(has_last_joint_cmd_ && last_joint_cmd_.kp.size()==count && last_joint_cmd_.kd.size()==count) {
+        source=JointImpedanceGains{last_joint_cmd_.kp,last_joint_cmd_.kd};
+    }
+    calibration_tracking_source_=std::move(source);
     calibration_tracking_gains_=gains;
-    calibration_tracking_started_=Clock::now();
+    calibration_tracking_started_=now;
     return true;
 }
 
-void Robot::clear_calibration_tracking_gains() noexcept {calibration_tracking_gains_.reset();}
+void Robot::clear_calibration_tracking_gains() noexcept {
+    calibration_tracking_gains_.reset();
+    calibration_tracking_source_.reset();
+}
 
 bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
     if(state_!=RobotState::ACTIVE ||
@@ -512,19 +564,21 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         const double fraction = std::clamp(elapsed / 0.30, 0.0, 1.0);
         const double smooth = fraction*fraction*(3.0-2.0*fraction);
         for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
-            joint_cmd.kp[i] += smooth*(calibration_hold_gains_->kp[i]-joint_cmd.kp[i]);
-            joint_cmd.kd[i] += smooth*(calibration_hold_gains_->kd[i]-joint_cmd.kd[i]);
+            const auto& origin=calibration_hold_source_ ? *calibration_hold_source_ : cfg_.ctrller.rigid_hold_gains;
+            joint_cmd.kp[i] = origin.kp[i]+smooth*(calibration_hold_gains_->kp[i]-origin.kp[i]);
+            joint_cmd.kd[i] = origin.kd[i]+smooth*(calibration_hold_gains_->kd[i]-origin.kd[i]);
         }
     }
 
 
     if(calibration_tracking_gains_ && ctrller_.get_impedance_mode() == JointImpedanceMode::RIGID_TRACKING) {
         const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
-        const double fraction=std::clamp(elapsed/0.25,0.0,1.0);
+        const double fraction=std::clamp(elapsed/0.12,0.0,1.0);
         const double smooth=fraction*fraction*(3.0-2.0*fraction);
+        const auto& source=calibration_tracking_source_ ? *calibration_tracking_source_ : cfg_.ctrller.rigid_tracking_gains;
         for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
-            joint_cmd.kp[i]+=smooth*(calibration_tracking_gains_->kp[i]-joint_cmd.kp[i]);
-            joint_cmd.kd[i]+=smooth*(calibration_tracking_gains_->kd[i]-joint_cmd.kd[i]);
+            joint_cmd.kp[i]=source.kp[i]+smooth*(calibration_tracking_gains_->kp[i]-source.kp[i]);
+            joint_cmd.kd[i]=source.kd[i]+smooth*(calibration_tracking_gains_->kd[i]-source.kd[i]);
         }
     }
 

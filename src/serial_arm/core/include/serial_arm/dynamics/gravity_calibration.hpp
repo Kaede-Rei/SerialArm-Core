@@ -116,6 +116,9 @@ public:
         const ModelCalibrationMetadata& metadata,
         const std::vector<JointVector>& trajectory = {});
     void push(ModelCalibrationFrame frame);
+    // A static pose is published only when its COMPLETE uninterrupted window passed.
+    bool approve_static_group(const std::vector<ModelCalibrationFrame>& group);
+    std::vector<ModelCalibrationFrame> approved_static_frames() const;
     void stop();
     ModelCalibrationRecorderStatus status() const;
     std::vector<ModelCalibrationFrame> frames() const;
@@ -134,6 +137,7 @@ private:
     std::condition_variable cv_;
     std::deque<ModelCalibrationFrame> queue_;
     std::vector<ModelCalibrationFrame> frames_;
+    std::vector<ModelCalibrationFrame> approved_static_frames_;
     std::thread writer_;
     std::atomic<bool> running_{ false };
     std::atomic<bool> stop_requested_{ false };

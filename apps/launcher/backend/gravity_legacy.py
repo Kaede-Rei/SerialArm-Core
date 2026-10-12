@@ -75,7 +75,16 @@ def _static_poses(folder, joints):
         minimum_frames = 30 if metadata.get('measurement_policy', {}).get('gain_independent_of_runtime_tuning') else 15
     except (OSError, ValueError, TypeError, AttributeError):
         minimum_frames = 15
-    with (Path(folder) / 'frames.csv').open(newline='', encoding='utf-8') as stream:
+    # New data MUST have an approved, atomic static sample archive.  Never
+    # silently fall back to raw frames, including if the accepted file is lost.
+    accepted = Path(folder) / 'accepted_static.csv'
+    new_policy = (metadata.get('measurement_policy', {}) if isinstance(metadata, dict) else {})
+    if new_policy.get('static_source') == 'accepted_static.csv' and not accepted.is_file():
+        raise ValueError('缺少本任务的已验收静态采样文件 accepted_static.csv')
+    static_source = accepted if accepted.exists() else Path(folder) / 'frames.csv'
+    if accepted.exists():
+        minimum_frames = max(minimum_frames, 30)
+    with static_source.open(newline='', encoding='utf-8') as stream:
         reader = csv.DictReader(stream)
         for row in reader:
             if row.get('phase') != 'static_reverse' or row.get('valid') != '1':
@@ -331,6 +340,7 @@ def recompute(directory, mode='global', locked_links=None):
         'core_fingerprint': metadata.get('core_fingerprint'),
         'urdf_fingerprint': metadata.get('urdf_fingerprint'),
         'frames_sha256': _digest(folder / 'frames.csv'),
+        'accepted_static_sha256': (_digest(folder / 'accepted_static.csv') if (folder / 'accepted_static.csv').exists() else None),
         'source_sha256': _digest(snapshot),
         'identification_mode': mode,
         'locked_links': locked,
@@ -396,6 +406,8 @@ def export_recomputed(directory, destination=None):
             or candidate.get('urdf_fingerprint') != metadata.get('urdf_fingerprint')
             or candidate.get('core_fingerprint') != metadata.get('core_fingerprint')
             or candidate.get('frames_sha256') != _digest(folder / 'frames.csv')
+            or candidate.get('accepted_static_sha256') != (
+                _digest(folder / 'accepted_static.csv') if (folder / 'accepted_static.csv').exists() else None)
             or candidate.get('source_sha256') != _digest(snapshot)):
         raise ValueError('离线候选与原始任务数据不匹配，请重新计算')
     masses = candidate['candidate_masses']

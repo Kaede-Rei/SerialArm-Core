@@ -322,3 +322,53 @@ class ExportSourceTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+class CommittedStaticSamplingTests(unittest.TestCase):
+    """Offline must only consume atomic approved samples from new tasks"""
+    def _write(self, target, torque, groups=5, points=46):
+        with target.open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['phase', 'valid', 'feedback_age_ms', 'pose_group', 'validation',
+                             'q:joint1', 'dq:joint1', 'tau:joint1'])
+            for group in range(1, groups + 1):
+                for k in range(points):
+                    writer.writerow(['static_reverse', 1, 1, group, int(group >= 4),
+                                     group * 0.15, 0.0, torque + group * 0.03])
+
+    def test_verified_file_wins_over_contaminated_raw_frames(self):
+        from gravity_legacy import _static_poses
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'metadata.json').write_text(json.dumps({'measurement_policy': {
+                'type': 'model_initialized_response_adaptive',
+                'static_source': 'accepted_static.csv',
+                'gain_independent_of_runtime_tuning': True}}), encoding='utf-8')
+            self._write(root / 'frames.csv', 9.0)
+            self._write(root / 'accepted_static.csv', 0.3)
+            rows = _static_poses(root, ['joint1'])
+            self.assertEqual(len(rows), 5)
+            self.assertAlmostEqual(rows[0][2][0], 0.33)
+            self.assertAlmostEqual(rows[-1][2][0], 0.45)
+            (root / 'accepted_static.csv').unlink()
+            with self.assertRaisesRegex(ValueError, 'accepted_static.csv'):
+                _static_poses(root, ['joint1'])
+
+    def test_legacy_task_without_accepted_file_remains_readable(self):
+        from gravity_legacy import _static_poses
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'metadata.json').write_text('{}', encoding='utf-8')
+            self._write(root / 'frames.csv', 0.5)
+            self.assertEqual(len(_static_poses(root, ['joint1'])), 5)
+
+    def test_incomplete_approved_group_is_not_used(self):
+        from gravity_legacy import _static_poses
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'metadata.json').write_text(json.dumps({'measurement_policy': {
+                'static_source': 'accepted_static.csv',
+                'gain_independent_of_runtime_tuning': True}}), encoding='utf-8')
+            self._write(root / 'frames.csv', 0.5)
+            self._write(root / 'accepted_static.csv', 0.5, points=10)
+            with self.assertRaisesRegex(ValueError, '静态'):
+                _static_poses(root, ['joint1'])
