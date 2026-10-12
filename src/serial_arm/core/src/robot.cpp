@@ -1,4 +1,5 @@
 #include "serial_arm/robot.hpp"
+#include "serial_arm/core/park_policy.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -194,6 +195,8 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(fault);
     }
 
+    clear_calibration_hold_gains();
+    clear_calibration_tracking_gains();
     ctrller_.reset();
     const auto initialized = ctrller_.initialize(joint_state.value());
     if(!initialized) {
@@ -278,6 +281,53 @@ tl::expected<void, RobotFault> Robot::set_full_cmd(const JointCtrlCmd& cmd, Time
 /**
  * @brief 切换阻抗模式
  */
+bool Robot::set_calibration_hold_gains(const JointImpedanceGains& gains) {
+    const std::size_t count = cfg_.joint_names.size();
+    if(state_ != RobotState::ACTIVE || ctrller_.get_impedance_mode() != JointImpedanceMode::RIGID_HOLD ||
+        gains.kp.size() != count || gains.kd.size() != count) return false;
+    for(std::size_t i = 0; i < count; ++i) {
+        if(!std::isfinite(gains.kp[i]) || !std::isfinite(gains.kd[i]) ||
+            gains.kp[i] < 0.0 || gains.kd[i] < 0.0 ||
+            gains.kp[i] > cfg_.safety.limits.max_kp[i] ||
+            gains.kd[i] > cfg_.safety.limits.max_kd[i]) return false;
+    }
+    calibration_hold_gains_ = gains;
+    calibration_hold_started_ = Clock::now();
+    return true;
+}
+
+void Robot::clear_calibration_hold_gains() noexcept {
+    calibration_hold_gains_.reset();
+}
+
+bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
+    const std::size_t count = cfg_.joint_names.size();
+    if(state_ != RobotState::ACTIVE || gains.kp.size()!=count || gains.kd.size()!=count) return false;
+    for(std::size_t i=0;i<count;++i) {
+        if(!std::isfinite(gains.kp[i]) || !std::isfinite(gains.kd[i]) ||
+            gains.kp[i]<0.0 || gains.kd[i]<0.0 ||
+            gains.kp[i]>cfg_.safety.limits.max_kp[i] ||
+            gains.kd[i]>cfg_.safety.limits.max_kd[i]) return false;
+    }
+    calibration_tracking_gains_=gains;
+    calibration_tracking_started_=Clock::now();
+    return true;
+}
+
+void Robot::clear_calibration_tracking_gains() noexcept {calibration_tracking_gains_.reset();}
+
+bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
+    if(state_!=RobotState::ACTIVE ||
+       ctrller_.get_impedance_mode()!=JointImpedanceMode::RIGID_TRACKING ||
+       !std::isfinite(duration_s) || duration_s < 0.1 || duration_s > 2.0 ||
+       now < last_cycle_time_) return false;
+    // A calibration override must not supersede the shutdown gain handover.
+    clear_calibration_tracking_gains();
+    park_rigid_ramp_started_=now;
+    park_rigid_ramp_duration_s_=duration_s;
+    return true;
+}
+
 tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode, TimePoint now) {
     if(state_ == RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
     if(state_ != RobotState::ACTIVE || !has_state_) return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
@@ -287,6 +337,8 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
 
     const auto mode_result = ctrller_.set_impedance_mode(mode, joint_state_);
     if(!mode_result) return tl::make_unexpected(make_ctrller_fault(mode_result.error()));
+    if(mode != JointImpedanceMode::RIGID_HOLD) clear_calibration_hold_gains();
+    park_rigid_ramp_started_.reset();
     interaction_controller_.reset();
 
     const auto history = safety_.reset_cmd_history(joint_state_);
@@ -453,6 +505,43 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     JointCtrlCmd joint_cmd = ctrl_output->cmd;
+    // Calibration hold gains are independent of normal user Kp/Kd.  Blend
+    // smoothly on entry, before the standard joint safety checker.
+    if(calibration_hold_gains_ && ctrller_.get_impedance_mode() == JointImpedanceMode::RIGID_HOLD) {
+        const double elapsed = std::chrono::duration<double>(now-calibration_hold_started_).count();
+        const double fraction = std::clamp(elapsed / 0.30, 0.0, 1.0);
+        const double smooth = fraction*fraction*(3.0-2.0*fraction);
+        for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
+            joint_cmd.kp[i] += smooth*(calibration_hold_gains_->kp[i]-joint_cmd.kp[i]);
+            joint_cmd.kd[i] += smooth*(calibration_hold_gains_->kd[i]-joint_cmd.kd[i]);
+        }
+    }
+
+
+    if(calibration_tracking_gains_ && ctrller_.get_impedance_mode() == JointImpedanceMode::RIGID_TRACKING) {
+        const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
+        const double fraction=std::clamp(elapsed/0.25,0.0,1.0);
+        const double smooth=fraction*fraction*(3.0-2.0*fraction);
+        for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
+            joint_cmd.kp[i]+=smooth*(calibration_tracking_gains_->kp[i]-joint_cmd.kp[i]);
+            joint_cmd.kd[i]+=smooth*(calibration_tracking_gains_->kd[i]-joint_cmd.kd[i]);
+        }
+    }
+
+    // Park is the only user of this temporary handover. The first RIGID_TRACKING
+    // command has compliant gains, then Kp/Kd increase continuously while its
+    // reference travels from actual measured q; safety limits still apply.
+    if(park_rigid_ramp_started_ &&
+       ctrller_.get_impedance_mode()==JointImpedanceMode::RIGID_TRACKING) {
+        const double elapsed=std::chrono::duration<double>(now-*park_rigid_ramp_started_).count();
+        const double fraction=park_rigid_gain_fraction(elapsed,park_rigid_ramp_duration_s_);
+        for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
+            const auto& soft=cfg_.ctrller.compliant_tracking_gains;
+            joint_cmd.kp[i]=soft.kp[i]+fraction*(joint_cmd.kp[i]-soft.kp[i]);
+            joint_cmd.kd[i]=soft.kd[i]+fraction*(joint_cmd.kd[i]-soft.kd[i]);
+        }
+        if(fraction>=1.0) park_rigid_ramp_started_.reset();
+    }
 
     const bool admittance_active = cfg_.capability.admittance.enabled &&
         !admittance_suspended_ &&
@@ -653,6 +742,9 @@ tl::expected<void, RobotFault> Robot::deactivate() {
         return tl::make_unexpected(fault);
     }
 
+    clear_calibration_hold_gains();
+    clear_calibration_tracking_gains();
+    park_rigid_ramp_started_.reset();
     ctrller_.reset();
     interaction_controller_.reset();
     safety_.clear_cmd_history();
@@ -680,6 +772,9 @@ tl::expected<void, RobotFault> Robot::force_deactivate() {
         return tl::make_unexpected(fault);
     }
 
+    clear_calibration_hold_gains();
+    clear_calibration_tracking_gains();
+    park_rigid_ramp_started_.reset();
     ctrller_.reset();
     interaction_controller_.reset();
     safety_.clear_cmd_history();
@@ -1032,6 +1127,7 @@ RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noe
  * @brief 进入 FAULT 状态并执行对应安全动作
  */
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
+    park_rigid_ramp_started_.reset();
     fault_hold_active_ = false;
     admittance_suspended_ = false;
     fault_hold_cmd_ = ActuatorCtrlCmd{};
@@ -1047,6 +1143,8 @@ void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
         disable_noexcept();
     }
 
+    clear_calibration_hold_gains();
+    clear_calibration_tracking_gains();
     ctrller_.reset();
     interaction_controller_.reset();
     safety_.clear_cmd_history();
@@ -1222,6 +1320,9 @@ bool Robot::is_compliant_recovery_fault_allowed() const noexcept {
  * @brief 清除外部命令并把参考重置为实测位置
  */
 tl::expected<void, RobotFault> Robot::reset_reference_to_measured(const JointState& state) {
+    park_rigid_ramp_started_.reset();
+    clear_calibration_hold_gains();
+    clear_calibration_tracking_gains();
     ctrller_.reset();
     interaction_controller_.reset();
     const auto initialized = ctrller_.initialize(state);
@@ -1258,6 +1359,7 @@ void Robot::disable_noexcept() noexcept {
  * @brief 清空运行时缓存状态
  */
 void Robot::clear_runtime_state() noexcept {
+    park_rigid_ramp_started_.reset();
     interaction_controller_.reset();
     admittance_suspended_ = false;
     joint_state_ = JointState{};

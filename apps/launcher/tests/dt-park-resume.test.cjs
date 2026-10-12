@@ -41,7 +41,13 @@ test('Tomato park runs timed 75 percent compliant then safely rebased rigid fini
   assert.match(terminal, /stream_\.ref_vel\.assign\(cfg_\.joint_names\.size\(\), 0\.0\)/);
   assert.match(terminal, /const double max_acc = cfg_\.safety\.limits\.max_acc\[i\]/);
   assert.match(terminal, /park timeout: fresh joint feedback unavailable/);
-  assert.match(gate, /std::abs\(measured\[i\]-target\[i\]\)>pos_bound/);
+  // Switching is gated by real motion/feedback, NOT by distance to park_pos.
+  assert.doesNotMatch(gate, /std::abs\(measured\[i\]-target\[i\]\)>pos_bound/);
+  assert.match(gate, /std::abs\(measured\_vel\[i\]\)>vel_bound/);
+  assert.match(gate, /park_rigid_gain_fraction/);
+  assert.match(terminal, /begin_park_rigid_gain_ramp\(0\.65,now\)/);
+  assert.match(terminal, /stream_\.speed_scale = cfg_\.shutdown\.speed_scale/);
+  assert.doesNotMatch(terminal, /std::min\(cfg_\.shutdown\.speed_scale, 0\.16\)/);
   assert.doesNotMatch(gate, /reference\[i\]-measured\[i\]/);
 });
 

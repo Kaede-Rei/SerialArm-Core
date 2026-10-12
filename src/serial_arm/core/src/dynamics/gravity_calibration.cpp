@@ -295,6 +295,12 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << ",\"joint_zero_offset\":"; json_vector(out, metadata_.mapping_joint_zero_offset);
     out << ",\"actuator_zero_offset\":"; json_vector(out, metadata_.mapping_actuator_zero_offset); out << "},\n";
     out << "  \"original_gravity_scale\":"; json_vector(out, metadata_.original_gravity_scale); out << ",\n";
+    out << "  \"measurement_policy\":{\"type\":\"capability_derived_static_hold\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"hold_kp\":";
+    json_vector(out,metadata_.measurement_hold_kp);
+    out << ",\"hold_kd\":"; json_vector(out,metadata_.measurement_hold_kd);
+    out << ",\"tracking_kp\":";json_vector(out,metadata_.measurement_tracking_kp);
+    out << ",\"tracking_kd\":";json_vector(out,metadata_.measurement_tracking_kd);
+    out << "},\n";
     out << "  \"calibration_options\":{\"mode\":\"" << json_escape(metadata_.identification_mode) << "\",\"locked_links\":[";
     for(std::size_t i=0;i<metadata_.locked_links.size();++i){if(i)out<<',';out<<'"'<<json_escape(metadata_.locked_links[i])<<'"';}
     out << "],\"identifiable_links\":[";
@@ -316,6 +322,13 @@ std::string ModelCalibrationRecorder::frame_line(const ModelCalibrationFrame& fr
         << frame.pose_group << ',' << (frame.validation?1:0) << ',' << (frame.valid?1:0) << ',' << frame.feedback_age_ms << ',' << frame.acceleration_source << ',' << frame.impedance_mode;
     auto append = [&](const JointVector& values) { for(double value : values) out << ',' << value; };
     append(frame.position); append(frame.velocity); append(frame.torque); append(frame.acceleration); append(frame.reference_position); append(frame.reference_velocity);
+    // Historical/synthetic frames may not have command telemetry.  Preserve
+    // the extended CSV column count for every row in the new schema.
+    auto append_optional=[&](const JointVector& values) {
+        for(std::size_t i=0;i<frame.position.size();++i)
+            out << ',' << (values.size()==frame.position.size()?values[i]:0.0);
+    };
+    append_optional(frame.command_kp); append_optional(frame.command_kd); append_optional(frame.model_feedforward);
     return out.str();
 }
 
@@ -330,7 +343,7 @@ void ModelCalibrationRecorder::writer_loop() {
         return;
     }
     out << "monotonic_ns,cycle,phase,direction,speed_tier,pose_group,validation,valid,feedback_age_ms,acceleration_source,impedance_mode";
-    for(const char* prefix : {"q","dq","tau","acc","ref_q","ref_dq"}) for(const auto& name : metadata_.joint_names) out << ',' << prefix << ':' << name;
+    for(const char* prefix : {"q","dq","tau","acc","ref_q","ref_dq","cmd_kp","cmd_kd","model_ff"}) for(const auto& name : metadata_.joint_names) out << ',' << prefix << ':' << name;
     out << '\n';
     while(true) {
         ModelCalibrationFrame frame;
@@ -433,12 +446,13 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
     std::vector<ModelCalibrationFrame> result;
     auto split=[](const std::string& text){std::vector<std::string> values;std::stringstream stream(text);std::string item;while(std::getline(stream,item,','))values.push_back(item);return values;};
     const std::size_t expected=11+6*joints_count;
+    const std::size_t extended=11+9*joints_count;
     std::size_t line_number=1;
     while(std::getline(in,line)) {
         ++line_number;
         if(line.empty()) continue;
         const auto values=split(line);
-        if(values.size()!=expected) return tl::make_unexpected("invalid frames.csv column count at line "+std::to_string(line_number));
+        if(values.size()!=expected && values.size()!=extended) return tl::make_unexpected("invalid frames.csv column count at line "+std::to_string(line_number));
         ModelCalibrationFrame frame;
         try {
             frame.monotonic_ns=static_cast<std::uint64_t>(std::stoull(values[0]));
@@ -447,14 +461,15 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
             std::size_t offset=11;
             auto read_vector=[&](JointVector& target){target.resize(joints_count);for(std::size_t i=0;i<joints_count;++i)target[i]=std::stod(values[offset++]);};
             read_vector(frame.position);read_vector(frame.velocity);read_vector(frame.torque);read_vector(frame.acceleration);read_vector(frame.reference_position);read_vector(frame.reference_velocity);
+            if(values.size()==extended){read_vector(frame.command_kp);read_vector(frame.command_kd);read_vector(frame.model_feedforward);}
         } catch(...) { return tl::make_unexpected("invalid numeric field in frames.csv at line "+std::to_string(line_number)); }
-        if(!finite_vector(frame.position)||!finite_vector(frame.velocity)||!finite_vector(frame.torque)||!finite_vector(frame.acceleration)||!finite_vector(frame.reference_position)||!finite_vector(frame.reference_velocity)||!std::isfinite(frame.feedback_age_ms)) frame.valid=false;
+        if(!finite_vector(frame.position)||!finite_vector(frame.velocity)||!finite_vector(frame.torque)||!finite_vector(frame.acceleration)||!finite_vector(frame.reference_position)||!finite_vector(frame.reference_velocity)||!std::isfinite(frame.feedback_age_ms) || (values.size()==extended && (!finite_vector(frame.command_kp)||!finite_vector(frame.command_kd)||!finite_vector(frame.model_feedforward)))) frame.valid=false;
         result.push_back(std::move(frame));
     }
     return result;
 }
 
-std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const std::vector<ModelCalibrationFrame>& frames) {
+std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const std::vector<ModelCalibrationFrame>& frames, std::size_t minimum_valid_frames) {
     std::unordered_map<std::size_t, GravityCalibrationPoseGroup> grouped;
     for(const auto& frame : frames) {
         if(frame.pose_group == 0 || frame.phase.find("static") == std::string::npos) continue;
@@ -484,7 +499,12 @@ std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const s
     }
     std::vector<GravityCalibrationPoseGroup> result;
     result.reserve(grouped.size());
-    for(auto& item : grouped) result.push_back(std::move(item.second));
+    // A brief lucky still frame must never qualify as a gravity pose.
+    // A full settled measurement normally yields about 90 cycles at 200 Hz.
+    for(auto& item : grouped) {
+        if(item.second.samples.size() < minimum_valid_frames) continue;
+        result.push_back(std::move(item.second));
+    }
     std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) { return left.pose_group < right.pose_group; });
     return result;
 }

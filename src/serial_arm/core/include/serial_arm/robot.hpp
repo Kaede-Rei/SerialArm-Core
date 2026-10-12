@@ -15,6 +15,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <optional>
 
 namespace serial_arm {
 
@@ -191,6 +192,20 @@ public:
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> set_impedance_mode(JointImpedanceMode mode, TimePoint now = Clock::now());
+    /** Temporary hold gains used only by automatic static model identification.
+     * They never modify the robot configuration or other impedance modes.
+     * The override is cleared on leaving RIGID_HOLD and on deactivation.
+     */
+    bool set_calibration_hold_gains(const JointImpedanceGains& gains);
+    void clear_calibration_hold_gains() noexcept;
+    bool set_calibration_tracking_gains(const JointImpedanceGains& gains);
+    void clear_calibration_tracking_gains() noexcept;
+    /** Shutdown-only compliant-to-rigid Kp/Kd handover. The current reference
+     * is reset to measured q by set_impedance_mode before calling this.
+     * Ordinary tracking and calibration gains are not changed.
+     */
+    bool begin_park_rigid_gain_ramp(double duration_s, TimePoint now = Clock::now());
+
     /**
      * @brief 设置模型前馈模式
      * @param mode 目标模型前馈模式
@@ -490,6 +505,12 @@ private:
     bool has_external_cmd_{ false };                ///< 跟踪模式是否收到过外部命令
     bool has_last_joint_cmd_{ false };              ///< 是否已有合法关节控制命令
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令
+    std::optional<JointImpedanceGains> calibration_hold_gains_;
+    std::optional<JointImpedanceGains> calibration_tracking_gains_;
+    std::optional<TimePoint> park_rigid_ramp_started_;
+    double park_rigid_ramp_duration_s_{0.65};
+    TimePoint calibration_tracking_started_{};
+    TimePoint calibration_hold_started_{};
     bool admittance_suspended_{ false };            ///< 运行时临时挂起导纳，不改变静态配置
     FaultHoldMode fault_hold_mode_{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 内部保持模式
     DtOverrunWatchdog dt_overrun_watchdog_;        ///< 三次连续过长周期触发 FAULT

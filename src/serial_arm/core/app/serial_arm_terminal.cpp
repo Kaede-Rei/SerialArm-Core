@@ -3,6 +3,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/dynamics/calibration_retime.hpp"
+#include "serial_arm/dynamics/calibration_measurement_quality.hpp"
 #include "serial_arm/dynamics/calibration_recovery_alignment.hpp"
 #include "serial_arm/core/park_policy.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
@@ -1515,12 +1516,18 @@ private:
         metadata.identification_mode = model_calibration_options_.identification_mode;
         metadata.locked_links = model_calibration_options_.locked_links;
         for(const auto& link : model_calibration_links_cache_) metadata.identifiable_links.push_back(link.link_name);
+        metadata.measurement_hold_kp = model_calibration_measurement_gains().kp;
+        metadata.measurement_hold_kd = model_calibration_measurement_gains().kd;
+        metadata.measurement_tracking_kp = model_calibration_replay_gains().kp;
+        metadata.measurement_tracking_kd = model_calibration_replay_gains().kd;
         metadata.max_task_duration_s = 0.0; // 0: no user-configurable task deadline
         return metadata;
     }
 
     void model_calibration_restore_runtime_hold() {
         std::lock_guard<std::mutex> lock(mutex_);
+        robot_.clear_calibration_hold_gains();
+        robot_.clear_calibration_tracking_gains();
         robot_.set_admittance_suspended(model_calibration_original_suspended_);
         last_output_.reset();
     }
@@ -1546,6 +1553,7 @@ private:
         model_calibration_friction_pass_ = false;
         model_calibration_candidate_applied_ = false;
         model_calibration_valid_static_samples_ = 0;
+        model_calibration_rejected_static_groups_ = 0;
         model_calibration_estimated_duration_s_ = 0.0;
         model_calibration_original_duration_s_ = 0.0;
         model_calibration_path_length_rad_ = 0.0;
@@ -1892,7 +1900,7 @@ private:
         if(!endpoint_choice.valid)
             throw std::runtime_error("fresh robot feedback is required before importing a replay trajectory");
         if(endpoint_choice.reverse_recorded_path)
-            std::reverse(candidate.positions.begin(), candidate.positions.end());
+            std::reverse(candidate.positions.begin(),candidate.positions.end());
         // Always retime with *current* safety limits; never trust timestamps in
         // an imported CSV as a guarantee of velocity/acceleration feasibility.
         const double recorded_duration = candidate.sample_dt * static_cast<double>(candidate.positions.size() - 1);
@@ -2178,36 +2186,118 @@ private:
         return true;
     }
 
+    // Standardized model-identification gains derive from actuator safety
+    // capability, NEVER the user's normal RIGID_HOLD/COMPLIANT_HOLD tuning.
+    JointImpedanceGains model_calibration_replay_gains() const {
+        JointImpedanceGains gain;
+        for(std::size_t i=0;i<cfg_.joint_names.size();++i) {
+            gain.kp.push_back(cfg_.safety.limits.max_kp[i]*0.65);
+            gain.kd.push_back(cfg_.safety.limits.max_kd[i]*0.55);
+        }
+        return gain;
+    }
+
+    JointImpedanceGains model_calibration_measurement_gains() const {
+        JointImpedanceGains gain;
+        for(std::size_t i=0; i<cfg_.joint_names.size(); ++i) {
+            gain.kp.push_back(cfg_.safety.limits.max_kp[i]*0.35);
+            gain.kd.push_back(cfg_.safety.limits.max_kd[i]*0.30);
+        }
+        return gain;
+    }
+
     bool model_calibration_collect_static(const ModelCalibrationPoseTarget& target, const std::string& direction) {
-        // Pose tags identify measured static frames only, never settling transients
+        using serial_arm::calibration_measurement::Observation;
+        using serial_arm::calibration_measurement::StableWindow;
         model_calibration_pose_group_.store(0);
         model_calibration_validation_.store(false);
         model_calibration_direction_.store(direction == "reverse" ? -1 : 1);
-        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD) ||
-            !wait_for_static_tuning_pose(model_calibration_options_.static_hold_s, model_calibration_options_.static_timeout_s,
-                model_calibration_options_.static_max_velocity, model_calibration_options_.static_max_acceleration)) return false;
-        model_calibration_pose_group_.store(target.pose_group);
-        model_calibration_validation_.store(target.validation);
-        struct StaticPoseTagGuard {
-            std::atomic<std::size_t>& group;
-            std::atomic<bool>& validation;
-            ~StaticPoseTagGuard() { group.store(0); validation.store(false); }
-        } tag_guard{ model_calibration_pose_group_, model_calibration_validation_ };
-        const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(model_calibration_options_.static_sample_s));
-        std::uint64_t cursor = 0;
-        { std::lock_guard<std::mutex> lock(mutex_); cursor = cycle_counter_; }
-        while(Robot::Clock::now() < deadline) {
-            if(model_calibration_cancel_.load() || !model_calibration_within_time_limit()) return false;
-            const auto phase = model_calibration_phase_.load();
-            if(!model_calibration_wait_if_paused(phase)) return false;
-            std::unique_lock<std::mutex> lock(mutex_);
-            const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() { return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE || model_calibration_cancel_.load(); });
-            if(robot_.get_state() != RobotState::ACTIVE || model_calibration_cancel_.load()) return false;
-            if(updated && cycle_counter_ > cursor && last_output_) { cursor = cycle_counter_; ++model_calibration_valid_static_samples_; }
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) return false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(!robot_.set_calibration_hold_gains(model_calibration_measurement_gains())) {
+                model_calibration_error_ = "static measurement gain override rejected by safety limits";
+                return false;
+            }
         }
-        model_calibration_pose_group_.store(0);
-        model_calibration_validation_.store(false);
-        return set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING);
+        // Restoring the tracking mode also clears the temporary gains.  All
+        // exits (including cancellation, timeout and failure) go through here.
+        auto finish = [&]() {
+            model_calibration_pose_group_.store(0);
+            model_calibration_validation_.store(false);
+            if(robot_.get_state() != RobotState::ACTIVE) return false;
+            return set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING);
+        };
+        // Check gross motion first, then check actual feedback torque and
+        // position stability.  A quiet encoder alone is not a torque sample.
+        if(!wait_for_static_tuning_pose(model_calibration_options_.static_hold_s,
+                model_calibration_options_.static_timeout_s,
+                model_calibration_options_.static_max_velocity,
+                model_calibration_options_.static_max_acceleration)) {
+            (void)finish();
+            model_calibration_error_ = "stationary pose did not settle within safe time";
+            return false;
+        }
+        StableWindow window;
+        std::size_t accepted = 0;
+        bool collecting = false;
+        std::optional<Robot::TimePoint> good_started;
+        const auto deadline = Robot::Clock::now() +
+            std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(
+                model_calibration_options_.static_timeout_s + model_calibration_options_.static_sample_s));
+        std::uint64_t cursor = 0;
+        {std::lock_guard<std::mutex> lock(mutex_); cursor = cycle_counter_;}
+        while(Robot::Clock::now() < deadline) {
+            if(model_calibration_cancel_.load() || !model_calibration_within_time_limit()) {
+                (void)finish(); return false;
+            }
+            const auto phase=model_calibration_phase_.load();
+            if(model_calibration_pause_.load()) {
+                model_calibration_pose_group_.store(0);
+                model_calibration_validation_.store(false);
+                window.clear();good_started.reset();collecting=false;accepted=0;
+            }
+            if(!model_calibration_wait_if_paused(phase)) {(void)finish();return false;}
+            std::unique_lock<std::mutex> lock(mutex_);
+            const bool updated=cycle_cv_.wait_for(lock,std::chrono::milliseconds(100), [&]{
+                return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load();
+            });
+            if(robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load()) {
+                lock.unlock();(void)finish();return false;
+            }
+            if(!updated || cycle_counter_<=cursor || !last_output_) continue;
+            cursor=cycle_counter_;
+            const auto& output=*last_output_;
+            const auto now=Robot::Clock::now();
+            window.push(Observation{std::chrono::duration<double>(now.time_since_epoch()).count(),
+                output.joint_state.pos, output.joint_state.vel, output.joint_state.tor});
+            const bool stable=window.stable(model_calibration_options_.static_max_velocity);
+            lock.unlock();
+            if(stable) {
+                if(!good_started)good_started=now;
+                // Current cycle was already recorded with the old tag by the
+                // worker.  Begin tagging from the NEXT cycle only.
+                model_calibration_pose_group_.store(target.pose_group);
+                model_calibration_validation_.store(target.validation);
+                collecting=true;
+                ++accepted;
+                ++model_calibration_valid_static_samples_;
+                if(accepted >= 18 &&
+                    std::chrono::duration<double>(now-*good_started).count()>=model_calibration_options_.static_sample_s)
+                    return finish();
+            } else {
+                model_calibration_pose_group_.store(0);
+                model_calibration_validation_.store(false);
+                good_started.reset();
+                if(collecting) accepted=0;
+                collecting=false;
+            }
+        }
+        // One low-quality stop should not force a second human demonstration.
+        // Ignore it and let the normal minimum train/holdout group checks
+        // reject the entire fit if enough independent positions were lost.
+        if(accepted < 31) ++model_calibration_rejected_static_groups_;
+        return finish();
     }
 
     bool model_calibration_static_pass(bool reverse) {
@@ -2324,6 +2414,11 @@ private:
 
     void model_calibration_worker() {
         try {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if(!robot_.set_calibration_tracking_gains(model_calibration_replay_gains()))
+                    throw std::runtime_error("calibration tracking gains were rejected by safety limits");
+            }
             // Keep the original demonstrated path and its retimed safety limits.
             // Reuse the reverse traversal for gravity holds AND friction data.
             model_calibration_set_phase(ModelCalibrationPhase::STATIC_REVERSE);
@@ -2335,7 +2430,7 @@ private:
             const auto recorder_status = model_calibration_recorder_.status();
             if(recorder_status.data_gap || recorder_status.write_failed)
                 throw std::runtime_error(recorder_status.error.empty() ? "model calibration raw data contains a recording gap" : recorder_status.error);
-            const auto groups = group_static_calibration_frames(model_calibration_recorder_.frames());
+            const auto groups = group_static_calibration_frames(model_calibration_recorder_.frames(), 30);
             GravityCalibrationOptions options;
             options.minimum_training_groups = model_calibration_options_.minimum_training_groups;
             options.regularization = model_calibration_options_.regularization;
@@ -2357,7 +2452,7 @@ private:
             // Forward at the planner-approved rate. The reverse traversal was
             // logged already, avoiding four redundant full-path traversals.
             model_calibration_set_phase(ModelCalibrationPhase::FRICTION_FORWARD_FAST);
-            if(!model_calibration_dynamic_pass(false, model_calibration_replay_rate_, 2, ModelCalibrationPhase::FRICTION_FORWARD_FAST))
+            if(!model_calibration_dynamic_pass(false,model_calibration_replay_rate_,2, ModelCalibrationPhase::FRICTION_FORWARD_FAST))
                 throw std::runtime_error(model_calibration_error_.empty() ? "forward dynamic replay failed or cancelled" : model_calibration_error_);
             if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
                 throw std::runtime_error("failed to hold after replay");
@@ -2379,8 +2474,8 @@ private:
                 // Reduced-pass data need positive observability AND held-out
                 // direction agreement; otherwise do not enable compensation.
                 const auto& r = *model_calibration_friction_result_;
-                model_calibration_friction_pass_ = r.observable.size() == cfg_.joint_names.size() &&
-                    r.validation_pass.size() == cfg_.joint_names.size() &&
+                model_calibration_friction_pass_ = r.observable.size()==cfg_.joint_names.size() &&
+                    r.validation_pass.size()==cfg_.joint_names.size() &&
                     std::all_of(r.observable.begin(), r.observable.end(), [](auto x) {return x != 0; }) &&
                     std::all_of(r.validation_pass.begin(), r.validation_pass.end(), [](auto x) {return x != 0; });
             }
@@ -2501,7 +2596,7 @@ private:
         model_calibration_fault_interrupted_.store(false); model_calibration_cancel_.store(false); model_calibration_pause_.store(false); model_calibration_resume_confirmed_.store(false);
         model_calibration_started_at_ = Robot::Clock::now();
         model_calibration_set_phase(ModelCalibrationPhase::STATIC_REVERSE);
-        model_calibration_worker_ = std::thread([this]() {model_calibration_worker(); });
+        model_calibration_worker_=std::thread([this]() {model_calibration_worker(); });
     }
 
     void machine_model_calibration_pause(const YAML::Node& params) {
@@ -2596,7 +2691,7 @@ private:
     std::string machine_model_calibration_status_json() const {
         std::ostringstream out; const auto recorder = model_calibration_recorder_.status();
         std::lock_guard<std::mutex> lock(model_calibration_mutex_);
-        out << std::setprecision(17) << "{\"task_id\":\"" << machine_json_escape(model_calibration_task_id_) << "\",\"phase\":\"" << to_string(model_calibration_phase_.load()) << "\",\"progress\":" << model_calibration_progress_ << ",\"completed\":" << model_calibration_completed_units_ << ",\"total\":" << model_calibration_total_units_ << ",\"valid_static_samples\":" << model_calibration_valid_static_samples_ << ",\"directory\":\"" << machine_json_escape(model_calibration_directory_) << "\",\"candidate_applied\":" << (model_calibration_candidate_applied_ ? "true" : "false") << ",\"resume_confirmation_required\":" << (model_calibration_resume_requires_confirmation_ ? "true" : "false") << ",\"core_fingerprint\":\"" << machine_json_escape(model_calibration_core_fingerprint_) << "\",\"urdf_fingerprint\":\"" << machine_json_escape(model_calibration_urdf_fingerprint_) << "\",\"joint_names\":[";
+        out << std::setprecision(17) << "{\"task_id\":\"" << machine_json_escape(model_calibration_task_id_) << "\",\"phase\":\"" << to_string(model_calibration_phase_.load()) << "\",\"progress\":" << model_calibration_progress_ << ",\"completed\":" << model_calibration_completed_units_ << ",\"total\":" << model_calibration_total_units_ << ",\"valid_static_samples\":" << model_calibration_valid_static_samples_ << ",\"rejected_static_groups\":" << model_calibration_rejected_static_groups_ << ",\"directory\":\"" << machine_json_escape(model_calibration_directory_) << "\",\"candidate_applied\":" << (model_calibration_candidate_applied_ ? "true" : "false") << ",\"resume_confirmation_required\":" << (model_calibration_resume_requires_confirmation_ ? "true" : "false") << ",\"core_fingerprint\":\"" << machine_json_escape(model_calibration_core_fingerprint_) << "\",\"urdf_fingerprint\":\"" << machine_json_escape(model_calibration_urdf_fingerprint_) << "\",\"joint_names\":[";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) { if(i)out << ','; out << '\"' << machine_json_escape(cfg_.joint_names[i]) << '\"'; }
         out << "],\"original_gravity_scale\":"; machine_json_joint_vector(out, model_calibration_original_gravity_scale_);
         out << ",\"recorder\":{\"accepted\":" << recorder.accepted_frames << ",\"written\":" << recorder.written_frames << ",\"dropped\":" << recorder.dropped_frames << ",\"data_gap\":" << (recorder.data_gap ? "true" : "false") << ",\"write_failed\":" << (recorder.write_failed ? "true" : "false") << "}";
@@ -3071,6 +3166,9 @@ private:
         frame.acceleration = output.joint_acc;
         frame.reference_position = output.joint_cmd.pos;
         frame.reference_velocity = output.joint_cmd.vel;
+        frame.command_kp = output.joint_cmd.kp;
+        frame.command_kd = output.joint_cmd.kd;
+        frame.model_feedforward = output.model_feedforward;
         frame.acceleration_source = "robot_joint_acc_filter";
         frame.impedance_mode = to_string(robot_.get_impedance_mode());
         frame.feedback_age_ms = 0.0;
@@ -3413,6 +3511,10 @@ private:
             return;
         }
 
+        // Stop an unfinished calibration from leaking temporary tracking gains
+        // into a normal shutdown. Robot's ordinary configured gains stay intact.
+        robot_.clear_calibration_hold_gains();
+        robot_.clear_calibration_tracking_gains();
         // 停放使用低刚度 COMPLIANT_TRACKING 降低碰撞风险，同时暂停导纳避免 park reference 被外力偏移
         robot_.set_admittance_suspended(true);
         const auto resume_admittance = [this]() {
@@ -3486,16 +3588,19 @@ private:
                 }
             }
 
-            // 75% compliant travel + 25% rigid finishing, measured from
-            // shutdown start. Only gross motion/position hazards may delay
-            // switching; benign soft-reference lag must not block the switch.
+            // The nominal 75/25 division is temporal. Decelerate the compliant
+            // reference shortly before the transition, so measured velocity can
+            // pass the handover gate without requiring proximity to park_pos.
             const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
+            const double soft_end_s=cfg_.shutdown.timeout_s*cfg_.shutdown.compliant_phase_ratio;
+            if(!rigid_finish_mode && elapsed_s>=std::max(0.0,soft_end_s-0.35))
+                stream_.speed_scale=0.0;
             if(!rigid_finish_mode && serial_arm::park_time_to_rigid(
                 elapsed_s, cfg_.shutdown.timeout_s, cfg_.shutdown.compliant_phase_ratio) &&
                 serial_arm::park_safe_for_timed_rigid(
                     last_output_->joint_state.pos, last_output_->joint_state.vel,
-                    cfg_.shutdown.park_pos, cfg_.shutdown.position_tolerance,
-                    cfg_.shutdown.velocity_tolerance, cfg_.shutdown.relaxed_tolerance_ratio)) {
+                    cfg_.shutdown.park_pos, cfg_.shutdown.velocity_tolerance,
+                    cfg_.shutdown.relaxed_tolerance_ratio)) {
                 // Robot::set_impedance_mode resets its command history to actual
                 // feedback, then the park streamer starts from this same state.
                 // High rigidity never inherits the compliant reference backlog.
@@ -3509,14 +3614,26 @@ private:
                     resume_admittance();
                     return;
                 }
+                // The command starts at measured q, NOT at the old compliant
+                // reference, and the gains are blended over 0.65 s instead of
+                // jumping directly from Gray compliant Kp to rigid Kp.
+                if(!robot_.begin_park_rigid_gain_ramp(0.65,now)) {
+                    clear_command_sources();
+                    (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD,now);
+                    park_last_error_="park failed: cannot initialize smooth rigid handover; robot remains enabled in RIGID_HOLD";
+                    resume_admittance();
+                    return;
+                }
                 stream_.ref_pos = actual_pos;
                 stream_.ref_vel.assign(cfg_.joint_names.size(), 0.0);
                 stream_.last_update_time = now;
                 stream_.completion_reported = false;
-                stream_.speed_scale = std::min(cfg_.shutdown.speed_scale, 0.16);
+                // Keep the configured safe speed limit during final approach.
+                // The old 0.16 clamp made a 2.5 s rigid phase unnecessarily slow.
+                stream_.speed_scale = cfg_.shutdown.speed_scale;
                 rigid_finish_mode = true;
                 settled_at.reset();
-                std::cout << "[停放] 柔性阶段结束，切换低速刚性精调\n";
+                std::cout << "[停放] 柔性阶段结束，实测位置续接并渐进增加刚度\n";
             }
 
             const bool reached = max_position_error <= cfg_.shutdown.position_tolerance &&
@@ -3545,7 +3662,7 @@ private:
                     << "s; stage=" << (rigid_finish_mode ? "rigid_final" : "compliant_approach")
                     << ". Robot remains enabled in RIGID_HOLD; no automatic disable. "
                     << (rigid_finish_mode ? "Rigid finishing did not settle in time." :
-                        "Timed rigid switch was delayed by the gross position/velocity safety gate.");
+                        "Timed rigid switch was delayed because joint motion was still too fast or feedback invalid; target distance is not a switching gate.");
                 park_last_error_ = detail.str();
                 std::cout << "停放流程超时，最终严格就位判据仍未满足，已切换 RIGID_HOLD 并取消失能\n";
                 std::cout << "最差位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，严格允许="
@@ -5555,6 +5672,7 @@ private:
     std::atomic<bool> model_calibration_pause_{ false };
     std::atomic<bool> model_calibration_resume_confirmed_{ false };
     std::atomic<std::size_t> model_calibration_pose_group_{ 0 };
+    std::atomic<std::size_t> model_calibration_rejected_static_groups_{ 0 };
     std::atomic<bool> model_calibration_validation_{ false };
     std::atomic<int> model_calibration_direction_{ 0 };
     std::atomic<int> model_calibration_speed_tier_{ 0 };

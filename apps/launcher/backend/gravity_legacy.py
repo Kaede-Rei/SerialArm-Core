@@ -68,6 +68,13 @@ def _static_poses(folder, joints):
     """Read recorded stationary poses, keeping validation groups independent"""
     import numpy as np
     groups = defaultdict(list)
+    # Existing task archives keep their historic minimum.  New tasks use
+    # metadata to opt into the stronger multi-cycle stability requirements.
+    try:
+        metadata = json.loads((Path(folder) / 'metadata.json').read_text(encoding='utf-8'))
+        minimum_frames = 30 if metadata.get('measurement_policy', {}).get('gain_independent_of_runtime_tuning') else 15
+    except (OSError, ValueError, TypeError, AttributeError):
+        minimum_frames = 15
     with (Path(folder) / 'frames.csv').open(newline='', encoding='utf-8') as stream:
         reader = csv.DictReader(stream)
         for row in reader:
@@ -90,7 +97,7 @@ def _static_poses(folder, joints):
                 continue
     rows = []
     for (group, validation), samples in groups.items():
-        if len(samples) < 15:
+        if len(samples) < minimum_frames:
             continue
         # End-of-hold frames suppress any transient before the pose settles
         stable = samples[-min(60, len(samples)):]

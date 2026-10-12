@@ -31,6 +31,10 @@ struct ModelCalibrationFrame {
     JointVector acceleration;
     JointVector reference_position;
     JointVector reference_velocity;
+    // Observed controller commands; logged for gain-dependence diagnosis.
+    JointVector command_kp;
+    JointVector command_kd;
+    JointVector model_feedforward;
     std::string acceleration_source;
     std::string impedance_mode;
     double feedback_age_ms{ 0.0 };
@@ -59,6 +63,10 @@ struct ModelCalibrationMetadata {
     std::string locked_joint_reference{ "pinocchio_neutral" };
     std::array<double, 3> gravity{ 0.0, 0.0, -9.81 };
     JointVector original_gravity_scale;
+    JointVector measurement_hold_kp;
+    JointVector measurement_hold_kd;
+    JointVector measurement_tracking_kp;
+    JointVector measurement_tracking_kd;
     JointVector mapping_pos_ratio;
     JointVector mapping_tor_ratio;
     std::vector<int> mapping_direction;
@@ -218,7 +226,8 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
  * @brief 从原始控制周期帧按 pose_group 构造静态数据组
  */
 std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(
-    const std::vector<ModelCalibrationFrame>& frames);
+    const std::vector<ModelCalibrationFrame>& frames,
+    std::size_t minimum_valid_frames = 15);
 
 /**
  * @brief 从任务目录重载控制周期原始帧
