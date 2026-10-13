@@ -45,7 +45,7 @@ const paths = { workbench: '<path d="M4 5h16v14H4zM8 9h8M8 13h5M6 3v4M18 3v4"/>'
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'auto', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: {teaching:[],gain:[],gravity:[],dynamics:[]}, calibrationToolSelected: {teaching:null,gain:null,gravity:null,dynamics:null}, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -69,6 +69,9 @@ function calibrationTaskPhaseText(value) {
     const text = labels[value] || [value || '—', value || '—'];
     return state.language === 'en' ? text[1] : text[0];
 }
+function localizedError(raw) {
+    return window.serialArmErrorI18n?.translate(raw, state.language) ?? String(raw ?? '');
+}
 const priorityErrorQueue = [];
 let priorityErrorOpen = false;
 let activePriorityError = null;
@@ -91,9 +94,10 @@ function paintPriorityError() {
     const calibrationOverlay = $('model-calibration-overlay');
     if (calibrationOverlay) { calibrationOverlay.hidden = true; calibrationOverlay.setAttribute('aria-hidden', 'true'); }
     $('priority-error-title').textContent = entry.kind === 'fault' ? busyText('机械臂安全故障', 'Robot safety fault') : t('error');
-    $('priority-error-detail').textContent = entry.message;
+    $('priority-error-detail').textContent = typeof localizedError === 'function' ? localizedError(entry.message) : entry.message;
+    const raw = $('priority-error-raw'); if (raw) raw.textContent = entry.message;
     $('priority-error-guidance').textContent = entry.kind === 'fault'
-        ? busyText('机器人已进入 FAULT请先检查故障原因和机械臂状态，再在控制工作台手动清除故障关闭此提示不会清除故障或恢复运动',
+        ? busyText('机器人进入故障状态 请先确认供电及机械臂安全，再使用“清除故障”或重新使能 关闭提示不会自动恢复运动 ',
             'The robot is in FAULT. Inspect its state and cause before manually clearing the fault. Dismissing does not recover motion.')
         : busyText('该任务可能未成功完成关闭提示仅确认已阅读，不会自动重试或恢复机械臂',
             'This operation may have failed. Dismissing does not retry or recover the robot.');
@@ -139,18 +143,20 @@ function toast(message, error = false) {
 }
 function describeRuntimeFault(snapshot) {
     const f = snapshot?.fault || {};
-    const name = f.joint_name || (Number.isInteger(f.joint_index) ? `joint ${f.joint_index}` : '');
-    const isCycleDeadline = f.safety_code === 'INVALID_DT';
-    const value = Number.isFinite(f.value) ? (isCycleDeadline ? `, actual=${(Number(f.value) * 1000).toFixed(2)} ms` : `, value=${Number(f.value).toFixed(4)}`) : '';
-    const limit = Number.isFinite(f.limit) ? (isCycleDeadline ? `, maximum=${(Number(f.limit) * 1000).toFixed(2)} ms` : `, limit=${Number(f.limit).toFixed(4)}`) : '';
-    const suffix = ['JOINT_VEL_LIMIT', 'CMD_VEL_LIMIT'].includes(f.safety_code) ? ' rad/s' : '';
+    const code = f.code || snapshot?.last_fault || 'FAULT';
+    const reason = [code, f.motor_bus_error, f.safety_code].filter(Boolean).join(' / ');
+    const name = f.joint_name || (Number.isInteger(f.joint_index) ? `joint${f.joint_index + 1}` : '');
+    const isDt = f.safety_code === 'INVALID_DT';
+    const value = Number.isFinite(f.value) ? `${isDt ? (f.value * 1000).toFixed(2) : Number(f.value).toFixed(4)}` : null;
+    const limit = Number.isFinite(f.limit) ? `${isDt ? (f.limit * 1000).toFixed(2) : Number(f.limit).toFixed(4)}` : null;
+    const unit = isDt ? ' ms' : ['JOINT_VEL_LIMIT', 'CMD_VEL_LIMIT'].includes(f.safety_code) ? ' rad/s' : '';
     const effective = snapshot?.safety_limits || {};
-    const i = Number.isInteger(f.joint_index) ? f.joint_index : (snapshot?.joint_names || []).indexOf(name);
-    const cmd = Number(effective.max_cmd_vel?.[i]);
-    const measured = Number(effective.max_state_vel?.[i]);
-    const bounds = Number.isFinite(cmd) && Number.isFinite(measured) && i >= 0
-        ? `\n${busyText('实际生效命令/状态速度上限', 'Effective command/state velocity limits')}: ${cmd.toFixed(4)} / ${measured.toFixed(4)} rad/s` : '';
-    return `${f.code || snapshot?.last_fault || 'FAULT'}${f.safety_code ? ' / ' + f.safety_code : ''}${name ? ' / ' + name : ''}${value}${limit}${suffix}${bounds}`;
+    const jointIndex = Number.isInteger(f.joint_index) ? f.joint_index : (snapshot?.joint_names || []).indexOf(name);
+    const cmdLimit = Number(effective.max_cmd_vel?.[jointIndex]);
+    const stateLimit = Number(effective.max_state_vel?.[jointIndex]);
+    const effectiveBounds = jointIndex >= 0 && Number.isFinite(cmdLimit) && Number.isFinite(stateLimit)
+        ? `\n${state.language === 'en' ? 'Effective command/state velocity limits' : '实际生效命令/状态速度上限'}：${cmdLimit.toFixed(4)} / ${stateLimit.toFixed(4)} rad/s` : '';
+    return [reason, name, value === null ? '' : `value=${value}${unit}`, limit === null ? '' : `limit=${limit}${unit}`, effectiveBounds].filter(Boolean).join(' / ');
 }
 function checkRuntimeAlerts(snapshot) {
     if (snapshot?.robot_state === 'FAULT') {
@@ -202,7 +208,7 @@ function shell() {
     const quickTheme = onboarding ? '' : `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${icon('robot')}SerialArm Launcher</div><div class="title-center">${onboarding ? 'SerialArm' : esc(state.config.profile || t('workspace'))}</div><div class="title-actions"><button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button>${quickTheme}<button id="win-min" class="title-button" aria-label="Minimize">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="Maximize">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="Close">${icon('close')}</button></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div class="priority-error-kicker">SAFETY / ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><p id="priority-error-guidance"></p><div class="actions"><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div class="priority-error-kicker">SAFETY / ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
     if (onboarding) {
         $('app').innerHTML = `<div class="shell onboarding-shell">${titlebar}<div class="onboarding-body"><main class="onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div></div>${overlays}`;
     } else {
@@ -228,6 +234,7 @@ function shell() {
     if ($('model-calibration-task-disable')) $('model-calibration-task-disable').onclick = () => modelCalibrationQuick('deactivate');
     mountTerminal(); render();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
+    if ($('confirm-dialog')) $('confirm-dialog').addEventListener('close', refreshCalibrationAfterDialog);
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
     if (activePriorityError) paintPriorityError();
 }
@@ -287,7 +294,7 @@ function readinessStateText(value) {
 }
 function statusUI() {
     const ready = state.status.installed;
-    const sidebar = $('sidebar-runtime'); if (sidebar) sidebar.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>${t(ready ? 'connected' : 'notInstalled')}<small>${esc(state.info?.profile || state.config.profile || '—')}</small><small>${state.backendError ? esc(state.backendError) : 'ROS2 ' + esc(state.status.ros_distro || '—')}</small>`;
+    const sidebar = $('sidebar-runtime'); if (sidebar) sidebar.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>${t(ready ? 'connected' : 'notInstalled')}<small>${esc(state.info?.profile || state.config.profile || '—')}</small><small>${state.backendError ? esc(localizedError(state.backendError)) : 'ROS2 ' + esc(state.status.ros_distro || '—')}</small>`;
     const env = $('env-pill'); if (env) env.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>Core ${t(ready ? 'ready' : 'unavailable')}`;
     const session = $('session-pill'); if (session) session.innerHTML = `<span class="dot ${active() ? 'ready' : ''}"></span>${t(state.session.state || 'idle')}`;
     const breadcrumb = $('breadcrumb'); if (breadcrumb) breadcrumb.textContent = t('workspace') + ' / ' + (words[state.page] ? t(state.page) : state.page);
@@ -441,7 +448,7 @@ async function alignHistoricalCalibrationPreview(record = state.modelCalibration
 
 function modelCalibrationPhaseText(phase) {
     const labels = {
-        idle: ['未启动', 'Idle'], teaching: ['拖动示教中', 'Teaching'], waiting_replay_confirmation: ['等待松手与回放确认', 'Waiting for replay confirmation'],
+        idle: ['未启动', 'Idle'], teaching: ['拖动示教中', 'Teaching'], waiting_replay_confirmation: ['等待松手与回放确认', 'Waiting for replay confirmation'], gain_adaptation: ['自动整定与验证跟踪增益', 'Adapting and validating tracking gains'],
         recorded_only: ['已录制轨迹 · 未标定', 'Recorded · Not calibrated'],
         static_reverse: ['反向回放 · 重力姿态及动力学数据', 'Reverse replay · gravity and dynamic data'], static_forward: ['正向静态停留采样', 'Forward static sampling'], gravity_fitting: ['拟合候选重力模型', 'Fitting gravity candidate'],
         friction_reverse_slow: ['低速反向摩擦采集', 'Slow reverse friction sampling'], friction_forward_slow: ['低速正向摩擦采集', 'Slow forward friction sampling'], friction_reverse_fast: ['高速反向摩擦采集', 'Fast reverse friction sampling'], friction_forward_fast: ['正向回放 · 动力学采集', 'Forward dynamic sampling'],
@@ -450,7 +457,7 @@ function modelCalibrationPhaseText(phase) {
     const value = labels[phase] || [phase || '—', phase || '—']; return state.language === 'en' ? value[1] : value[0];
 }
 function modelCalibrationActive(status = state.telemetry?.model_calibration) { return !!status && !['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(status.phase); }
-function modelCalibrationLongRunning(status = state.telemetry?.model_calibration) { return !!status && ['teaching', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting', 'paused'].includes(status.phase); }
+function modelCalibrationLongRunning(status = state.telemetry?.model_calibration) { return !!status && ['teaching', 'gain_adaptation', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting', 'paused'].includes(status.phase); }
 function modelCalibrationMetricTable(status) {
     const result = status?.gravity_result; if (!result) return '';
     const offline = state.modelCalibrationCandidateSource === 'offline';
@@ -537,7 +544,7 @@ function modelCalibrationPanelHtml() {
         }
         actions.push(`<button id="model-calibration-replay-confirm" class="button danger" ${status.source_task_id && !alignment.aligned ? 'disabled' : ''}>${t('modelCalibrationConfirmReplay')}</button>`);
     }
-    if (live && ['static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(phase)) actions.push(`<button id="model-calibration-pause" class="button">${t('pauseTask')}</button>`);
+    if (live && ['gain_adaptation', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(phase)) actions.push(`<button id="model-calibration-pause" class="button">${t('pauseTask')}</button>`);
     if (live && phase === 'paused') actions.push(`<button id="model-calibration-resume" class="button primary">${t('resumeTask')}</button>`);
     if (live && (taskActive || phase === 'waiting_replay_confirmation')) actions.push(`<button id="model-calibration-cancel" class="button danger">${t('cancelTask')}</button>`);
     if (!live && state.modelCalibrationOffline?.can_resume) {
@@ -546,19 +553,22 @@ function modelCalibrationPanelHtml() {
     }
     if (live && result?.static_pass) actions.push(`<button id="model-calibration-apply" class="button primary" ${robotInactive && !taskActive ? '' : 'disabled'}>${t('applyCandidate')}</button>`);
     if (live && status.candidate_applied) actions.push(`<button id="model-calibration-restore" class="button" ${robotInactive && !taskActive ? '' : 'disabled'}>${t('restoreCandidate')}</button>`);
-    const estimate = Number(status.estimated_duration_s || 0);
     const singlePass = Number(status.single_pass_duration_s || 0);
+    const gainPreview = state.calibrationEntry === 'gain';
+    const estimate = gainPreview && singlePass > 0
+        ? 2 * singlePass * (1 / 0.80 + 1 / 1.0) + 2
+        : Number(status.estimated_duration_s || 0);
     const groups = Array.isArray(status.pose_targets) ? status.pose_targets.length : 0;
     const teaching = Number(status.teaching_wall_duration_s || 0);
-    const totalEstimate = Number(status.estimated_total_duration_s || teaching + estimate);
+    const totalEstimate = gainPreview ? teaching + estimate : Number(status.estimated_total_duration_s || teaching + estimate);
     const recorded = Number(status.recorded_duration_s || 0);
     const planningReady = live && phase === 'waiting_replay_confirmation' && status.planner_id === 'local_hermite' && status.calibration_strategy === 'two_pass_combined' && Number.isFinite(estimate) && estimate > 0 && singlePass > 0;
     const replayHint = planningReady ? `<div class="callout"><b>${state.language === 'en' ? 'Online capture time estimate' : '已选示教轨迹 · 在线采集耗时预估'}</b>
       <div>${state.language === 'en' ? 'Demonstration' : '自由示教'} ${teaching.toFixed(1)} s · ${state.language === 'en' ? 'Recorded track' : '原始轨迹'} ${recorded.toFixed(1)} s · ${state.language === 'en' ? 'Retimed one-way pass' : '优化后单程'} ${singlePass.toFixed(1)} s</div>
       <div>${state.language === 'en' ? 'Parking now cancels the pending automatic replay; saved task records remain on disk.' : '此时选择停放会结束待确认的自动回放，已记录的任务数据仍保存在磁盘中'}</div>
       <div>${state.language === 'en' ? 'Trajectory path' : '轨迹路径长度'} ${Number(status.joint_path_length_rad || 0).toFixed(2)} rad · ${state.language === 'en' ? 'Reduced waypoints' : '几何关键点'} ${Number(status.geometric_waypoints || 0)} / ${Number(status.original_samples || 0)} · ${state.language === 'en' ? 'Planner' : '规划器'} local_hermite</div>
-      <div>${state.language === 'en' ? 'Approx.' : '简式'}：T总 ≈ ${teaching.toFixed(1)} + 2 × ${singlePass.toFixed(1)} + 1.5 × ${groups} + 2 = <b>${totalEstimate.toFixed(1)} s</b> (${state.language === 'en' ? 'automatic phase' : '自动阶段'} ${estimate.toFixed(1)} s)</div>
-      <div>${totalEstimate <= 200 ? (state.language === 'en' ? 'Within the 200 s target (estimate only).' : '预计符合 200 s 目标，实际耗时取决于停稳、控制反馈与拟合') : (state.language === 'en' ? 'Over the 200 s target. You may still run; joint safety limits will not be raised.' : '预计超过 200 s 目标：可继续，但不会为了赶时间放宽关节安全限制')} ${state.language === 'en' ? 'Offline full inertial export is not included in this estimate.' : '注意：这不包含后续离线完整惯量候选计算与验证'} ${t('releaseSafetyHint')}</div></div>` : (phase === 'teaching' ? `<div class="callout">${state.language === 'en' ? 'Teaching is not time-limited.' : '示教时间不设上限，结束示教后根据轨迹运动量和关节安全限制计算自动回放时间'}</div>` : (phase === 'waiting_replay_confirmation' ? `<div class="callout error-callout">${state.language === 'en' ? 'Native Core is outdated; reinstall before automatic playback.' : '正在运行的 C++ Core 未加载新的轨迹规划器，请重新安装编译后再自动回放'}</div>` : ''));
+      <div>${gainPreview ? (state.language === 'en' ? 'Gain calibration: 80% speed round trip + full-speed validation round trip (4 traversals max)' : '增益标定：80% 速度往返＋全速验证往返（最多 4 次单程）') : (state.language === 'en' ? 'Gravity correction: reverse + forward measurement passes and static holds' : '重力校正：正反向正式采集及静态停留')} ≈ <b>${totalEstimate.toFixed(1)} s</b> (${state.language === 'en' ? 'automatic stage' : '自动阶段'} ${estimate.toFixed(1)} s)</div>
+      <div>${gainPreview ? (state.language === 'en' ? 'Estimation excludes extra feedback settling; unsuccessful candidates remain saved but cannot be applied.' : '这是不含跟踪等待的计划估算；未通过验收的增益候选会保存，但不能直接应用') : (state.language === 'en' ? 'Actual settling and fitting may take longer; offline full inertial fitting is not included.' : '实际停稳与拟合可能更久，且不包含后续离线惯量计算')} ${t('releaseSafetyHint')}</div></div>` : (phase === 'teaching' ? `<div class="callout">${state.language === 'en' ? 'Teaching is not time-limited.' : '示教时间不设上限，结束示教后根据轨迹运动量和关节安全限制计算自动回放时间'}</div>` : (phase === 'waiting_replay_confirmation' ? `<div class="callout error-callout">${state.language === 'en' ? 'Native Core is outdated; reinstall before automatic playback.' : '正在运行的 C++ Core 未加载新的轨迹规划器，请重新安装编译后再自动回放'}</div>` : ''));
     const resumeSafetyHint = live && status.source_task_id ? `<div class="callout"><b>${state.language === 'en' ? 'Imported demonstration' : '已恢复历史轨迹'}：${esc(status.source_task_id)}</b>
       <div>${status.original_start_selected ? (state.language === 'en' ? 'Current pose was closer to original FIRST pose: imported path was reversed. The same recorded path is replayed, without an extra move.' : '当前位置更接近原示教起点：已自动选择从这一端开始，沿原示教路径采集，无须额外归位') : (state.language === 'en' ? 'Current pose was closer to original LAST pose: standard reverse/forward collection.' : '当前位置更接近原示教终点：采用原反向／正向采集流程')}</div>
       <div>${state.language === 'en' ? 'Target joint angles (rad)' : '回放起点关节角（rad）'}：${esc((status.replay_start_joint_positions || []).map(x => Number(x).toFixed(3)).join('，'))}</div>
@@ -576,12 +586,12 @@ function modelCalibrationPanelHtml() {
     const resultBasis = state.modelCalibrationCandidateSource === 'offline'
         ? (state.language === 'en' ? 'Offline refined URDF · global: mass + first moments; local: legacy fit with selected links preserved · not applied automatically' : '离线精修 URDF · 全局：质量与一阶质量矩联合求解；局部：旧版回归并保护所选 Link · 不自动应用')
         : (state.language === 'en' ? 'Online quick preview · fixed mass, first moments only · current runtime calibration; not interchangeable with offline' : '在线快速预览 · 固定质量，仅辨识一阶质量矩 · 可供当前运行时应用，与离线结果不等价');
-    const resultBlock = result?.first_moments?.length && ['complete', 'failed'].includes(phase) ? `<div class="callout"><b>${state.language === 'en' ? 'Candidate meaning' : '当前候选含义'}</b><div>${resultBasis}</div><div>${state.language === 'en' ? 'Passed/failed refers only to this solver and its evaluation poses; no whole-workspace or real-hardware certification' : '通过或未通过只对应当前算法及其留出姿态，不能作为跨工作空间或真机验收结论'}</div></div><div class="candidate-compare-head"><h4>${t('candidateComparison')}</h4><span>${t('candidateScope')}</span></div>${(!result.static_pass || result.review_warnings?.length) ? `<div class="callout"><b>${state.language === 'en' ? 'Needs human review' : '需要人工审核'}</b> · ${esc(result.failure_reason || 'holdout result not approved')} · ${state.language === 'en' ? 'Export requires valid mass and COM for every included Link; no automatic application' : '存在异常参数时禁止导出，不会自动应用到真机'}</div>` : ''}${result.identification_mode === 'local' ? `<div class="callout">${state.language === 'en' ? 'Local fit' : '局部辨识'} · ${state.language === 'en' ? 'Locked' : '锁定'} ${esc((result.locked_links || []).join(', ') || '—')} · ${state.language === 'en' ? 'Fitted' : '允许校正'} ${esc((result.fitted_links || []).join(', ') || '—')}</div>` : ''}${status.friction_status === 'requires_refit_or_review' ? `<div class="callout">${state.language === 'en' ? 'Friction result belongs to a different gravity candidate; do not reuse it' : '摩擦参数属于原来的重力候选，当前离线重算结果尚未重新匹配摩擦模型，不可直接复用'}</div>` : ''}${modelCalibrationMetricTable(status)}${modelCalibrationCandidateTable(status)}<div class="workspace-actions">${result.static_pass && state.modelCalibrationCandidateSource !== 'offline' ? `<button id="model-calibration-preview-save" class="button">${t('previewSave')}</button>${state.modelCalibrationSavePreview ? `<button id="model-calibration-save" class="button primary">${t('saveCandidate')}</button>` : ''}` : ''}<span class="gravity-export-hint">${state.modelCalibrationCandidateSource === 'offline' ? (state.language === 'en' ? 'Offline candidate mass and COM, computed from saved data; source inertia-at-COM remains unchanged; review holdout separately' : '离线重算的质量与质心候选，质量和质心可同时变化；惯性张量保留原值，须独立评估留出表现') : (state.language === 'en' ? 'Original masses and inertia tensors are retained; only fitted COM values are updated' : '保留原始质量和惯性张量，仅更新辨识质心')}</span><button id="model-calibration-export" class="button">${state.language === 'en' ? 'Export gravity-corrected URDF' : '导出重力校正 URDF'}</button><button id="model-calibration-export-friction" class="button">${state.language === 'en' ? 'Export friction YAML' : '导出摩擦参数 YAML'}</button>${state.modelCalibrationSaved ? `<button id="model-calibration-restore-config" class="button">${t('restoreSavedConfig')}</button>` : ''}</div>${state.modelCalibrationSavePreview ? `<div class="diff-box"><b>${esc(state.modelCalibrationSavePreview.path)}</b>${(state.modelCalibrationSavePreview.changes || []).map(x => `<div><del>${esc(x.before)}</del><ins>${esc(x.after)}</ins></div>`).join('') || `<p>${t('noChanges')}</p>`}</div>` : ''}${state.modelCalibrationFrictionExport ? `<div class="callout"><b>${state.language === 'en' ? 'Friction candidate · review only' : '摩擦候选 · 仅供审核'}</b><div class="path-chip">${esc(state.modelCalibrationFrictionExport.path || '')}</div><div>${state.modelCalibrationFrictionExport.matches_current_candidate ? (state.language === 'en' ? 'Gravity source matches' : '重力来源一致') : (state.language === 'en' ? 'Gravity model has changed; friction fit needs revalidation' : '重力候选已变化，原摩擦结果需要重新验证')}</div></div>` : ''}${state.modelCalibrationExport ? `<div class="callout"><b>${t('exportCandidate')}</b><div class="path-chip">${esc(state.modelCalibrationExport.candidate_urdf || '')}</div>${state.modelCalibrationExport.verification_warning ? `<div class="callout">${esc(state.modelCalibrationExport.verification_warning)}</div>` : ''}${state.modelCalibrationExport.verification ? `<div>gravity RMS ${Number(state.modelCalibrationExport.verification.gravity_rms_nm || 0).toExponential(3)} Nm · FK Δp ${Number(state.modelCalibrationExport.verification.fk_max_position_error_m || 0).toExponential(3)} m</div>` : ''}</div>` : ''}` : '';
-    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div><div class="model-calibration-identification"><b>${state.language === 'en' ? 'Gravity identification' : '重力模型辨识范围'}</b><div class="mode-buttons"><button id="model-cal-mode-global" type="button" class="button ${options.mode !== 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Global' : '全局辨识'}</button><button id="model-cal-mode-local" type="button" class="button ${options.mode === 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Local' : '局部辨识'}</button>${options.mode === 'local' ? `<button id="model-cal-lock-select" type="button" class="button" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Trusted links' : '选择可信 Link'}</button><span>${state.language === 'en' ? 'Locked' : '已锁定'} ${(options.locked_links || []).length}</span>` : ''}</div><p class="hint">${options.mode === 'local' ? (state.language === 'en' ? 'Local scope locks trusted links; online estimates first moments while offline uses the legacy fit on unlocked links' : '局部范围锁定可信 Link；在线仅修正一阶质量矩，离线按旧版回归修正未锁定 Link') : (state.language === 'en' ? 'Global selects all controlled links; online fixes mass, offline fits mass + first moments' : '全局选择全部受控 Link；在线固定质量，离线联合估计质量与一阶质量矩')}${!calibrationSelectableLinks().length ? (state.language === 'en' ? ' · No link list yet: load the model or a calibration record' : ' · 尚未取得 Link 清单，请加载模型或历史任务') : ''}</p></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button><button id="model-calibration-scan-records" class="button">${state.language === 'en' ? 'Scan saved tasks' : '扫描已有任务'}</button>${state.modelCalibrationOffline ? `<button id="model-calibration-refresh-record" class="button">${state.language === 'en' ? 'Refresh record' : '重新检查记录'}</button>` : ''}${directory && (!state.modelCalibrationOffline || state.modelCalibrationOffline.has_result) ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.error ? `<div class="callout error-callout">${esc(status.error)}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${modelCalibrationModelBinding().historical ? `<div class="callout"><b>${state.language === 'en' ? 'Historical model preview · read only' : '历史模型对照 · 仅预览'}</b><div>${state.language === 'en' ? 'Only inertial parameters differ, geometry and joints match, this does not validate the updated dynamics or authorize replay or application' : '已核对只有惯量参数改变，几何与关节保持一致，历史 RMS 不代表当前模型的预测精度，此预览不授权回放或参数应用'}</div><div>${state.language === 'en' ? 'Changed links' : '变化的 Link'} ${esc(modelCalibrationModelBinding().alignment.changed_links.join(', '))}</div>${(modelCalibrationModelBinding().alignment.warnings || []).map(w => `<div class="workspace-error">${esc(w)}</div>`).join('')}</div>` : ''}${replayHint}${resumeSafetyHint}${offlineHint}${recordInventory}${resultBlock}${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
+    const resultBlock = result?.first_moments?.length && ['complete', 'failed'].includes(phase) ? `<div class="callout"><b>${state.language === 'en' ? 'Candidate meaning' : '当前候选含义'}</b><div>${resultBasis}</div><div>${state.language === 'en' ? 'Passed/failed refers only to this solver and its evaluation poses; no whole-workspace or real-hardware certification' : '通过或未通过只对应当前算法及其留出姿态，不能作为跨工作空间或真机验收结论'}</div></div><div class="candidate-compare-head"><h4>${t('candidateComparison')}</h4><span>${t('candidateScope')}</span></div>${(!result.static_pass || result.review_warnings?.length) ? `<div class="callout"><b>${state.language === 'en' ? 'Needs human review' : '需要人工审核'}</b> · ${esc(result.failure_reason || 'holdout result not approved')} · ${state.language === 'en' ? 'Export requires valid mass and COM for every included Link; no automatic application' : '存在异常参数时禁止导出，不会自动应用到真机'}</div>` : ''}${result.identification_mode === 'local' ? `<div class="callout">${state.language === 'en' ? 'Local fit' : '局部辨识'} · ${state.language === 'en' ? 'Locked' : '锁定'} ${esc((result.locked_links || []).join(', ') || '—')} · ${state.language === 'en' ? 'Fitted' : '允许校正'} ${esc((result.fitted_links || []).join(', ') || '—')}</div>` : ''}${status.friction_status === 'requires_refit_or_review' ? `<div class="callout">${state.language === 'en' ? 'Friction result belongs to a different gravity candidate; do not reuse it' : '摩擦参数属于原来的重力候选，当前离线重算结果尚未重新匹配摩擦模型，不可直接复用'}</div>` : ''}${modelCalibrationMetricTable(status)}${modelCalibrationCandidateTable(status)}<div class="workspace-actions">${result.static_pass && state.modelCalibrationCandidateSource !== 'offline' ? `<button id="model-calibration-preview-save" class="button">${t('previewSave')}</button>${state.modelCalibrationSavePreview ? `<button id="model-calibration-save" class="button primary">${t('saveCandidate')}</button>` : ''}` : ''}<span class="gravity-export-hint">${state.modelCalibrationCandidateSource === 'offline' ? (state.language === 'en' ? 'Offline candidate mass and COM, computed from saved data; source inertia-at-COM remains unchanged; review holdout separately' : '离线重算的质量与质心候选，质量和质心可同时变化；惯性张量保留原值，须独立评估留出表现') : (state.language === 'en' ? 'Original masses and inertia tensors are retained; only fitted COM values are updated' : '保留原始质量和惯性张量，仅更新辨识质心')}</span><button id="model-calibration-export" class="button">${state.language === 'en' ? 'Export gravity and friction result' : '导出重力与摩擦成果'}</button><button id="model-calibration-export-friction" class="button">${state.language === 'en' ? 'Export friction YAML' : '导出摩擦参数 YAML'}</button>${state.modelCalibrationSaved ? `<button id="model-calibration-restore-config" class="button">${t('restoreSavedConfig')}</button>` : ''}</div>${state.modelCalibrationSavePreview ? `<div class="diff-box"><b>${esc(state.modelCalibrationSavePreview.path)}</b>${(state.modelCalibrationSavePreview.changes || []).map(x => `<div><del>${esc(x.before)}</del><ins>${esc(x.after)}</ins></div>`).join('') || `<p>${t('noChanges')}</p>`}</div>` : ''}${state.modelCalibrationFrictionExport ? `<div class="callout"><b>${state.language === 'en' ? 'Friction candidate · review only' : '摩擦候选 · 仅供审核'}</b><div class="path-chip">${esc(state.modelCalibrationFrictionExport.path || '')}</div><div>${state.modelCalibrationFrictionExport.matches_current_candidate ? (state.language === 'en' ? 'Gravity source matches' : '重力来源一致') : (state.language === 'en' ? 'Gravity model has changed; friction fit needs revalidation' : '重力候选已变化，原摩擦结果需要重新验证')}</div></div>` : ''}${state.modelCalibrationExport ? `<div class="callout"><b>${t('exportCandidate')}</b><div class="path-chip">${esc(state.modelCalibrationExport.path || state.modelCalibrationExport.candidate_urdf || '')}</div>${state.modelCalibrationExport.verification_warning ? `<div class="callout">${esc(state.modelCalibrationExport.verification_warning)}</div>` : ''}${state.modelCalibrationExport.verification ? `<div>gravity RMS ${Number(state.modelCalibrationExport.verification.gravity_rms_nm || 0).toExponential(3)} Nm · FK Δp ${Number(state.modelCalibrationExport.verification.fk_max_position_error_m || 0).toExponential(3)} m</div>` : ''}</div>` : ''}` : '';
+    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div>${calibrationTaskGuidance('gravity')}<div class="model-calibration-identification"><b>${state.language === 'en' ? 'Gravity identification' : '重力模型辨识范围'}</b><div class="mode-buttons"><button id="model-cal-mode-global" type="button" class="button ${options.mode !== 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Global' : '全局辨识'}</button><button id="model-cal-mode-local" type="button" class="button ${options.mode === 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Local' : '局部辨识'}</button>${options.mode === 'local' ? `<button id="model-cal-lock-select" type="button" class="button" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Trusted links' : '选择可信 Link'}</button><span>${state.language === 'en' ? 'Locked' : '已锁定'} ${(options.locked_links || []).length}</span>` : ''}</div><p class="hint">${options.mode === 'local' ? (state.language === 'en' ? 'Local scope locks trusted links; online estimates first moments while offline uses the legacy fit on unlocked links' : '局部范围锁定可信 Link；在线仅修正一阶质量矩，离线按旧版回归修正未锁定 Link') : (state.language === 'en' ? 'Global selects all controlled links; online fixes mass, offline fits mass + first moments' : '全局选择全部受控 Link；在线固定质量，离线联合估计质量与一阶质量矩')}${!calibrationSelectableLinks().length ? (state.language === 'en' ? ' · No link list yet: load the model or a calibration record' : ' · 尚未取得 Link 清单，请加载模型或历史任务') : ''}</p></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button><button id="model-calibration-scan-records" class="button">${state.language === 'en' ? 'Scan saved tasks' : '扫描已有任务'}</button>${state.modelCalibrationOffline ? `<button id="model-calibration-refresh-record" class="button">${state.language === 'en' ? 'Refresh record' : '重新检查记录'}</button>` : ''}${directory && (!state.modelCalibrationOffline || state.modelCalibrationOffline.has_result) ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.error ? `<div class="callout error-callout">${esc(localizedError(status.error))}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${modelCalibrationModelBinding().historical ? `<div class="callout"><b>${state.language === 'en' ? 'Historical model preview · read only' : '历史模型对照 · 仅预览'}</b><div>${state.language === 'en' ? 'Only inertial parameters differ, geometry and joints match, this does not validate the updated dynamics or authorize replay or application' : '已核对只有惯量参数改变，几何与关节保持一致，历史 RMS 不代表当前模型的预测精度，此预览不授权回放或参数应用'}</div><div>${state.language === 'en' ? 'Changed links' : '变化的 Link'} ${esc(modelCalibrationModelBinding().alignment.changed_links.join(', '))}</div>${(modelCalibrationModelBinding().alignment.warnings || []).map(w => `<div class="workspace-error">${esc(w)}</div>`).join('')}</div>` : ''}${replayHint}${resumeSafetyHint}${offlineHint}${recordInventory}${resultBlock}${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
 }
 function singleCalibrationToolsHtml() {
     const c = state.telemetry?.calibration || { kind: 'none', phase: 'idle', captured: 0, expected: 0 }; const progress = c.expected ? `${c.captured}/${c.expected}` : '';
-    return `<details class="workspace-section single-calibration-tools"><summary>${t('singleCalibrationTools')}</summary><div class="single-calibration-tools-body"><section><h4>${t('staticCalibration')}</h4><p>${t('staticCalibrationDesc')}</p><div class="workspace-actions"><button data-calibration-begin="static" class="button">${t('start')}</button><button id="calibration-capture" class="button">${t('capturePose')}</button><button id="calibration-finish" class="button">${t('finishFit')}</button></div></section><section><h4>${t('staticValidation')}</h4><button data-calibration-begin="validation" class="button">${t('startValidation')}</button></section><section><h4>${t('frictionCalibration')}</h4><div class="workspace-actions"><button id="friction-record-start" class="button">${t('startRecording')}</button><button id="friction-record-stop" class="button">${t('stopRecording')}</button><button id="friction-replay" class="button danger">${t('startReplay')}</button></div></section><dl class="kv compact"><dt>${t('taskType')}</dt><dd id="cal-task-kind">${esc(calibrationTaskKindText(c.kind))}</dd><dt>${t('taskPhase')}</dt><dd id="cal-task-phase">${esc(calibrationTaskPhaseText(c.phase))}</dd><dt>${t('progressLabel')}</dt><dd id="cal-task-progress">${esc(progress || '—')}</dd><dt>${t('trajectorySamples')}</dt><dd id="cal-task-trajectory">${esc(c.trajectory_samples ?? '—')}</dd><dt>${t('errorLabel')}</dt><dd id="cal-task-error" class="workspace-error">${esc(c.error || '—')}</dd></dl><div class="workspace-actions"><button id="calibration-cancel" class="button danger">${t('cancelTask')}</button><button id="export-session" class="button">${t('exportData')}</button></div></div></details>`;
+    return `<details class="workspace-section single-calibration-tools"><summary>${t('singleCalibrationTools')}</summary><div class="single-calibration-tools-body"><section><h4>${t('staticCalibration')}</h4><p>${t('staticCalibrationDesc')}</p><div class="workspace-actions"><button data-calibration-begin="static" class="button">${t('start')}</button><button id="calibration-capture" class="button">${t('capturePose')}</button><button id="calibration-finish" class="button">${t('finishFit')}</button></div></section><section><h4>${t('staticValidation')}</h4><button data-calibration-begin="validation" class="button">${t('startValidation')}</button></section><section><h4>${t('frictionCalibration')}</h4><div class="workspace-actions"><button id="friction-record-start" class="button">${t('startRecording')}</button><button id="friction-record-stop" class="button">${t('stopRecording')}</button><button id="friction-replay" class="button danger">${t('startReplay')}</button></div></section><dl class="kv compact"><dt>${t('taskType')}</dt><dd id="cal-task-kind">${esc(calibrationTaskKindText(c.kind))}</dd><dt>${t('taskPhase')}</dt><dd id="cal-task-phase">${esc(calibrationTaskPhaseText(c.phase))}</dd><dt>${t('progressLabel')}</dt><dd id="cal-task-progress">${esc(progress || '—')}</dd><dt>${t('trajectorySamples')}</dt><dd id="cal-task-trajectory">${esc(c.trajectory_samples ?? '—')}</dd><dt>${t('errorLabel')}</dt><dd id="cal-task-error" class="workspace-error">${esc(c.error ? localizedError(c.error) : '—')}</dd></dl><div class="workspace-actions"><button id="calibration-cancel" class="button danger">${t('cancelTask')}</button><button id="export-session" class="button">${t('exportData')}</button></div></div></details>`;
 }
 function advancedIdentificationPanelHtml() {
     const en = state.language === 'en';
@@ -597,7 +607,7 @@ function advancedIdentificationPanelHtml() {
     const assessment = state.advancedAssessment?.directory === dir ? state.advancedAssessment : null;
     const result = state.advancedReport?.task_id === status.task_id ? state.advancedReport : null;
     const dynamic = ['inertia','full'].includes(state.advancedTarget);
-    const missing = !dir || !['complete'].includes(status.phase) || !state.modelCalibrationOffline?.has_result;
+    const missing = !dir || !state.modelCalibrationOffline?.metadata;
     const disable = missing || workbenchConnected() || !assessment || (dynamic && !assessment.dynamic_precheck) || (!dynamic && !assessment.gravity_ready) || (calibrationSelectableLinks().length > 0 && state.advancedLocked.length >= calibrationSelectableLinks().length);
     const limits = en ? 'Offline-only candidate, no motor action or automatic application. Rank, physical consistency and validation are checked separately' : '仅离线分析，不发送电机指令或自动应用参数，分别核验回归秩、物理一致性和留出误差';
     const available = calibrationSelectableLinks();
@@ -605,18 +615,26 @@ function advancedIdentificationPanelHtml() {
     const lockList = available.map(link => `<label class="calibration-advanced-link"><input type="checkbox" data-advanced-locked="${esc(link.name)}" aria-label="${en ? 'Keep original parameters for ' : '保留原始参数 ' }${esc(link.name)}" ${locks.has(link.name)?'checked':''}><span>${esc(link.name)}</span></label>`).join('');
     return `<section class="workspace-section calibration-advanced-card">
       <div class="workspace-section-head"><div><h3>${en?'Advanced dynamics identification':'高级动力学辨识'}</h3><p class="hint">${en?'Continue from saved data, identify only missing parameters':'复用现有数据 · 仅补充未完成的参数辨识'}</p></div><span class="result-badge neutral">${en?'Offline only':'离线专用'}</span></div>
-      <div class="workspace-actions"><button id="advanced-load-record" class="button">${t('loadRecord')}</button><button id="advanced-assess-record" class="button" ${dir?'':'disabled'}>${en?'Assess saved data':'分析已有数据'}</button><span class="hint">${esc(status.task_id|| (en?'No record selected':'尚未选择任务'))}</span></div>
-      ${assessment ? `<div class="calibration-capability-grid"><div>${en?'Static pose groups':'静态姿态组'}<b>${assessment.training_groups} / ${assessment.holdout_groups}</b><small>${en?'Train / holdout':'训练 / 留出'}</small></div><div>${en?'Dynamic samples':'有效动态帧'}<b>${assessment.valid_dynamic_samples}</b><small>${assessment.dynamic_precheck ? (en?'Precheck ready':'初步具备动态数据') : (en?'Insufficient paired replay':'双向激励可能不足')}</small></div></div>` : `<p class="hint">${en?'Select a completed task and assess the data before solving':'选择已完成的标定任务并先分析信息量，再选择辨识目标'}</p>`}
+      ${calibrationTaskGuidance('dynamics')}
+      <div class="calibration-workflow-steps">
+        <div class="calibration-workflow-step ${missing ? 'current' : 'complete'}"><span>1</span>${en?'Load saved task':'加载任务'}</div>
+        <div class="calibration-workflow-step ${!missing && !assessment ? 'current' : assessment ? 'complete' : ''}"><span>2</span>${en?'Assess data':'评估数据'}</div>
+        <div class="calibration-workflow-step ${assessment && !result ? 'current' : result ? 'complete' : ''}"><span>3</span>${en?'Set target and identify':'选择目标并辨识'}</div>
+        <div class="calibration-workflow-step ${result ? 'current' : ''}"><span>4</span>${en?'Review and export':'审核并导出'}</div>
+      </div>
+      <div class="workspace-actions"><button id="advanced-temp-restore-unconditional" class="button" ${!state.calibrationRuntimeCandidates?.dynamics_applied ? 'hidden' : ''} ${state.calibrationRuntimeCandidates?.dynamics_applied && workbenchConnected() && state.telemetry?.robot_state==='INACTIVE' ? '':'disabled'}>${en?'Undo temporary dynamics':'撤销临时动力学模型'}</button><button id="advanced-load-record" class="button">${t('loadRecord')}</button><button id="advanced-assess-record" class="button" ${!missing?'':'disabled'}>${en?'Assess saved data':'分析已有数据'}</button><span class="hint">${esc(status.task_id|| (en?'No record selected':'尚未选择任务'))}</span></div>
+      ${assessment ? `<div class="calibration-capability-grid"><div>${en?'Static pose groups':'静态姿态组'}<b>${assessment.training_groups} / ${assessment.holdout_groups}</b><small>${en?'Train / holdout':'训练 / 留出'}</small></div><div>${en?'Dynamic samples':'有效动态帧'}<b>${assessment.valid_dynamic_samples}</b><small>${assessment.dynamic_precheck ? (en?'Precheck ready':'初步具备动态数据') : (en?'Insufficient paired replay':'双向激励可能不足')}</small></div></div>` : `<div class="calibration-muted-note">${en?'Load a completed task to evaluate static poses and bidirectional dynamic samples':'先加载已完成任务，检查静态姿态组和动态激励数据是否足够'}</div>`}
       <label class="calibration-advanced-target-label">${en?'Identification target':'辨识目标'}<select id="advanced-target">${options.map(([id,name])=>`<option value="${id}" ${state.advancedTarget===id?'selected':''}>${name}</option>`).join('')}</select></label>
+      <div class="calibration-muted-note">${dynamic ? (en ? 'Requires bidirectional dynamic excitation, sufficient velocity and acceleration samples, and an independent holdout check' : '需要双向动态激励及足够的速度、加速度样本，辨识后还必须检查物理一致性与留出误差') : (en ? 'Uses gravity information from static pose groups; dynamic excitation is not required for this target' : '使用静态姿态组中的重力信息，不要求动态激励数据')}</div>
       <details class="calibration-locks"><summary>${en?'Lock trusted links':'锁定可信 Link'} · ${state.advancedLocked.length}</summary><div class="calibration-advanced-links">${lockList|| (en?'Load URDF / record first':'请先加载 URDF 或标定任务')}</div></details>
       <p class="hint">${en ? (state.advancedLocked.length ? 'Locked links will keep their original inertial data' : 'No locked links: all sampled links are eligible for fitting') : (state.advancedLocked.length ? '已锁定 Link 保留原始惯性参数' : '未锁定 Link，当前将尝试全局辨识')}</p><div class="callout">${limits}</div>
-      <div class="workspace-actions"><button class="button primary" id="advanced-run" ${disable?'disabled':''}>${en?'Fit offline candidate for review':'离线辨识并生成审核候选'}</button>${workbenchConnected()?`<span class="hint">${en?'Park and disconnect the workspace first':'请先安全停放并断开工作台，再执行耗时离线计算'}</span>`:missing?`<span class="hint">${en?'Requires a saved completed task':'需要已完成并带结果的历史标定记录'}</span>`:''}</div>
-      ${result ? `<div class="callout"><b>${en?'Identification result':'高级辨识结果'} · ${esc(result.identification_mode)}</b><div><span class="result-badge ${result.status==='review_passed_offline'?'pass':'warn'}">${result.status==='review_passed_offline'?(en?'Passed offline review':'离线审核通过'):(en?'Needs review':'需要审核')}</span> ${en?'Rank':'数值秩'} ${Number(result.regressor_rank)}/${Number(result.regressor_columns)}</div><div>${en?'Holdout RMS':'留出 RMS'} ${Number(result.original_holdout_rms_nm).toFixed(4)} → ${Number(result.candidate_holdout_rms_nm).toFixed(4)} Nm</div><div class="path-chip">${esc(result.candidate_urdf||'')}</div>${(result.warnings||[]).map(w=>`<div>${esc(w)}</div>`).join('')}<div>${en?'Validation scope':'评价范围'} ${esc(result.validation_scope === 'static_gravity' ? (en?'Static gravity only':'仅静态重力') : (en?'Dynamic inertial model':'动态惯量'))}</div><div>${en?'Physical inertia check':'惯量物理一致性'} ${result.full_dynamics_physical_pass ? (en?'Passed':'通过') : (en?'Failed; do not apply':'未通过，不可应用')}</div><div>${en?'No automatic application or hardware validation':'未自动应用，也不代表已完成真机验证'}</div></div>`:''}
+      <div class="calibration-advanced-next">${result?(en?'Candidate generated: review validation results, then export or reconnect to apply':'候选已生成，请先审核验证指标并导出成果，如需临时应用再连接工作台'):missing?(en?'Next: load a completed task':'下一步：加载已完成任务'):!assessment?(en?'Next: assess data':'下一步：分析已有数据'):workbenchConnected()?(en?'Next: safely disconnect to run offline':'下一步：安全停放并断开工作台，再离线辨识'):disable?(dynamic&&!assessment.dynamic_precheck?(en?'Dynamic data precheck did not pass. Select a static target or collect more data':'动态数据预检查未通过，请改选静态目标或重新采集双向激励数据'):!dynamic&&!assessment.gravity_ready?(en?'Static data is insufficient':'静态数据不足，需重新采集'):en?'Check trusted links and available targets':'请检查可信 Link 选择和可辨识范围'):(en?'Ready: review target and start offline identification':'数据具备初步条件，可确认目标并开始离线辨识')}</div><div class="workspace-actions"><button class="button primary" id="advanced-run" ${disable?'disabled':''}>${en?'Fit offline candidate for review':'离线辨识并生成审核候选'}</button>${workbenchConnected()?`<span class="hint">${en?'Park and disconnect the workspace first':'请先安全停放并断开工作台，再执行耗时离线计算'}</span>`:missing?`<span class="hint">${en?'Requires a saved completed task':'需要加载具有合法来源信息的历史任务记录'}</span>`:''}</div>
+      ${result ? `<div class="callout"><b>${en?'Identification result':'高级辨识结果'} · ${esc(result.identification_mode)}</b><div><span class="result-badge ${result.status==='review_passed_offline'?'pass':'warn'}">${result.status==='review_passed_offline'?(en?'Passed offline review':'离线审核通过'):(en?'Needs review':'需要审核')}</span> ${en?'Rank':'数值秩'} ${Number(result.regressor_rank)}/${Number(result.regressor_columns)}</div><div>${en?'Holdout RMS':'留出 RMS'} ${Number(result.original_holdout_rms_nm).toFixed(4)} → ${Number(result.candidate_holdout_rms_nm).toFixed(4)} Nm</div><div class="path-chip">${esc(result.candidate_urdf||'')}</div>${(result.warnings||[]).map(w=>`<div>${esc(w)}</div>`).join('')}<div>${en?'Validation scope':'评价范围'} ${esc(result.validation_scope === 'static_gravity' ? (en?'Static gravity only':'仅静态重力') : (en?'Dynamic inertial model':'动态惯量'))}</div><div>${en?'Physical inertia check':'惯量物理一致性'} ${result.full_dynamics_physical_pass ? (en?'Passed':'通过') : (en?'Failed; do not apply':'未通过，不可应用')}</div><div>${en?'No automatic application or hardware validation':'未自动应用，也不代表已完成真机验证'}</div><div class="workspace-actions"><button id="advanced-temp-apply" class="button" ${result.status==='review_passed_offline'&&result.validation_scope==='dynamic_inertia'&&result.full_dynamics_physical_pass&&workbenchConnected()&&state.telemetry?.robot_state==='INACTIVE'?'':'disabled'}>${en?'Temporarily apply candidate (INACTIVE)':'临时应用惯量候选（需 INACTIVE）'}</button><button id="advanced-temp-restore" class="button" ${state.calibrationRuntimeCandidates?.dynamics_applied&&workbenchConnected()&&state.telemetry?.robot_state==='INACTIVE'?'':'disabled'}>${en?'Restore original model':'撤销并恢复原模型'}</button></div></div>`:''}
     </section>`;
 }
 async function assessLoadedCalibrationRecord(record) {
     // The CSV scan never competes with a running robot's control IPC
-    if (!record?.has_result || !record.directory || workbenchConnected()) return;
+    if (!record?.directory || workbenchConnected()) return;
     try {
         const report = await api.request('model_calibration_assess', {directory: record.directory});
         if (state.modelCalibrationOffline?.directory !== record.directory) return;
@@ -625,7 +643,7 @@ async function assessLoadedCalibrationRecord(record) {
         if (state.page === 'workbench' && state.workbenchTab === 'calibration') render();
     } catch (error) {
         if (state.modelCalibrationOffline?.directory !== record.directory) return;
-        state.advancedProgress = String(error.message || error);
+        state.advancedProgress = localizedError(String(error.message || error));
         if (state.page === 'workbench' && state.workbenchTab === 'calibration') render();
     }
 }
@@ -642,10 +660,240 @@ function calibrationUnifiedResultsHtml() {
     ];
     return `<section class="workspace-section calibration-results-card"><h3>${en?'Calibration records and candidates':'标定记录与候选结果'}</h3><div class="calibration-result-stages">${stages.map(([name,tone,label])=>`<div><b>${name}</b><span class="result-badge ${tone}">${label}</span></div>`).join('')}</div><p class="hint">${en?'Pass / review / insufficient data / not run are separate statuses. Candidates never overwrite the live model without explicit approval':'已通过、需要审核、信息不足和未执行分别记录 · 离线候选不会自动替换运行中的模型'}</p>${assessment?`<p class="hint">${en?'Data precheck':'数据质量预评估'} · ${assessment.training_groups} / ${assessment.holdout_groups} ${en?'static poses':'静态姿态'} · ${assessment.valid_dynamic_samples} ${en?'potential dynamic frames':'动态候选帧'} · ${en?'excitation observability not yet validated':'惯量可辨识性仍需正式计算'}</p>`:''}${state.advancedProgress?`<p class="workspace-error">${esc(state.advancedProgress)}</p>`:''}${record.directory?`<div class="task-directory">${esc(record.directory)}</div>`:''}</section>`;
 }
+const calibrationToolDefinitions = [
+    ['teaching','拖拽示教','Teaching','轨迹采集与复用','Record and reuse trajectories'],
+    ['gain','自适应增益标定','Adaptive gains','刚性、柔性和辨识控制候选','Rigid, compliant and identification controllers'],
+    ['gravity','重力模型校正','Gravity correction','全局 / 局部 · 静态采样验证','Global / local gravity'],
+    ['dynamics','高级动力学辨识','Advanced dynamics','惯性参数与离线验证','Inertial identification'],
+];
+function calibrationToolHistoryHtml(kind) {
+    const selected=state.calibrationToolSelected[kind];
+    const records=state.calibrationToolRecords[kind]||[];
+    const recent=state.telemetry?.model_calibration || {};
+    const canExport=!!selected || (kind==='dynamics' && !!state.advancedReport?.candidate_urdf) ||
+      (kind==='gravity' && !!state.modelCalibrationOffline?.result?.gravity_result) ||
+      ((kind==='teaching'||kind==='gain'||kind==='gravity') && recent.workflow_kind===kind && !!recent.directory);
+    const en=state.language==='en';
+    return `<section class="workspace-section calibration-tool-history">
+      <div class="workspace-section-head"><div><h3>${en?'Task records':'任务记录'}</h3><p class="hint">${en?'Records can be reused across tools; no automatic robot movement':'四个工具共享来源数据，加载记录不会导致机械臂运动'}</p></div></div>
+      <div class="workspace-actions"><button class="button" data-tool-scan="${kind}">${en?'Scan saved tasks':'扫描已有任务'}</button><button class="button" data-tool-load="${kind}">${en?'Load task folder':'加载任务记录'}</button><button class="button primary" data-tool-export="${kind}" ${canExport?'':'disabled'}>${en?'Export calibration result':'导出标定成果'}</button></div>
+      ${selected?`<div class="callout"><b>${esc(selected.task_id||'')}</b><div>${esc(selected.directory)}</div><div>${esc(selected.note||'')}</div></div>`:''}
+      ${records.length?`<div class="calibration-tool-list">${records.map((r,i)=>`<button class="button calibration-tool-record" data-tool-select="${kind}" data-tool-index="${i}"><b>${esc(r.task_id||'')}</b><small>${esc(r.record_kind||'')} · ${esc(r.trajectory?.samples??0)} ${en?'frames':'帧'}</small></button>`).join('')}</div>`: `<p class="hint">${en?'Scan to view saved data for this tool':'点击“扫描已有任务”显示本工具可用的记录'}</p>`}
+    </section>`;
+}
+async function selectCalibrationToolRecord(kind,selection) {
+    if(!selection?.directory)throw new Error('请选择有效任务');
+    state.calibrationToolSelected[kind]=selection;
+    if(kind==='gravity'||kind==='dynamics') {
+        const record=await api.request('model_calibration_load',{directory:selection.directory});
+        state.modelCalibrationOffline=record;
+        state.modelCalibrationDirectory=record.directory;
+        state.advancedReport=null;
+        state.advancedAssessment=null;
+        state.advancedLocked=advancedTrustedLinks(record);
+        if(kind==='dynamics' && selection.dynamic_candidates?.length) {
+            const item=selection.dynamic_candidates[0];
+            // Loaded candidate remains explicitly review-only until Core
+            // checks its physical report, model hash and robot lifecycle.
+            state.advancedReport={...item,task_id:record.task_id};
+        }
+    }
+    render();
+}
+// Read the completed candidate automatically; task records never change motor state
+function syncCompletedGainCandidate(calibration = state.telemetry?.model_calibration) {
+    if (!workbenchConnected() || calibration?.workflow_kind !== 'gain' ||
+        calibration?.phase !== 'complete' || !calibration.directory) return;
+    const directory = calibration.directory;
+    if (state.calibrationToolSelected.gain?.directory === directory ||
+        state.gainCandidateLoadPending === directory || state.gainCandidateLoadAttempted === directory) return;
+    state.gainCandidateLoadPending = directory;
+    api.request('calibration_tool_load', {kind: 'gain', directory}).then(record => {
+        if (state.telemetry?.model_calibration?.directory !== directory) return;
+        state.calibrationToolSelected.gain = record;
+        state.gainCandidateLoadError = '';
+        if (state.page === 'workbench' && state.workbenchTab === 'calibration' && state.calibrationEntry === 'gain') refreshCalibrationOrDefer();
+    }).catch(error => {
+        state.gainCandidateLoadError = error.message || String(error);
+        if (state.page === 'workbench' && state.workbenchTab === 'calibration' && state.calibrationEntry === 'gain') refreshCalibrationOrDefer();
+    }).finally(() => {
+        state.gainCandidateLoadPending = '';
+        state.gainCandidateLoadAttempted = directory;
+    });
+}
+async function temporaryCandidateAction(action,kind) {
+    return blockingOperation(busyText('正在安全切换临时参数...', 'Switching candidate safely...'),async()=>{
+        if(!workbenchConnected())throw new Error('请先连接工作台');
+        if(state.telemetry?.robot_state!=='INACTIVE')throw new Error('临时应用与撤销需要先安全停放机械臂（INACTIVE）');
+        const directory=state.calibrationToolSelected[kind]?.directory||state.modelCalibrationDirectory;
+        if(action==='apply'&&!directory)throw new Error('请选择候选任务');
+        const report=kind==='dynamics' ? (state.advancedReport?.candidate_urdf ? `${state.advancedReport.candidate_urdf.replace(/\/[^/]+$/, '')}/identification-report.json` : '') : '';
+        if(action==='apply'&&kind==='dynamics'&&!report)throw new Error('请先运行高级惯量辨识并获得离线审核通过的候选');
+        state.calibrationRuntimeCandidates=await api.request('calibration_candidate_'+action,{kind,directory,report});
+        render();
+    });
+}
+function calibrationStandalonePanelHtml(kind) {
+    const en=state.language==='en';
+    const status=currentModelCalibration()||{};
+    const phase=status.phase||'idle';
+    const live=workbenchConnected() && !state.modelCalibrationOffline;
+    const robotActive=state.telemetry?.robot_state==='ACTIVE';
+    const selected=state.calibrationToolSelected[kind];
+    const isTeach=kind==='teaching';
+    const waiting=live && phase==='waiting_replay_confirmation';
+    const active=live && modelCalibrationActive(status);
+    const buttons=[];
+    if(live && ['idle','complete','cancelled','failed'].includes(phase) && isTeach)
+        buttons.push(`<button id="model-calibration-teach-start" class="button primary" ${robotActive?'':'disabled'}>${en?'Start demonstration':'开始拖拽示教'}</button>`);
+    if(live && phase==='teaching' && isTeach)
+        buttons.push(`<button id="model-calibration-teach-stop" class="button primary">${en?'Stop demonstration':'结束示教'}</button>`);
+    if(isTeach && waiting)
+        buttons.push(`<button id="calibration-finish-teaching" class="button primary">${en?'Save trajectory and finish':'保存轨迹并结束任务'}</button>`);
+    if(kind==='gain' && waiting)
+        buttons.push(`<button id="model-calibration-replay-confirm" class="button danger" ${status.source_task_id && !calibrationAlignment(status).aligned?'disabled':''}>${en?'Confirm gain adaptation':'确认开始增益标定'}</button>`);
+    if(kind==='gain' && selected && live && robotActive && ['idle','complete','failed','cancelled'].includes(phase))
+        buttons.push(`<button id="calibration-tool-import" class="button primary">${en?'Import selected trajectory (no motion)':'导入所选示教轨迹（不运动）'}</button>`);
+    if(kind==='gain' && live && status.workflow_kind==='gain' && status.directory && ['complete','failed'].includes(phase))
+        buttons.push(`<button id="calibration-gain-load-live" class="button">${en?'Review this gain task':'查看本次增益候选'}</button>`);
+    if(kind==='gain' && waiting && status.source_task_id)
+        buttons.push(status.alignment_active ? `<button id="model-calibration-alignment-finish" class="button">${en?'Finish guided alignment':'完成引导对齐'}</button>`:
+            `<button id="model-calibration-alignment-begin" class="button">${en?'Guided alignment':'引导对齐回放起点'}</button>`);
+    if(active && kind==='gain')
+        buttons.push(`<button id="model-calibration-cancel" class="button danger">${en?'Cancel current task':'取消当前任务'}</button>`);
+    const gainCandidate=(selected?.gain_candidate || null);
+    const isInactive=state.telemetry?.robot_state==='INACTIVE';
+    const gainValidated=selected?.gain_candidate?.validated===true;
+    const gainApplied=!!state.calibrationRuntimeCandidates?.gain_applied;
+    const gainCanApply=gainValidated && isInactive && workbenchConnected() && !gainApplied;
+    let gainActionHint='';
+    if(kind==='gain') {
+        buttons.push(`<button id="calibration-gain-temp-apply" class="button" ${gainCanApply?'':'disabled'} title="${esc(!workbenchConnected()?(en?'Connect the workspace first':'请先连接工作台'):!gainValidated?(en?'Load a verified candidate first':'请先加载通过验收的候选'):gainApplied?(en?'Restore the existing temporary candidate first':'请先撤销当前临时增益'):!isInactive?(en?'Park and disable the robot first':'请先停放并失能机械臂'):'')}">${en?'Temporarily apply validated gain':'临时应用已验收增益'}</button>`);
+        buttons.push(`<button id="calibration-gain-temp-restore" class="button" ${gainApplied && isInactive?'':'disabled'}>${en?'Undo temporary gains':'撤销增益临时应用'}</button>`);
+        if(gainValidated && workbenchConnected() && !isInactive) {
+            gainActionHint=en?'Candidate passed, but runtime gain changes require an INACTIVE robot. Confirm the workspace is clear and park the robot first':'候选已通过验收，但临时应用要求机械臂处于 INACTIVE 状态，请确认机械臂已被安全支撑及周围环境无障碍后先停放并失能';
+        } else if(!gainValidated && status.workflow_kind==='gain' && status.phase==='complete') {
+            gainActionHint=state.gainCandidateLoadPending?(en?'Loading verified candidate':'正在自动加载已验收候选'):
+                (state.gainCandidateLoadError || (en?'Please review this completed task to load its candidate':'正在读取候选记录，必要时点击查看本次增益候选'));
+        } else if(gainValidated && gainApplied) {
+            gainActionHint=en?'A temporary gain candidate is already active. Park the robot before restoring it':'临时增益已应用，恢复原参数前请先停放机械臂';
+        }
+    }
+    return `<section class="workspace-section calibration-standalone-card"><div class="workspace-section-head"><div><h3>${isTeach?(en?'Demonstration':'拖拽示教'):(en?'Adaptive gain calibration':'自适应增益标定')}</h3><p class="hint">${isTeach ? (en?'Capture once, reuse across calibration tools':'只记录安全示教轨迹，不强制运行辨识') : (en?'Search gains at 80%, then validate the frozen candidate at full speed, two round trips':'80% 速度搜索增益后冻结参数，100% 速度独立验收，共两次往返，不自动开始重力辨识')}</p></div><span class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div>
+       <div class="workspace-actions">${buttons.join('')}</div>
+       ${kind==='gain'?`<label>${en?'Gain target':'标定目标'} <select id="gain-target"><option value="rigid" ${state.gainMode==='rigid'?'selected':''}>${en?'Rigid gains':'刚性增益'}</option><option value="compliant" ${state.gainMode==='compliant'?'selected':''}>${en?'Compliant gains':'柔性增益'}</option><option value="identification" ${state.gainMode==='identification'?'selected':''}>${en?'Identification gains':'辨识增益'}</option></select></label><div class="callout">${en?({rigid:'Rigid gains are used for precise trajectory tracking and high-stiffness position control',compliant:'Compliant gains support flexible tracking with controlled position deviation and force yielding',identification:'Identification gains are dedicated to repeatable calibration playback and dynamics data collection'}[state.gainMode]):({rigid:'刚性增益用于精确轨迹执行和较高刚度的位置跟踪',compliant:'柔性增益用于柔顺轨迹跟踪，在运动过程中允许适度退让',identification:'辨识增益专用于标定轨迹回放、重力模型校正和动力学数据采集'}[state.gainMode])}${!calibrationTaskLoaded('gain') ? calibrationTaskGuidance('gain') : ''}${gainCandidate?`<div>${en?'Frozen full-speed verification':'冻结增益全速验收'}: ${gainCandidate.validated?'PASS':'NOT YET'} · ${Number(gainCandidate.passes||0)} ${en?'passes':'次单程'}${gainCandidate.verification?` · ${en?'Mean':'平均'} ${Number(gainCandidate.verification.mean_ratio||0).toFixed(3)} · ${en?'Peak':'最大'} ${Number(gainCandidate.verification.worst_ratio||0).toFixed(3)} · ${en?'Pauses':'暂停'} ${gainCandidate.verification.pauses} · ${en?'Revisions':'修改'} ${gainCandidate.verification.revisions}`:''}</div>`:''}</div>`:''}
+       ${kind==='gain'?`<div id="calibration-gain-action-hint" class="callout" ${gainActionHint?'':'hidden'}>${esc(gainActionHint)}</div>`:''}
+       ${status.error?`<div class="callout error-callout">${esc(localizedError(status.error))}</div>`:''}
+       ${status.directory?`<div class="task-directory">${esc(status.directory)}</div>`:''}
+       </section>${calibrationToolHistoryHtml(kind)}`;
+}
+function refreshGainApplyControls() {
+    if (state.page !== 'workbench' || state.workbenchTab !== 'calibration' || state.calibrationEntry !== 'gain') return;
+    const apply = $('calibration-gain-temp-apply');
+    const restore = $('calibration-gain-temp-restore');
+    const hint = $('calibration-gain-action-hint');
+    if (!apply || !restore || !hint) return;
+    const en = state.language === 'en';
+    const connected = workbenchConnected();
+    const inactive = state.telemetry?.robot_state === 'INACTIVE';
+    const validated = state.calibrationToolSelected.gain?.gain_candidate?.validated === true;
+    const applied = !!state.calibrationRuntimeCandidates?.gain_applied;
+    const status = state.telemetry?.model_calibration || {};
+    apply.disabled = !(connected && inactive && validated && !applied);
+    restore.disabled = !(connected && inactive && applied);
+    const reason = !connected ? (en?'Connect the workspace first':'请先连接工作台')
+        : !validated ? (en?'Load a verified candidate first':'请先加载通过验收的候选')
+        : applied ? (en?'Restore the existing temporary candidate first':'请先撤销当前临时增益')
+        : !inactive ? (en?'Park and disable the robot first':'请先停放并失能机械臂') : '';
+    apply.title = reason;
+    const message = connected && validated && !inactive
+        ? (en?'Candidate passed, but runtime gain changes require an INACTIVE robot. Confirm the workspace is clear and park the robot first':'候选已通过验收，但临时应用要求机械臂处于 INACTIVE 状态，请确认机械臂已被安全支撑及周围环境无障碍后先停放并失能')
+        : !validated && status.workflow_kind === 'gain' && status.phase === 'complete'
+          ? (state.gainCandidateLoadPending ? (en?'Loading verified candidate':'正在自动加载已验收候选')
+             : state.gainCandidateLoadError || (en?'Please review this completed task to load its candidate':'正在读取候选记录，必要时点击查看本次增益候选'))
+        : validated && applied ? (en?'A temporary gain candidate is already active. Park the robot before restoring it':'临时增益已应用，恢复原参数前请先停放机械臂') : '';
+    hint.textContent = message;
+    hint.hidden = !message;
+}
+function calibrationTaskLoaded(kind) {
+    if (kind === 'dynamics') return !!(state.modelCalibrationOffline?.metadata && state.modelCalibrationDirectory);
+    if (kind === 'gravity' && state.modelCalibrationOffline?.metadata && state.modelCalibrationDirectory) return true;
+    if (state.calibrationToolSelected[kind]?.directory) return true;
+    const live = state.telemetry?.model_calibration || {};
+    return workbenchConnected() && live.workflow_kind === kind && !!live.directory;
+}
+function calibrationTaskGuidance(kind) {
+    const en = state.language === 'en';
+    if (calibrationTaskLoaded(kind)) return '';
+    const labels = {
+        gain: en ? 'No trajectory selected yet. Load a teaching task below or select a saved gain task, then import the trajectory before calibration' : '尚未加载任务，请先在下方任务记录中选择或加载拖拽示教轨迹，再导入轨迹进行增益标定',
+        gravity: en ? 'No gravity task loaded. Connect and activate the robot to demonstrate a trajectory, or load an existing gravity task to inspect and export results' : '尚未加载重力标定任务，可连接并使能机械臂开始示教，或加载已有标定任务查看和导出结果',
+        dynamics: en ? 'No saved task loaded. Load completed gravity data first, then assess the data before choosing an identification target' : '尚未加载任务，请先加载已完成的标定记录，检查数据质量后再选择辨识目标',
+    };
+    return `<div class="calibration-empty-guidance" role="status">${labels[kind] || ''}</div>`;
+}
+function calibrationQuickControlsHtml() {
+    const en = state.language === 'en';
+    const connected = workbenchConnected();
+    const robotState = connected ? (state.telemetry?.robot_state || 'UNKNOWN') : 'OFFLINE';
+    const inactive = robotState === 'INACTIVE';
+    const active = robotState === 'ACTIVE';
+    const phase = state.telemetry?.model_calibration?.phase || 'idle';
+    const busy = modelCalibrationActive();
+    const safeEnable = ['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(phase);
+    const runningTask = !safeEnable || robotState === 'FAULT';
+    const hint = !connected ? (en ? 'Connect the workspace to control the robot from calibration' : '请先连接工作台，连接后可在标定页面直接使能或停放机械臂')
+        : robotState === 'FAULT' ? (en ? 'Resolve the safety fault on the Control tab before activating' : '机械臂存在安全故障，请先在控制页排查并清除故障')
+        : busy ? (en ? 'A calibration task is in progress. Parking may cancel the current replay' : '标定任务正在执行，停放可能中止当前采集或回放')
+        : inactive ? (en ? 'Robot is parked. Activate only after checking the work area' : '机械臂已失能，确认工作区域安全后可使能')
+        : active ? (en ? 'Robot is enabled. Park and disable before switching temporary parameters' : '机械臂已使能，切换临时参数前请先停放并失能')
+        : (en ? 'Waiting for robot status' : '等待机械臂状态反馈');
+    return `<section class="calibration-quick-bar" aria-label="${en ? 'Robot controls' : '标定控制'}">
+      <div class="calibration-quick-state"><span class="calibration-state-dot ${connected && active ? 'on' : connected && inactive ? 'standby' : ''}"></span><strong>${en ? 'Robot' : '机械臂状态'}</strong><span id="calibration-robot-state">${esc(robotState)}</span></div>
+      <div class="calibration-quick-actions">
+        <button type="button" class="button" id="calibration-connect-workbench" ${connected ? 'hidden' : ''}>${t('startWorkbench')}</button>
+        <button type="button" class="button primary" id="calibration-activate" ${connected && inactive && !runningTask ? '' : 'disabled'}>${t('activateRobot')}</button>
+        <button type="button" class="button" id="calibration-safe-park" ${connected && active ? '' : 'disabled'}>${t('parkRobot')}</button>
+      </div>
+      <p id="calibration-quick-hint" class="hint calibration-quick-hint">${hint}</p>
+    </section>`;
+}
+function refreshCalibrationQuickControls() {
+    if (state.page !== 'workbench' || state.workbenchTab !== 'calibration') return;
+    const connect = $('calibration-connect-workbench');
+    const enable = $('calibration-activate');
+    const park = $('calibration-safe-park');
+    const status = $('calibration-robot-state');
+    const hint = $('calibration-quick-hint');
+    if (!enable || !park || !status || !hint) return;
+    const connected = workbenchConnected();
+    const robotState = connected ? (state.telemetry?.robot_state || 'UNKNOWN') : 'OFFLINE';
+    if (connect) connect.hidden = connected;
+    enable.disabled = !(connected && robotState === 'INACTIVE' && ['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(state.telemetry?.model_calibration?.phase || 'idle'));
+    park.disabled = !(connected && robotState === 'ACTIVE');
+    status.textContent = robotState;
+    const dot = document.querySelector('.calibration-state-dot');
+    if (dot) dot.className = 'calibration-state-dot' + (connected && robotState === 'ACTIVE' ? ' on' : connected && robotState === 'INACTIVE' ? ' standby' : '');
+    hint.textContent = !connected ? busyText('请先连接工作台，连接后可在标定页面直接使能或停放机械臂', 'Connect the workspace to control the robot from calibration')
+        : robotState === 'FAULT' ? busyText('机械臂存在安全故障，请先在控制页排查并清除故障', 'Resolve the safety fault on the Control tab before activating')
+        : modelCalibrationActive() ? busyText('标定任务正在执行，停放可能中止当前采集或回放', 'A calibration task is in progress. Parking may cancel the current replay')
+        : robotState === 'INACTIVE' ? busyText('机械臂已失能，确认工作区域安全后可使能', 'Robot is parked. Activate only after checking the work area')
+        : robotState === 'ACTIVE' ? busyText('机械臂已使能，切换临时参数前请先停放并失能', 'Robot is enabled. Park before switching temporary parameters')
+        : busyText('等待机械臂状态反馈', 'Waiting for robot status');
+}
 function calibrationPanelHtml() {
     const en=state.language==='en';
     const locked=modelCalibrationActive();
-    return `<div class="workspace-panel calibration-panel"><div class="calibration-entry-grid"><button id="calibration-entry-auto" type="button" class="calibration-entry ${state.calibrationEntry==='auto'?'selected':''}" ${locked&&state.calibrationEntry!=='auto'?'disabled':''}><span class="calibration-entry-title">${en?'One demonstration':'一次拖拽示教'}</span><span>${en?'Automatic static gravity + friction, evaluate possible dynamic identification':'自动采样、重力辨识、摩擦辨识，并评估动态惯量信息量'}</span></button><button id="calibration-entry-advanced" type="button" class="calibration-entry ${state.calibrationEntry==='advanced'?'selected':''}" ${locked?'disabled':''}><span class="calibration-entry-title">${en?'Advanced identification':'高级动力学辨识'}</span><span>${en?'Reuse saved data to supplement mass, COM and inertial identification':'复用历史数据，补充质量、质心、惯性张量和联合参数辨识'}</span></button></div>${state.calibrationEntry==='auto'?modelCalibrationPanelHtml():advancedIdentificationPanelHtml()}${calibrationUnifiedResultsHtml()}${singleCalibrationToolsHtml()}</div>`;
+    const entry=state.calibrationEntry;
+    return `<div class="workspace-panel calibration-panel">${calibrationQuickControlsHtml()}<div class="calibration-entry-grid">${calibrationToolDefinitions.map(([key,zh,enName,zhDesc,enDesc])=>`<button data-calibration-entry="${key}" type="button" class="calibration-entry ${entry===key?'selected':''}" ${locked&&entry!==key?'disabled':''}><span class="calibration-entry-title">${en?enName:zh}</span><span>${en?enDesc:zhDesc}</span></button>`).join('')}</div>
+      ${(state.calibrationRuntimeCandidates?.gain_applied||state.calibrationRuntimeCandidates?.gravity_applied||state.calibrationRuntimeCandidates?.dynamics_applied)?`<section class="workspace-section"><h3>${en?'Active temporary candidates':'当前临时覆盖'}</h3><p class="hint">${en?'Disconnect parks and removes all temporary overrides. Manual undo requires INACTIVE; saved config is unchanged':'断连将安全停放并撤销所有临时覆盖，原配置不变；手动撤销也需要先停放至 INACTIVE'}</p><div class="workspace-actions">${[['gain','gain_applied',en?'Gains':'增益'],['gravity','gravity_applied',en?'Gravity':'重力'],['dynamics','dynamics_applied',en?'Dynamics':'动力学']].filter(([key,flag])=>state.calibrationRuntimeCandidates?.[flag]).map(([key,flag,name])=>`<button class="button" data-candidate-undo="${key}" ${workbenchConnected()&&state.telemetry?.robot_state==='INACTIVE'?'':'disabled'}>${en?'Undo ':'撤销'}${name}</button>`).join('')}</div></section>`:''}
+      ${entry==='teaching'?calibrationStandalonePanelHtml('teaching'):
+        entry==='gain'?calibrationStandalonePanelHtml('gain'):
+        entry==='gravity'?modelCalibrationPanelHtml()+calibrationToolHistoryHtml('gravity')+`<section class="workspace-section"><h3>重力候选预览</h3><p class="hint">仅临时覆盖重力项，原始 URDF/YAML 不变；请先安全停放至 INACTIVE</p><div class="workspace-actions"><button id="calibration-gravity-temp-apply" class="button" ${state.calibrationToolSelected.gravity && workbenchConnected() && state.telemetry?.robot_state==='INACTIVE'?'':'disabled'}>临时应用已验证重力候选</button><button id="calibration-gravity-temp-restore" class="button" ${state.calibrationRuntimeCandidates?.gravity_applied && workbenchConnected() && state.telemetry?.robot_state==='INACTIVE'?'':'disabled'}>撤销重力临时应用</button></div></section>`:
+        advancedIdentificationPanelHtml()+calibrationToolHistoryHtml('dynamics')}
+      ${entry==='gravity'||entry==='dynamics'?calibrationUnifiedResultsHtml():''}
+      ${entry==='gravity'?singleCalibrationToolsHtml():''}
+    </div>`;
 }
 
 function matrixHtml(matrix) { if (!Array.isArray(matrix)) return '—'; return `<table class="matrix-table">${matrix.map(row => `<tr>${row.map(v => `<td>${Number(v).toFixed(4)}</td>`).join('')}</tr>`).join('')}</table>`; }
@@ -670,7 +918,7 @@ function updateWorkbenchModel() { if (!modelView || !state.telemetry || !state.t
 function updateWorkbenchControlState() { const x = state.telemetry || {}; const pending = state.workbenchPending || {}; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; document.querySelectorAll('[data-impedance-mode]').forEach(button => { const mode = button.dataset.impedanceMode; button.classList.toggle('active', x.impedance_mode === mode); button.disabled = !active || pending.kind === 'impedance'; button.title = active ? '' : (state.language === 'en' ? 'The robot must be ACTIVE before changing impedance mode' : '机器人需要处于 ACTIVE 才能切换阻抗模式'); }); document.querySelectorAll('[data-feedforward-mode]').forEach(button => { const mode = button.dataset.feedforwardMode; button.classList.toggle('active', x.model_feedforward_mode === mode); button.disabled = !inactive || pending.kind === 'feedforward'; button.title = inactive ? '' : (state.language === 'en' ? 'Model feedforward can only be changed while the robot is INACTIVE' : '模型前馈只能在机器人处于 INACTIVE 时修改'); }); }
 function applyWorkbenchSnapshot(snapshot) { if (!snapshot || typeof snapshot !== 'object') return; state.telemetry = snapshot; state.telemetryReceivedAt = Date.now(); updateWorkbenchLive(); }
 async function switchWorkbenchMode(kind, mode) { if (state.workbenchPending?.kind || state.blockingBusy) return; state.workbenchPending = { kind, value: mode }; updateWorkbenchControlState(); const message = kind === 'impedance' ? busyText(`正在切换阻抗模式至 ${mode}...`, `Switching impedance mode to ${mode}...`) : busyText(`正在切换模型前馈至 ${mode}...`, `Switching model feedforward to ${mode}...`); try { return await blockingOperation(message, async () => { await new Promise(resolve => requestAnimationFrame(resolve)); const method = kind === 'impedance' ? 'set_impedance_mode' : 'set_model_feedforward_mode'; const snapshot = await workbenchRequest(method, { mode }); applyWorkbenchSnapshot(snapshot); return snapshot; }); } finally { state.workbenchPending = { kind: '', value: '' }; updateWorkbenchControlState(); } }
-function updateWorkbenchLive() { if (state.page !== 'workbench') return; const x = state.telemetry || {}; const age = document.querySelector('.workspace-status span:nth-child(5)'); if (age) age.textContent = `${t('feedbackAge')} ${Number.isFinite(x.feedback_age_ms) ? x.feedback_age_ms.toFixed(0) + ' ms' : '—'}`; updateWorkbenchControlState(); updateWorkbenchModel(); if (state.pendingTarget && x.valid && Array.isArray(x.joint?.pos)) { const err = Math.max(...x.joint.pos.map((v, i) => Math.abs(v - state.pendingTarget[i]))); const vel = Math.max(...(x.joint.vel || []).map(v => Math.abs(v))); if (err < 0.02 && vel < 0.05) { state.commandState = 'complete'; state.pendingTarget = null; const node = document.querySelector('.command-state'); if (node) node.textContent = `${t('commandState')} ${commandStateText(state.commandState)}`; } } const c = x.calibration || {}; const kind = $('cal-task-kind'), phase = $('cal-task-phase'), progress = $('cal-task-progress'), trajectory = $('cal-task-trajectory'), error = $('cal-task-error'); if (kind) kind.textContent = calibrationTaskKindText(c.kind || 'none'); if (phase) phase.textContent = calibrationTaskPhaseText(c.phase || 'idle'); if (progress) progress.textContent = c.expected ? `${c.captured || 0}/${c.expected}` : '—'; if (trajectory) trajectory.textContent = String(c.trajectory_samples ?? '—'); if (error) error.textContent = c.error || '—'; if (c.phase === 'complete' && state.calibrationFlow === 'friction') { state.calibrationFlow = 'complete'; operation(loadAdmittance); } updateModelCalibrationLive(); updateModelCalibrationTaskOverlay(); if (state.workbenchTab === 'diagnostics') drawWorkbenchChart(); }
+function updateWorkbenchLive() { if (state.page !== 'workbench') return; const x = state.telemetry || {}; const age = document.querySelector('.workspace-status span:nth-child(5)'); if (age) age.textContent = `${t('feedbackAge')} ${Number.isFinite(x.feedback_age_ms) ? x.feedback_age_ms.toFixed(0) + ' ms' : '—'}`; updateWorkbenchControlState(); refreshCalibrationQuickControls(); updateWorkbenchModel(); if (state.pendingTarget && x.valid && Array.isArray(x.joint?.pos)) { const err = Math.max(...x.joint.pos.map((v, i) => Math.abs(v - state.pendingTarget[i]))); const vel = Math.max(...(x.joint.vel || []).map(v => Math.abs(v))); if (err < 0.02 && vel < 0.05) { state.commandState = 'complete'; state.pendingTarget = null; const node = document.querySelector('.command-state'); if (node) node.textContent = `${t('commandState')} ${commandStateText(state.commandState)}`; } } const c = x.calibration || {}; const kind = $('cal-task-kind'), phase = $('cal-task-phase'), progress = $('cal-task-progress'), trajectory = $('cal-task-trajectory'), error = $('cal-task-error'); if (kind) kind.textContent = calibrationTaskKindText(c.kind || 'none'); if (phase) phase.textContent = calibrationTaskPhaseText(c.phase || 'idle'); if (progress) progress.textContent = c.expected ? `${c.captured || 0}/${c.expected}` : '—'; if (trajectory) trajectory.textContent = String(c.trajectory_samples ?? '—'); if (error) error.textContent = c.error ? localizedError(c.error) : '—'; if (c.phase === 'complete' && state.calibrationFlow === 'friction') { state.calibrationFlow = 'complete'; operation(loadAdmittance); } updateModelCalibrationLive(); updateModelCalibrationTaskOverlay(); if (state.workbenchTab === 'diagnostics') drawWorkbenchChart(); }
 function updateModelCalibrationComparison() {
     if (!modelView || state.page !== 'workbench') return;
     const binding = modelCalibrationModelBinding();
@@ -710,16 +958,23 @@ function updateModelCalibrationTaskOverlay() {
     const status = state.telemetry?.model_calibration; const show = !priorityErrorOpen && modelCalibrationLongRunning(status) && state.telemetry?.robot_state !== 'FAULT';
     overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
     if (!show) return;
-    const progress = Math.max(0, Math.min(1, Number(status.progress || 0)));
+    const adapting = status.phase === 'gain_adaptation';
+    const passes = Math.max(0, Number(status.gain_adaptation_passes || 0));
+    const revisions = Math.max(0, Number(status.gain_adaptation_revisions || 0));
+    const maxGainPasses = Math.max(1, Number(status.gain_adaptation_max_passes || 4));
+    const progress = adapting ? Math.min(1, passes / maxGainPasses) : Math.max(0, Math.min(1, Number(status.progress || 0)));
     $('model-calibration-task-title').textContent = modelCalibrationPhaseText(status.phase);
     $('model-calibration-task-progress-bar').style.width = `${Math.round(progress * 100)}%`;
-    $('model-calibration-task-progress').textContent = status.phase === 'teaching' ? `${state.language === 'en' ? 'Free teaching' : '自由示教'} ${Number(status.teaching_wall_duration_s || 0).toFixed(1)} s · ${state.language === 'en' ? 'No duration cap' : '无时长上限'}` : `${Math.round(progress * 100)}% · ${Number(status.completed || 0)}/${Number(status.total || 0)}`;
+    $('model-calibration-task-progress').textContent = adapting
+        ? (state.language === 'en' ? `Gain traversals ${passes}/${maxGainPasses} (maximum) · revisions ${revisions}` : `增益标定单程 ${passes}/${maxGainPasses}（最多）· 增益调整 ${revisions} 次`)
+        : status.phase === 'teaching' ? `${state.language === 'en' ? 'Free teaching' : '自由示教'} ${Number(status.teaching_wall_duration_s || 0).toFixed(1)} s · ${state.language === 'en' ? 'No duration cap' : '无时长上限'}`
+        : `${Math.round(progress * 100)}% · ${Number(status.completed || 0)}/${Number(status.total || 0)}`;
     $('model-calibration-task-samples').textContent = `${t('acceptedDroppedFrames')} ${status.recorder?.accepted ?? '—'} / ${status.recorder?.dropped ?? '—'} · ${t('validStaticSamples')} ${status.valid_static_samples ?? '—'}`;
     $('model-calibration-task-feedback').textContent = `${t('feedbackAge')} ${Number.isFinite(state.telemetry?.feedback_age_ms) ? state.telemetry.feedback_age_ms.toFixed(0) + ' ms' : '—'}`;
     $('model-calibration-task-id').textContent = `${t('taskIdentifier')} ${status.task_id || '—'}`;
-    $('model-calibration-task-error').textContent = status.error || (status.recorder?.data_gap ? (state.language === 'en' ? 'Recorded data contains gaps' : '记录数据存在缺口') : status.recorder?.write_failed ? (state.language === 'en' ? 'Raw data write failed' : '原始数据写入失败') : '');
+    $('model-calibration-task-error').textContent = (status.error ? localizedError(status.error) : '') || (status.recorder?.data_gap ? (state.language === 'en' ? 'Recorded data contains gaps' : '记录数据存在缺口') : status.recorder?.write_failed ? (state.language === 'en' ? 'Raw data write failed' : '原始数据写入失败') : '');
     $('model-calibration-task-stop-teach').hidden = status.phase !== 'teaching';
-    $('model-calibration-task-pause').hidden = !['static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(status.phase);
+    $('model-calibration-task-pause').hidden = !['gain_adaptation', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(status.phase);
     $('model-calibration-task-resume').hidden = status.phase !== 'paused';
     $('model-calibration-task-hold').disabled = state.telemetry?.robot_state !== 'ACTIVE';
     $('model-calibration-task-disable').disabled = state.telemetry?.robot_state === 'INACTIVE';
@@ -856,14 +1111,21 @@ function modelCalibrationReplayConfirm() {
     const plan = currentModelCalibration() || {};
     if (plan.source_task_id && !calibrationAlignment(plan).aligned) { showPriorityError(state.language === 'en' ? 'Replay start not aligned. Use guided alignment and wait for fresh feedback.' : '当前姿态与回放起点不匹配：请先完成引导对齐，并等待新鲜的关节反馈'); return; }
     if (plan.planner_id !== 'local_hermite' || !(Number(plan.single_pass_duration_s) > 0)) { showPriorityError(state.language === 'en' ? 'Native Core was not rebuilt. Reinstall before replay.' : 'C++ Core 仍是旧版，请重新编译安装后再执行自动回放'); return; }
-    const estimate = Number(plan.estimated_duration_s || 0);
+    const gainPlan = state.calibrationEntry === 'gain';
+    const oneWayDuration = Number(plan.single_pass_duration_s || 0);
+    const estimate = gainPlan && oneWayDuration > 0
+        ? 2 * oneWayDuration * (1 / 0.80 + 1 / 1.0) + 2
+        : Number(plan.estimated_duration_s || 0);
     const teaching = Number(plan.teaching_wall_duration_s || 0);
-    const totalEstimate = Number(plan.estimated_total_duration_s || teaching + estimate);
+    const totalEstimate = gainPlan ? teaching + estimate : Number(plan.estimated_total_duration_s || teaching + estimate);
     const oneWay = Number(plan.single_pass_duration_s || 0);
     const poses = Array.isArray(plan.pose_targets) ? plan.pose_targets.length : 0;
-    dialog.innerHTML = `<h3>${t('modelCalibration')}</h3><p>${state.language === 'en' ? 'Automatic capture reuses the checked trajectory for one reverse static/dynamic pass and one forward dynamic pass' : '自动采集将沿已检查轨迹完成一次反向静态/动态采集和一次正向动态采集'}</p><div class="callout"><b>${state.language === 'en' ? 'Estimated full calibration time' : '预计全流程时间'}：${Number.isFinite(totalEstimate) ? totalEstimate.toFixed(1) : '—'} s (${state.language === 'en' ? 'automatic' : '自动'} ${estimate.toFixed(1)} s)</b><div>${state.language === 'en' ? 'Approx.' : '简式'}：T总 ≈ ${teaching.toFixed(1)} + 2 × ${oneWay.toFixed(1)} + 1.5 × ${poses} + 2</div><div>${totalEstimate > 200 ? (state.language === 'en' ? 'Exceeds 200 s target; safety limits remain enforced.' : '预计超过 200s 目标，但仍允许启动，不会放宽安全限制') : (state.language === 'en' ? 'Estimate only; actual stabilizing and fitting may take longer.' : '这是估算值，实际停稳与拟合可能更久')}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
+    const formula = gainPlan
+        ? `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 2 × ${oneWay.toFixed(1)} / 0.8 + 2 × ${oneWay.toFixed(1)} / 1.0 + 2`
+        : `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 2 × ${oneWay.toFixed(1)} + 1.5 × ${poses} + 2`;
+    dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Gain calibration' : '自适应增益标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? 'One 80% gain search round trip, then one frozen full-speed verification round trip' : '80% 速度搜索一次往返，冻结增益后全速验收一次往返，共四次单程') : (state.language === 'en' ? 'The checked path is replayed once in reverse and once forward for gravity measurement.' : '沿已检查轨迹进行一次反向与正向的重力采集')}</p><div class="callout"><b>${state.language === 'en' ? 'Estimated automatic stage' : '预计自动阶段'}：${estimate.toFixed(1)} s · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${totalEstimate.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'Estimate only: feedback pauses and settling may extend real time; safety limits remain unchanged.' : '仅为计划运动估算：实际跟踪等待可能延长耗时，安全保护不变'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
     dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked; $('model-calibration-confirm-cancel').onclick = () => dialog.close();
-    $('model-calibration-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
+    $('model-calibration-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
 }
 async function resumeModelCalibrationWithConfirmation() {
     try {
@@ -953,6 +1215,23 @@ async function markReadinessStage(stage) { state.readiness = await api.request('
 function collectProfileEditor() { const e = state.profileEditor; if (!e) return null; const payload = { core_sha: e.core_sha, hardware_sha: e.hardware_sha, hardware_plugin: $('edit-hardware-plugin')?.value || e.hardware_plugin || '', write_enabled: !!$('edit-write-enabled')?.checked, bus: $('edit-bus')?.value || '', device: $('edit-device')?.value || '', baudrate: $('edit-baudrate')?.value || '', calibration: {}, actuators: {}, park_pos: e.park_pos || {} }; for (const j of e.joint_names) { payload.calibration[j] = {}; for (const key of ['direction', 'pos_ratio', 'tor_ratio', 'joint_zero_offset', 'actuator_zero_offset']) payload.calibration[j][key] = Number(document.querySelector(`[data-edit="${key}"][data-joint="${CSS.escape(j)}"]`)?.value); payload.actuators[j] = { motor_id: Number(document.querySelector(`[data-edit-act="motor_id"][data-joint="${CSS.escape(j)}"]`)?.value || 0), motor_type: document.querySelector(`[data-edit-act="motor_type"][data-joint="${CSS.escape(j)}"]`)?.value || '', name: e.actuators?.[j]?.name || '', master_id: Number(e.actuators?.[j]?.master_id || 0) }; } return payload; }
 let previewFrame = 0, previewInFlight = false, previewDirty = false;
 let renderedPage = '';
+let calibrationRefreshPending = false;
+function calibrationDialogOpen() {
+    return !!$('confirm-dialog')?.open;
+}
+function refreshCalibrationAfterDialog() {
+    if (!calibrationRefreshPending) return;
+    calibrationRefreshPending = false;
+    if (state.page === 'workbench' && state.workbenchTab === 'calibration' && !calibrationDialogOpen()) render();
+}
+function refreshCalibrationOrDefer() {
+    if (calibrationDialogOpen()) {
+        calibrationRefreshPending = true;
+        updateWorkbenchLive();
+        return;
+    }
+    render();
+}
 function queuePreview() { previewDirty = true; if (previewFrame || previewInFlight) return; previewFrame = requestAnimationFrame(async () => { previewFrame = 0; if (previewInFlight) return; previewInFlight = true; previewDirty = false; try { await previewModel(); } catch (error) { toast(t('error') + ': ' + error.message, true); } finally { previewInFlight = false; if (previewDirty) queuePreview(); } }); }
 function reducedMotion() { return matchMedia('(prefers-reduced-motion: reduce)').matches; }
 async function pageExit() {
@@ -1071,7 +1350,20 @@ function bindPage() {
         document.querySelectorAll('[data-calibration-com-scale]').forEach(button => button.onclick = () => { state.modelCalibrationDisplayScale = Number(button.dataset.calibrationComScale); document.querySelectorAll('[data-calibration-com-scale]').forEach(other => { const active = Number(other.dataset.calibrationComScale) === state.modelCalibrationDisplayScale; other.classList.toggle('active', active); other.setAttribute('aria-pressed', String(active)); }); const hint = document.querySelector('.calibration-com-hint'); if (hint) hint.textContent = state.modelCalibrationDisplayScale === 1 ? (state.language === 'en' ? 'True 3D locations' : '真实三维位置') : (state.language === 'en' ? 'Visual displacement only' : '仅放大显示位移，不更改实际坐标'); updateModelCalibrationComparison(); });
         if ($('calibration-com-unchanged')) $('calibration-com-unchanged').onchange = event => { state.modelCalibrationShowUnchanged = event.target.checked; updateModelCalibrationComparison(); };
         if ($('start-workbench')) $('start-workbench').onclick = () => blockingOperation(busyText('正在检查工作台连接条件...', 'Checking workspace connection...'), startWorkbench);
-        if ($('stop-workbench')) $('stop-workbench').onclick = () => blockingOperation(busyText('正在停放并断开工作台...', 'Parking and disconnecting workspace...'), async () => { await api.request('workbench_stop'); });
+        if ($('calibration-connect-workbench')) $('calibration-connect-workbench').onclick = () => blockingOperation(busyText('正在检查工作台连接条件...', 'Checking workspace connection...'), startWorkbench);
+        for (const [id, action] of [['calibration-activate', 'activate'], ['calibration-safe-park', 'park']]) {
+            const button = $(id);
+            if (button) button.onclick = () => {
+                if (confirmCalibrationPark(action)) return;
+                return blockingOperation(actionBusyMessage(action), async () => {
+                const snapshot = await workbenchCommand(action);
+                if (snapshot && typeof snapshot === 'object' && snapshot.robot_state) applyWorkbenchSnapshot(snapshot);
+                refreshCalibrationQuickControls();
+                refreshGainApplyControls();
+                });
+            };
+        }
+        if ($('stop-workbench')) $('stop-workbench').onclick = () => confirmWorkbenchDisconnect();
         document.querySelectorAll('[data-workbench-action]').forEach(b => b.onclick = () => blockingOperation(actionBusyMessage(b.dataset.workbenchAction), () => workbenchCommand(b.dataset.workbenchAction)));
         document.querySelectorAll('[data-impedance-mode]').forEach(b => b.onclick = () => switchWorkbenchMode('impedance', b.dataset.impedanceMode));
         document.querySelectorAll('[data-feedforward-mode]').forEach(b => b.onclick = () => switchWorkbenchMode('feedforward', b.dataset.feedforwardMode));
@@ -1097,19 +1389,78 @@ function bindPage() {
         if ($('export-session')) $('export-session').onclick = () => blockingOperation(busyText('正在导出会话数据...', 'Exporting session data...'), async () => { const r = await api.request('workbench_export', { profile: state.config.profile, core: state.info?.resources?.core || '' }); toast(`Exported ${r.samples} samples · ${r.path}`); });
         if ($('apply-gravity')) $('apply-gravity').onclick = () => blockingOperation(busyText('正在应用重力比例...', 'Applying gravity scale...'), async () => { const values = [...document.querySelectorAll('[data-gravity-index]')].sort((a, b) => Number(a.dataset.gravityIndex) - Number(b.dataset.gravityIndex)).map(x => Number(x.value)); await workbenchRequest('set_gravity_scale', { values }); state.savePreview = null; });
         if ($('diagnostic-frame')) $('diagnostic-frame').onchange = () => { state.selectedFrame = $('diagnostic-frame').value; render(); };
-        if ($('calibration-entry-auto')) $('calibration-entry-auto').onclick = () => { state.calibrationEntry='auto'; render(); };
-        if ($('calibration-entry-advanced')) $('calibration-entry-advanced').onclick = () => { if (modelCalibrationActive()) return; state.calibrationEntry='advanced'; render(); };
+        document.querySelectorAll('[data-calibration-entry]').forEach(button => button.onclick=()=>{
+            if (modelCalibrationActive() && button.dataset.calibrationEntry!==state.calibrationEntry) return;
+            state.calibrationEntry=button.dataset.calibrationEntry;
+            render();
+        });
+        document.querySelectorAll('[data-tool-scan]').forEach(button=>button.onclick=()=>blockingOperation(busyText('正在扫描任务记录...', 'Scanning task records...'),async()=>{
+            const kind=button.dataset.toolScan;
+            state.calibrationToolRecords[kind]=await api.request('calibration_tool_records',{kind});
+            render();
+        }));
+        document.querySelectorAll('[data-tool-load]').forEach(button=>button.onclick=()=>blockingOperation(busyText('正在检查任务记录...', 'Loading task...'),async()=>{
+            const kind=button.dataset.toolLoad;
+            const directory=await api.selectResources();
+            if(!directory)return;
+            const selected=await api.request('calibration_tool_load',{kind,directory});
+            await selectCalibrationToolRecord(kind,selected);
+        }));
+        document.querySelectorAll('[data-tool-select]').forEach(button=>button.onclick=()=>blockingOperation(busyText('正在读取历史任务...', 'Loading task...'),async()=>{
+            const kind=button.dataset.toolSelect;
+            await selectCalibrationToolRecord(kind,state.calibrationToolRecords[kind][Number(button.dataset.toolIndex)]);
+        }));
+        document.querySelectorAll('[data-tool-export]').forEach(button=>button.onclick=()=>blockingOperation(busyText('正在生成标定成果...', 'Exporting calibration result...'),async()=>{
+            const kind=button.dataset.toolExport;
+            const directory=state.calibrationToolSelected[kind]?.directory||state.modelCalibrationDirectory||state.telemetry?.model_calibration?.directory;
+            if(!directory)throw new Error('请先选择含有有效标定成果的任务');
+            const destination=await api.selectResources();
+            if(!destination)return;
+            const report=kind==='dynamics' ? (state.advancedReport?.report||state.advancedReport?.candidate_urdf?.replace(/\/[^/]+$/, '/identification-report.json')||'') : '';
+            const result=await api.request('calibration_tool_export',{kind,directory,destination,report,candidate_source:kind==='gravity'?state.modelCalibrationCandidateSource:'online'});
+            toast((state.language==='en'?'Calibration result exported: ':'标定成果已导出 ') + result.path);
+        }));
+        if ($('calibration-finish-teaching')) $('calibration-finish-teaching').onclick=()=>blockingOperation(busyText('正在保存示教任务...', 'Saving demonstration...'),async()=>{
+            const result=await workbenchRequest('model_calibration_finish_teaching',modelCalibrationTaskParams());
+            if(state.telemetry)state.telemetry.model_calibration=result;
+            state.modelCalibrationDirectory=result.directory||'';
+            render();
+        });
+        if ($('calibration-tool-import')) $('calibration-tool-import').onclick=()=>blockingOperation(busyText('正在导入轨迹...', 'Importing saved trajectory...'),async()=>{
+            const record=state.calibrationToolSelected[state.calibrationEntry];
+            if(!record?.directory)throw new Error('请先选择示教轨迹任务');
+            const result=await workbenchRequest('model_calibration_import_trajectory',{directory:record.directory,...captureModelCalibrationOptions({validate:false})});
+            if(state.telemetry)state.telemetry.model_calibration=result;
+            state.modelCalibrationDirectory=result.directory;
+            render();
+            toast('轨迹已导入，但尚未执行任何自动运动；请先检查并对齐起点');
+        });
+        document.querySelectorAll('[data-candidate-undo]').forEach(b=>b.onclick=()=>temporaryCandidateAction('restore',b.dataset.candidateUndo));
+        if ($('calibration-gain-load-live')) $('calibration-gain-load-live').onclick=()=>blockingOperation(busyText('正在读取当前增益任务...', 'Loading current gain task...'),async()=>{
+            const directory=state.telemetry?.model_calibration?.directory;
+            if(!directory)throw new Error('当前任务尚无有效目录');
+            const record=await api.request('calibration_tool_load',{kind:'gain',directory});
+            state.calibrationToolSelected.gain=record;render();
+        });
+        if ($('gain-target')) $('gain-target').onchange=()=>{ state.gainMode=$('gain-target').value; render(); };
+        if ($('calibration-gain-temp-apply')) $('calibration-gain-temp-apply').onclick=()=>temporaryCandidateAction('apply','gain');
+        if ($('calibration-gain-temp-restore')) $('calibration-gain-temp-restore').onclick=()=>temporaryCandidateAction('restore','gain');
+        if ($('calibration-gravity-temp-apply')) $('calibration-gravity-temp-apply').onclick=()=>temporaryCandidateAction('apply','gravity');
+        if ($('calibration-gravity-temp-restore')) $('calibration-gravity-temp-restore').onclick=()=>temporaryCandidateAction('restore','gravity');
+        if ($('advanced-temp-apply')) $('advanced-temp-apply').onclick=()=>temporaryCandidateAction('apply','dynamics');
+        if ($('advanced-temp-restore')) $('advanced-temp-restore').onclick=()=>temporaryCandidateAction('restore','dynamics');
+        if ($('advanced-temp-restore-unconditional')) $('advanced-temp-restore-unconditional').onclick=()=>temporaryCandidateAction('restore','dynamics');
         if ($('advanced-target')) $('advanced-target').onchange = () => { state.advancedTarget=$('advanced-target').value; state.advancedReport=null; render(); };
         document.querySelectorAll('[data-advanced-locked]').forEach(input => input.onchange=()=>{ const name=input.dataset.advancedLocked; const names=new Set(state.advancedLocked); if(input.checked)names.add(name);else names.delete(name);state.advancedLocked=Array.from(names);state.advancedReport=null;const wasOpen=!!input.closest('details')?.open;render();if(wasOpen){const picker=document.querySelector('.calibration-locks');if(picker)picker.open=true;} });
         if ($('advanced-load-record')) $('advanced-load-record').onclick = () => blockingOperation(busyText('正在读取历史标定...', 'Loading calibration...'), async()=>{ const directory=await api.selectResources();if(!directory)return;const loaded=await api.request('model_calibration_load',{directory});state.modelCalibrationOffline=loaded;state.modelCalibrationDirectory=loaded.directory||directory;state.advancedAssessment=null;state.advancedReport=null;state.advancedLocked=advancedTrustedLinks(loaded);render();await alignHistoricalCalibrationPreview(loaded);await assessLoadedCalibrationRecord(loaded); });
         if ($('advanced-assess-record')) $('advanced-assess-record').onclick = () => blockingOperation(busyText('正在检查采样信息量...', 'Assessing data...'), async()=>{ state.advancedAssessment=await api.request('model_calibration_assess',{directory:state.modelCalibrationDirectory||currentModelCalibration()?.directory});render(); });
-        if ($('advanced-run')) $('advanced-run').onclick = () => blockingOperation(busyText('正在离线辨识并检查候选模型...', 'Identifying and validating offline candidate...'), async()=>{ if(!state.modelCalibrationOffline?.has_result)throw new Error('请先加载包含完成结果的历史标定任务');const dir=state.modelCalibrationDirectory||state.modelCalibrationOffline.directory;const available=calibrationSelectableLinks().map(l=>l.name);
+        if ($('advanced-run')) $('advanced-run').onclick = () => blockingOperation(busyText('正在离线辨识并检查候选模型...', 'Identifying and validating offline candidate...'), async()=>{ if(!state.modelCalibrationOffline?.metadata)throw new Error('请先加载带有效来源信息的历史任务');const dir=state.modelCalibrationDirectory||state.modelCalibrationOffline.directory;const available=calibrationSelectableLinks().map(l=>l.name);
             if (!available.length) throw new Error('历史任务缺少可验证的可辨识 Link 清单');
             const invalid=state.advancedLocked.filter(n=>!available.includes(n));
             if (invalid.length) throw new Error('可信 Link 与当前任务模型不一致，请重新选择');
             if (state.advancedLocked.length === available.length) throw new Error('所有可辨识 Link 均已锁定，请至少保留一个');
             const locked=available.filter(n=>state.advancedLocked.includes(n));
-            const result=await api.request('model_calibration_advanced',{directory:dir,mode:state.advancedTarget,locked_links:locked});state.advancedReport=result;render(); });
+            const result=await api.request('model_calibration_advanced',{directory:dir,mode:state.advancedTarget,locked_links:locked});state.advancedReport=result;state.calibrationToolSelected.dynamics=await api.request('calibration_tool_load',{kind:'dynamics',directory:dir});render(); });
         if ($('calibration-all-in-one')) $('calibration-all-in-one').onclick = () => blockingOperation(busyText('正在启动完整标定流程...', 'Starting full calibration workflow...'), async () => { state.calibrationFlow = 'static'; await workbenchRequest('calibration_begin', { kind: 'static' }); render(); });
         if ($('calibration-preview-save')) $('calibration-preview-save').onclick = () => blockingOperation(busyText('正在整理标定结果差异...', 'Preparing calibration result diff...'), async () => { state.admittance = await workbenchRequest('get_admittance'); state.savePreview = await api.request('workbench_config_preview', { config: state.config }); render(); });
         if ($('calibration-save-config')) $('calibration-save-config').onclick = () => blockingOperation(busyText('正在保存标定参数...', 'Saving calibration parameters...'), async () => { const result = await api.request('workbench_config_save', { config: state.config, expected_sha: state.savePreview.sha256 }); state.savePreview = null; toast(`Saved ${result.path}`); render(); });
@@ -1202,7 +1553,7 @@ function bindPage() {
         if ($('model-calibration-preview-save')) $('model-calibration-preview-save').onclick = () => blockingOperation(busyText('正在准备候选保存差异...', 'Preparing candidate save diff...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); state.modelCalibrationSavePreview = await api.request('model_calibration_preview_save', { config: state.config, directory }); render(); });
         if ($('model-calibration-save')) $('model-calibration-save').onclick = () => blockingOperation(busyText('正在保存候选重力校正...', 'Saving candidate gravity correction...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory || !state.modelCalibrationSavePreview) throw new Error('save preview is required'); if (state.modelCalibrationCandidateSource === 'offline') throw new Error('离线动力学候选不能直接保存为在线静态重力参数'); state.modelCalibrationSaved = await api.request('model_calibration_save', { config: state.config, directory, expected_sha: state.modelCalibrationSavePreview.sha256 }); state.modelCalibrationSavePreview = null; toast(`Saved ${state.modelCalibrationSaved.gravity_correction_path}`); render(); });
         if ($('model-calibration-restore-config')) $('model-calibration-restore-config').onclick = () => blockingOperation(busyText('正在恢复保存前配置...', 'Restoring pre-save configuration...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const result = await api.request('model_calibration_restore_config', { config: state.config, directory }); state.modelCalibrationSaved = null; state.modelCalibrationSavePreview = null; toast(`Restored ${result.core_path}`); render(); });
-        if ($('model-calibration-export')) $('model-calibration-export').onclick = () => blockingOperation(busyText('正在导出并校验候选 URDF...', 'Exporting and verifying candidate URDF...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const destination = await api.selectResources(); if (!destination) return; state.modelCalibrationExport = await api.request('model_calibration_export_urdf', { config: state.config, directory, destination, candidate_source: state.modelCalibrationCandidateSource || 'online' }); render(); });
+        if ($('model-calibration-export')) $('model-calibration-export').onclick = () => blockingOperation(busyText('正在生成重力与摩擦成果...', 'Exporting gravity and friction artifacts...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const destination = await api.selectResources(); if (!destination) return; state.modelCalibrationExport = await api.request('calibration_tool_export', { kind:'gravity',directory,destination,candidate_source:state.modelCalibrationCandidateSource || 'online' }); render(); });
         if (state.workbenchTab === 'diagnostics') setTimeout(drawWorkbenchChart, 0);
         setTimeout(updateWorkbenchControlState, 0);
     }
@@ -1216,7 +1567,48 @@ function bindPage() {
 async function workbenchRequest(method, params = {}) { if (!workbenchConnected()) throw new Error('workspace session is not connected'); return api.request('workbench_request', { method, params }); }
 async function loadAdmittance() { if (!workbenchConnected()) return; state.admittance = await workbenchRequest('get_admittance'); state.tuneDraft = structuredClone(state.admittance); }
 async function startWorkbench() { await inspect(); if (!state.info?.available?.workbench) throw new Error('Structured workspace is unavailable'); if (state.info.write_enabled === false) return connectWorkbench(false); return workbenchConfirm(); }
-async function connectWorkbench(confirmed) { state.busy = true; render(); try { state.session = await api.request('workbench_start', { config: state.config, confirmed, fingerprint: state.info?.fingerprint }); await loadAdmittance(); } finally { state.busy = false; render(); } }
+async function connectWorkbench(confirmed) { state.busy = true; render(); try { state.session = await api.request('workbench_start', { config: state.config, confirmed, fingerprint: state.info?.fingerprint }); await loadAdmittance(); state.calibrationRuntimeCandidates = await api.request('calibration_candidate_status',{}); } finally { state.busy = false; render(); } }
+function confirmCalibrationPark(action) {
+    if (action !== 'park' || !modelCalibrationActive()) return false;
+    const dialog = $('confirm-dialog');
+    if (!dialog || dialog.open) return true;
+    const en = state.language === 'en';
+    dialog.innerHTML = `<h3>${en ? 'Park during calibration' : '标定过程中停放机械臂'}</h3><p>${en ? 'Parking may interrupt the current capture or cancel pending playback. Saved task files are retained. Check robot support, cables and the surrounding area first' : '停放可能中断当前采集或取消待执行回放，已经保存的任务文件不会删除，请先确认机械臂支撑、线缆和周围空间安全'}</p><div class="actions"><button class="button" id="calibration-park-cancel">${t('cancel')}</button><button class="button danger" id="calibration-park-confirm">${t('parkRobot')}</button></div>`;
+    dialog.showModal();
+    $('calibration-park-cancel').onclick = () => dialog.close();
+    $('calibration-park-confirm').onclick = () => {
+        dialog.close();
+        blockingOperation(actionBusyMessage('park'), async () => {
+            const snapshot = await workbenchCommand('park');
+            if (snapshot && typeof snapshot === 'object' && snapshot.robot_state) applyWorkbenchSnapshot(snapshot);
+            refreshCalibrationOrDefer();
+        });
+    };
+    return true;
+}
+function activeTemporaryOverrides() {
+    const status = state.calibrationRuntimeCandidates || {};
+    return ['gain', 'gravity', 'dynamics'].filter(kind => status[kind + '_applied']);
+}
+function confirmWorkbenchDisconnect() {
+    const en = state.language === 'en';
+    const kinds = activeTemporaryOverrides();
+    if (!kinds.length) {
+        return blockingOperation(busyText('正在安全断开工作台...', 'Safely disconnecting workspace...'), async () => {
+            await api.request('workbench_stop', {});
+        });
+    }
+    const dialog = $('confirm-dialog');
+    if (!dialog || dialog.open) return;
+    const names = kinds.map(kind => ({ gain: en ? 'gain' : '增益', gravity: en ? 'gravity' : '重力', dynamics: en ? 'dynamics' : '动力学' }[kind]));
+    dialog.innerHTML = `<h3>${en ? 'Disconnect and remove temporary candidates' : '断连后撤销临时应用'}</h3><p>${en ? 'The following temporary runtime candidates are active' : '以下临时参数目前正在生效'}：<strong>${esc(names.join(' / '))}</strong></p><p>${en ? 'Disconnect will first park and disable the robot, restore the original runtime parameters, and then close the session. Saved YAML / URDF files will not change' : '断连将先停放并失能机械臂，依次撤销临时覆盖，再结束工作台连接，原始 YAML 和 URDF 文件不受影响'}</p><p>${en ? 'If safe parking or restoration fails, the session stays connected and you must inspect the robot state' : '如果安全停放或参数恢复失败，将保留工作台连接，请先排查机械臂状态'}</p><div class="actions"><button class="button" id="cancel-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-disconnect">${en ? 'Park, restore and disconnect' : '停放、撤销并断连'}</button></div>`;
+    dialog.showModal();
+    $('cancel-disconnect').onclick = () => dialog.close();
+    $('confirm-disconnect').onclick = () => { dialog.close(); blockingOperation(busyText('正在停放、撤销临时参数并断连...', 'Parking, restoring and disconnecting...'), async () => {
+        await api.request('workbench_stop', {});
+        toast(en ? 'Temporary candidates removed before disconnect' : '临时应用已在断连前撤销');
+    }); };
+}
 function workbenchConfirm() { const info = state.info, dialog = $('confirm-dialog'); dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3>${t('workbenchTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd>${t(info.write_enabled === true ? 'enabled' : 'unknown')}</dd></dl><label class="confirmation"><input id="workspace-confirmed" type="checkbox"><span>${t('confirm')}</span></label><div class="actions"><button id="workspace-cancel" class="button">${t('cancel')}</button><button id="workspace-connect" class="button primary" disabled>${t('startWorkbench')}</button></div>`; dialog.showModal(); $('workspace-confirmed').onchange = () => $('workspace-connect').disabled = !$('workspace-confirmed').checked; $('workspace-cancel').onclick = () => dialog.close(); $('workspace-connect').onclick = () => { dialog.close(); blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), () => connectWorkbench(true)); }; }
 async function workbenchCommand(action) { const methods = { activate: 'activate', park: 'park', deactivate: 'deactivate', hold: 'hold', clear_fault: 'clear_fault', fault_compliant: 'fault_compliant', fault_rigid: 'fault_rigid' }; const method = methods[action]; if (!method) throw new Error('unknown workspace action'); state.commandState = 'submitting'; const result = await workbenchRequest(method); state.commandState = 'accepted'; return result; }
 async function applyTuning() { const draft = state.tuneDraft || state.admittance; if (!draft) throw new Error('admittance parameters are not loaded'); const params = { observer_mode: draft.observer_mode, mass: draft.mass, damping: draft.damping, stiffness: draft.stiffness, max_delta_q: draft.max_delta_q, max_delta_q_dot: draft.max_delta_q_dot, momentum_gain: draft.momentum_gain }; state.admittance = await workbenchRequest('set_admittance', params); state.tuneDraft = structuredClone(state.admittance); state.savePreview = null; render(); }
@@ -1235,6 +1627,7 @@ function onEvent(event) {
     if (event.event === 'native_log') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'telemetry') {
         const previousCalibrationPhase = state.telemetry?.model_calibration?.phase;
+        const previousRobotState = state.telemetry?.robot_state;
         state.telemetry = event.data; state.telemetryReceivedAt = Date.now(); state.telemetryHistory.push(event.data); if (state.telemetryHistory.length > 600) state.telemetryHistory.shift();
         checkRuntimeAlerts(event.data);
         const calibration = event.data?.model_calibration;
@@ -1243,9 +1636,16 @@ function onEvent(event) {
         // its directory for a different (possibly incomplete) live task.
         if (calibration?.directory && !state.modelCalibrationOffline) state.modelCalibrationDirectory = calibration.directory;
         const phaseBoundary = calibration?.phase !== previousCalibrationPhase && ['waiting_replay_confirmation', 'complete', 'cancelled', 'failed'].includes(calibration?.phase);
-        if (phaseBoundary && state.page === 'workbench' && state.workbenchTab === 'calibration') render(); else updateWorkbenchLive();
+        const robotStateChanged = state.telemetry?.robot_state !== previousRobotState;
+        if (phaseBoundary && state.page === 'workbench' && state.workbenchTab === 'calibration') {
+            refreshCalibrationOrDefer();
+        } else {
+            updateWorkbenchLive();
+        }
+        if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); }
+        syncCompletedGainCandidate(calibration);
     }
-    if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running') setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
+    if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running') setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
     if (event.event === 'error') { state.backendError = event.error; toast(event.error, true); statusUI(); }
 }
 async function boot() {

@@ -145,7 +145,12 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     }
     if(state_ == RobotState::FAULT) {
-        return tl::make_unexpected(make_fault(RobotErr::FAULTED));
+        // A failed FIRST activation (including motors not powered yet) must
+        // not trap the operator in FAULT forever. Only startup bus faults
+        // without an active holding controller are eligible for retry.
+        // An in-motion safety FAULT must still be cleared explicitly.
+        const auto reset = clear_fault();
+        if(!reset) return tl::make_unexpected(reset.error());
     }
     if(state_ == RobotState::ACTIVE) {
         return tl::make_unexpected(make_fault(RobotErr::ALREADY_ACTIVE));
@@ -333,7 +338,8 @@ void Robot::clear_calibration_hold_gains() noexcept {
     calibration_hold_source_.reset();
 }
 
-bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
+bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode) {
+    if(mode!=JointImpedanceMode::RIGID_TRACKING && mode!=JointImpedanceMode::COMPLIANT_TRACKING)return false;
     const std::size_t count = cfg_.joint_names.size();
     if(state_ != RobotState::ACTIVE || gains.kp.size()!=count || gains.kd.size()!=count) return false;
     for(std::size_t i=0;i<count;++i) {
@@ -345,8 +351,9 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
     const auto now=Clock::now();
     // Revisions start at the CURRENT blended gains, never jump back to the
     // user's rigid tracking gains on each automatic adjustment.
-    JointImpedanceGains source=cfg_.ctrller.rigid_tracking_gains;
-    if(calibration_tracking_gains_ && calibration_tracking_source_) {
+    JointImpedanceGains source=mode==JointImpedanceMode::COMPLIANT_TRACKING ?
+        cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains;
+    if(calibration_tracking_gains_ && calibration_tracking_source_ && calibration_tracking_mode_==mode) {
         const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
         const double x=std::clamp(elapsed/0.12,0.0,1.0);
         const double blend=x*x*(3.0-2.0*x);
@@ -358,6 +365,7 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
         source=JointImpedanceGains{last_joint_cmd_.kp,last_joint_cmd_.kd};
     }
     calibration_tracking_source_=std::move(source);
+    calibration_tracking_mode_=mode;
     calibration_tracking_gains_=gains;
     calibration_tracking_started_=now;
     return true;
@@ -366,6 +374,34 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains) {
 void Robot::clear_calibration_tracking_gains() noexcept {
     calibration_tracking_gains_.reset();
     calibration_tracking_source_.reset();
+    calibration_tracking_mode_=JointImpedanceMode::RIGID_TRACKING;
+}
+
+bool Robot::set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains) {
+    if(state_ != RobotState::INACTIVE) return false;
+    const std::size_t count=cfg_.joint_names.size();
+    if(gains.kp.size()!=count || gains.kd.size()!=count) return false;
+    for(std::size_t i=0;i<count;++i) {
+        if(!std::isfinite(gains.kp[i]) || !std::isfinite(gains.kd[i]) ||
+           gains.kp[i]<0.0 || gains.kd[i]<0.0 ||
+           gains.kp[i]>cfg_.safety.limits.max_kp[i] ||
+           gains.kd[i]>cfg_.safety.limits.max_kd[i]) return false;
+    }
+    auto candidate=cfg_.ctrller;
+    switch(mode) {
+        case JointImpedanceMode::RIGID_HOLD: candidate.rigid_hold_gains=gains; break;
+        case JointImpedanceMode::RIGID_TRACKING: candidate.rigid_tracking_gains=gains; break;
+        case JointImpedanceMode::COMPLIANT_HOLD: candidate.compliant_hold_gains=gains; break;
+        case JointImpedanceMode::COMPLIANT_DRAG: candidate.compliant_drag_gains=gains; break;
+        case JointImpedanceMode::COMPLIANT_TRACKING: candidate.compliant_tracking_gains=gains; break;
+        default: return false;
+    }
+    const auto updated=ctrller_.configure(candidate);
+    if(!updated)return false;
+    cfg_.ctrller=std::move(candidate);
+    clear_calibration_tracking_gains();
+    clear_calibration_hold_gains();
+    return true;
 }
 
 bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
@@ -571,11 +607,13 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
 
-    if(calibration_tracking_gains_ && ctrller_.get_impedance_mode() == JointImpedanceMode::RIGID_TRACKING) {
+    if(calibration_tracking_gains_ && ctrller_.get_impedance_mode() == calibration_tracking_mode_) {
         const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
         const double fraction=std::clamp(elapsed/0.12,0.0,1.0);
         const double smooth=fraction*fraction*(3.0-2.0*fraction);
-        const auto& source=calibration_tracking_source_ ? *calibration_tracking_source_ : cfg_.ctrller.rigid_tracking_gains;
+        const auto& source=calibration_tracking_source_ ? *calibration_tracking_source_ :
+            (calibration_tracking_mode_==JointImpedanceMode::COMPLIANT_TRACKING ?
+                cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains);
         for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
             joint_cmd.kp[i]=source.kp[i]+smooth*(calibration_tracking_gains_->kp[i]-source.kp[i]);
             joint_cmd.kd[i]=source.kd[i]+smooth*(calibration_tracking_gains_->kd[i]-source.kd[i]);
@@ -902,7 +940,30 @@ tl::expected<void, RobotFault> Robot::return_to_fault_rigid_hold() {
 tl::expected<void, RobotFault> Robot::clear_fault() {
     if(state_ == RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
-    if(!fault_hold_active_) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
+    if(!fault_hold_active_) {
+        // Bus connection / motor activation can fail before the controller
+        // ever reaches ACTIVE (e.g. USB-CAN connected, motors not powered).
+        // The hardware backend already attempted to disable every motor on
+        // the failed activation path. Retry a best-effort disable, then
+        // restore only the lifecycle to INACTIVE; never command motion here.
+        const bool startup_failure = current_fault_ &&
+            (current_fault_->code == RobotErr::MOTOR_BUS_CONNECT_FAILED ||
+             current_fault_->code == RobotErr::MOTOR_BUS_ACTIVATE_FAILED) &&
+            !has_completed_cycle_;
+        if(!startup_failure) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
+        (void)motor_bus_->deactivate();
+        clear_calibration_hold_gains();
+        clear_calibration_tracking_gains();
+        ctrller_.reset();
+        interaction_controller_.reset();
+        safety_.clear_cmd_history();
+        clear_runtime_state();
+        fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
+        current_fault_.reset();
+        last_fault_.reset();
+        state_ = RobotState::INACTIVE;
+        return {};
+    }
 
     const auto actuator_state = motor_bus_->read();
     if(!actuator_state) return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED, actuator_state.error()));

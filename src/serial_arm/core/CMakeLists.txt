@@ -367,7 +367,7 @@ endif()
 # 测试
 # =============================================================================
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     find_package(GTest REQUIRED)
 

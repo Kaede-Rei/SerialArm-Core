@@ -321,3 +321,65 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
  .model-calibration-options label{grid-template-rows:auto 36px}
  .task-directory{grid-template-columns:minmax(0,1fr)}
 }
+/* Keep translated user-facing diagnostics primary; raw backend text is opt-in. */
+.priority-error-card .error-technical{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+.priority-error-card .error-technical summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+.priority-error-card .error-technical pre{max-height:190px;overflow:auto;margin:9px 0 0;font-size:11px}
+
+.calibration-standalone-card [hidden]{display:none!important}
+
+/* Consistent spacing and alignment across the workspace and calibration panels */
+.page,.workspace-layout,.workspace-panel,.workspace-section,.workspace-section-head{min-width:0}
+.workspace-section-head>div:first-child{flex:1;min-width:0}
+.workspace-section-head h3{margin:0 0 7px;line-height:1.4}
+.workspace-section-head .hint{margin:0;font-size:12px;line-height:1.65;overflow-wrap:anywhere}
+.workspace-section-head>.result-badge,.workspace-section-head>.result-badges{flex:0 0 auto;align-self:flex-start}
+.result-badge{white-space:nowrap;line-height:1.4;justify-content:center;font-size:10px}
+.workspace-panel{gap:16px}
+.workspace-section{padding:18px;overflow-wrap:anywhere}
+.workspace-section>.workspace-actions{margin-top:12px}
+.workspace-actions{gap:9px;align-items:center;min-width:0}
+.workspace-actions>.button{min-height:38px;max-width:100%;white-space:normal;text-align:center;line-height:1.45}
+.workspace-section .callout{margin-top:12px;line-height:1.7}
+.workspace-section label:not(.calibration-advanced-link):not(.calibration-advanced-target-label){color:var(--muted)}
+.calibration-panel select{min-height:38px;max-width:100%;padding:7px 30px 7px 11px;border:1px solid var(--line);border-radius:9px;background:var(--subtle);color:var(--text)}
+.calibration-panel .calibration-standalone-card>label{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px}
+.calibration-panel .calibration-standalone-card>label select{min-width:130px}
+.calibration-entry{min-height:108px;justify-content:center;gap:7px}
+.calibration-entry>span:last-child{line-height:1.5}
+.calibration-standalone-card{display:flex;flex-direction:column;gap:12px}
+.calibration-standalone-card .workspace-section-head{margin-bottom:0}
+.calibration-tool-history{display:flex;flex-direction:column;gap:12px}
+.calibration-tool-history .workspace-actions{margin-top:0}
+.calibration-tool-history .callout{min-width:0;overflow-wrap:anywhere}
+.calibration-tool-list{display:grid;gap:8px}
+.calibration-tool-record{white-space:normal;max-width:100%;min-width:0;text-align:left;overflow-wrap:anywhere}
+.calibration-tool-record small{font-size:10px;color:var(--muted)}
+.calibration-quick-bar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 16px;align-items:center;padding:14px 17px;border:1px solid var(--line);background:var(--subtle);border-radius:12px}
+.calibration-quick-state{display:flex;align-items:center;gap:9px;min-width:0;font-size:12px}
+.calibration-quick-state strong{font-weight:650}
+.calibration-quick-state #calibration-robot-state{font:11px ui-monospace,monospace;color:var(--muted)}
+.calibration-state-dot{width:8px;height:8px;border-radius:50%;background:var(--dim);flex:0 0 8px}
+.calibration-state-dot.on{background:var(--green)}
+.calibration-state-dot.standby{background:var(--accent)}
+.calibration-quick-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.calibration-quick-actions>.button{min-height:37px}
+.calibration-quick-hint{grid-column:1/-1;margin:0!important;font-size:11px!important;color:var(--muted)!important}
+.calibration-empty-guidance{padding:10px 12px;margin:8px 0;border:1px solid color-mix(in srgb,var(--accent) 26%,var(--line));border-radius:8px;background:color-mix(in srgb,var(--accent) 6%,var(--card));color:var(--text);font-size:12px;line-height:1.7}
+.calibration-workflow-steps{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.calibration-workflow-step{display:flex;align-items:center;gap:7px;min-height:44px;padding:9px;border:1px solid var(--line);border-radius:9px;color:var(--muted);font-size:11px;line-height:1.5}
+.calibration-workflow-step span{display:grid;place-items:center;flex:0 0 20px;height:20px;border-radius:50%;border:1px solid var(--line);font-size:10px}
+.calibration-workflow-step.current{border-color:var(--accent);background:var(--tint);color:var(--text)}
+.calibration-workflow-step.complete{color:var(--green)}
+.calibration-advanced-next{border-left:3px solid var(--accent);padding:9px 12px;background:var(--subtle);border-radius:0 8px 8px 0;font-size:12px;line-height:1.7}
+.calibration-muted-note{font-size:12px;line-height:1.7;color:var(--muted)}
+.calibration-advanced-card .calibration-advanced-target-label select{width:100%;min-width:0}
+.calibration-advanced-card .workspace-actions>span.hint{margin:0;flex:1 1 180px;min-width:0}
+.model-calibration-card .workspace-section-head,.calibration-advanced-card .workspace-section-head{margin-bottom:0}
+@media(max-width:660px){
+ .calibration-quick-bar{grid-template-columns:minmax(0,1fr)}
+ .calibration-quick-actions{justify-content:flex-start}
+ .calibration-workflow-steps{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .calibration-entry{min-height:95px}
+ .workspace-section{padding:14px}
+}

@@ -54,6 +54,7 @@ struct JointCtrllerCfg {
     JointImpedanceGains compliant_hold_gains;            ///< 柔性保持模式增益
     JointImpedanceGains compliant_drag_gains;            ///< 柔性拖拽模式增益
     JointImpedanceGains compliant_tracking_gains;        ///< 柔性跟踪模式增益
+    JointImpedanceGains identification_tracking_gains;   ///< 辨识轨迹回放专用增益
 
     bool allow_full_cmd{ false };                         ///< 是否允许直接设置关节完整控制命令
 };

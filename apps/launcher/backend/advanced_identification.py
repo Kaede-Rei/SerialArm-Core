@@ -5,6 +5,7 @@ All results are review-only. Nothing here changes robot runtime parameters
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 import numpy as np
@@ -13,6 +14,14 @@ from full_inertial import (
     _prepare_inputs, _articulated_mapping, _sampling_map, _extract_rows,
     _fit_regressor, _dynamic_parameters_to_urdf_fields, physical_inertia,
 )
+
+def _native_file_fingerprint(contents):
+    """Match Core's 64-bit FNV-1a fingerprint for runtime candidate validation."""
+    value=1469598103934665603
+    for item in contents:
+        value=((value^item)*1099511628211)&0xffffffffffffffff
+    return f'{value:016x}'
+
 
 MODES = ('mass', 'com', 'mass_com', 'inertia', 'full')
 PARAMETERS = {
@@ -483,7 +492,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     report={
         'schema':'serial_arm_advanced_identification', 'task_id':metadata.get('task_id'),
         'identification_mode':mode,'source_urdf_fingerprint':metadata.get('urdf_fingerprint'),
-        'candidate_urdf':str(filename), 'locked_links':sorted(locked),
+        'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
         'status':'review_passed_offline' if passed else 'requires_review',
         'automatic_application_allowed':False, 'validated_on_hardware':False,
         'friction_validation_reusable':False, 'friction_status':'requires_revalidation_with_selected_model',

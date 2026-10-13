@@ -7,7 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(ament_cmake REQUIRED)
 find_package(serial_arm_core CONFIG REQUIRED)
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
     find_package(ament_cmake_pytest REQUIRED)
 endif()
 find_package(rclcpp REQUIRED)
@@ -67,7 +67,7 @@ install(FILES serial_arm_hardware_plugin.xml
 ament_export_include_directories(include)
 ament_export_dependencies(hardware_interface pluginlib)
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test")
     ament_add_pytest_test(test_profile_utils test/test_profile_utils.py)
     ament_add_pytest_test(test_external_profile_launch_contract test/test_external_profile_launch_contract.py)
     ament_add_pytest_test(test_runtime_overrides_xacro test/test_runtime_overrides_xacro.py)

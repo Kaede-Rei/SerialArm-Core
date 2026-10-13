@@ -8,14 +8,6 @@
 # 05 shutdown         停放与正常关机策略
 # 06 capability       可选高级能力
 #
-# 当前状态（2026-10-04）
-# - 已同步最新 SolidWorks 模型；joint3/joint4 方向与末端有效 STL 已在新版 CAD 中修正
-# - 已完成 drag 初步真机验证，但尚未完成 Tomato-Picker 独立动力学/力矩/摩擦/导纳标定
-# - 未特别说明的控制/导纳参数当前沿用已验证的 DM-Arm Gray 配置作为 bring-up 初值
-# - TODO(calibration): 最终机械模型定型后依次复核 gravity_scale -> torque_bias/threshold -> friction -> admittance M/D/K -> park/fault-recovery limits
-# - TODO(tool): tool0 当前固定在新版 joint7 安装轴心；待机械明确 TCP 与相机安装坐标后补充 tcp/camera frames
-# - SerialArm-Core 仅控制 joint1~joint6；真实 EEF joint7/joint7-1/joint7-2 保留在 URDF，但不进入 Core joint_names
-
 # 01 model
 model:
   urdf_path: ../../urdf/tomato_picker.urdf                                 # Tomato-Picker 动力学 URDF，路径相对当前 YAML
@@ -67,6 +59,11 @@ control:
     compliant_tracking:
       kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节跟踪位置刚度
       kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
+
+    # 辨识回放专用增益，不影响普通刚性和柔性跟踪
+    identification_tracking:
+      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}
+      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}
 
 # 04 safety_policy
 safety_policy:

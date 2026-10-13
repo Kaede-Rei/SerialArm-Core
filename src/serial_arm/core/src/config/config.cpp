@@ -248,13 +248,14 @@ std::filesystem::path resolve_urdf_path(const std::filesystem::path& config_path
  * @param cfg 控制器配置
  * @return 阻抗增益的指针数组
  */
-std::array<const JointImpedanceGains*, 5> all_gains(const JointCtrllerCfg& cfg) {
+std::array<const JointImpedanceGains*, 6> all_gains(const JointCtrllerCfg& cfg) {
     return {
         &cfg.rigid_hold_gains,
         &cfg.rigid_tracking_gains,
         &cfg.compliant_hold_gains,
         &cfg.compliant_drag_gains,
         &cfg.compliant_tracking_gains,
+        &cfg.identification_tracking_gains,
     };
 }
 
@@ -484,6 +485,8 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.ctrller.compliant_hold_gains = load_gains(controller, "compliant_hold");
         cfg.ctrller.compliant_drag_gains = load_gains(controller, "compliant_drag");
         cfg.ctrller.compliant_tracking_gains = load_gains(controller, "compliant_tracking");
+        cfg.ctrller.identification_tracking_gains = controller["identification_tracking"] ?
+            load_gains(controller, "identification_tracking") : cfg.ctrller.rigid_tracking_gains;
 
 
         const YAML::Node dynamics = require_map(root, "dynamics", "root");
@@ -666,12 +669,14 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
         cfg.runtime.tracking_impedance_mode = load_tracking_impedance_mode(runtime);
         const YAML::Node controller = require_map(control_node, "controller", "control");
-        reject_unknown_keys(controller, "control.controller", { "allow_full_cmd", "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking" });
+        reject_unknown_keys(controller, "control.controller", { "allow_full_cmd", "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking" });
         reject_unknown_keys(require_map(controller, "rigid_hold", "controller"), "controller.rigid_hold", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "rigid_tracking", "controller"), "controller.rigid_tracking", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_hold", "controller"), "controller.compliant_hold", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_drag", "controller"), "controller.compliant_drag", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_tracking", "controller"), "controller.compliant_tracking", { "kp", "kd" });
+        if(controller["identification_tracking"])
+            reject_unknown_keys(require_map(controller, "identification_tracking", "controller"), "controller.identification_tracking", { "kp", "kd" });
         cfg.ctrller.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", "controller");
         cfg.ctrller.rigid_hold_gains.kp = load_named_joint_vector(require_map(controller, "rigid_hold", "controller")["kp"], cfg.joint_names, "controller.rigid_hold.kp");
         cfg.ctrller.rigid_hold_gains.kd = load_named_joint_vector(require_map(controller, "rigid_hold", "controller")["kd"], cfg.joint_names, "controller.rigid_hold.kd");
@@ -683,6 +688,12 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.ctrller.compliant_drag_gains.kd = load_named_joint_vector(require_map(controller, "compliant_drag", "controller")["kd"], cfg.joint_names, "controller.compliant_drag.kd");
         cfg.ctrller.compliant_tracking_gains.kp = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kp"], cfg.joint_names, "controller.compliant_tracking.kp");
         cfg.ctrller.compliant_tracking_gains.kd = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kd"], cfg.joint_names, "controller.compliant_tracking.kd");
+        cfg.ctrller.identification_tracking_gains = cfg.ctrller.rigid_tracking_gains;
+        if(controller["identification_tracking"]) {
+            const auto id_tracking = require_map(controller, "identification_tracking", "controller");
+            cfg.ctrller.identification_tracking_gains.kp = load_named_joint_vector(id_tracking["kp"], cfg.joint_names, "controller.identification_tracking.kp");
+            cfg.ctrller.identification_tracking_gains.kd = load_named_joint_vector(id_tracking["kd"], cfg.joint_names, "controller.identification_tracking.kd");
+        }
 
         const YAML::Node joints = require_map(calibration_node, "joints", "calibration");
         reject_unknown_joint_keys(joints, cfg.joint_names, "calibration.joints");
@@ -983,7 +994,8 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs->ctrller.rigid_tracking_gains.kp != rhs->ctrller.rigid_tracking_gains.kp || lhs->ctrller.rigid_tracking_gains.kd != rhs->ctrller.rigid_tracking_gains.kd ||
         lhs->ctrller.compliant_hold_gains.kp != rhs->ctrller.compliant_hold_gains.kp || lhs->ctrller.compliant_hold_gains.kd != rhs->ctrller.compliant_hold_gains.kd ||
         lhs->ctrller.compliant_drag_gains.kp != rhs->ctrller.compliant_drag_gains.kp || lhs->ctrller.compliant_drag_gains.kd != rhs->ctrller.compliant_drag_gains.kd ||
-        lhs->ctrller.compliant_tracking_gains.kp != rhs->ctrller.compliant_tracking_gains.kp || lhs->ctrller.compliant_tracking_gains.kd != rhs->ctrller.compliant_tracking_gains.kd) add("controller.impedance_gains");
+        lhs->ctrller.compliant_tracking_gains.kp != rhs->ctrller.compliant_tracking_gains.kp || lhs->ctrller.compliant_tracking_gains.kd != rhs->ctrller.compliant_tracking_gains.kd ||
+        lhs->ctrller.identification_tracking_gains.kp != rhs->ctrller.identification_tracking_gains.kp || lhs->ctrller.identification_tracking_gains.kd != rhs->ctrller.identification_tracking_gains.kd) add("controller.impedance_gains");
     if(lhs->safety.limits.min_pos != rhs->safety.limits.min_pos || lhs->safety.limits.max_pos != rhs->safety.limits.max_pos) add("limits.position");
     if(lhs->safety.limits.max_vel != rhs->safety.limits.max_vel) add("limits.max_cmd_vel_or_state_base");
     if(lhs->safety.limits.max_acc != rhs->safety.limits.max_acc) add("limits.max_acc");

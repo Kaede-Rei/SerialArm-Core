@@ -9,9 +9,8 @@
 ./tools/bootstrap_standalone.sh --robot dm_arm
 source install/standalone/setup.bash
 
-# 仅库或同时运行开发测试
+# 仅构建核心库
 ./tools/bootstrap_standalone.sh --without-terminal
-./tools/bootstrap_standalone.sh --with-tests
 
 # ROS2 全仓构建
 source /opt/ros/humble/setup.bash
@@ -22,34 +21,15 @@ source install/setup.bash
 
 源码位于 `src/`，GUI 位于 `apps/launcher/`，安装逻辑位于 `tools/install/`
 
-## 离线测试
+## 验证与部署
 
-```bash
-python3 -m unittest discover -s tools/install/tests -v
-python3 src/serial_arm/core/tests/bootstrap_standalone_cli_test.py
-python3 src/serial_arm/core/tests/standalone_dependency_contract.py
-python3 -m unittest discover -s apps/launcher/tests -v
-node --test apps/launcher/tests/*.test.cjs
-node apps/launcher/scripts/verify.cjs
-```
+分发仓库不含开发团队的 `tests/`、`test/` 及测试数据夹具
 
-安装器测试用真实控制终端和假 sudo/apt 重现密码交互，验证提示可见与密码不入日志
+代码修改应先在完整开发环境完成单元与集成测试，随后在目标 Ubuntu、ROS2 与达妙电机上按安全规程进行真机验收
 
-Launcher 测试用假进程覆盖 PTY、配置确认、设备互斥与退出，不驱动机器人
+常规使用仍从仓库根目录执行 `./install.sh`，Developer 用途会构建选中的工程组件，但在发布包中自动跳过不存在的测试源码
 
-安装 GUI 依赖后可执行 Electron 界面测试
-
-```bash
-SERIAL_ARM_LAUNCHER_PYTHON="$PWD/.install/gui-venv/bin/python" \
-  apps/launcher/node_modules/electron/dist/electron \
-  apps/launcher/tests/electron-smoke.cjs
-```
-
-界面测试使用离线状态，检查 Profile、模式、确认、主题、语言、偏好与 IPC 限制
-
-终端测试验证系统剪贴板复制、复制全部、右键菜单、粘贴输入与 Ctrl+C，输入由测试夹具接收
-
-以上检查不替代目标环境的 Core/ROS2 全栈编译与真机验收
+静态检查不能代替完整 C++ 构建、机械臂轨迹跟踪验证与实际力矩观测验证
 
 ## 文档约定
 

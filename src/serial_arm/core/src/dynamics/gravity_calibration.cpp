@@ -390,7 +390,10 @@ void ModelCalibrationRecorder::writer_loop() {
             if(queue_.empty() && stop_requested_.load()) break;
             frame = std::move(queue_.front());
             queue_.pop_front();
-            frames_.push_back(frame);
+            // Pre-adaptation remains in the raw CSV for diagnostics, but
+            // must NEVER enter the online friction/identification buffer.
+            // Long warm-up runs would otherwise pollute or bloat that buffer.
+            if(frame.phase != "gain_adaptation")frames_.push_back(frame);
         }
         out << frame_line(frame) << '\n';
         if(!out) {

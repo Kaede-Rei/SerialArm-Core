@@ -58,7 +58,7 @@ install(FILES package.xml
     DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     find_package(GTest REQUIRED)
 
     add_executable(serial_arm_hardware_damiao_tests

@@ -66,7 +66,7 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     find_package(GTest REQUIRED)
 
     add_executable(serial_arm_protocol_damiao_usb2can_tests

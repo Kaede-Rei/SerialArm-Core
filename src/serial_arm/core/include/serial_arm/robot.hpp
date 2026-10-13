@@ -199,7 +199,9 @@ public:
     bool begin_calibration_hold(const JointImpedanceGains& gains);
     bool set_calibration_hold_gains(const JointImpedanceGains& gains);
     void clear_calibration_hold_gains() noexcept;
-    bool set_calibration_tracking_gains(const JointImpedanceGains& gains);
+    bool set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode=JointImpedanceMode::RIGID_TRACKING);
+    // Explicit temporary runtime gains; only accepted while motors are INACTIVE.
+    bool set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains);
     void clear_calibration_tracking_gains() noexcept;
     /** Shutdown-only compliant-to-rigid Kp/Kd handover. The current reference
      * is reset to measured q by set_impedance_mode before calling this.
@@ -510,6 +512,7 @@ private:
     std::optional<JointImpedanceGains> calibration_hold_source_;
     std::optional<JointImpedanceGains> calibration_tracking_gains_;
     std::optional<JointImpedanceGains> calibration_tracking_source_;
+    JointImpedanceMode calibration_tracking_mode_{JointImpedanceMode::RIGID_TRACKING};
     std::optional<TimePoint> park_rigid_ramp_started_;
     double park_rigid_ramp_duration_s_{0.65};
     TimePoint calibration_tracking_started_{};

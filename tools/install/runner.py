@@ -159,7 +159,7 @@ class Runner:
 
     def native(self):
         self.apt(['build-essential', 'cmake', 'python3-venv', 'python3-dev',
-                  'libyaml-cpp-dev', 'libeigen3-dev'] + (['libgtest-dev'] if self.plan.tests else []))
+                  'libyaml-cpp-dev', 'libeigen3-dev'] + (['libgtest-dev'] if self.plan.tests and (self.root/'src/serial_arm/core/tests').is_dir() else []))
         for command in ('cmake', 'c++'):
             if not shutil.which(command):
                 raise InstallError(f'缺少 {command}；请准备构建工具后重试')
@@ -169,7 +169,7 @@ class Runner:
         argv = ['bash', self.root / 'tools/bootstrap_standalone.sh']
         if self.plan.robot == 'dm_arm':
             argv += ['--robot', 'dm_arm']
-        if self.plan.tests:
+        if self.plan.tests and (self.root/'src/serial_arm/core/tests').is_dir():
             argv += ['--with-tests']
         if not self.plan.terminal:
             argv += ['--without-terminal']
@@ -221,13 +221,17 @@ class Runner:
             self.run('rosdep-update', update, source=self.ros_setup)
             types = [value for kind in ('build', 'buildtool', 'build_export', 'buildtool_export', 'exec')
                      for value in ('--dependency-types', kind)]
-            if self.plan.tests:
+            if self.plan.tests and (self.root/'src/serial_arm/core/tests').exists():
                 types += ['--dependency-types', 'test']
             cmd = ['rosdep', 'install', '--from-paths', *paths, '--ignore-src', '-y',
                    '--rosdistro', self.plan.ros_distro, *types]
             if not self.plan.python:
                 cmd += ['--skip-keys', 'ament_cmake_python python3-dev pybind11-dev python3-numpy']
             self.run('rosdep-install', cmd, source=self.ros_setup, terminal=True)
+        installed_test_sources = (self.root/'src/serial_arm/core/tests').exists()
+        run_tests = bool(self.plan.tests and installed_test_sources)
+        if self.plan.tests and not run_tests:
+            print('开发包不包含 tests/，将继续构建全部组件并跳过内置测试')
         colcon = ['colcon', '--log-base', str(self.logs / 'colcon')]
         build = ['build', '--base-paths', *paths, '--build-base', str(self.build),
                  '--install-base', str(self.prefix), '--merge-install', '--symlink-install',
@@ -235,9 +239,9 @@ class Runner:
                  '-DCMAKE_BUILD_TYPE=Release', '-DSERIAL_ARM_ENABLE_ROS2=ON',
                  '-DSERIAL_ARM_BUILD_PYTHON=' + ('ON' if self.plan.python else 'OFF'),
                  '-DSERIAL_ARM_BUILD_TERMINAL=' + ('ON' if self.plan.terminal else 'OFF'),
-                 '-DBUILD_TESTING=' + ('ON' if self.plan.tests else 'OFF')]
+                 '-DBUILD_TESTING=' + ('ON' if run_tests else 'OFF')]
         self.run('ros2-build', colcon + build, source=self.ros_setup)
-        if self.plan.tests:
+        if run_tests:
             self.run('ros2-test', colcon + ['test', '--base-paths', *paths, '--build-base', str(self.build),
                                          '--install-base', str(self.prefix), '--merge-install', '--return-code-on-test-failure'], source=self.setup)
             self.run('ros2-test-result', ['colcon', 'test-result', '--test-result-base', str(self.build), '--verbose'])

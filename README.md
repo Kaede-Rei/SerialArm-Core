@@ -92,7 +92,6 @@ Robot Profile 将 Core YAML、Hardware Backend、模型、Controllers 和 MoveIt
 | `apps/launcher/` | Electron 界面、Python 后端与测试 |
 | `tools/` / `conanfile.py` | 安装器、Standalone 构建与依赖声明 |
 | `docs/` | 使用说明与 API 参考 |
-| `docs/other/` | 私人阅读资料与原始长文，Git 忽略 |
 
 `build/`、`install/`、`log/` 与 `.install/` 是自动生成目录，Git 忽略
 
@@ -103,6 +102,5 @@ Robot Profile 将 Core YAML、Hardware Backend、模型、Controllers 和 MoveIt
 - [配置与机器人接入](docs/tutorial.md)
 - [架构与职责边界](docs/architecture.md)
 - [API 参考](docs/reference/api.md)
-- [开发与验证](docs/development.md)
 
 MIT License，见 [LICENSE](LICENSE)

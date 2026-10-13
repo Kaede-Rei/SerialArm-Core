@@ -24,8 +24,8 @@ Dependency strategy:
   2. If system dependencies are incomplete, try Conan binary packages only
   3. Build missing Conan packages from source only after explicit opt-in
 
-By default, build and install the standalone SerialArm Core without developer tests
-Use --with-tests to build and run the Core test suite with CTest
+The distributed source excludes the internal test suite
+An external developer checkout with tests may use --with-tests
 Use --without-terminal for a library-only installation
 With --robot dm_arm, also install the Damiao USB2CAN protocol, Damiao hardware
 backend, robot profiles and DM-Arm resources required by dm_arm_gray/white

@@ -49,6 +49,30 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
         raise ValueError('完整惯量候选进程没有返回有效 JSON') from error
 
 
+def restore_temporary_candidates_for_disconnect(native):
+    """Park and restore process-local candidates before a normal disconnect
+
+    Keep the session running if restoration cannot be verified
+    """
+    overrides = native.request('candidate_overrides', {}, timeout=8)
+    enabled = [kind for kind in ('dynamics', 'gravity', 'gain')
+               if overrides.get(kind + '_applied')]
+    if not enabled:
+        return []
+    status = native.request('status', {}, timeout=8)
+    if status.get('robot_state') != 'INACTIVE':
+        native.request('park', {}, timeout=120)
+        status = native.request('status', {}, timeout=8)
+    if status.get('robot_state') != 'INACTIVE':
+        raise ValueError('无法确认机械臂已安全停放，已保留连接，请检查机器人状态后重试')
+    for kind in enabled:
+        native.request('candidate_' + kind + '_restore', {}, timeout=12)
+    remaining = native.request('candidate_overrides', {}, timeout=8)
+    if any(remaining.get(kind + '_applied') for kind in ('gain', 'gravity', 'dynamics')):
+        raise ValueError('临时参数尚未全部撤销，已保留连接，请检查并重试')
+    return enabled
+
+
 def emit(data):
     with output_lock:
         print(json.dumps(data, ensure_ascii=False), flush=True)
@@ -118,7 +142,13 @@ def main():
                     native_method = params.get('method')
                     result = native.request(native_method, params.get('params', {}), timeout=120 if native_method == 'park' else (45 if native_method in ('model_calibration_teach_stop','model_calibration_import_trajectory') else 8))
                 elif method == 'workbench_stop':
-                    result = native.stop(params.get('force') is True)
+                    # Temporary overrides are process-local, but restore explicitly
+                    # before disconnect so the outcome is observable and auditable
+                    # When safe parking or restoration fails keep the session alive
+                    force = params.get('force') is True
+                    if not force and native.status().get('state') == 'running':
+                        restore_temporary_candidates_for_disconnect(native)
+                    result = native.stop(force)
                 elif method == 'workbench_config_preview':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
@@ -133,6 +163,43 @@ def main():
                     result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'])
                 elif method == 'workbench_export':
                     result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
+                elif method == 'calibration_candidate_prepare':
+                    from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
+                    kind = params.get('kind')
+                    if kind == 'gain': result = prepare_gain_candidate(params.get('directory', ''))
+                    elif kind == 'gravity': result = prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True)
+                    elif kind == 'dynamics': result = prepare_dynamics_candidate(params.get('report', ''))
+                    else: raise ValueError('未知的候选类型')
+                elif method == 'calibration_candidate_apply':
+                    from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
+                    kind = params.get('kind')
+                    if kind == 'gain': result_path=prepare_gain_candidate(params.get('directory', ''))['candidate_path'];native_args={'path':result_path}
+                    elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True)['candidate_path'];native_args={'path':result_path}
+                    elif kind == 'dynamics': result_path=prepare_dynamics_candidate(params.get('report', ''))['report'];native_args={'report':result_path}
+                    else: raise ValueError('未知的候选类型')
+                    native.request('candidate_'+kind+'_apply', native_args, timeout=12)
+                    result=native.request('candidate_overrides',{},timeout=8)
+                elif method == 'calibration_candidate_restore':
+                    kind = params.get('kind')
+                    if kind not in ('gain','gravity','dynamics'): raise ValueError('未知的候选类型')
+                    native.request('candidate_'+kind+'_restore', {}, timeout=12)
+                    result=native.request('candidate_overrides',{},timeout=8)
+                elif method == 'calibration_candidate_status':
+                    result = native.request('candidate_overrides', {}, timeout=8)
+                elif method == 'calibration_tool_records':
+                    from workflow_registry import scan
+                    result = scan(ROOT, params.get('kind', ''), params.get('limit', 60))
+                elif method == 'calibration_tool_load':
+                    from workflow_registry import load
+                    result = load(params.get('directory', ''), params.get('kind', ''))
+                elif method == 'calibration_tool_export':
+                    from artifact_exports import export_artifact
+                    result = export_artifact(ROOT, params.get('directory', ''), params.get('kind', ''),
+                        report=params.get('report'), destination=params.get('destination'),
+                        candidate_source=params.get('candidate_source','online'))
+                elif method == 'calibration_tool_export_record':
+                    from workflow_registry import export_record
+                    result = export_record(ROOT, params.get('directory', ''), params.get('kind', ''))
                 elif method == 'model_calibration_load':
                     result = load_model_calibration_summary(params.get('directory', ''))
                 elif method == 'model_calibration_model_alignment':
