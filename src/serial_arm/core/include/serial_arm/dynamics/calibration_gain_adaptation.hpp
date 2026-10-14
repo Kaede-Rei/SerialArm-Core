@@ -34,7 +34,7 @@ inline bool quality_acceptable(const PassMetrics& metrics) {
         metrics.worst_error_ratio<=1.50;
 }
 // Independent gain calibration must be a short, bounded operation.  The
-// first round trip at 80% searches for stable gains
+// First search traversal runs at 80 percent, the return runs at full speed
 // The second round trip freezes the candidate and verifies at full speed
 // Four traversals are bounded and safety limits remain unchanged
 inline constexpr std::array<double,2> round_trip_rates{0.80,1.0};
@@ -46,7 +46,8 @@ inline constexpr bool is_validation_round_trip(std::size_t round_trip_index) noe
 }
 inline double worst_case_pass_factor() {
     double factor=0.0;
-    for(double fraction:round_trip_rates)factor+=2.0/fraction;
+    factor=1.0/round_trip_rates.front()+1.0/round_trip_rates.back()+
+        2.0/round_trip_rates.back();
     return factor;
 }
 } // namespace serial_arm::calibration_gain_adaptation

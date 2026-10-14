@@ -178,8 +178,7 @@ def _insert_or_replace_model_scalar(text, key, value):
     return ''.join(lines)
 
 
-def _candidate_threshold(result, joints):
-    candidate = result['gravity_result']
+def _candidate_threshold(candidate, joints):
     p99 = candidate.get('validation_candidate', {}).get('p99', [])
     noise = candidate.get('noise_rms', [])
     if len(p99) != len(joints) or len(noise) != len(joints):
@@ -200,19 +199,62 @@ def _same_gravity_candidate(a, b):
         len(a.get('torque_bias') or []) == len(b.get('torque_bias') or [])
 
 
+def _recorded_joint_bias(directory, metadata, joints):
+    """Preserve the original bias only when an old offline report has none"""
+    core = directory / 'source' / 'core.yaml'
+    if not matches_recorded_fingerprint(core, metadata.get('core_fingerprint')):
+        core = Path(metadata.get('core_config_path') or '/missing').expanduser().resolve()
+    if not matches_recorded_fingerprint(core, metadata.get('core_fingerprint')):
+        raise ValueError('旧离线候选缺少力矩偏置，且找不到指纹匹配的原始 Core 配置')
+    cfg = yaml.safe_load(core.read_text(encoding='utf-8'))
+    values = (((cfg or {}).get('capability') or {}).get('admittance') or {}).get('calibration', {}).get('torque_bias')
+    if not isinstance(values, dict) or set(values) != set(joints):
+        raise ValueError('原始 Core 配置的力矩偏置与受控关节不一致')
+    ordered = [values[joint] for joint in joints]
+    if any(not isinstance(v, (int, float)) or not math.isfinite(v) for v in ordered):
+        raise ValueError('原始 Core 配置的力矩偏置含无效数值')
+    return ordered
+
+
 def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
     if prefer_recomputed:
         recomputed = directory / 'recomputed-candidate.json'
-        if recomputed.is_file():
-            gravity = json.loads(recomputed.read_text())
+        if not recomputed.is_file():
+            raise ValueError('此任务尚未生成离线重力候选，请先执行离线重算')
+        gravity = json.loads(recomputed.read_text(encoding='utf-8'))
+        if (gravity.get('task_id') != metadata.get('task_id')
+                or gravity.get('core_fingerprint') != metadata.get('core_fingerprint')
+                or gravity.get('urdf_fingerprint') != metadata.get('urdf_fingerprint')):
+            raise ValueError('离线候选与标定任务来源不匹配')
+        def sha(path):
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for chunk in iter(lambda: stream.read(65536), b''):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        source = verified_source_urdf(directory, metadata)
+        static_file = directory / 'accepted_static.csv'
+        accepted_hash = sha(static_file) if static_file.is_file() else None
+        if (not (directory / 'frames.csv').is_file()
+                or gravity.get('frames_sha256') != sha(directory / 'frames.csv')
+                or gravity.get('accepted_static_sha256') != accepted_hash
+                or gravity.get('source_sha256') != sha(source)):
+            raise ValueError('离线候选的原始数据或模型已发生变化，请重新执行离线重算')
     joints = result.get('joint_names') or metadata.get('joint_names') or []
     if not allow_unvalidated and (result.get('phase') != 'complete' or not gravity.get('static_pass')):
         raise ValueError('model calibration task has no validated static candidate')
     recomputed_used = gravity is not result.get('gravity_result')
     friction_matches = not recomputed_used or _same_gravity_candidate(gravity, result.get('gravity_result') or {})
     friction_pass = bool(result.get('friction_pass')) and friction_matches
+    torque_bias = gravity.get('torque_bias')
+    bias_source = 'fitted_candidate'
+    if recomputed_used and torque_bias is None:
+        # Historical offline fits do not save the per-joint residual bias
+        # Reuse the verified original configuration without inventing a fit
+        torque_bias = _recorded_joint_bias(directory, metadata, joints)
+        bias_source = 'original_core_unrecalibrated'
     source_id = 'recomputed-candidate.json' if recomputed_used else 'result.json'
     lock_names = list(gravity.get('locked_links') or []) if gravity.get('identification_mode', 'global') == 'local' else []
     fitted_names = list(gravity.get('fitted_links') or [])
@@ -262,6 +304,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
         'friction_matches_gravity': friction_matches,
         'friction_status': 'validated' if friction_pass else 'requires_refit_or_review',
         'candidate_source': source_id,
+        'torque_bias_source': bias_source,
         'identification_mode': gravity.get('identification_mode', 'global'),
         'locked_links': lock_names,
         'fitted_links': fitted_names,
@@ -280,8 +323,8 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             'noise_rms': gravity.get('noise_rms'),
         },
         'residual': {
-            'torque_bias': gravity.get('torque_bias'),
-            'torque_threshold': _candidate_threshold(result, joints),
+            'torque_bias': torque_bias,
+            'torque_threshold': _candidate_threshold(gravity, joints),
             'friction': {
                 'velocity_transition': 0.03,
                 'positive_coulomb': friction.get('positive_coulomb', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
@@ -452,7 +495,19 @@ def load_model_calibration_summary(directory):
     if can_resume and trajectory['source'] == 'trajectory.checkpoint.csv':
         note = '仅保存了示教检查点，属于中断片段，必须重新校验运动范围和真机起点，再人工确认回放'
     selectable_links = _identifiable_links_from_snapshot(folder, metadata)
+    offline_candidate = None
+    recomputed = folder / 'recomputed-candidate.json'
+    if recomputed.is_file():
+        candidate = json.loads(recomputed.read_text(encoding='utf-8'))
+        if (isinstance(candidate, dict)
+                and candidate.get('task_id') == task_id
+                and candidate.get('urdf_fingerprint') == metadata.get('urdf_fingerprint')
+                and candidate.get('core_fingerprint') == metadata.get('core_fingerprint')
+                and isinstance(candidate.get('first_moments'), list)
+                and isinstance(candidate.get('candidate_masses'), dict)):
+            offline_candidate = candidate
     return {'directory': str(folder), 'metadata': metadata, 'result': display_result,
+            'recomputed_candidate': offline_candidate,
             'identifiable_links': selectable_links,
             'has_result': bool(result), 'record_kind': record_kind, 'can_resume': can_resume,
             'files': files, 'trajectory': trajectory, 'note': note, 'task_id': task_id}

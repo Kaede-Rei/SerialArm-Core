@@ -4,6 +4,7 @@
 # 01 model            URDF 与模型基础信息
 # 02 calibration      单机方向、比例与零位
 # 03 control          运行时与基础控制增益
+
 # 04 safety_policy    运行安全策略与收窄值
 # 05 shutdown         停放与正常关机策略
 # 06 capability       可选高级能力

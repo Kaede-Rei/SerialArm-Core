@@ -173,7 +173,7 @@ def _static_validation(training, heldout, prior, candidate):
     scale = np.maximum(np.sqrt(np.mean(original_error**2, axis=0)), 0.02)
     before = _gravity_metrics(heldout, prior, prior, prior_bias, scale)
     after = _gravity_metrics(heldout, prior, candidate, candidate_bias, scale)
-    return before, after, scale
+    return before, after, scale, candidate_bias
 
 
 def _preserve_com_inertia(prior, selected):
@@ -311,7 +311,7 @@ def recompute(directory, mode='global', locked_links=None):
     # about the Link origin must reflect the parallel-axis theorem for scoring
     # the *exported* URDF, not the original (possibly nonphysical) 60D fit.
     exported = None
-    before = after = noise = None
+    before = after = noise = candidate_bias = None
     static_status = 'not_evaluated'
     static_reason = '独立静态验证尚未执行'
     try:
@@ -319,17 +319,24 @@ def recompute(directory, mode='global', locked_links=None):
             raise ValueError('候选存在零质量，无法计算模型重力预测')
         exported = _preserve_com_inertia(prior, raw)
         training, heldout = _static_holdout(folder, model, pin, mapped, prior)
-        before, after, noise = _static_validation(training, heldout, prior, exported)
-        improving = after['score'] < before['score'] * 0.99
-        static_status = 'passed' if improving else 'failed'
-        static_reason = ('独立静态留出姿态的重力力矩预测有改善' if improving
-                         else '独立静态留出姿态未显示足够的重力力矩改善')
+        before, after, noise, candidate_bias = _static_validation(training, heldout, prior, exported)
+        original_rms = np.asarray(before['rms'], dtype=float)
+        candidate_rms = np.asarray(after['rms'], dtype=float)
+        noise_floor = np.asarray(noise, dtype=float)
+        permitted = np.maximum(0.02, np.maximum(0.10 * original_rms,
+            np.minimum(2.0 * noise_floor, 0.05 + 0.5 * original_rms)))
+        comparable = (np.isfinite(candidate_rms).all() and
+            np.isfinite(original_rms).all() and
+            np.all(candidate_rms <= original_rms + permitted))
+        static_status = 'passed' if comparable else 'failed'
+        static_reason = ('独立静态留出误差在测量容差内，可继续评估实际参数'
+                         if comparable else '留出姿态存在超过测量容差的预测误差，需人工审核')
     except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
         static_status = 'unavailable'
         static_reason = '静态验证不可用: ' + str(exc)
     constraints_ok = not invalid
     # Static predictive evidence and physical export admissibility are distinct
-    static_pass = static_status == 'passed'
+    static_pass = static_status == 'passed' and constraints_ok
     if not constraints_ok:
         reason = '; '.join(f'{name}: {issue}' for name, issue in invalid.items())
     else:
@@ -370,6 +377,7 @@ def recompute(directory, mode='global', locked_links=None):
         'validation_candidate': {k: after[k] for k in ('rms', 'p99', 'max')} if after else {},
         'validation_scaled': {k: before[k] for k in ('rms', 'p99', 'max')} if before else {},
         'noise_rms': noise.tolist() if noise is not None else [],
+        'torque_bias': candidate_bias.tolist() if candidate_bias is not None else None,
         'com_shifts_m': shifts,
         'link_review': invalid,
         'review_warnings': ([f'{name}: 完整惯量诊断存在异常参数，未用于重力候选: {issue}' for name, issue in rejected_raw.items()]

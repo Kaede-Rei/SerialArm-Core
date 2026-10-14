@@ -21,6 +21,8 @@
         [/\bJOINT_VEL_LIMIT\b/i, '实测关节速度超出安全限制'],
         [/\bCMD_VEL_LIMIT\b/i, '下发的关节速度超过安全限制'],
         [/\bSAFETY_FAILED\b/i, '机器人安全检查未通过，请核对关节状态、反馈和控制限制'],
+        [/calibration replay hard following limit reached/i, '自动回放触及硬跟踪误差边界，已停止回放 请检查关节执行器和轨迹是否存在异常'],
+        [/calibration replay soft following recovery timed out/i, '自动回放已暂停等待关节追上参考位置，但在限定时间内未恢复 软阈值不是硬安全上限，请检查增益、摩擦、负载和当前是否处于冻结验收阶段'],
         [/calibration tracking error exceeded safe following limit/i, '自动回放的实际位置持续无法跟上参考轨迹，已按安全限制中止'],
         [/gain adaptation.*(without|not).*\b(verification|validated|clean|converge)/i, '增益自适应未达到全路径验证要求 候选参数已保留，但不能直接应用'],
         [/reverse static replay failed or cancelled/i, '反向自动采集失败或已取消，请查看具体关节和控制故障'],
@@ -64,7 +66,8 @@
         const numbers = [...clean.matchAll(/\b(?:value|limit|position error|speed|timeout)\s*=\s*[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*(?:rad(?:\/s)?|ms|s))?/gi)]
             .map(m => m[0].replace(/^value=/i, '实测值=').replace(/^limit=/i, '限制值=').replace(/^position error=/i, '位置误差=').replace(/^speed=/i, '速度=').replace(/^timeout=/i, '超时='));
         const codes = [...new Set((clean.match(codePattern) || []))];
-        const diagnostic = [...codes, ...numbers].join('，');
+        const replayFields = [...clean.matchAll(/\b(?:joint|actual|reference|error|soft_limit|hard_limit|kp|kd|adaptive|phase)\s*=\s*(?:[A-Za-z_][\w-]*|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?)/gi)].map(m => m[0]);
+        const diagnostic = [...new Set([...codes, ...numbers, ...replayFields])].join('，');
         if (matched) return `${action}${matched[1]}${diagnostic ? `（${diagnostic}）` : ''}`;
         const zhPortion = clean.match(/[\u3400-\u9fff][^\n]*/);
         if (zhPortion) return `${action}${zhPortion[0]}${diagnostic ? `（${diagnostic}）` : ''}`;

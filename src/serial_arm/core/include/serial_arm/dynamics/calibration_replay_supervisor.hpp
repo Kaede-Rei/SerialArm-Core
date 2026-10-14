@@ -12,6 +12,7 @@ enum class State { FOLLOWING, PAUSE_FOR_FEEDBACK };
 struct Assessment {
     State state{State::PAUSE_FOR_FEEDBACK};
     bool valid{false};
+    bool hard_violation{false};
     std::size_t worst_joint{0};
     double max_error{0.0};
     double peak_velocity{0.0};
@@ -46,9 +47,37 @@ inline Assessment evaluate(const std::vector<double>& reference,
         const double excess=error/soft;
         if(excess>most_excess){most_excess=excess;result.worst_joint=i;result.max_error=error;}
         if(error>soft)result.state=State::PAUSE_FOR_FEEDBACK;
+        if(error>=hard)result.hard_violation=true;
     }
     result.valid=true;
     return result;
+}
+// Slow the SEARCH trajectory before the soft following limit is reached
+// This governor does not run during frozen validation and cannot relax limits
+inline double search_progress_scale(const Assessment& assessment) noexcept {
+    if(!assessment.valid || assessment.soft_limit.empty())return 0.0;
+    const double soft=assessment.soft_limit[assessment.worst_joint];
+    if(!std::isfinite(soft) || soft<=0.0)return 0.0;
+    const double ratio=assessment.max_error/soft;
+    if(!std::isfinite(ratio) || ratio<0.0)return 0.0;
+    // No slowdown for good tracking, smooth reduction approaching the limit
+    return std::clamp((1.0-ratio)/0.70,0.20,1.0);
+}
+// Keep the governor from introducing a new acceleration step on the
+// already retimed path; reserve acceleration headroom for curvature
+inline double search_governor_slew_limit(const std::vector<double>& max_velocity,
+                                         const std::vector<double>& max_acceleration,
+                                         double frequency) noexcept {
+    if(max_velocity.empty() || max_velocity.size()!=max_acceleration.size() ||
+       !std::isfinite(frequency) || frequency<=0.0)return 0.0;
+    double limit=1.0;
+    for(std::size_t i=0;i<max_velocity.size();++i) {
+        if(!std::isfinite(max_velocity[i]) || !std::isfinite(max_acceleration[i]) ||
+           max_velocity[i]<=0.0 || max_acceleration[i]<=0.0)return 0.0;
+        limit=std::min(limit,0.12*max_acceleration[i] /
+            (0.94*max_velocity[i]*frequency));
+    }
+    return std::clamp(limit,0.0,1.0);
 }
 // The user trajectory may have a nonzero velocity at the sampled reference;
 // as soon as path time stops, that derivative is no longer a valid setpoint.

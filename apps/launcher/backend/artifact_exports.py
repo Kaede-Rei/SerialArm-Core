@@ -18,7 +18,12 @@ from model_calibration_source import matches_recorded_fingerprint, verified_sour
 from persistence import build_gravity_correction_payload, export_candidate_urdf, patch_text
 from workflow_registry import load
 
-GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'identification_tracking'}
+GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'identification_tracking', 'all'}
+GAIN_DESTINATIONS = {
+    'rigid_tracking': ('rigid_hold', 'rigid_tracking'),
+    'compliant_tracking': ('compliant_hold', 'compliant_tracking'),
+    'identification_tracking': ('identification_tracking',),
+}
 
 
 def _read_json(path):
@@ -112,27 +117,40 @@ def _bundle_model(snapshot, metadata, dest, name='robot.urdf'):
 
 
 def _gain_export(record, dest):
-    folder,metadata,model,core,cfg=_snapshot(record)
-    gain=_read_json(folder/'gain-candidate.json')
-    if gain.get('schema')!='serial_arm_gain_candidate' or gain.get('validated') is not True:
-        raise ValueError('增益候选未通过独立轨迹验收，不能导出为可部署配置')
-    if gain.get('task_id')!=metadata.get('task_id') or gain.get('urdf_fingerprint')!=metadata.get('urdf_fingerprint') or gain.get('joint_names')!=metadata.get('joint_names'):
+    folder, metadata, model, core, cfg = _snapshot(record)
+    gain = _read_json(folder / 'gain-candidate.json')
+    if gain.get('schema') != 'serial_arm_gain_candidate' or gain.get('validated') is not True:
+        raise ValueError('增益候选未通过独立轨迹验收，不能导出为运行配置')
+    if (gain.get('task_id') != metadata.get('task_id') or
+        gain.get('urdf_fingerprint') != metadata.get('urdf_fingerprint') or
+        gain.get('joint_names') != metadata.get('joint_names')):
         raise ValueError('增益候选与任务源模型不一致')
-    category=gain.get('category')
-    if category not in GAIN_FIELDS:raise ValueError('未知增益标定目标')
-    joints=metadata['joint_names']
-    policy=cfg.get('safety_policy') or {}
-    targets={}
-    for term,limit_field in [('kp','max_kp_override'),('kd','max_kd_override')]:
-        values=gain.get(term)
-        if not isinstance(values,list):raise ValueError('增益候选参数不完整')
-        targets[('control','controller',category,term)]=_gain_map(joints,values,policy.get(limit_field))
-    # Bundle an exact geometric model so the relocated Core YAML still loads
-    _bundle_model(model,metadata,dest)
-    targets[('model','urdf_path')]='robot.urdf'
-    result=_replace_core(core.read_text(encoding='utf-8'),targets,include_identification=category=='identification_tracking')
-    (dest/'core.yaml').write_text(result,encoding='utf-8')
-    return {'target':category,'validated':True}
+    category = gain.get('category')
+    if category not in GAIN_FIELDS:
+        raise ValueError('未知增益标定目标')
+    joints = metadata['joint_names']
+    policy = cfg.get('safety_policy') or {}
+    groups = (gain.get('targets') or {}) if category == 'all' else {category: gain}
+    required = set(GAIN_DESTINATIONS) if category == 'all' else {category}
+    if set(groups) != required:
+        raise ValueError('增益候选缺少独立验证的标定目标')
+    targets = {}
+    for item, fields in groups.items():
+        if not isinstance(fields, dict) or fields.get('validated') is not True:
+            raise ValueError(f'{item} 尚未通过独立验证')
+        for term, limit_field in [('kp', 'max_kp_override'), ('kd', 'max_kd_override')]:
+            values = fields.get(term)
+            if not isinstance(values, list):
+                raise ValueError('增益候选参数不完整')
+            gain_map = _gain_map(joints, values, policy.get(limit_field))
+            for destination in GAIN_DESTINATIONS[item]:
+                targets[('control', 'controller', destination, term)] = gain_map
+    result = _replace_core(core.read_text(encoding='utf-8'), targets,
+                           include_identification=True)
+    # Keep model.urdf_path unchanged because this artifact intentionally contains
+    # only core.yaml; changing to a missing relative URDF would break deployment
+    (dest / 'core.yaml').write_text(result, encoding='utf-8')
+    return {'target': category, 'validated': True, 'files_only': ['core.yaml']}
 
 
 def _gravity_export(record,dest,candidate_source="online"):
@@ -140,11 +158,14 @@ def _gravity_export(record,dest,candidate_source="online"):
     if candidate_source not in ('online','offline'):
         raise ValueError('未知重力候选来源')
     offline=candidate_source=='offline'
-    _,_,result,payload=build_gravity_correction_payload(folder,allow_unvalidated=offline,prefer_recomputed=offline)
-    if not payload.get('static_pass'):
-        raise ValueError('重力候选尚未通过留出姿态验收')
-    if not payload.get('friction_pass') or not payload.get('friction_matches_gravity'):
-        raise ValueError('重力候选对应的摩擦验证未通过，不能导出标称完整的重力与摩擦配置')
+    _,_,result,payload=build_gravity_correction_payload(folder,allow_unvalidated=True,prefer_recomputed=offline)
+    if offline and payload.get('candidate_source') != 'recomputed-candidate.json':
+        raise ValueError('此任务尚未生成离线重算候选，请先离线重算')
+    verified = bool(payload.get('static_pass'))
+    friction_verified = bool(verified and payload.get('friction_pass') and payload.get('friction_matches_gravity'))
+    # Evaluation results control application, not the right to inspect a complete
+    # finite physical candidate. Unsafe or structurally invalid candidates remain blocked
+
     # Use the existing geometry-preserving exporter, not an independently fitted model
     with tempfile.TemporaryDirectory(prefix='serialarm-gravity-') as staging:
         if offline:
@@ -176,15 +197,18 @@ def _gravity_export(record,dest,candidate_source="online"):
              ('model','gravity_scale'):_gain_map(joints,[1.0]*len(joints)),
              ('capability','admittance','calibration','torque_bias'):_gain_map_signed(joints,residual['torque_bias']),
              ('capability','admittance','calibration','torque_threshold'):_gain_map(joints,residual['torque_threshold']),
-             ('capability','admittance','calibration','friction','enabled'):'true',
+             ('capability','admittance','calibration','friction','enabled'):'true' if friction_verified else 'false',
              ('capability','admittance','calibration','friction','velocity_transition'):str(float(friction['velocity_transition']))}
     for name in ('positive_coulomb','positive_viscous','negative_coulomb','negative_viscous'):
         targets[('capability','admittance','calibration','friction',name)]=_gain_map_signed(joints,friction[name])
     result_core=_replace_core(core.read_text(encoding='utf-8'),targets)
     (dest/'core.yaml').write_text(result_core,encoding='utf-8')
-    return {'target':'gravity_and_friction','validated':True,
-            'mass_scope':'joint_mass_and_com' if offline else 'original_mass_and_corrected_com',
-            'friction_pass':True}
+    return {'target':'gravity_and_friction','validated':verified and friction_verified,
+            'review_required':not verified or not friction_verified,
+            'static_pass':verified,'friction_pass':friction_verified,
+            'friction_enabled':friction_verified,
+            'torque_bias_source':payload.get('torque_bias_source'),
+            'mass_scope':'joint_mass_and_com' if offline else 'original_mass_and_corrected_com'}
 
 
 def _gain_map_signed(joints,values):

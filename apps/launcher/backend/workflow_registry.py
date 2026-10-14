@@ -124,6 +124,8 @@ def prepare_gravity_candidate(directory, *, prefer_recomputed=False):
     import yaml
     from persistence import build_gravity_correction_payload
     folder, metadata, _, payload=build_gravity_correction_payload(directory,prefer_recomputed=prefer_recomputed)
+    if prefer_recomputed and payload.get('candidate_source') != 'recomputed-candidate.json':
+        raise ValueError('缺少离线重力候选，请先执行离线重算')
     # Native checks actual robot URDF fingerprint again, on every apply.
     folder=Path(folder)
     target=folder/'candidate'/'gravity-runtime-preview.yaml'
