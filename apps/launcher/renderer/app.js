@@ -489,6 +489,36 @@ function modelCalibrationPhaseText(phase) {
     const value = labels[phase] || [phase || '—', phase || '—']; return state.language === 'en' ? value[1] : value[0];
 }
 function modelCalibrationActive(status = state.telemetry?.model_calibration) { return !!status && !['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(status.phase); }
+function gainCalibrationSeconds(oneWay, mode) {
+    const rigid = oneWay * (1 / 0.8 + 3) + 1.5;
+    const compliant = oneWay * (1 / 0.55 + 1 / 0.75 + 2 / 0.65) + 1.5;
+    const identification = oneWay * (1 / 0.8 + 3);
+    return (mode === 'all' ? rigid + compliant + identification :
+        mode === 'compliant' ? compliant : mode === 'identification' ? identification : rigid) + 2;
+}
+function gainCandidateDeployable(candidate) {
+    if (!candidate || candidate.validated !== true) return false;
+    const mode = candidate.category;
+    const soft = mode === 'all' ? candidate.targets?.compliant_tracking :
+        mode === 'compliant_tracking' ? candidate : null;
+    return !soft || (soft.validated === true &&
+        soft.compliant_separation_validated === true &&
+        soft.hold_verification?.validated === true &&
+        Array.isArray(soft.rigid_reference_kp) &&
+        Array.isArray(soft.rigid_reference_kd) &&
+        Number(soft.tested_speed_fraction) > 0);
+}
+function gainVerificationDescription(candidate, en) {
+    if (!candidate) return '';
+    const stages = candidate.category === 'all' ? (candidate.targets || {}) : {[candidate.category]: candidate};
+    return Object.entries(stages).map(([key, data]) => {
+        const name = key === 'compliant_tracking' ? (en ? 'Compliant' : '柔性') :
+            key === 'rigid_tracking' ? (en ? 'Rigid' : '刚性') : (en ? 'Identification' : '辨识');
+        const speed = Math.round(Number(data.tested_speed_fraction || 1) * 100);
+        const hold = data.hold_verification;
+        return `${name} ${data.validated ? 'PASS' : 'REVIEW'} · ${speed}% ${en ? 'replay' : '回放'}${hold ? ` · ${en ? 'Hold' : '保持'} ${hold.validated ? 'PASS' : 'REVIEW'}` : ''}`;
+    }).join(' · ');
+}
 function modelCalibrationLongRunning(status = state.telemetry?.model_calibration) { return !!status && ['teaching', 'gain_adaptation', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting', 'paused'].includes(status.phase); }
 function modelCalibrationMetricTable(status) {
     const result = status?.gravity_result; if (!result) return '';
@@ -588,7 +618,7 @@ function modelCalibrationPanelHtml() {
     const singlePass = Number(status.single_pass_duration_s || 0);
     const gainPreview = state.calibrationEntry === 'gain';
     const estimate = gainPreview && singlePass > 0
-        ? 2 * singlePass * (1 / 0.80 + 1 / 1.0) + 2
+        ? gainCalibrationSeconds(singlePass, state.gainMode)
         : Number(status.estimated_duration_s || 0);
     const groups = Array.isArray(status.pose_targets) ? status.pose_targets.length : 0;
     const teaching = Number(status.teaching_wall_duration_s || 0);
@@ -599,7 +629,7 @@ function modelCalibrationPanelHtml() {
       <div>${state.language === 'en' ? 'Demonstration' : '自由示教'} ${teaching.toFixed(1)} s · ${state.language === 'en' ? 'Recorded track' : '原始轨迹'} ${recorded.toFixed(1)} s · ${state.language === 'en' ? 'Retimed one-way pass' : '优化后单程'} ${singlePass.toFixed(1)} s</div>
       <div>${state.language === 'en' ? 'Parking now cancels the pending automatic replay; saved task records remain on disk.' : '此时选择停放会结束待确认的自动回放，已记录的任务数据仍保存在磁盘中'}</div>
       <div>${state.language === 'en' ? 'Trajectory path' : '轨迹路径长度'} ${Number(status.joint_path_length_rad || 0).toFixed(2)} rad · ${state.language === 'en' ? 'Reduced waypoints' : '几何关键点'} ${Number(status.geometric_waypoints || 0)} / ${Number(status.original_samples || 0)} · ${state.language === 'en' ? 'Planner' : '规划器'} local_hermite</div>
-      <div>${gainPreview ? (state.language === 'en' ? 'Gain calibration: 80% speed round trip + full-speed validation round trip (4 traversals max)' : '增益标定：80% 速度往返＋全速验证往返（最多 4 次单程）') : (state.language === 'en' ? 'Gravity correction: reverse + forward measurement passes and static holds' : '重力校正：正反向正式采集及静态停留')} ≈ <b>${totalEstimate.toFixed(1)} s</b> (${state.language === 'en' ? 'automatic stage' : '自动阶段'} ${estimate.toFixed(1)} s)</div>
+      <div>${gainPreview ? (state.language === 'en' ? 'Gain calibration: two round trips per target; compliant validation at 65% and separate hold check' : '增益标定：每项目标两次往返，柔性采用 65% 速度验收并独立检查保持稳定性') : (state.language === 'en' ? 'Gravity correction: reverse + forward measurement passes and static holds' : '重力校正：正反向正式采集及静态停留')} ≈ <b>${totalEstimate.toFixed(1)} s</b> (${state.language === 'en' ? 'automatic stage' : '自动阶段'} ${estimate.toFixed(1)} s)</div>
       <div>${gainPreview ? (state.language === 'en' ? 'Estimation excludes extra feedback settling; unsuccessful candidates remain saved but cannot be applied.' : '这是不含跟踪等待的计划估算；未通过验收的增益候选会保存，但不能直接应用') : (state.language === 'en' ? 'Actual settling and fitting may take longer; offline full inertial fitting is not included.' : '实际停稳与拟合可能更久，且不包含后续离线惯量计算')} ${t('releaseSafetyHint')}</div></div>` : (phase === 'teaching' ? `<div class="callout">${state.language === 'en' ? 'Teaching is not time-limited.' : '示教时间不设上限，结束示教后根据轨迹运动量和关节安全限制计算自动回放时间'}</div>` : (phase === 'waiting_replay_confirmation' ? `<div class="callout error-callout">${state.language === 'en' ? 'Native Core is outdated; reinstall before automatic playback.' : '正在运行的 C++ Core 未加载新的轨迹规划器，请重新安装编译后再自动回放'}</div>` : ''));
     const resumeSafetyHint = live && status.source_task_id ? `<div class="callout"><b>${state.language === 'en' ? 'Imported demonstration' : '已恢复历史轨迹'}：${esc(status.source_task_id)}</b>
       <div>${status.original_start_selected ? (state.language === 'en' ? 'Current pose was closer to original FIRST pose: imported path was reversed. The same recorded path is replayed, without an extra move.' : '当前位置更接近原示教起点：已自动选择从这一端开始，沿原示教路径采集，无须额外归位') : (state.language === 'en' ? 'Current pose was closer to original LAST pose: standard reverse/forward collection.' : '当前位置更接近原示教终点：采用原反向／正向采集流程')}</div>
@@ -806,7 +836,7 @@ function calibrationStandalonePanelHtml(kind) {
         buttons.push(`<button id="model-calibration-cancel" class="button danger">${en?'Cancel current task':'取消当前任务'}</button>`);
     const gainCandidate=(selected?.gain_candidate || null);
     const isInactive=state.telemetry?.robot_state==='INACTIVE';
-    const gainValidated=selected?.gain_candidate?.validated===true;
+    const gainValidated=gainCandidateDeployable(selected?.gain_candidate);
     const gainApplied=!!state.calibrationRuntimeCandidates?.gain_applied;
     const gainCanApply=gainValidated && isInactive && workbenchConnected() && !gainApplied;
     let gainActionHint='';
@@ -822,9 +852,9 @@ function calibrationStandalonePanelHtml(kind) {
             gainActionHint=en?'A temporary gain candidate is already active. Park the robot before restoring it':'临时增益已应用，恢复原参数前请先停放机械臂';
         }
     }
-    return `<section class="workspace-section calibration-standalone-card"><div class="workspace-section-head"><div><h3>${isTeach?(en?'Demonstration':'拖拽示教'):(en?'Adaptive gain calibration':'自适应增益标定')}</h3><p class="hint">${isTeach ? (en?'Capture once, reuse across calibration tools':'只记录安全示教轨迹，不强制运行辨识') : (en?'Search gains at 80% outbound and supervised full-speed return, then validate frozen gains at full speed, two round trips':'首轮以 80% 速度去程和自适应全速返程搜索增益，次轮冻结参数并全速独立验收，共两次往返，不自动开始重力辨识')}</p></div><span class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div>
+    return `<section class="workspace-section calibration-standalone-card"><div class="workspace-section-head"><div><h3>${isTeach?(en?'Demonstration':'拖拽示教'):(en?'Adaptive gain calibration':'自适应增益标定')}</h3><p class="hint">${isTeach ? (en?'Capture once, reuse across calibration tools':'只记录安全示教轨迹，不强制运行辨识') : (en?'Rigid and identification: frozen full-speed validation · Compliant: lower-stiffness search, 65% validation and stationary hold check · two round trips each':'刚性与辨识采用全速冻结验收 · 柔性以较低刚度搜索、65% 速度验收并检查静态保持 · 每项两次往返')}</p></div><span class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div>
        <div class="workspace-actions">${buttons.join('')}</div>
-       ${kind==='gain'?`<label>${en?'Gain target':'标定目标'} <select id="gain-target"><option value="rigid" ${state.gainMode==='rigid'?'selected':''}>${en?'Rigid gains':'刚性增益'}</option><option value="compliant" ${state.gainMode==='compliant'?'selected':''}>${en?'Compliant gains':'柔性增益'}</option><option value="identification" ${state.gainMode==='identification'?'selected':''}>${en?'Identification gains':'辨识增益'}</option><option value="all" ${state.gainMode==='all'?'selected':''}>${en?'All gains':'全部增益'}</option></select></label><div class="callout">${en?({rigid:'Rigid gains are used for precise trajectory tracking and high-stiffness position control',compliant:'Compliant gains support flexible tracking with controlled position deviation and force yielding',identification:'Identification gains are dedicated to repeatable calibration playback and dynamics data collection',all:'Calibrate rigid, compliant and identification gains sequentially · 3 × 2 round trips · compliant drag remains manually configured'}[state.gainMode]):({rigid:'刚性增益用于精确轨迹执行和较高刚度的位置跟踪',compliant:'柔性增益用于柔顺轨迹跟踪，在运动过程中允许适度退让',identification:'辨识增益专用于标定轨迹回放、重力模型校正和动力学数据采集',all:'依次标定刚性、柔性和辨识增益，共六次往返 · 同步更新保持与跟踪 · 柔性拖拽只允许手动修改'}[state.gainMode])}${state.gainMode==='all' && active?`<div>${en?'Current target':'当前标定'}: ${status.gain_active_target==='compliant'?(en?'Compliant gains':'柔性增益'):status.gain_active_target==='identification'?(en?'Identification gains':'辨识增益'):(en?'Rigid gains':'刚性增益')} · ${Number(status.gain_adaptation_passes||0)}/12</div>`:''}${state.gainMode==='all'?`<div>${en?'Rigid → rigid hold + rigid tracking · Compliant → compliant hold + compliant tracking · Identification → identification tracking · compliant drag unchanged':'刚性 → 刚性保持与刚性跟踪 · 柔性 → 柔性保持与柔性跟踪 · 辨识 → 辨识跟踪 · 柔性拖拽不变'}</div>`:''}${!calibrationTaskLoaded('gain') ? calibrationTaskGuidance('gain') : ''}${gainCandidate?`<div>${en?'Frozen full-speed verification':'冻结增益全速验收'}: ${gainCandidate.validated?'PASS':'NOT YET'} · ${Number(gainCandidate.passes||0)} ${en?'passes':'次单程'}${gainCandidate.category==='all'?` · ${Object.entries(gainCandidate.targets||{}).map(([key,val])=>`${key==='rigid_tracking'?(en?'Rigid':'刚性'):key==='compliant_tracking'?(en?'Compliant':'柔性'):(en?'Identification':'辨识')} ${val.validated?'PASS':'REVIEW'}`).join(' · ')}`:''}${gainCandidate.verification?` · ${en?'Mean':'平均'} ${Number(gainCandidate.verification.mean_ratio||0).toFixed(3)} · ${en?'Peak':'最大'} ${Number(gainCandidate.verification.worst_ratio||0).toFixed(3)} · ${en?'Pauses':'暂停'} ${gainCandidate.verification.pauses} · ${en?'Revisions':'修改'} ${gainCandidate.verification.revisions}`:''}</div>`:''}</div>`:''}
+       ${kind==='gain'?`<label>${en?'Gain target':'标定目标'} <select id="gain-target"><option value="rigid" ${state.gainMode==='rigid'?'selected':''}>${en?'Rigid gains':'刚性增益'}</option><option value="compliant" ${state.gainMode==='compliant'?'selected':''}>${en?'Compliant gains':'柔性增益'}</option><option value="identification" ${state.gainMode==='identification'?'selected':''}>${en?'Identification gains':'辨识增益'}</option><option value="all" ${state.gainMode==='all'?'selected':''}>${en?'All gains':'全部增益'}</option></select></label><div class="callout">${en?({rigid:'Rigid gains are used for precise trajectory tracking and high-stiffness position control',compliant:'Compliant calibration uses rigid-relative stiffness limits, 65% replay validation and a stationary hold check · external-force compliance is not measured',identification:'Identification gains are dedicated to repeatable calibration playback and dynamics data collection',all:'Calibrate rigid, compliant and identification sequentially · compliant uses 65% validation and hold check · drag stays manual'}[state.gainMode]):({rigid:'刚性增益用于精确轨迹执行和较高刚度的位置跟踪',compliant:'柔性增益相对刚性限制刚度和阻尼，以 65% 速度验收跟踪并检查静态保持 · 不代表已测量外力柔顺性',identification:'辨识增益专用于标定轨迹回放、重力模型校正和动力学数据采集',all:'依次标定刚性、柔性与辨识增益，共六次往返 · 柔性按较低速度及保持稳定性独立验收 · 柔性拖拽仅手动修改'}[state.gainMode])}${state.gainMode==='all' && active?`<div>${en?'Current target':'当前标定'}: ${status.gain_active_target==='compliant'?(en?'Compliant gains':'柔性增益'):status.gain_active_target==='identification'?(en?'Identification gains':'辨识增益'):(en?'Rigid gains':'刚性增益')} · ${Number(status.gain_adaptation_passes||0)}/12</div>`:''}${state.gainMode==='all'?`<div>${en?'Rigid → rigid hold + rigid tracking · Compliant → compliant hold + compliant tracking · Identification → identification tracking · compliant drag unchanged':'刚性 → 刚性保持与刚性跟踪 · 柔性 → 柔性保持与柔性跟踪 · 辨识 → 辨识跟踪 · 柔性拖拽不变'}</div>`:''}${!calibrationTaskLoaded('gain') ? calibrationTaskGuidance('gain') : ''}${gainCandidate?`<div>${en?'Frozen mode-specific verification':'冻结增益分类验收'}: ${gainCandidate.validated?'PASS':'NOT YET'} · ${Number(gainCandidate.passes||0)} ${en?'passes':'次单程'}${gainCandidate?` · ${gainVerificationDescription(gainCandidate,en)}`:''}${gainCandidate.verification?` · ${en?'Mean':'平均'} ${Number(gainCandidate.verification.mean_ratio||0).toFixed(3)} · ${en?'Peak':'最大'} ${Number(gainCandidate.verification.worst_ratio||0).toFixed(3)} · ${en?'Pauses':'暂停'} ${gainCandidate.verification.pauses} · ${en?'Revisions':'修改'} ${gainCandidate.verification.revisions}`:''}</div>`:''}</div>`:''}
        ${kind==='gain'?`<div id="calibration-gain-action-hint" class="callout" ${gainActionHint?'':'hidden'}>${esc(gainActionHint)}</div>`:''}
        ${status.error?`<div class="callout error-callout">${esc(localizedError(status.error))}</div>`:''}
        ${status.directory?`<div class="task-directory">${esc(status.directory)}</div>`:''}
@@ -839,7 +869,7 @@ function refreshGainApplyControls() {
     const en = state.language === 'en';
     const connected = workbenchConnected();
     const inactive = state.telemetry?.robot_state === 'INACTIVE';
-    const validated = state.calibrationToolSelected.gain?.gain_candidate?.validated === true;
+    const validated = gainCandidateDeployable(state.calibrationToolSelected.gain?.gain_candidate);
     const applied = !!state.calibrationRuntimeCandidates?.gain_applied;
     const status = state.telemetry?.model_calibration || {};
     apply.disabled = !(connected && inactive && validated && !applied);
@@ -1224,18 +1254,17 @@ function modelCalibrationReplayConfirm() {
     if (plan.planner_id !== 'local_hermite' || !(Number(plan.single_pass_duration_s) > 0)) { showPriorityError(state.language === 'en' ? 'Native Core was not rebuilt. Reinstall before replay.' : 'C++ Core 仍是旧版，请重新编译安装后再执行自动回放'); return; }
     const gainPlan = state.calibrationEntry === 'gain';
     const oneWayDuration = Number(plan.single_pass_duration_s || 0);
-    const gainMultiplier = gainPlan && state.gainMode === 'all' ? 3 : 1;
     const estimate = gainPlan && oneWayDuration > 0
-        ? gainMultiplier * (oneWayDuration * (1 / 0.80 + 3 / 1.0) + 2)
+        ? gainCalibrationSeconds(oneWayDuration, state.gainMode)
         : Number(plan.estimated_duration_s || 0);
     const teaching = Number(plan.teaching_wall_duration_s || 0);
     const totalEstimate = gainPlan ? teaching + estimate : Number(plan.estimated_total_duration_s || teaching + estimate);
     const oneWay = Number(plan.single_pass_duration_s || 0);
     const poses = Array.isArray(plan.pose_targets) ? plan.pose_targets.length : 0;
     const formula = gainPlan
-        ? `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ ${gainMultiplier} × (${oneWay.toFixed(1)} / 0.8 + 3 × ${oneWay.toFixed(1)} / 1.0 + 2)`
+        ? `${state.language === 'en' ? 'Plan' : '计算'}：${state.gainMode === 'all' ? (state.language === 'en' ? 'Rigid + Compliant + Identification' : '刚性 + 柔性 + 辨识') : state.gainMode === 'compliant' ? (state.language === 'en' ? '55% + 75% search, 65% frozen validation + hold' : '55% 与 75% 搜索，65% 冻结验收及保持验证') : (state.language === 'en' ? '80% + 100% search, 100% frozen validation' : '80% 与 100% 搜索，100% 冻结验收')} · ${oneWay.toFixed(1)} s ${state.language === 'en' ? 'one-way' : '单程'}`
         : `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 2 × ${oneWay.toFixed(1)} + 1.5 × ${poses} + 2`;
-    dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Gain calibration' : '自适应增益标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? state.gainMode==='all' ? 'Rigid, compliant and identification gains are calibrated consecutively, each with two round trips, twelve traversals total' : 'One adaptive search round trip, then one frozen full-speed verification round trip' : state.gainMode==='all' ? '依次标定刚性、柔性和辨识增益，各两次往返，共十二次单程，柔性拖拽保持不变' : '首轮搜索一次往返，次轮冻结增益全速验收一次往返，共四次单程') : (state.language === 'en' ? 'The checked path is replayed once in reverse and once forward for gravity measurement.' : '沿已检查轨迹进行一次反向与正向的重力采集')}</p><div class="callout"><b>${state.language === 'en' ? 'Estimated automatic stage' : '预计自动阶段'}：${estimate.toFixed(1)} s · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${totalEstimate.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'Estimate only: feedback pauses and settling may extend real time; safety limits remain unchanged.' : '仅为计划运动估算：实际跟踪等待可能延长耗时，安全保护不变'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
+    dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Gain calibration' : '自适应增益标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? state.gainMode==='all' ? 'Rigid, compliant and identification gains are calibrated consecutively, each with two round trips, twelve traversals total' : 'Search round trip followed by frozen validation · compliant target is tested at 65% replay speed and checked for stationary hold stability' : state.gainMode==='all' ? '依次标定刚性、柔性和辨识增益，各两次往返，共十二次单程，柔性拖拽保持不变' : '首轮搜索一次往返，次轮冻结增益独立验收一次往返 · 柔性按 65% 速度验收并增加静态保持检查') : (state.language === 'en' ? 'The checked path is replayed once in reverse and once forward for gravity measurement.' : '沿已检查轨迹进行一次反向与正向的重力采集')}</p><div class="callout"><b>${state.language === 'en' ? 'Estimated automatic stage' : '预计自动阶段'}：${estimate.toFixed(1)} s · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${totalEstimate.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'Estimate only: feedback pauses and settling may extend real time; safety limits remain unchanged.' : '仅为计划运动估算：实际跟踪等待可能延长耗时，安全保护不变'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
     dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked; $('model-calibration-confirm-cancel').onclick = () => dialog.close();
     $('model-calibration-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
 }

@@ -199,6 +199,8 @@ public:
     bool begin_calibration_hold(const JointImpedanceGains& gains);
     bool set_calibration_hold_gains(const JointImpedanceGains& gains);
     void clear_calibration_hold_gains() noexcept;
+    // Temporary ramped gains for trajectory tracking or independent hold
+    // verification. Active only in the matching impedance mode and never saved
     bool set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode=JointImpedanceMode::RIGID_TRACKING);
     // Explicit temporary runtime gains; only accepted while motors are INACTIVE.
     bool set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains);

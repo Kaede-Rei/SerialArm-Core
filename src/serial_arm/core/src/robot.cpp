@@ -339,7 +339,8 @@ void Robot::clear_calibration_hold_gains() noexcept {
 }
 
 bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode) {
-    if(mode!=JointImpedanceMode::RIGID_TRACKING && mode!=JointImpedanceMode::COMPLIANT_TRACKING)return false;
+    if(mode!=JointImpedanceMode::RIGID_TRACKING && mode!=JointImpedanceMode::COMPLIANT_TRACKING &&
+       mode!=JointImpedanceMode::RIGID_HOLD && mode!=JointImpedanceMode::COMPLIANT_HOLD)return false;
     const std::size_t count = cfg_.joint_names.size();
     if(state_ != RobotState::ACTIVE || gains.kp.size()!=count || gains.kd.size()!=count) return false;
     for(std::size_t i=0;i<count;++i) {
@@ -352,7 +353,9 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains, Joi
     // Revisions start at the CURRENT blended gains, never jump back to the
     // user's rigid tracking gains on each automatic adjustment.
     JointImpedanceGains source=mode==JointImpedanceMode::COMPLIANT_TRACKING ?
-        cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains;
+        cfg_.ctrller.compliant_tracking_gains : mode==JointImpedanceMode::COMPLIANT_HOLD ?
+        cfg_.ctrller.compliant_hold_gains : mode==JointImpedanceMode::RIGID_HOLD ?
+        cfg_.ctrller.rigid_hold_gains : cfg_.ctrller.rigid_tracking_gains;
     if(calibration_tracking_gains_ && calibration_tracking_source_ && calibration_tracking_mode_==mode) {
         const double elapsed=std::chrono::duration<double>(now-calibration_tracking_started_).count();
         const double x=std::clamp(elapsed/0.12,0.0,1.0);
@@ -613,7 +616,11 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         const double smooth=fraction*fraction*(3.0-2.0*fraction);
         const auto& source=calibration_tracking_source_ ? *calibration_tracking_source_ :
             (calibration_tracking_mode_==JointImpedanceMode::COMPLIANT_TRACKING ?
-                cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains);
+                cfg_.ctrller.compliant_tracking_gains :
+                calibration_tracking_mode_==JointImpedanceMode::COMPLIANT_HOLD ?
+                cfg_.ctrller.compliant_hold_gains :
+                calibration_tracking_mode_==JointImpedanceMode::RIGID_HOLD ?
+                cfg_.ctrller.rigid_hold_gains : cfg_.ctrller.rigid_tracking_gains);
         for(std::size_t i=0;i<joint_cmd.kp.size();++i) {
             joint_cmd.kp[i]=source.kp[i]+smooth*(calibration_tracking_gains_->kp[i]-source.kp[i]);
             joint_cmd.kd[i]=source.kd[i]+smooth*(calibration_tracking_gains_->kd[i]-source.kd[i]);

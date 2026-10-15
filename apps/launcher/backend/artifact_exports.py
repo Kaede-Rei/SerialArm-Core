@@ -138,6 +138,34 @@ def _gain_export(record, dest):
     for item, fields in groups.items():
         if not isinstance(fields, dict) or fields.get('validated') is not True:
             raise ValueError(f'{item} 尚未通过独立验证')
+        if item == 'compliant_tracking':
+            hold = fields.get('hold_verification') or {}
+            if (fields.get('compliant_separation_validated') is not True or
+                hold.get('validated') is not True or
+                not isinstance(fields.get('tested_speed_fraction'), (float, int)) or
+                not 0 < float(fields['tested_speed_fraction']) <= 1):
+                raise ValueError('柔性候选缺少刚柔分离或保持稳定性验收，请重新运行柔性增益标定')
+            rigid = fields.get('rigid_reference_kp')
+            rigid_kd = fields.get('rigid_reference_kd')
+            kp, kd = fields.get('kp'), fields.get('kd')
+            expected = (groups['rigid_tracking'] if category == 'all' else
+                        cfg['control']['controller']['rigid_tracking'])
+            def reference_values(term):
+                values = expected.get(term)
+                return [values[name] for name in joints] if isinstance(values, dict) else values
+            expected_kp = reference_values('kp')
+            expected_kd = reference_values('kd')
+            if (not all(isinstance(x, list) and len(x) == len(joints)
+                        for x in (rigid, rigid_kd, kp, kd, expected_kp, expected_kd)) or
+                any(not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vals)
+                    for vals in (rigid, rigid_kd, kp, kd, expected_kp, expected_kd)) or
+                any(r <= 0 or d <= 0 or
+                    not math.isclose(r, ref_r, abs_tol=1e-5) or
+                    not math.isclose(d, ref_d, abs_tol=1e-5) or
+                    k > 0.65 * r + 1e-6 or v > 0.85 * d + 1e-6
+                    for r, d, k, v, ref_r, ref_d in
+                    zip(rigid, rigid_kd, kp, kd, expected_kp, expected_kd))):
+                raise ValueError('柔性增益与任务源刚性参考不一致')
         for term, limit_field in [('kp', 'max_kp_override'), ('kd', 'max_kd_override')]:
             values = fields.get(term)
             if not isinstance(values, list):

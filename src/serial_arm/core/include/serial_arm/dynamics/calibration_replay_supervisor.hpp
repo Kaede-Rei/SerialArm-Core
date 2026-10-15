@@ -122,4 +122,76 @@ inline bool revise_tracking(std::vector<double>& kp,std::vector<double>& kd,
     }
     return changed;
 }
+// Compliant calibration is constrained by the measured or configured rigid
+// reference rather than the motor ceiling. A gain set that has no meaningful
+// stiffness separation is not a valid compliant candidate.
+struct CompliantBounds {
+    std::vector<double> kp_ceiling;
+    std::vector<double> kd_ceiling;
+    bool valid{false};
+};
+inline CompliantBounds compliant_bounds(const std::vector<double>& rigid_kp,
+                                       const std::vector<double>& rigid_kd,
+                                       const std::vector<double>& safety_kp,
+                                       const std::vector<double>& safety_kd) {
+    CompliantBounds bounds;
+    const auto n=rigid_kp.size();
+    if(n==0 || rigid_kd.size()!=n || safety_kp.size()!=n || safety_kd.size()!=n)return bounds;
+    for(std::size_t i=0;i<n;++i) {
+        if(!std::isfinite(rigid_kp[i]) || !std::isfinite(rigid_kd[i]) ||
+           !std::isfinite(safety_kp[i]) || !std::isfinite(safety_kd[i]) ||
+           rigid_kp[i]<=0.0 || rigid_kd[i]<=0.0 || safety_kp[i]<=0.0 || safety_kd[i]<=0.0)
+            return bounds;
+        bounds.kp_ceiling.push_back(std::min(safety_kp[i],0.65*rigid_kp[i]));
+        bounds.kd_ceiling.push_back(std::min(safety_kd[i],0.85*rigid_kd[i]));
+    }
+    bounds.valid=true;
+    return bounds;
+}
+inline bool within_compliant_bounds(const std::vector<double>& kp,
+                                    const std::vector<double>& kd,
+                                    const CompliantBounds& bounds) {
+    if(!bounds.valid || kp.size()!=bounds.kp_ceiling.size() || kd.size()!=kp.size())return false;
+    for(std::size_t i=0;i<kp.size();++i)
+        if(!std::isfinite(kp[i]) || !std::isfinite(kd[i]) || kp[i]<0 || kd[i]<0 ||
+           kp[i]>bounds.kp_ceiling[i]+1e-8 || kd[i]>bounds.kd_ceiling[i]+1e-8)
+            return false;
+    return true;
+}
+// Only fresh feedback changes compliant gains. Healthy tracking slowly probes
+// lower stiffness while increased position error requests just enough recovery
+// authority, never exceeding the rigid-relative ceiling. No force measurement
+// is implied by this purely position-domain search.
+inline bool revise_compliant(std::vector<double>& kp,std::vector<double>& kd,
+                             const Assessment& assessment,
+                             const std::vector<double>& reference,
+                             const std::vector<double>& actual,
+                             const std::vector<double>& velocity,
+                             const CompliantBounds& bounds) {
+    const auto n=reference.size();
+    if(!assessment.valid || !bounds.valid || kp.size()!=n || kd.size()!=n ||
+       actual.size()!=n || velocity.size()!=n || assessment.soft_limit.size()!=n ||
+       bounds.kp_ceiling.size()!=n || bounds.kd_ceiling.size()!=n)return false;
+    bool changed=false;
+    for(std::size_t i=0;i<n;++i) {
+        const double soft=assessment.soft_limit[i];
+        if(!(soft>0) || !std::isfinite(reference[i]) || !std::isfinite(actual[i]) ||
+           !std::isfinite(velocity[i]) || !std::isfinite(kp[i]) || !std::isfinite(kd[i]))return false;
+        const double ratio=std::abs(reference[i]-actual[i])/soft;
+        double next_kp=kp[i],next_kd=kd[i];
+        if(ratio<0.35) {
+            // Probe a softer candidate only while the joint has error margin
+            next_kp=std::max(0.01,kp[i]*0.985);
+        } else if(ratio>0.85) {
+            next_kp=std::min(bounds.kp_ceiling[i],kp[i]*(1.0+0.25*std::min(ratio,2.0)));
+            const bool moving_away=(actual[i]-reference[i])*velocity[i]>0.0;
+            if(moving_away)next_kd=std::min(bounds.kd_ceiling[i],kd[i]*1.12);
+        }
+        next_kp=std::min(next_kp,bounds.kp_ceiling[i]);
+        next_kd=std::min(next_kd,bounds.kd_ceiling[i]);
+        changed |= std::abs(next_kp-kp[i])>1e-7 || std::abs(next_kd-kd[i])>1e-7;
+        kp[i]=next_kp;kd[i]=next_kd;
+    }
+    return changed;
+}
 } // namespace serial_arm::calibration_replay_supervisor
