@@ -196,7 +196,8 @@ def _same_gravity_candidate(a, b):
         for name in left
     ) and all(math.isclose(float(x), float(y), abs_tol=1e-11, rel_tol=1e-10)
               for x, y in zip(a.get('torque_bias') or [], b.get('torque_bias') or [])) and \
-        len(a.get('torque_bias') or []) == len(b.get('torque_bias') or [])
+        len(a.get('torque_bias') or []) == len(b.get('torque_bias') or []) and \
+        (a.get('candidate_masses') or {}) == (b.get('candidate_masses') or {})
 
 
 def _recorded_joint_bias(directory, metadata, joints):
@@ -264,6 +265,9 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
         raise ValueError('candidate fitted/locked Link lists overlap or contain duplicates')
     if gravity.get('identification_mode', 'global') not in ('global', 'local'):
         raise ValueError('candidate identification mode is invalid')
+    if gravity.get('identification_mode', 'global') == 'global':
+        if lock_names or set(fitted_names) != {item['link_name'] for item in gravity.get('first_moments') or []}:
+            raise ValueError('全局辨识只能包含完整候选，不接受局部锁定或局部候选拼接')
     if gravity.get('identification_mode', 'global') == 'local':
         candidates = _identifiable_links_from_snapshot(directory, metadata)
         allowed = {item['name'] for item in candidates}
@@ -290,6 +294,13 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
     if not moments:
         raise ValueError('candidate contains no first moments')
     first_moments = {item['link_name']: [float(x) for x in item['value']] for item in moments}
+    candidate_masses = gravity.get('candidate_masses') if recomputed_used else None
+    if recomputed_used:
+        if not isinstance(candidate_masses, dict) or set(candidate_masses) != set(first_moments):
+            raise ValueError('离线质量参数和一阶矩 Link 映射不一致')
+        candidate_masses = {name: float(mass) for name, mass in candidate_masses.items()}
+        if any(not math.isfinite(mass) or mass <= 0 for mass in candidate_masses.values()):
+            raise ValueError('离线候选包含无效质量参数')
     friction = result.get('friction') or {}
     payload = {
         'schema': 'serial_arm_gravity_correction',
@@ -342,6 +353,8 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             'load_description': metadata.get('load_description', ''),
         },
     }
+    if candidate_masses is not None:
+        payload['candidate_masses'] = candidate_masses
     return directory, metadata, result, payload
 
 

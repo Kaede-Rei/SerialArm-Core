@@ -533,6 +533,7 @@ function modelCalibrationMetricTable(status) {
     const rows = names.map((name, i) => `<tr><td>${esc(name)}</td><td>${metric(original, 'rms', i)}</td><td>${metric(scaled, 'rms', i)}</td><td>${metric(candidate, 'rms', i)}</td><td>${metric(candidate, 'p99', i)}</td><td>${metric(candidate, 'max', i)}</td><td>${metric({noise:result.noise_rms}, 'noise', i)}</td></tr>`).join('');
     const testName = offline ? (en ? 'Offline static holdout' : '离线静态留出评价') : (en ? 'Online static holdout' : '在线静态留出评价');
     const testResult = result.static_validation_status === 'unavailable' ? (en ? 'Unavailable' : '不可用')
+        : result.static_validation_status === 'limited' ? (en ? 'Limited validation · review only' : '验证姿态不足 · 仅供审核')
         : (result.static_pass ? (en ? 'Passes own criteria' : '满足本算法门槛') : (en ? 'Fails own criteria' : '未满足本算法门槛'));
     const noiseTitle = offline ? (en ? 'Scoring scale (not sensor noise)' : '评分归一化尺度（非传感器噪声）') : t('noiseRms');
     return `<div class="model-calibration-results"><div class="result-badges"><span class="result-badge neutral">${testName}</span><span class="result-badge ${result.static_validation_status === 'unavailable' ? 'neutral' : result.static_pass ? 'pass' : 'warn'}">${testResult}</span><span class="result-badge ${status.friction_status === 'not_evaluated' || status.friction_status === 'requires_refit_or_review' ? 'neutral' : status.friction_pass ? 'pass' : 'warn'}">${status.friction_status === 'not_evaluated' || status.friction_status === 'requires_refit_or_review' ? (en ? 'Friction not retested' : '摩擦未复验') : t(status.friction_pass ? 'frictionPassed' : 'frictionFailed')}</span><span class="result-badge neutral">${t('dynamicsNotIdentified')}</span><span class="result-badge neutral">${t('numericalRank')} ${Number(result.numerical_rank ?? 0)}</span>${Number.isFinite(Number(result.selected_regularization)) ? `<span class="result-badge neutral">CV λ ${Number(result.selected_regularization).toPrecision(3)}</span>` : ''}${result.constraints_ok === false ? `<span class="result-badge fail">${en ? 'Mass/COM out of bounds' : '质量或质心超界'}</span>` : ''}${result.prior_preferred ? `<span class="result-badge warn">${en ? 'Prior preferred' : '交叉验证倾向原模型'}</span>` : ''}</div><p class="hint">${offline ? (en ? 'Offline scoring evaluates a different full-data fit and does not share the online acceptance threshold. It cannot certify unvisited poses or hardware holding.' : '离线以完整记录重算质量与质心，评价门槛与在线不同，不代表未示教姿态或真机保持已验证') : (en ? 'Online tests only the fixed-mass first-moment fit with its own validation and torque-offset model, not the offline URDF.' : '在线仅评价固定质量的一阶质量矩候选，验证时使用自身的力矩偏置口径，不能与离线 URDF 评分直接比较')}</p><div class="table-scroll"><table class="workspace-table calibration-metrics"><thead><tr><th>${t('joint')}</th><th>${t('currentUrdfRms')}</th><th>${t('currentScaleRms')}</th><th>${t('candidateRms')}</th><th>${t('candidateP99')}</th><th>${t('candidateMaximum')}</th><th>${noiseTitle}</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
@@ -820,7 +821,9 @@ function calibrationStandalonePanelHtml(kind) {
     if(live && ['idle','complete','cancelled','failed'].includes(phase) && isTeach)
         buttons.push(`<button id="model-calibration-teach-start" class="button primary" ${robotActive?'':'disabled'}>${en?'Start demonstration':'开始拖拽示教'}</button>`);
     if(live && phase==='teaching' && isTeach)
-        buttons.push(`<button id="model-calibration-teach-stop" class="button primary">${en?'Stop demonstration':'结束示教'}</button>`);
+        buttons.push(`<button id="model-calibration-teach-stop" class="button primary">${robotActive?(en?'Stop demonstration':'结束示教'):(en?'Close interrupted demonstration':'结束中断的示教并清理')}</button>`);
+    if(live && isTeach && status.teaching_cleanup_pending && ['failed','cancelled'].includes(phase))
+        buttons.push(`<button id="model-calibration-teach-cleanup" class="button">${en?'Finish interrupted teaching cleanup':'清理中断示教'}</button>`);
     if(isTeach && waiting)
         buttons.push(`<button id="calibration-finish-teaching" class="button primary">${en?'Save trajectory and finish':'保存轨迹并结束任务'}</button>`);
     if(kind==='gain' && waiting)
@@ -915,8 +918,9 @@ function calibrationQuickControlsHtml() {
     const busy = modelCalibrationActive();
     const safeEnable = ['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(phase);
     const runningTask = !safeEnable || robotState === 'FAULT';
-    const hint = !connected ? (en ? 'Connect the workspace to control the robot from calibration' : '请先连接工作台，连接后可在标定页面直接使能或停放机械臂')
-        : robotState === 'FAULT' ? (en ? 'Resolve the safety fault on the Control tab before activating' : '机械臂存在安全故障，请先在控制页排查并清除故障')
+    const hint = workbenchRecoveryRequired() ? (en ? 'Control session unresponsive, physically secure the robot before reconnecting' : '控制会话无响应，请先确保机械臂硬件安全，再恢复连接')
+        : !connected ? (en ? 'Connect the workspace to control the robot from calibration' : '请先连接工作台，连接后可在标定页面直接使能或停放机械臂')
+        : robotState === 'FAULT' ? (en ? 'Check motor power and cabling, then clear fault or disable here' : '机械臂存在故障，请先检查电机供电及线缆，再清除故障或失能')
         : busy ? (en ? 'A calibration task is in progress. Parking may cancel the current replay' : '标定任务正在执行，停放可能中止当前采集或回放')
         : inactive ? (en ? 'Robot is parked. Activate only after checking the work area' : '机械臂已失能，确认工作区域安全后可使能')
         : active ? (en ? 'Robot is enabled. Park and disable before switching temporary parameters' : '机械臂已使能，切换临时参数前请先停放并失能')
@@ -925,8 +929,10 @@ function calibrationQuickControlsHtml() {
       <div class="calibration-quick-state"><span class="calibration-state-dot ${connected && active ? 'on' : connected && inactive ? 'standby' : ''}"></span><strong>${en ? 'Robot' : '机械臂状态'}</strong><span id="calibration-robot-state">${esc(robotState)}</span></div>
       <div class="calibration-quick-actions">
         <button type="button" class="button" id="calibration-connect-workbench" ${connected ? 'hidden' : ''}>${t('startWorkbench')}</button>
-        <button type="button" class="button primary" id="calibration-activate" ${connected && inactive && !runningTask ? '' : 'disabled'}>${t('activateRobot')}</button>
-        <button type="button" class="button" id="calibration-safe-park" ${connected && active ? '' : 'disabled'}>${t('parkRobot')}</button>
+        <button type="button" class="button primary" id="calibration-activate" ${connected && inactive && !runningTask && !workbenchRecoveryRequired() ? '' : 'disabled'}>${t('activateRobot')}</button>
+        <button type="button" class="button" id="calibration-safe-park" ${connected && active && !workbenchRecoveryRequired() ? '' : 'disabled'}>${t('parkRobot')}</button>
+        <button type="button" class="button" id="calibration-fault-clear" ${connected && robotState === 'FAULT' && !workbenchRecoveryRequired() ? '' : 'hidden'}>${t('clearFault')}</button>
+        <button type="button" class="button danger" id="calibration-fault-disable" ${connected && robotState === 'FAULT' && !workbenchRecoveryRequired() ? '' : 'hidden'}>${t('deactivateRobot')}</button>
       </div>
       <p id="calibration-quick-hint" class="hint calibration-quick-hint">${hint}</p>
     </section>`;
@@ -934,7 +940,7 @@ function calibrationQuickControlsHtml() {
 // Refresh controls that depend on live robot state without replacing the panel or dialogs
 function refreshCalibrationActionControls() {
     if (state.page !== 'workbench' || state.workbenchTab !== 'calibration') return;
-    const connected = workbenchConnected();
+    const connected = workbenchConnected() && !workbenchRecoveryRequired();
     const robotState = connected ? state.telemetry?.robot_state : 'OFFLINE';
     const active = robotState === 'ACTIVE';
     const inactive = robotState === 'INACTIVE';
@@ -992,13 +998,15 @@ function refreshCalibrationQuickControls() {
     const connected = workbenchConnected();
     const robotState = connected ? (state.telemetry?.robot_state || 'UNKNOWN') : 'OFFLINE';
     if (connect) connect.hidden = connected;
-    enable.disabled = !(connected && robotState === 'INACTIVE' && ['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(state.telemetry?.model_calibration?.phase || 'idle'));
-    park.disabled = !(connected && robotState === 'ACTIVE');
+    enable.disabled = !(connected && !workbenchRecoveryRequired() && robotState === 'INACTIVE' && ['idle', 'complete', 'cancelled', 'failed', 'waiting_replay_confirmation'].includes(state.telemetry?.model_calibration?.phase || 'idle'));
+    park.disabled = !(connected && !workbenchRecoveryRequired() && robotState === 'ACTIVE');
+    for (const [id] of [['calibration-fault-clear'], ['calibration-fault-disable']]) { const button = $(id); if (button) button.hidden = !connected || robotState !== 'FAULT' || workbenchRecoveryRequired(); }
     status.textContent = robotState;
     const dot = document.querySelector('.calibration-state-dot');
     if (dot) dot.className = 'calibration-state-dot' + (connected && robotState === 'ACTIVE' ? ' on' : connected && robotState === 'INACTIVE' ? ' standby' : '');
-    hint.textContent = !connected ? busyText('请先连接工作台，连接后可在标定页面直接使能或停放机械臂', 'Connect the workspace to control the robot from calibration')
-        : robotState === 'FAULT' ? busyText('机械臂存在安全故障，请先在控制页排查并清除故障', 'Resolve the safety fault on the Control tab before activating')
+    hint.textContent = workbenchRecoveryRequired() ? busyText('控制会话无响应，请先采取物理安全措施，再使用页面上方的恢复连接', 'Control session not responding, secure hardware then recover connection')
+        : !connected ? busyText('请先连接工作台，连接后可在标定页面直接使能或停放机械臂', 'Connect the workspace to control the robot from calibration')
+        : robotState === 'FAULT' ? busyText('机械臂存在故障，请检查电机供电和线缆，可在这里清除故障或失能', 'Check motor power and wiring, then clear fault or disable here')
         : modelCalibrationActive() ? busyText('标定任务正在执行，停放可能中止当前采集或回放', 'A calibration task is in progress. Parking may cancel the current replay')
         : robotState === 'INACTIVE' ? busyText('机械臂已失能，确认工作区域安全后可使能', 'Robot is parked. Activate only after checking the work area')
         : robotState === 'ACTIVE' ? busyText('机械臂已使能，切换临时参数前请先停放并失能', 'Robot is enabled. Park before switching temporary parameters')
@@ -1053,10 +1061,16 @@ function calibrationComOverlayHtml() {
     const zoom = state.language === 'en' ? 'Visual displacement only' : '仅放大显示位移，不更改实际坐标';
     return `<div class="calibration-com-overlay" aria-label="${title}"><div class="calibration-com-heading">${title}</div><div class="calibration-com-legend"><span><i class="com-swatch original"></i>${original}</span><span><i class="com-swatch candidate"></i>${candidate}</span><span class="com-connector">─</span>${state.language === 'en' ? 'Offset' : '质心偏移'}</div>${hasComparison ? `<div class="calibration-com-scale"><span>${state.language === 'en' ? 'Display' : '显示比例'}</span>${[1,12,25].map(value=>`<button type="button" class="${scale===value?'active':''}" data-calibration-com-scale="${value}" aria-pressed="${scale===value}">×${value}</button>`).join('')}</div><label class="calibration-com-unchanged"><input type="checkbox" id="calibration-com-unchanged" ${state.modelCalibrationShowUnchanged?'checked':''}>${state.language==='en'?'Show unchanged links':'显示未变化的 Link'}</label><div class="calibration-com-hint">${scale===1?(state.language==='en'?'True 3D locations':'真实三维位置'):zoom}</div>` : `<div class="calibration-com-hint">${binding.comparable?pending:esc(binding.reason)}</div>`}</div>`;
 }
-function workbenchPage() { const connected = workbenchConnected(); const action = connected ? `<button id="stop-workbench" class="button danger">${t('stopWorkbench')}</button>` : `<button id="start-workbench" class="button primary">${t('startWorkbench')}</button>`; return pageHead('workbenchTitle', 'workbenchDesc', action) + workbenchStatusBar() + workbenchTabs() + `<div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div>${calibrationComOverlayHtml()}<div class="workbench-model-note">${t(connected ? 'actualTelemetry' : 'offlineWaiting')}</div></section><section class="workbench-task">${workbenchPanelHtml()}</section></div>`; }
+function workbenchRecoveryRequired() { return workbenchConnected() && state.session?.recovery_required === true; }
+function workbenchRecoveryNotice() {
+    if (!workbenchRecoveryRequired()) return '';
+    const en = state.language === 'en';
+    return `<section class="workspace-section" role="alert"><h3>${en ? 'Control session not responding' : '控制会话无响应'}</h3><p class="hint">${en ? 'The previous hardware command timed out. It may still be executing, and the displayed joint state may be stale. Do not repeat enable or disable. Secure the robot using physical safety measures, then explicitly disconnect and reconnect' : '上一条硬件命令已超时，原生命令可能仍在执行，界面关节反馈可能过期，请勿重复使能或失能，请先采取物理安全措施，再确认强制断连并重新连接'}</p><button id="workbench-recover-disconnect" class="button danger">${en ? 'Disconnect unresponsive session' : '恢复连接（需安全确认）'}</button></section>`;
+}
+function workbenchPage() { const connected = workbenchConnected(); const recovering = workbenchRecoveryRequired(); const action = connected ? (recovering ? `<button id="workbench-force-disconnect" class="button danger">${state.language === 'en' ? 'Recover connection' : '恢复连接'}</button>` : `<button id="stop-workbench" class="button danger">${t('stopWorkbench')}</button>`) : `<button id="start-workbench" class="button primary">${t('startWorkbench')}</button>`; return pageHead('workbenchTitle', 'workbenchDesc', action) + workbenchStatusBar() + workbenchTabs() + workbenchRecoveryNotice() + `<div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div>${calibrationComOverlayHtml()}<div class="workbench-model-note">${t(connected ? 'actualTelemetry' : 'offlineWaiting')}</div></section><section class="workbench-task">${workbenchPanelHtml()}</section></div>`; }
 async function mountWorkbenchView() { if (state.page !== 'workbench' || !state.modelData || !$('workbench-viewport')) return; try { if (!modelModule) modelModule = await import('./model-view.js'); modelView?.dispose(); const view = new modelModule.SerialArmModelView($('workbench-viewport'), file => api.modelResource(file)); modelView = view; await view.setModel(state.modelData); if (modelView !== view || state.page !== 'workbench') return; view.setLayers({ visual: true, collision: false, linkFrames: false, jointAxes: false, com: false, inertia: false, labels: false }); updateWorkbenchModel(); updateModelCalibrationComparison(); } catch (error) { toast((state.language === 'en' ? 'Workspace model: ' : '工作台模型: ') + error.message, true); } }
 function updateWorkbenchModel() { if (!modelView || !state.telemetry || !state.telemetry.valid) return; if (Number.isFinite(state.telemetry.feedback_age_ms) && state.telemetry.feedback_age_ms > 500) return; const frames = state.telemetry.frames || []; modelView.updatePose({ state: { frames, positions: state.telemetry.joint?.pos || [] } }); updateModelCalibrationComparison(); }
-function updateWorkbenchControlState() { const x = state.telemetry || {}; const pending = state.workbenchPending || {}; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; document.querySelectorAll('[data-impedance-mode]').forEach(button => { const mode = button.dataset.impedanceMode; button.classList.toggle('active', x.impedance_mode === mode); button.disabled = !active || pending.kind === 'impedance'; button.title = active ? '' : (state.language === 'en' ? 'The robot must be ACTIVE before changing impedance mode' : '机器人需要处于 ACTIVE 才能切换阻抗模式'); }); document.querySelectorAll('[data-feedforward-mode]').forEach(button => { const mode = button.dataset.feedforwardMode; button.classList.toggle('active', x.model_feedforward_mode === mode); button.disabled = !inactive || pending.kind === 'feedforward'; button.title = inactive ? '' : (state.language === 'en' ? 'Model feedforward can only be changed while the robot is INACTIVE' : '模型前馈只能在机器人处于 INACTIVE 时修改'); }); }
+function updateWorkbenchControlState() { const x = state.telemetry || {}; const recovering = workbenchRecoveryRequired(); document.querySelectorAll('[data-workbench-action]').forEach(button => { const action = button.dataset.workbenchAction; const fault = x.robot_state === 'FAULT'; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; const permitted = ({activate:inactive, park:active, deactivate:active||fault, hold:active, clear_fault:fault, fault_compliant:fault, fault_rigid:fault})[action] ?? false; button.disabled = recovering || !permitted; button.title = recovering ? (state.language === 'en' ? 'Recover the connection before issuing hardware commands' : '原生会话无响应，请先恢复连接') : !permitted ? (state.language === 'en' ? 'Not available in the current robot state' : '当前机械臂状态不允许此操作') : ''; }); const pending = state.workbenchPending || {}; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; document.querySelectorAll('[data-impedance-mode]').forEach(button => { const mode = button.dataset.impedanceMode; button.classList.toggle('active', x.impedance_mode === mode); button.disabled = recovering || !active || pending.kind === 'impedance'; button.title = active ? '' : (state.language === 'en' ? 'The robot must be ACTIVE before changing impedance mode' : '机器人需要处于 ACTIVE 才能切换阻抗模式'); }); document.querySelectorAll('[data-feedforward-mode]').forEach(button => { const mode = button.dataset.feedforwardMode; button.classList.toggle('active', x.model_feedforward_mode === mode); button.disabled = recovering || !inactive || pending.kind === 'feedforward'; button.title = inactive ? '' : (state.language === 'en' ? 'Model feedforward can only be changed while the robot is INACTIVE' : '模型前馈只能在机器人处于 INACTIVE 时修改'); }); }
 function applyWorkbenchSnapshot(snapshot) { if (!snapshot || typeof snapshot !== 'object') return; state.telemetry = snapshot; state.telemetryReceivedAt = Date.now(); updateWorkbenchLive(); }
 async function switchWorkbenchMode(kind, mode) { if (state.workbenchPending?.kind || state.blockingBusy) return; state.workbenchPending = { kind, value: mode }; updateWorkbenchControlState(); const message = kind === 'impedance' ? busyText(`正在切换阻抗模式至 ${mode}...`, `Switching impedance mode to ${mode}...`) : busyText(`正在切换模型前馈至 ${mode}...`, `Switching model feedforward to ${mode}...`); try { return await blockingOperation(message, async () => { await new Promise(resolve => requestAnimationFrame(resolve)); const method = kind === 'impedance' ? 'set_impedance_mode' : 'set_model_feedforward_mode'; const snapshot = await workbenchRequest(method, { mode }); applyWorkbenchSnapshot(snapshot); return snapshot; }); } finally { state.workbenchPending = { kind: '', value: '' }; updateWorkbenchControlState(); } }
 function updateWorkbenchLive() { if (state.page !== 'workbench') return; const x = state.telemetry || {}; const age = document.querySelector('.workspace-status span:nth-child(5)'); if (age) age.textContent = `${t('feedbackAge')} ${Number.isFinite(x.feedback_age_ms) ? x.feedback_age_ms.toFixed(0) + ' ms' : '—'}`; updateWorkbenchControlState(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); refreshGainApplyControls(); updateWorkbenchModel(); if (state.pendingTarget && x.valid && Array.isArray(x.joint?.pos)) { const err = Math.max(...x.joint.pos.map((v, i) => Math.abs(v - state.pendingTarget[i]))); const vel = Math.max(...(x.joint.vel || []).map(v => Math.abs(v))); if (err < 0.02 && vel < 0.05) { state.commandState = 'complete'; state.pendingTarget = null; const node = document.querySelector('.command-state'); if (node) node.textContent = `${t('commandState')} ${commandStateText(state.commandState)}`; } } const c = x.calibration || {}; const kind = $('cal-task-kind'), phase = $('cal-task-phase'), progress = $('cal-task-progress'), trajectory = $('cal-task-trajectory'), error = $('cal-task-error'); if (kind) kind.textContent = calibrationTaskKindText(c.kind || 'none'); if (phase) phase.textContent = calibrationTaskPhaseText(c.phase || 'idle'); if (progress) progress.textContent = c.expected ? `${c.captured || 0}/${c.expected}` : '—'; if (trajectory) trajectory.textContent = String(c.trajectory_samples ?? '—'); if (error) error.textContent = c.error ? localizedError(c.error) : '—'; if (c.phase === 'complete' && state.calibrationFlow === 'friction') { state.calibrationFlow = 'complete'; operation(loadAdmittance); } updateModelCalibrationLive(); updateModelCalibrationTaskOverlay(); if (state.workbenchTab === 'diagnostics') drawWorkbenchChart(); }
@@ -1124,6 +1138,25 @@ function modelCalibrationTaskParams(params = {}) {
     const taskId = currentModelCalibration()?.task_id || state.telemetry?.model_calibration?.task_id || '';
     return taskId ? { ...params, task_id: taskId } : { ...params };
 }
+async function finishTeachingSafely(cleanupOnly = false) {
+    return blockingOperation(busyText('正在结束示教并同步任务状态...', 'Closing demonstration and syncing task state...'), async () => {
+        const method = cleanupOnly ? 'model_calibration_cancel' : 'model_calibration_teach_stop';
+        try {
+            const result = await workbenchRequest(method, modelCalibrationTaskParams());
+            if (result && state.telemetry) state.telemetry.model_calibration = result;
+            if (result?.directory) state.modelCalibrationDirectory = result.directory;
+        } finally {
+            // Native teaching may have ended asynchronously on disable or FAULT
+            // Always read the authoritative phase even if the close request failed
+            try {
+                const latest = await workbenchRequest('model_calibration_status', {});
+                if (latest && state.telemetry) state.telemetry.model_calibration = latest;
+                if (latest?.directory) state.modelCalibrationDirectory = latest.directory;
+            } catch { /* Preserve the original close error */ }
+            render();
+        }
+    });
+}
 async function modelCalibrationQuick(method, params = {}) {
     try {
         const before = state.telemetry?.model_calibration?.phase;
@@ -1141,8 +1174,8 @@ async function modelCalibrationQuick(method, params = {}) {
             if (latest && state.telemetry) state.telemetry.model_calibration = latest;
         } catch { /* preserve the original request error */ }
         showPriorityError(t('error') + ': ' + error.message);
-        updateModelCalibrationTaskOverlay();
-        updateModelCalibrationLive();
+        if (state.telemetry?.model_calibration?.phase !== before) render();
+        else { updateModelCalibrationTaskOverlay(); updateModelCalibrationLive(); }
         return null;
     }
 }
@@ -1492,7 +1525,7 @@ function bindPage() {
         if ($('calibration-com-unchanged')) $('calibration-com-unchanged').onchange = event => { state.modelCalibrationShowUnchanged = event.target.checked; updateModelCalibrationComparison(); };
         if ($('start-workbench')) $('start-workbench').onclick = () => blockingOperation(busyText('正在检查工作台连接条件...', 'Checking workspace connection...'), startWorkbench);
         if ($('calibration-connect-workbench')) $('calibration-connect-workbench').onclick = () => blockingOperation(busyText('正在检查工作台连接条件...', 'Checking workspace connection...'), startWorkbench);
-        for (const [id, action] of [['calibration-activate', 'activate'], ['calibration-safe-park', 'park']]) {
+        for (const [id, action] of [['calibration-activate', 'activate'], ['calibration-safe-park', 'park'], ['calibration-fault-clear', 'clear_fault'], ['calibration-fault-disable', 'deactivate']]) {
             const button = $(id);
             if (button) button.onclick = () => {
                 if (confirmCalibrationPark(action)) return;
@@ -1506,6 +1539,7 @@ function bindPage() {
             };
         }
         if ($('stop-workbench')) $('stop-workbench').onclick = () => confirmWorkbenchDisconnect();
+        for (const id of ['workbench-force-disconnect', 'workbench-recover-disconnect']) if ($(id)) $(id).onclick = () => confirmUnresponsiveDisconnect();
         document.querySelectorAll('[data-workbench-action]').forEach(b => b.onclick = () => blockingOperation(actionBusyMessage(b.dataset.workbenchAction), () => workbenchCommand(b.dataset.workbenchAction)));
         document.querySelectorAll('[data-impedance-mode]').forEach(b => b.onclick = () => switchWorkbenchMode('impedance', b.dataset.impedanceMode));
         document.querySelectorAll('[data-feedforward-mode]').forEach(b => b.onclick = () => switchWorkbenchMode('feedforward', b.dataset.feedforwardMode));
@@ -1643,7 +1677,8 @@ function bindPage() {
             editCalibrationLockedLinks();
         });
         if ($('model-calibration-teach-start')) $('model-calibration-teach-start').onclick = () => blockingOperation(busyText('正在启动拖动示教...', 'Starting demonstration...'), async () => { captureModelCalibrationOptions(); state.modelCalibrationCandidateSource = 'online'; state.modelCalibrationOffline = null; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationSaved = null; const result = await workbenchRequest('model_calibration_teach_begin', state.modelCalibrationOptions); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || ''; render(); updateModelCalibrationTaskOverlay(); });
-        if ($('model-calibration-teach-stop')) $('model-calibration-teach-stop').onclick = () => blockingOperation(busyText('正在结束示教并检查轨迹...', 'Stopping demonstration and checking path...'), async () => { const result = await workbenchRequest('model_calibration_teach_stop', modelCalibrationTaskParams()); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || state.modelCalibrationDirectory; render(); });
+        if ($('model-calibration-teach-stop')) $('model-calibration-teach-stop').onclick = () => finishTeachingSafely();
+        if ($('model-calibration-teach-cleanup')) $('model-calibration-teach-cleanup').onclick = () => finishTeachingSafely(true);
         if ($('model-calibration-replay-confirm')) $('model-calibration-replay-confirm').onclick = modelCalibrationReplayConfirm;
         if ($('model-calibration-pause')) $('model-calibration-pause').onclick = () => modelCalibrationQuick('model_calibration_pause');
         if ($('model-calibration-resume')) $('model-calibration-resume').onclick = resumeModelCalibrationWithConfirmation;
@@ -1702,7 +1737,7 @@ function bindPage() {
     document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
 }
-async function workbenchRequest(method, params = {}) { if (!workbenchConnected()) throw new Error('workspace session is not connected'); return api.request('workbench_request', { method, params }); }
+async function workbenchRequest(method, params = {}) { if (workbenchRecoveryRequired()) throw new Error('native session is unresponsive; force disconnect after making hardware safe'); if (!workbenchConnected()) throw new Error('workspace session is not connected'); return api.request('workbench_request', { method, params }); }
 async function loadAdmittance() { if (!workbenchConnected()) return; state.admittance = await workbenchRequest('get_admittance'); state.tuneDraft = structuredClone(state.admittance); }
 async function startWorkbench() { await inspect(); if (!state.info?.available?.workbench) throw new Error('Structured workspace is unavailable'); if (state.info.write_enabled === false) return connectWorkbench(false); return workbenchConfirm(); }
 async function connectWorkbench(confirmed) { state.busy = true; render(); try { state.session = await api.request('workbench_start', { config: state.config, confirmed, fingerprint: state.info?.fingerprint }); await loadAdmittance(); state.calibrationRuntimeCandidates = await api.request('calibration_candidate_status',{}); } finally { state.busy = false; render(); } }
@@ -1728,6 +1763,19 @@ function activeTemporaryOverrides() {
     const status = state.calibrationRuntimeCandidates || {};
     return ['gain', 'gravity', 'dynamics'].filter(kind => status[kind + '_applied']);
 }
+function confirmUnresponsiveDisconnect() {
+    if (!workbenchRecoveryRequired()) return;
+    const dialog = $('confirm-dialog');
+    if (!dialog || dialog.open) return;
+    const en = state.language === 'en';
+    dialog.innerHTML = `<h3>${en ? 'Disconnect unresponsive control process' : '确认强制断开无响应的控制进程'}</h3><p>${en ? 'The prior hardware command may still be running. This action stops the control process but cannot verify motor disable, safe parking, or temporary candidate restoration' : '上一条硬件操作可能仍在执行，强制断连只能终止控制进程，无法确认电机已失能、机械臂已停放或临时参数已正常撤销'}</p><p>${en ? 'First physically secure the robot and cut actuator power if necessary. Do not rely on software controls. Reconnect only after hardware power and wiring are verified' : '请先确认机械臂获得可靠支撑，必要时通过硬件急停或断电确保安全，不要依赖失去响应的软件控制，检查供电和线缆后再重新连接'}</p><div class="actions"><button class="button" id="cancel-unresponsive-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-unresponsive-disconnect">${en ? 'I secured hardware, disconnect' : '已确认硬件安全，强制断连'}</button></div>`;
+    dialog.showModal();
+    $('cancel-unresponsive-disconnect').onclick = () => dialog.close();
+    $('confirm-unresponsive-disconnect').onclick = () => { dialog.close(); blockingOperation(busyText('正在终止无响应的控制会话...', 'Terminating unresponsive control session...'), async () => {
+        await api.request('workbench_stop', {force:true});
+        toast(busyText('已请求终止控制进程，未确认电机失能，请检查硬件再重新连接', 'Control process termination requested; hardware disable was not verified'));
+    }); };
+}
 function confirmWorkbenchDisconnect() {
     const en = state.language === 'en';
     const kinds = activeTemporaryOverrides();
@@ -1748,7 +1796,7 @@ function confirmWorkbenchDisconnect() {
     }); };
 }
 function workbenchConfirm() { const info = state.info, dialog = $('confirm-dialog'); dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3>${t('workbenchTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd>${t(info.write_enabled === true ? 'enabled' : 'unknown')}</dd></dl><label class="confirmation"><input id="workspace-confirmed" type="checkbox"><span>${t('confirm')}</span></label><div class="actions"><button id="workspace-cancel" class="button">${t('cancel')}</button><button id="workspace-connect" class="button primary" disabled>${t('startWorkbench')}</button></div>`; dialog.showModal(); $('workspace-confirmed').onchange = () => $('workspace-connect').disabled = !$('workspace-confirmed').checked; $('workspace-cancel').onclick = () => dialog.close(); $('workspace-connect').onclick = () => { dialog.close(); blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), () => connectWorkbench(true)); }; }
-async function workbenchCommand(action) { const methods = { activate: 'activate', park: 'park', deactivate: 'deactivate', hold: 'hold', clear_fault: 'clear_fault', fault_compliant: 'fault_compliant', fault_rigid: 'fault_rigid' }; const method = methods[action]; if (!method) throw new Error('unknown workspace action'); state.commandState = 'submitting'; const result = await workbenchRequest(method); state.commandState = 'accepted'; return result; }
+async function workbenchCommand(action) { const methods = { activate: 'activate', park: 'park', deactivate: 'deactivate', hold: 'hold', clear_fault: 'clear_fault', fault_compliant: 'fault_compliant', fault_rigid: 'fault_rigid' }; const method = methods[action]; if (!method) throw new Error('unknown workspace action'); state.commandState = 'submitting'; try { const result = await workbenchRequest(method); state.commandState = 'accepted'; return result; } catch (error) { state.commandState = 'failed'; throw error; } }
 async function applyTuning() { const draft = state.tuneDraft || state.admittance; if (!draft) throw new Error('admittance parameters are not loaded'); const params = { observer_mode: draft.observer_mode, mass: draft.mass, damping: draft.damping, stiffness: draft.stiffness, max_delta_q: draft.max_delta_q, max_delta_q_dot: draft.max_delta_q_dot, momentum_gain: draft.momentum_gain }; state.admittance = await workbenchRequest('set_admittance', params); state.tuneDraft = structuredClone(state.admittance); state.savePreview = null; render(); }
 async function finishCalibrationStage() { const before = state.calibrationFlow; await workbenchRequest('calibration_finish'); if (before === 'static') { state.calibrationFlow = 'validation'; await workbenchRequest('calibration_begin', { kind: 'validation' }); } else if (before === 'validation') { state.calibrationFlow = 'friction-ready'; } state.admittance = await workbenchRequest('get_admittance'); state.tuneDraft = structuredClone(state.admittance); render(); }
 function frictionConfirm() { const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('frictionCalibration')}</h3><p>${state.language === 'en' ? 'The robot will replay the demonstration path in reverse and forward directions; confirm people, cables, and surrounding space are safe, and fully release the robot' : '机械臂将反向和正向回放示教轨迹，请确认人员、线缆和周围空间安全，并确认已完全松手'}</p><div class="actions"><button id="friction-cancel-dialog" class="button">${t('cancel')}</button><button id="friction-confirm-replay" class="button danger">${t('startReplay')}</button></div>`; dialog.showModal(); $('friction-cancel-dialog').onclick = () => dialog.close(); $('friction-confirm-replay').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动双向摩擦回放...', 'Starting bidirectional friction replay...'), () => workbenchRequest('friction_replay_start')); }; }
@@ -1783,7 +1831,7 @@ function onEvent(event) {
         if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); }
         syncCompletedGainCandidate(calibration);
     }
-    if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running') setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
+    if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
     if (event.event === 'error') { state.backendError = event.error; toast(event.error, true); statusUI(); }
 }
 async function boot() {

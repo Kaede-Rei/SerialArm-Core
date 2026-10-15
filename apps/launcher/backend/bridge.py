@@ -28,11 +28,15 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
     env = dict(os.environ)
     # Avoid a user-site NumPy 2 overriding the ROS Humble NumPy 1 ABI
     env['PYTHONNOUSERSITE'] = '1'
+    operation = {
+        'legacy_gravity_recompute': '离线重力模型辨识',
+        'legacy_gravity_export': '离线重力模型导出',
+    }.get(mode, '高级动力学辨识')
     try:
         completed = subprocess.run(argv, capture_output=True, text=True,
                                    timeout=timeout, env=env)
     except subprocess.TimeoutExpired as error:
-        raise ValueError('完整惯量候选计算超时，已终止独立计算进程，Launcher 可继续使用') from error
+        raise ValueError(f'{operation}计算超时，独立计算进程已终止，工作台仍可正常使用') from error
     if completed.returncode != 0:
         details = (completed.stderr or completed.stdout).strip()
         numpy_abi = ('_ARRAY_API not found' in details or
@@ -41,12 +45,14 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
         if numpy_abi:
             raise ValueError('Pinocchio 与 NumPy ABI 不兼容，当前候选计算已隔离终止，不影响机器人控制界面，请重新运行 ./install.sh 更新 GUI Python 环境中的 numpy<2')
         if completed.returncode < 0:
-            raise ValueError(f'完整惯量计算子进程被信号 {-completed.returncode} 终止，Backend 未受影响，请检查 Python 原生依赖')
-        raise ValueError('完整惯量候选导出失败: ' + (details[-2000:] or f'退出码 {completed.returncode}'))
+            raise ValueError(f'{operation}进程被信号 {-completed.returncode} 终止，工作台未受影响，请检查 Python 原生依赖')
+        if details.startswith(('ValueError: ', 'RuntimeError: ', 'KeyError: ')):
+            details = details.split(': ', 1)[1]
+        raise ValueError(f'{operation}失败: ' + (details[-2000:] or f'退出码 {completed.returncode}'))
     try:
         return json.loads(completed.stdout)
     except json.JSONDecodeError as error:
-        raise ValueError('完整惯量候选进程没有返回有效 JSON') from error
+        raise ValueError(f'{operation}进程没有返回有效 JSON') from error
 
 
 def restore_temporary_candidates_for_disconnect(native):

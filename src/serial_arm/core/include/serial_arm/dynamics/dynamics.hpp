@@ -61,6 +61,7 @@ struct GravityLinkParameterInfo {
 struct GravityFirstMoment {
     std::string link_name;                                  ///< 原始 URDF Link 名称
     Eigen::Vector3d value{ Eigen::Vector3d::Zero() };        ///< h=m*c，位于 Link 坐标系 kg m
+    double candidate_mass{ 0.0 };  ///< 0 保留原始质量，正值用于离线候选的重力项
 };
 
 /**
@@ -69,6 +70,7 @@ struct GravityFirstMoment {
 struct GravityRegressionResult {
     JointVector original_gravity;                           ///< 原始 URDF 重力广义力 Nm
     Eigen::MatrixXd first_moment_regressor;                 ///< N×(3L) 一阶矩回归矩阵
+    Eigen::MatrixXd mass_regressor;                         ///< N×L Link 原点的质量回归矩阵
     std::vector<GravityLinkParameterInfo> links;            ///< 列分组对应的原始 Link
     double reconstruction_rms{ 0.0 };                       ///< 由原始 Link 参数重建原重力的 RMS Nm
 };

@@ -58,7 +58,7 @@ class NativeSession:
             except BaseException:
                 self._release()
                 raise
-            self.state = {'state': 'running', 'mode': 'workbench', 'pid': self.proc.pid,
+            self.state = {'state': 'running', 'mode': 'workbench', 'recovery_required': False, 'pid': self.proc.pid,
                           'started_at': time.time(), 'devices': list(devices), 'command': list(argv)}
             self.emit({'event': 'session', **self.state})
             self.reader = threading.Thread(target=self._read_stdout, daemon=True)
@@ -107,6 +107,10 @@ class NativeSession:
         if not isinstance(params, dict): raise ValueError('native request params must be an object')
         with self.mutex:
             if not self.proc or self.state.get('state') not in ('running', 'stopping'): raise ValueError('workspace session is not running')
+            # A timed-out command may still execute later in the native process
+            # Never queue another hardware action until the operator reconnects
+            if self.state.get('recovery_required'):
+                raise RuntimeError('native session is unresponsive; force disconnect after making hardware safe')
             self.seq += 1
             number = self.seq
             event = threading.Event()
@@ -119,8 +123,15 @@ class NativeSession:
                 self.pending.pop(number, None)
                 raise
         if not event.wait(timeout):
-            with self.mutex: self.pending.pop(number, None)
-            raise TimeoutError('native session request timed out')
+            with self.mutex:
+                # The transport timeout does not cancel a native hardware call
+                # Treat its result and the current actuator state as unknown
+                self.pending.pop(number, None)
+                if self.state.get('state') == 'running':
+                    self.state['recovery_required'] = True
+                    self.state['recovery_reason'] = method
+                    self.emit({'event': 'session', **self.state})
+            raise TimeoutError('native session request timed out; state unknown, force disconnect after making hardware safe')
         message = request['message'] or {}
         if message.get('error'): raise ValueError(message['error'])
         return message.get('result')
@@ -145,6 +156,7 @@ class NativeSession:
         with self.mutex:
             if self.state.get('state') != 'exited':
                 self.state['state'] = 'stopping'
+                self.state['force_stop_unverified'] = bool(force)
                 self.emit({'event': 'session', **self.state})
         if not graceful and proc.poll() is None:
             try: os.killpg(proc.pid, 9 if force else 15)

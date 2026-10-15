@@ -23,10 +23,12 @@ struct Assessment {
 inline Assessment evaluate(const std::vector<double>& reference,
                            const std::vector<double>& actual,
                            const std::vector<double>& velocity,
-                           const std::vector<double>& max_velocity) {
+                           const std::vector<double>& max_velocity,
+                           double pause_soft_ratio=1.0) {
     Assessment result;
     const auto count=reference.size();
-    if(count==0 || actual.size()!=count || velocity.size()!=count || max_velocity.size()!=count)
+    if(count==0 || actual.size()!=count || velocity.size()!=count || max_velocity.size()!=count ||
+       !std::isfinite(pause_soft_ratio) || pause_soft_ratio<1.0)
         return result;
     result.soft_limit.resize(count);
     result.hard_limit.resize(count);
@@ -46,7 +48,11 @@ inline Assessment evaluate(const std::vector<double>& reference,
                                                 std::min(0.25,0.07*max_velocity[i]));
         const double excess=error/soft;
         if(excess>most_excess){most_excess=excess;result.worst_joint=i;result.max_error=error;}
-        if(error>soft)result.state=State::PAUSE_FOR_FEEDBACK;
+        // During frozen verification the instant error allowance must match
+        // the verification metric. Do not treat its softer diagnostic
+        // threshold as a hard actuator limit. Remain below the real hard bound.
+        const double pause_limit=std::min(soft*pause_soft_ratio,0.80*hard);
+        if(error>pause_limit)result.state=State::PAUSE_FOR_FEEDBACK;
         if(error>=hard)result.hard_violation=true;
     }
     result.valid=true;

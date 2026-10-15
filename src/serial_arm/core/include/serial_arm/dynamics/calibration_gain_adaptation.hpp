@@ -27,11 +27,13 @@ struct PassMetrics {
 // conservative soft following limits, not fractions of actuator Kp/Kd.
 // Rigid and identification gains require a frozen full-speed round trip.
 // Compliant gains are checked separately at a declared reduced rate.
+inline constexpr double rigid_validation_max_error_ratio=1.50;
+inline constexpr double compliant_validation_max_error_ratio=1.75;
 inline bool quality_acceptable(const PassMetrics& metrics) {
     return metrics.samples>=60 && metrics.revisions==0 &&
         metrics.pauses<=std::max<std::size_t>(2,metrics.samples/100) &&
         metrics.error_ratio_sum/static_cast<double>(metrics.samples)<=0.70 &&
-        metrics.worst_error_ratio<=1.50;
+        metrics.worst_error_ratio<=rigid_validation_max_error_ratio;
 }
 // Compliant tracking is deliberately judged at a reduced, explicitly
 // recorded trajectory rate. The native hard-following and motor limits remain
@@ -43,7 +45,7 @@ inline bool compliant_quality_acceptable(const PassMetrics& metrics) {
     return metrics.samples>=60 && metrics.revisions==0 &&
         metrics.pauses<=std::max<std::size_t>(3,metrics.samples/50) &&
         metrics.error_ratio_sum/static_cast<double>(metrics.samples)<=0.95 &&
-        metrics.worst_error_ratio<=1.75;
+        metrics.worst_error_ratio<=compliant_validation_max_error_ratio;
 }
 struct HoldMetrics {
     std::size_t samples{0};

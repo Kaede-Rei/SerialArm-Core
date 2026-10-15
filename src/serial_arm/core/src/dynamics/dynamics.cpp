@@ -618,13 +618,15 @@ tl::expected<void, DynamicsErr> Dynamics::update_state(const JointState& state, 
                 const pinocchio::FrameIndex frame_id = impl_->model.getFrameId(candidate.link_name);
                 if(static_cast<int>(frame_id) >= impl_->model.nframes) continue;
                 const Eigen::Vector3d delta_h = candidate.value - original.mass * original.center_of_mass;
+                const double delta_mass = candidate.candidate_mass > 0.0 ? candidate.candidate_mass - original.mass : 0.0;
                 const Eigen::Matrix3d rotation = impl_->data->oMf[frame_id].rotation();
                 const Eigen::Vector3d gravity_world = impl_->model.gravity.linear();
                 const Eigen::Vector3d moment = gravity_world.cross(rotation * delta_h);
                 const Eigen::MatrixXd& jacobian = impl_->frame_jacobians[frame_id];
                 // Pinocchio Motion/Jacobian rows are [linear; angular]
                 for(std::size_t joint = 0; joint < impl_->info.joints_count; ++joint) {
-                    impl_->state.candidate_gravity[joint] += jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint)).dot(moment);
+                    impl_->state.candidate_gravity[joint] += jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint)).dot(moment)
+                        - jacobian.block<3,1>(0, static_cast<Eigen::Index>(joint)).dot(delta_mass * gravity_world);
                 }
             }
         }
@@ -814,6 +816,9 @@ tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regress
         result.first_moment_regressor = Eigen::MatrixXd::Zero(
             static_cast<Eigen::Index>(impl_->info.joints_count),
             static_cast<Eigen::Index>(3 * result.links.size()));
+        result.mass_regressor = Eigen::MatrixXd::Zero(
+            static_cast<Eigen::Index>(impl_->info.joints_count),
+            static_cast<Eigen::Index>(result.links.size()));
         Eigen::VectorXd reconstructed = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(impl_->info.joints_count));
         const Eigen::Vector3d gravity_world = impl_->model.gravity.linear();
         Eigen::MatrixXd jacobian_model = Eigen::MatrixXd::Zero(6, impl_->model.nv);
@@ -834,6 +839,8 @@ tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regress
                 const Eigen::Vector3d angular = jacobian.block<3,1>(3, static_cast<Eigen::Index>(joint));
                 reconstructed(static_cast<Eigen::Index>(joint)) += -linear.dot(force) + angular.dot(gravity_world.cross(rotation * h));
                 if(fit_index != impl_->gravity_link_index.end()) {
+                    result.mass_regressor(static_cast<Eigen::Index>(joint),
+                        static_cast<Eigen::Index>(fit_index->second)) = -linear.dot(gravity_world);
                     for(int axis = 0; axis < 3; ++axis) {
                         const Eigen::Vector3d basis = rotation.col(axis);
                         result.first_moment_regressor(
@@ -862,19 +869,24 @@ tl::expected<JointVector, DynamicsErr> Dynamics::compute_gravity_with_first_mome
     const auto regression = get_gravity_regression(positions);
     if(!regression) return tl::make_unexpected(regression.error());
     Eigen::VectorXd delta = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(3 * regression->links.size()));
-    std::unordered_map<std::string, Eigen::Vector3d> candidates;
+    Eigen::VectorXd delta_mass = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(regression->links.size()));
+    std::unordered_map<std::string, GravityFirstMoment> candidates;
     for(const auto& item : first_moments) {
-        if(!item.value.allFinite()) return tl::make_unexpected(DynamicsErr::NON_FINITE_INPUT);
-        candidates[item.link_name] = item.value;
+        if(!item.value.allFinite() || !std::isfinite(item.candidate_mass) || item.candidate_mass < 0.0)
+            return tl::make_unexpected(DynamicsErr::NON_FINITE_INPUT);
+        candidates[item.link_name] = item;
     }
     for(std::size_t i = 0; i < regression->links.size(); ++i) {
         const auto& link = regression->links[i];
         const auto it = candidates.find(link.link_name);
         if(it == candidates.end()) continue;
-        delta.segment<3>(static_cast<Eigen::Index>(3 * i)) = it->second - link.mass * link.center_of_mass;
+        delta.segment<3>(static_cast<Eigen::Index>(3 * i)) = it->second.value - link.mass * link.center_of_mass;
+        if(it->second.candidate_mass > 0.0)
+            delta_mass[static_cast<Eigen::Index>(i)] = it->second.candidate_mass - link.mass;
     }
     Eigen::VectorXd gravity = Eigen::Map<const Eigen::VectorXd>(regression->original_gravity.data(), static_cast<Eigen::Index>(regression->original_gravity.size()));
     gravity += regression->first_moment_regressor * delta;
+    gravity += regression->mass_regressor * delta_mass;
     JointVector result(static_cast<std::size_t>(gravity.size()), 0.0);
     for(Eigen::Index i = 0; i < gravity.size(); ++i) result[static_cast<std::size_t>(i)] = gravity[i];
     return result;
@@ -885,7 +897,8 @@ tl::expected<void, DynamicsErr> Dynamics::set_gravity_first_moment_override(
     if(!is_configured()) return tl::make_unexpected(DynamicsErr::NOT_CONFIGURED);
     std::unordered_set<std::string> names;
     for(const auto& item : first_moments) {
-        if(!item.value.allFinite() || impl_->gravity_link_index.find(item.link_name) == impl_->gravity_link_index.end() ||
+        if(!item.value.allFinite() || !std::isfinite(item.candidate_mass) || item.candidate_mass < 0.0 ||
+            impl_->gravity_link_index.find(item.link_name) == impl_->gravity_link_index.end() ||
             !names.insert(item.link_name).second) return tl::make_unexpected(DynamicsErr::INVALID_CFG);
     }
     impl_->gravity_override = first_moments;

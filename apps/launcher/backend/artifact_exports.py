@@ -181,8 +181,33 @@ def _gain_export(record, dest):
     return {'target': category, 'validated': True, 'files_only': ['core.yaml']}
 
 
+def _gravity_merge_source(folder, metadata, source_core):
+    # Prefer the currently deployed Core configuration only when it still
+    # describes the exact immutable source URDF and ordered joint mapping
+    current_path = metadata.get('core_config_path')
+    if not current_path:
+        return source_core, 'task_snapshot'
+    current = Path(current_path).expanduser().resolve()
+    if not current.is_file() or current == source_core:
+        return source_core, 'task_snapshot'
+    live = yaml.safe_load(current.read_text(encoding='utf-8'))
+    if not isinstance(live, dict) or not isinstance(live.get('model'), dict):
+        raise ValueError('当前 Core 配置格式无效，拒绝用历史快照覆盖已调增益')
+    if list(live['model'].get('joint_names') or []) != metadata.get('joint_names'):
+        raise ValueError('当前 Core 的关节映射与重力候选不一致，拒绝覆盖已有增益')
+    model_path = Path(str(live['model'].get('urdf_path') or ''))
+    if not model_path.is_absolute():
+        model_path = current.parent / model_path
+    if not matches_recorded_fingerprint(model_path.resolve(), metadata.get('urdf_fingerprint')):
+        raise ValueError('当前 Core 所用 URDF 已变化，请先检查模型来源，不能自动合并历史重力候选')
+    if not isinstance(((live.get('control') or {}).get('controller')), dict):
+        raise ValueError('当前 Core 缺少控制增益配置，拒绝自动合并')
+    return current, 'current_core'
+
+
 def _gravity_export(record,dest,candidate_source="online"):
     folder,metadata,model,core,cfg=_snapshot(record)
+    core,core_source=_gravity_merge_source(folder,metadata,core)
     if candidate_source not in ('online','offline'):
         raise ValueError('未知重力候选来源')
     offline=candidate_source=='offline'
@@ -232,6 +257,7 @@ def _gravity_export(record,dest,candidate_source="online"):
     result_core=_replace_core(core.read_text(encoding='utf-8'),targets)
     (dest/'core.yaml').write_text(result_core,encoding='utf-8')
     return {'target':'gravity_and_friction','validated':verified and friction_verified,
+            'core_merge_source':core_source,
             'review_required':not verified or not friction_verified,
             'static_pass':verified,'friction_pass':friction_verified,
             'friction_enabled':friction_verified,
