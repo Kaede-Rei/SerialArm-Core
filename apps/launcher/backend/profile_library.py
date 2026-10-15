@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import math
 import os
 from pathlib import Path
@@ -118,6 +119,15 @@ class ProfileLibrary:
         model = core.get('model') or {}; safety = core.get('safety_policy') or {}
         joints = model.get('joint_names') or []
         profile_setup = profile_setup and bool(joints) and bool(model.get('base_frame')) and bool(model.get('tool_frame'))
+        if profile_setup and info.get('hardware_plugin') == 'serial_arm_hardware_damiao':
+            hardware = read_yaml(info['resources']['hardware'])
+            damiao = hardware.get('damiao') or {}
+            acts = damiao.get('actuators') or {}
+            buses = hardware.get('buses') or {}
+            ids = [a.get('motor_id') for a in acts.values() if isinstance(a,dict)]
+            profile_setup = (set(acts) == set(joints) and bool(damiao.get('bus') in buses)
+                and all(isinstance(a,dict) and a.get('motor_type') and isinstance(a.get('motor_id'),int)
+                    and a['motor_id'] > 0 for a in acts.values()) and len(set(ids)) == len(joints))
         gravity_valid = bool(((safety.get('fault_recovery') or {}).get('gravity_model_validated')))
         meta_path = self._readiness_path(info['profile_file'], info['profile'])
         meta = yaml.safe_load(meta_path.read_text()) if meta_path.is_file() else {}
@@ -282,13 +292,21 @@ class ProfileLibrary:
         base=text(options.get('base_frame')); tool=text(options.get('tool_frame'))
         if base not in analysis['links'] or tool not in analysis['links']: raise ValueError('base/tool frame must exist in the Description')
         zeros=self._joint_map(joints,0.0); ones=self._joint_map(joints,1.0)
+        limits = {item['name']: item.get('limit') or {} for item in analysis['joints']}
+        park = {}
+        for name in joints:
+            low, high = limits[name].get('lower'), limits[name].get('upper')
+            if low is not None and high is not None:
+                if float(low) > float(high): raise ValueError(f'{name} URDF 关节限位上下界错误')
+                park[name] = max(float(low), min(float(high), 0.0))
+            else: park[name] = 0.0
         kp_rigid=self._joint_map(joints,20.0); kd_rigid=self._joint_map(joints,0.5); kp_soft=self._joint_map(joints,3.0); kd_soft=self._joint_map(joints,0.1)
         core={
           'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
           'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
-          'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':kd_soft},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'identification_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
+          'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'identification_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
           'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_kp_override':self._joint_map(joints,50.0),'max_kd_override':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
-          'shutdown':{'park_before_disable':True,'park_pos':zeros,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
+          'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
           'capability':{'admittance':{'enabled':False,'joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
         }
         # If the Description already supplies a robot-specific Core config,
@@ -317,14 +335,18 @@ class ProfileLibrary:
             core_config_relative = 'config/serialarm/core.yaml'
             _atomic_yaml(config_dir/'core.yaml',core)
         hardware_plugin=text(options.get('hardware_plugin'))
+        if hardware_plugin not in ('', 'serial_arm_hardware_damiao'):
+            raise ValueError('hardware_plugin 目前仅支持未配置或 serial_arm_hardware_damiao')
         hardware={}
         actuators=options.get('actuators') or []
         complete=hardware_plugin=='serial_arm_hardware_damiao' and len(actuators)==len(joints) and all(text(a.get('motor_type')) and int(a.get('motor_id',0))>0 for a in actuators)
-        if complete:
+        if hardware_plugin=='serial_arm_hardware_damiao':
+            if len(actuators)!=len(joints):
+                actuators = list(actuators[:len(joints)]) + [{} for _ in range(max(0,len(joints)-len(actuators)))]
             bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
-            hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id')),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
+            hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
         _atomic_yaml(config_dir/'hardware.yaml',hardware)
-        entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin if complete else '','config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
+        entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin if hardware_plugin=='serial_arm_hardware_damiao' else '','config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
         if analysis['ros2_control_xacro']:
             entry['description']['ros2_control_xacro']=str(Path(analysis['ros2_control_xacro']).relative_to(analysis['package_root'])).replace('\\','/')
         profile_file=package_dir/'robot_profiles.yaml'; _atomic_yaml(profile_file,{'profiles':{profile:entry}})
@@ -341,47 +363,289 @@ class ProfileLibrary:
         stages[stage]={'confirmed':bool(confirmed),'fingerprint':info['fingerprint'] if confirmed else ''}
         _atomic_yaml(path,data); return self._readiness(config)
 
+    def _profile_config_paths(self, config):
+        info = self.inspector.inspect(config)
+        return info, Path(info['resources']['core']), Path(info['resources']['hardware']), Path(info['profile_file'])
+
     def profile_editor_load(self, config):
-        info=self.inspector.inspect(config); core=read_yaml(info['resources']['core']); hardware=read_yaml(info['resources']['hardware']) if Path(info['resources'].get('hardware','')).is_file() else {}
-        joints=(core.get('model') or {}).get('joint_names') or []; calibration=(core.get('calibration') or {}).get('joints') or {}
-        damiao=hardware.get('damiao') or {}; actuators=damiao.get('actuators') or {}; bus=damiao.get('bus') or info.get('bus') or ''; bus_cfg=(hardware.get('buses') or {}).get(bus,{})
-        return {'profile_file':info['profile_file'],'profile':info['profile'],'core_path':info['resources']['core'],'hardware_path':info['resources'].get('hardware',''),'core_sha':_sha(info['resources']['core']),'hardware_sha':_sha(info['resources']['hardware']) if Path(info['resources'].get('hardware','')).is_file() else '','joint_names':joints,'calibration':calibration,'write_enabled':bool(((core.get('control') or {}).get('runtime') or {}).get('write_enabled')),'park_pos':(core.get('shutdown') or {}).get('park_pos') or {},'hardware_plugin':info.get('hardware_plugin',''),'bus':bus,'device':bus_cfg.get('device',''),'baudrate':bus_cfg.get('baudrate',''),'actuators':{j:actuators.get(j,{}) for j in joints}}
+        info, core_path, hardware_path, profile_path = self._profile_config_paths(config)
+        core = read_yaml(core_path)
+        hardware = read_yaml(hardware_path) if hardware_path.is_file() else {}
+        profile = read_yaml(profile_path)['profiles'][info['profile']]
+        joints = (core.get('model') or {}).get('joint_names') or []
+        try:
+            urdf = (core_path.parent / core['model']['urdf_path']).resolve()
+            nodes = ET.parse(urdf).getroot().findall('joint')
+            urdf_effort_limits = {node.get('name'): float(node.find('limit').get('effort'))
+                for node in nodes if node.find('limit') is not None and node.find('limit').get('effort')}
+        except (OSError, ET.ParseError, KeyError, ValueError):
+            urdf_effort_limits = {}
+        return {
+            'profile': info['profile'], 'core_path': str(core_path),
+            'hardware_path': str(hardware_path), 'profile_path': str(profile_path),
+            'core_sha': _sha(core_path),
+            'hardware_sha': _sha(hardware_path) if hardware_path.is_file() else '',
+            'profile_sha': _sha(profile_path),
+            'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits, 'core': core, 'hardware': hardware,
+            'profile_entry': profile,
+            'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
+            'managed_by_launcher': self._readiness_path(info['profile_file'], info['profile']).is_file(),
+        }
+
+    @staticmethod
+    def _finite(value, path, minimum=None, maximum=None, integer=False):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f'{path} 必须是有限数值')
+        if integer and int(value) != value:
+            raise ValueError(f'{path} 必须是整数')
+        if minimum is not None and value < minimum:
+            raise ValueError(f'{path} 不能小于 {minimum}')
+        if maximum is not None and value > maximum:
+            raise ValueError(f'{path} 不能大于 {maximum}')
+
+    @staticmethod
+    def _same_structure(original, candidate, path=''):
+        # Edit existing values without silently deleting unknown driver fields
+        if isinstance(original, dict):
+            if not isinstance(candidate, dict) or set(original) - set(candidate):
+                raise ValueError(f'{path or "root"} 缺少原有配置字段')
+            for key, value in original.items():
+                ProfileLibrary._same_structure(value, candidate[key], f'{path}.{key}' if path else str(key))
+        elif isinstance(original, list):
+            if not isinstance(candidate, list) or len(original) != len(candidate):
+                raise ValueError(f'{path} 数组长度不一致')
+            for i, value in enumerate(original):
+                ProfileLibrary._same_structure(value, candidate[i], f'{path}[{i}]')
+        elif isinstance(original, bool):
+            if not isinstance(candidate, bool): raise ValueError(f'{path} 必须是布尔值')
+        elif isinstance(original, (float, int)):
+            ProfileLibrary._finite(candidate, path)
+        elif isinstance(original, str):
+            if not isinstance(candidate, str): raise ValueError(f'{path} 必须是文本')
+        elif candidate != original:
+            raise ValueError(f'{path} 不支持此参数类型')
+
+    def _validate_core_profile(self, core, hardware, entry, core_path, old_core):
+        names = core['model']['joint_names']
+        original_names = old_core['model']['joint_names']
+        if names != original_names or not isinstance(names, list) or not names or len(set(names)) != len(names):
+            raise ValueError('model.joint_names 当前 Profile 的受控关节不能在参数编辑页更改，请重新建立控制链')
+        def section(path):
+            node = core
+            for part in path.split('.'):
+                if not isinstance(node, dict) or part not in node:
+                    raise ValueError(f'{path} 缺少必需的配置字段')
+                node = node[part]
+            return node
+        def scalar(path, minv=None, maxv=None, integer=False):
+            self._finite(section(path), path, minv, maxv, integer)
+        def joint_map(path, minv=None, maxv=None, integer=False, nonzero=False):
+            values = section(path)
+            if not isinstance(values, dict) or set(values) != set(names):
+                raise ValueError(f'{path} 关节名称与 model.joint_names 不一致')
+            for name in names:
+                self._finite(values[name], path + '.' + name, minv, maxv, integer)
+                if nonzero and values[name] == 0: raise ValueError(f'{path}.{name} 不能为零')
+        model = core['model']
+        urdf = (core_path.parent / model['urdf_path']).resolve()
+        if not urdf.is_file(): raise ValueError('model.urdf_path 无法找到 URDF 文件')
+        try:
+            root = ET.parse(urdf).getroot()
+        except ET.ParseError as error:
+            raise ValueError(f'model.urdf_path URDF 解析失败 {error}') from error
+        joints_xml = {j.get('name'): j for j in root.findall('joint')}
+        links_xml = {n.get('name') for n in root.findall('link')}
+        for name in names:
+            if name not in joints_xml or joints_xml[name].get('type') == 'fixed':
+                raise ValueError(f'model.joint_names.{name} 在 URDF 中不存在可动关节')
+        for key in ('base_frame', 'tool_frame'):
+            if model[key] not in links_xml:
+                raise ValueError(f'model.{key} 不在 URDF link 中')
+        parent_by_child = {}
+        for node in root.findall('joint'):
+            parent, child = node.find('parent'), node.find('child')
+            if parent is not None and child is not None:
+                parent_by_child[child.get('link')] = (parent.get('link'), node.get('name'))
+        chain = []
+        current, visited = model['tool_frame'], set()
+        while current != model['base_frame'] and current not in visited:
+            visited.add(current)
+            parent = parent_by_child.get(current)
+            if parent is None: break
+            current, name = parent
+            chain.append(name)
+        chain.reverse()
+        if current != model['base_frame'] or [name for name in chain if name in names] != names:
+            raise ValueError('model.base_frame 或 model.tool_frame 与受控关节链不一致')
+        gravity = model['gravity']
+        if not isinstance(gravity, list) or len(gravity) != 3:
+            raise ValueError('model.gravity 必须包含三个重力分量')
+        for i,v in enumerate(gravity): self._finite(v, f'model.gravity[{i}]')
+        joint_map('model.gravity_scale',0,2)
+        if model.get('gravity_correction_path'):
+            if not (core_path.parent / model['gravity_correction_path']).resolve().is_file():
+                raise ValueError('model.gravity_correction_path 找不到校正文件')
+        for name in names:
+            path = 'calibration.joints.' + name
+            data = section(path)
+            for field in ('direction','pos_ratio','tor_ratio','joint_zero_offset','actuator_zero_offset'):
+                self._finite(data[field], f'{path}.{field}')
+            if data['direction'] not in (-1,1): raise ValueError(f'{path}.direction 只能为 -1 或 1')
+            if data['pos_ratio'] == 0 or data['tor_ratio'] == 0:
+                raise ValueError(f'{path} 位置和力矩比例不能为零')
+        runtime = section('control.runtime')
+        scalar('control.runtime.ctrl_frequency_hz',1)
+        scalar('control.runtime.joint_acc_filter_alpha',0,1)
+        if runtime['model_feedforward_mode'] not in ('NONE','GRAVITY','FULL_INVERSE_DYNAMICS'):
+            raise ValueError('control.runtime.model_feedforward_mode 无效')
+        if runtime['tracking_impedance_mode'] not in ('RIGID_TRACKING','COMPLIANT_TRACKING'):
+            raise ValueError('control.runtime.tracking_impedance_mode 无效')
+        controller = section('control.controller')
+        for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','identification_tracking'):
+            if mode == 'identification_tracking' and mode not in controller: continue
+            for axis in ('kp','kd'): joint_map(f'control.controller.{mode}.{axis}',0)
+        safety = section('safety_policy')
+        for key in ('position_margin', 'max_dt_s','state_timeout_s','cmd_timeout_s'):
+            scalar('safety_policy.'+key, 0 if key=='position_margin' else 1e-7)
+        for key in ('cmd_vel_scale','state_vel_scale'):
+            scalar('safety_policy.'+key,1e-7,1)
+        for field in ('max_acc','max_effort_override','max_kp_override','max_kd_override'):
+            if field in safety: joint_map('safety_policy.'+field,0)
+        recovery = section('safety_policy.fault_recovery')
+        if recovery['default_mode'] != 'rigid_hold':
+            raise ValueError('safety_policy.fault_recovery.default_mode 仅支持 rigid_hold')
+        scalar('safety_policy.fault_recovery.recovery_timeout_s',1e-7)
+        for field in ('kp','kd','max_vel'):
+            joint_map('safety_policy.fault_recovery.compliant_recovery.'+field,0)
+        scalar('safety_policy.fault_recovery.compliant_recovery.effort_scale',0,1)
+        for name in names:
+            for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','identification_tracking'):
+                for axis in ('kp','kd'):
+                    if mode not in controller: continue
+                    limit = safety.get('max_'+axis+'_override',{}).get(name)
+                    if limit is not None and controller[mode][axis][name] > limit:
+                        raise ValueError(f'control.controller.{mode}.{axis}.{name} 超出 safety_policy.max_{axis}_override')
+        shut = section('shutdown')
+        joint_map('shutdown.park_pos')
+        for key in ('speed_scale','compliant_phase_ratio'):
+            if key in shut: scalar('shutdown.'+key,1e-7,1)
+        for key in ('position_tolerance','velocity_tolerance','settle_time_s','relaxed_tolerance_ratio','timeout_s'):
+            scalar('shutdown.'+key,1e-7)
+        for name in names:
+            lim = joints_xml[name].find('limit')
+            if lim is not None and lim.get('lower') is not None and lim.get('upper') is not None:
+                lo,hi = float(lim.get('lower')),float(lim.get('upper'))
+                pos = shut['park_pos'][name]
+                if not lo+safety['position_margin'] <= pos <= hi-safety['position_margin']:
+                    raise ValueError(f'shutdown.park_pos.{name} 超出 URDF 有效限位')
+        admittance = section('capability.admittance')
+        if not isinstance(admittance['enabled'],bool): raise ValueError('capability.admittance.enabled 必须为布尔值')
+        flags = admittance['joint_enabled']
+        if not isinstance(flags,dict) or set(flags)!=set(names) or any(not isinstance(v,bool) for v in flags.values()):
+            raise ValueError('capability.admittance.joint_enabled 与关节名称不一致')
+        if admittance['observer']['mode'] not in ('FULL_ID','MOMENTUM'):
+            raise ValueError('capability.admittance.observer.mode 无效')
+        joint_map('capability.admittance.observer.momentum_gain',0)
+        for key in ('torque_bias','torque_threshold'):
+            joint_map('capability.admittance.calibration.'+key,0 if key=='torque_threshold' else None)
+        friction = admittance['calibration']['friction']
+        scalar('capability.admittance.calibration.friction.velocity_transition',1e-7)
+        for key in ('positive_coulomb','positive_viscous','negative_coulomb','negative_viscous'):
+            joint_map('capability.admittance.calibration.friction.'+key)
+        for key in ('mass','damping','stiffness','max_delta_q','max_delta_q_dot'):
+            joint_map('capability.admittance.controller.'+key,1e-7 if key=='mass' else 0)
+        plugin = ((entry.get('hardware') or {}).get('plugin') or '')
+        if not isinstance(plugin,str): raise ValueError('profile.hardware.plugin 必须是文本')
+        if plugin == 'serial_arm_hardware_damiao':
+            damiao = hardware.get('damiao') or {}
+            buses = hardware.get('buses') or {}
+            bus = damiao.get('bus')
+            if not bus or bus not in buses: raise ValueError('hardware.damiao.bus 必须对应 hardware.buses 中的总线')
+            for key in ('feedback_timeout_s',):
+                self._finite(damiao.get(key), 'hardware.damiao.'+key,1e-7)
+            for key in ('activation_retries','startup_read_cycles','stop_cycles'):
+                self._finite(damiao.get(key), 'hardware.damiao.'+key,0,integer=True)
+            for key in ('stop_kp','stop_kd'):
+                self._finite(damiao.get(key), 'hardware.damiao.'+key,0)
+            self._finite(buses[bus].get('baudrate'), f'hardware.buses.{bus}.baudrate',1,integer=True)
+            if not buses[bus].get('device'): raise ValueError(f'hardware.buses.{bus}.device 不能为空')
+            acts = damiao.get('actuators') or {}
+            if set(acts)!=set(names): raise ValueError('hardware.damiao.actuators 与受控关节不一致')
+            ids = set()
+            for name in names:
+                item = acts[name]
+                if not item.get('motor_type'): raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 不能为空')
+                self._finite(item.get('motor_id'),f'hardware.damiao.actuators.{name}.motor_id',1,integer=True)
+                self._finite(item.get('master_id'),f'hardware.damiao.actuators.{name}.master_id',0,integer=True)
+                bus_key = (bus,item['motor_id'])
+                if bus_key in ids: raise ValueError(f'hardware.damiao.actuators.{name}.motor_id 重复')
+                ids.add(bus_key)
 
     def profile_editor_save(self, config, payload):
-        info=self.inspector.inspect(config); core_path=Path(info['resources']['core']); hw_path=Path(info['resources']['hardware'])
-        if _sha(core_path)!=payload.get('core_sha') or (hw_path.is_file() and _sha(hw_path)!=payload.get('hardware_sha')): raise ValueError('Profile files changed outside the workspace; reload before saving')
-        core=read_yaml(core_path); hardware=read_yaml(hw_path) if hw_path.is_file() else {}; joints=(core.get('model') or {}).get('joint_names') or []
-        cal=(core.setdefault('calibration',{}).setdefault('joints',{})); incoming=payload.get('calibration') or {}
-        for j in joints:
-            item=incoming.get(j) or {}; target=cal.setdefault(j,{})
-            for key in ('direction','pos_ratio','tor_ratio','joint_zero_offset','actuator_zero_offset'):
-                value=float(item.get(key,target.get(key,1.0 if key in ('direction','pos_ratio','tor_ratio') else 0.0)))
-                if not math.isfinite(value): raise ValueError('calibration values must be finite')
-                target[key]=value
-        core.setdefault('control',{}).setdefault('runtime',{})['write_enabled']=bool(payload.get('write_enabled'))
-        park=payload.get('park_pos') or {}; core.setdefault('shutdown',{})['park_pos']={j:float(park.get(j,0.0)) for j in joints}
-        _atomic_yaml(core_path,core)
-        # A profile imported with its own config/core/<profile>.yaml may
-        # contain a legacy config/serialarm/core.yaml compatibility copy.
-        # The copy is never authoritative, but keep it in sync after edits so
-        # old integrations cannot silently run low-gain creation defaults.
-        if core_path.parent.name == 'core' and core_path.parent.parent.name == 'config':
+        info, core_path, hw_path, profile_path = self._profile_config_paths(config)
+        for path, field in ((core_path,'core_sha'),(hw_path,'hardware_sha'),(profile_path,'profile_sha')):
+            current_sha = _sha(path) if path.is_file() else ''
+            if current_sha != payload.get(field):
+                raise ValueError(f'{path.name} 已被外部修改，请重新加载参数后再保存')
+        before_core = read_yaml(core_path)
+        before_hw = read_yaml(hw_path) if hw_path.is_file() else {}
+        profile_data = read_yaml(profile_path)
+        original_entry = profile_data['profiles'][info['profile']]
+        core = payload.get('core')
+        hardware = payload.get('hardware')
+        entry = payload.get('profile_entry')
+        if not isinstance(core,dict) or not isinstance(hardware,dict) or not isinstance(entry,dict):
+            raise ValueError('core hardware profile_entry 必须是完整配置对象')
+        self._same_structure(before_core,core)
+        for section, allowed in {
+            'model': {'gravity_correction_path'},
+            'safety_policy': {'max_effort_override'},
+            'shutdown': {'compliant_phase_ratio'},
+        }.items():
+            extra = set(core[section]) - set(before_core[section])
+            if not extra.issubset(allowed):
+                raise ValueError(f'{section} 不支持新增字段 {sorted(extra)}')
+        for section in ('calibration','control','capability'):
+            if set(core[section]) != set(before_core[section]):
+                raise ValueError(f'{section} 不允许新增未知字段')
+        new_modes = set(core['control']['controller']) - set(before_core['control']['controller'])
+        if not new_modes.issubset({'identification_tracking'}):
+            raise ValueError('control.controller 不允许新增未知控制模式')
+        if (core['capability']['admittance']['enabled'] and
+            not before_core['capability']['admittance']['enabled']):
+            raise ValueError('capability.admittance.enabled 需要后续标定和验证后才能启用')
+        if (core['safety_policy']['fault_recovery']['gravity_model_validated'] !=
+            before_core['safety_policy']['fault_recovery']['gravity_model_validated']):
+            raise ValueError('safety_policy.fault_recovery.gravity_model_validated 必须由后续真机验证流程更新')
+        self._same_structure(before_hw,hardware,'hardware')
+        self._same_structure(original_entry,entry,'profile')
+        if entry.get('core') != original_entry.get('core') or entry.get('description') != original_entry.get('description'):
+            raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')
+        self._validate_core_profile(core,hardware,entry,core_path,before_core)
+        # A user-owned Profile is a single authoritative configuration; preserve
+        # exact existing bytes on no-op saves so comments and verified values stay intact
+        desired = {}
+        if core != before_core: desired[core_path] = yaml.safe_dump(core, allow_unicode=True, sort_keys=False)
+        if hardware != before_hw: desired[hw_path] = yaml.safe_dump(hardware, allow_unicode=True, sort_keys=False)
+        next_profiles = copy.deepcopy(profile_data)
+        next_profiles['profiles'][info['profile']] = entry
+        if next_profiles != profile_data: desired[profile_path] = yaml.safe_dump(next_profiles, allow_unicode=True, sort_keys=False)
+        if core_path in desired and core_path.parent.name == 'core' and core_path.parent.parent.name == 'config':
             compatibility = core_path.parent.parent / 'serialarm' / 'core.yaml'
-            if compatibility.is_file():
-                compatibility.write_bytes(core_path.read_bytes())
-        requested_plugin=text(payload.get('hardware_plugin')) or info.get('hardware_plugin','')
-        if requested_plugin and requested_plugin != info.get('hardware_plugin',''):
-            profile_file=Path(info['profile_file']); profile_data=read_yaml(profile_file); entry=(profile_data.get('profiles') or {}).get(info['profile'])
-            if not isinstance(entry,dict): raise ValueError('Profile entry is missing while updating hardware plugin')
-            entry.setdefault('hardware',{})['plugin']=requested_plugin
-            _atomic_yaml(profile_file,profile_data)
-        if requested_plugin=='serial_arm_hardware_damiao':
-            damiao=hardware.setdefault('damiao',{}); bus=text(payload.get('bus')) or damiao.get('bus') or 'main_can'; damiao['bus']=bus
-            for key,value in {'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5}.items(): damiao.setdefault(key,value)
-            buses=hardware.setdefault('buses',{}); b=buses.setdefault(bus,{'type':'can','backend':'damiao_usb2can'}); b['device']=text(payload.get('device')) or b.get('device','/dev/ttyACM0'); b['baudrate']=int(payload.get('baudrate') or b.get('baudrate',921600))
-            target_act=damiao.setdefault('actuators',{}); incoming_act=payload.get('actuators') or {}
-            for i,j in enumerate(joints):
-                a=incoming_act.get(j) or {}; t=target_act.setdefault(j,{})
-                t['name']=text(a.get('name')) or t.get('name') or f'actuator{i+1}'; t['motor_id']=int(a.get('motor_id') or t.get('motor_id') or i+1); t['master_id']=int(a.get('master_id') or t.get('master_id') or 0); t['motor_type']=text(a.get('motor_type')) or t.get('motor_type') or 'DM4310'
-            _atomic_yaml(hw_path,hardware)
+            if compatibility.is_file(): desired[compatibility] = desired[core_path]
+        backup = {path: path.read_bytes() if path.is_file() else None for path in desired}
+        try:
+            # Before touching files, validate every new YAML and stage replacements
+            for path, value in desired.items():
+                parsed = yaml.safe_load(value)
+                if not isinstance(parsed,dict): raise ValueError(f'{path.name} 无效配置结构')
+            for path,value in desired.items():
+                _atomic_yaml(path,yaml.safe_load(value))
+        except Exception:
+            for path, content in backup.items():
+                if content is None: path.unlink(missing_ok=True)
+                else:
+                    tmp = path.with_suffix(path.suffix+'.rollback')
+                    tmp.write_bytes(content); tmp.replace(path)
+            raise
         return self.profile_editor_load(config)

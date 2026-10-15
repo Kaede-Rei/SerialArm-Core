@@ -303,6 +303,7 @@ function statusUI() {
 }
 
 async function resetToStart() {
+    if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameters' : '有未保存的参数，确认放弃修改后返回首页')) return;
     if (active()) { toast(state.language === 'en' ? 'Stop the active session before returning to the start page' : '请先停止当前运行会话', true); return; }
     await pageExit();
     state.page = 'start'; state.entryIntent = ''; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
@@ -315,7 +316,7 @@ function libraryStateClass(value) { return value === 'ready' ? 'ready' : value =
 function libraryPage() {
     const intent = state.entryIntent || 'manage';
     let items = state.library.slice();
-    if (intent === 'continue') items = items.filter(x => x.readiness?.state !== 'ready');
+    // A previously supplied Profile can always be reopened for parameter maintenance
     if (intent === 'use') items = items.filter(x => x.readiness?.state === 'ready');
     const cards = items.map(item => `<article class="library-card"><div class="library-card-main"><div><span class="readiness-chip ${libraryStateClass(item.readiness?.state)}">${readinessStateText(item.readiness?.state)}</span><h3>${esc(item.profile)}</h3><p>${item.source === 'builtin' ? (state.language === 'en' ? 'Built-in Profile' : '内置 Profile') : esc(item.profile_file)}</p><small>${state.language === 'en' ? 'Next: ' : '下一步'}${readinessStageText(item.readiness?.next_stage)}</small></div><div class="library-actions"><button class="button primary" data-library-open="${esc(item.id)}">${intent === 'use' ? t('useProfile') : state.language === 'en' ? 'Open' : '打开'}</button><button class="button" data-library-remove="${esc(item.id)}">${t('removeFromLibrary')}</button></div></div></article>`).join('');
     const empty = `<div class="empty-state">${intent === 'use' ? (state.language === 'en' ? 'No validated Profiles are ready to use' : '当前没有已完成验证、可直接使用的 Profile') : (state.language === 'en' ? 'No matching Profiles' : '没有符合当前入口的 Profile')}</div>`;
@@ -332,9 +333,9 @@ function descriptionPage() {
     const toolOptions = a.links.map(x => `<option value="${esc(x)}" ${x === d.tool_frame ? 'selected' : ''}>${esc(x)}</option>`).join('');
     const chain = computeChain(d.base_frame, d.tool_frame, a.joints);
     const jointSummary = chain.map(j => `<span class="chain-joint ${j.type === 'fixed' ? 'fixed' : ''}">${esc(j.name)}<small>${esc(j.type)}</small></span>`).join('') || `<span class="warning-text">${state.language === 'en' ? 'The selected frames do not form one descendant chain' : '所选 Base / Tool 之间不是一条连续的后代链'}</span>`;
-    const motorOptions = ['', 'DM4310', 'DM4340', 'DM8009P'].map(x => `<option value="${x}">${x || (state.language === 'en' ? 'Choose motor type' : '选择电机型号')}</option>`).join('');
-    const actuators = d.joint_names.map((j, i) => { const x = d.actuators[i] || {}; return `<tr><td>${esc(j)}</td><td><input data-act-name="${i}" value="${esc(x.name || `actuator${i + 1}`)}"></td><td><input data-act-id="${i}" type="number" min="1" value="${Number(x.motor_id || i + 1)}"></td><td><input data-master-id="${i}" type="number" min="0" value="${Number(x.master_id || 0)}"></td><td><select data-motor-type="${i}">${motorOptions.replace(`value="${esc(x.motor_type || '')}"`, `value="${esc(x.motor_type || '')}" selected`)}</select></td></tr>` }).join('');
-    return pageHead('newDescription', 'newDescriptionDesc', `<button id="description-reset" class="button">${state.language === 'en' ? 'Choose another Description' : '重新选择 Description 文件'}</button>`) + `<div class="setup-stepper"><span class="active">1 ${t('descriptionStage')}</span><span class="active">2 ${t('controlChain')}</span><span>3 ${t('hardwareMapping')}</span><span>4 ${t('createProfile')}</span></div><div class="description-layout"><section class="card description-preview"><div class="card-head">${icon('model')}<div><h3>${esc(a.package_name)}</h3><p>${esc(a.urdf)}</p></div></div><div id="description-viewport"></div><div class="description-facts"><span>${a.links.length} Links</span><span>${a.joints.length} Joints</span><span>${esc(a.fingerprint.slice(0, 12))}</span></div></section><section class="card setup-form"><div class="card-body"><h3>${t('controlChain')}</h3><div class="row"><div class="field"><label>${t('baseFrame')}</label><select id="draft-base">${linkOptions}</select></div><div class="field"><label>${t('toolFrame')}</label><select id="draft-tool">${toolOptions}</select></div></div><div class="chain-preview">${jointSummary}</div><div class="field"><label>${t('controlledJoints')}</label><div class="chip-row">${d.joint_names.map(x => `<span class="chip">${esc(x)}</span>`).join('') || '—'}</div></div><hr><h3>${t('hardwareMapping')}</h3><div class="row"><div class="field"><label>${t('hardwareDriver')}</label><select id="draft-hardware"><option value="serial_arm_hardware_damiao" ${d.hardware_plugin === 'serial_arm_hardware_damiao' ? 'selected' : ''}>DAMIÃO</option><option value="" ${!d.hardware_plugin ? 'selected' : ''}>${state.language === 'en' ? 'Configure later' : '稍后配置'}</option></select></div><div class="field"><label>${t('bus')}</label><input id="draft-bus" value="${esc(d.bus)}"></div></div><div class="row"><div class="field"><label>${t('serial')}</label><input id="draft-device" value="${esc(d.device)}"></div><div class="field"><label>${t('baudrate')}</label><input id="draft-baudrate" value="${esc(d.baudrate)}"></div></div><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actuatorName')}</th><th>${t('motorId')}</th><th>${t('masterId')}</th><th>${t('motorType')}</th></tr></thead><tbody>${actuators}</tbody></table></div><hr><h3>${t('createProfile')}</h3><div class="field"><label>${t('profileId')}</label><input id="draft-profile" value="${esc(d.profile)}"></div><div class="field"><label>${t('destination')}</label><div class="input-row"><input id="draft-destination" value="${esc(d.destination)}"><button id="draft-destination-browse" class="button">${t('chooseDirectory')}</button></div></div><button id="draft-create" class="button primary">${t('createProfile')}</button></div></section></div>`;
+    const motorOptions = ['', ...knownMotorTypes];
+    const actuators = d.joint_names.map((j, i) => { const x = d.actuators[i] || {}; const isOther = !motorOptions.includes(x.motor_type || ''); return `<tr><td>${esc(j)}</td><td><input data-act-name="${i}" value="${esc(x.name || `actuator${i + 1}`)}"></td><td><input data-act-id="${i}" type="number" min="1" value="${Number(x.motor_id || i + 1)}"></td><td><input data-master-id="${i}" type="number" min="0" value="${Number(x.master_id || 0)}"></td><td><div class="hardware-choice"><select data-draft-motor-choice="${i}">${motorOptions.map(m => `<option value="${esc(m)}" ${!isOther && m === (x.motor_type || '') ? 'selected' : ''}>${esc(m || (state.language === 'en' ? 'Choose motor type' : '选择电机型号'))}</option>`).join('')}<option value="__custom__" ${isOther ? 'selected' : ''}>${state.language === 'en' ? 'Custom identifier…' : '自定义标识…'}</option></select><input data-motor-type="${i}" value="${esc(x.motor_type || '')}" class="hardware-custom-value" ${isOther ? '' : 'hidden'} placeholder="${state.language === 'en' ? 'Custom motor model' : '自定义电机型号'}"></div></td></tr>` }).join('');
+    return pageHead('newDescription', 'newDescriptionDesc', `<button id="description-reset" class="button">${state.language === 'en' ? 'Choose another Description' : '重新选择 Description 文件'}</button>`) + `<div class="setup-stepper"><span class="active">1 ${t('descriptionStage')}</span><span class="active">2 ${t('controlChain')}</span><span>3 ${t('hardwareMapping')}</span><span>4 ${t('createProfile')}</span><span>5 ${t('profileSetup')}</span></div><div class="description-layout"><section class="card description-preview"><div class="card-head">${icon('model')}<div><h3>${esc(a.package_name)}</h3><p>${esc(a.urdf)}</p></div></div><div id="description-viewport"></div><div class="description-facts"><span>${a.links.length} Links</span><span>${a.joints.length} Joints</span><span>${esc(a.fingerprint.slice(0, 12))}</span></div></section><section class="card setup-form"><div class="card-body"><h3>${t('controlChain')}</h3><div class="row"><div class="field"><label>${t('baseFrame')}</label><select id="draft-base">${linkOptions}</select></div><div class="field"><label>${t('toolFrame')}</label><select id="draft-tool">${toolOptions}</select></div></div><div class="chain-preview">${jointSummary}</div><div class="field"><label>${t('controlledJoints')}</label><div class="chip-row">${d.joint_names.map(x => `<span class="chip">${esc(x)}</span>`).join('') || '—'}</div></div><hr><h3>${t('hardwareMapping')}</h3><p class="parameter-guidance">${state.language === 'en' ? 'Creation currently supports Damiao only; other plugins can be configured after creating the Profile when their Backend is installed' : '新建时仅支持现有达妙硬件生成逻辑，其他驱动可在创建 Profile 后通过硬件参数编辑接入'}</p><details class="description-hardware-extra"><summary>${state.language === 'en' ? 'Transport and Backend details' : '总线类型与通信后端'}</summary><div class="row"><div class="field"><label>${state.language === 'en' ? 'Bus type' : '总线类型'}</label><select disabled><option>can</option></select></div><div class="field"><label>${state.language === 'en' ? 'Communication Backend' : '通信后端'}</label><select disabled><option>damiao_usb2can</option></select></div></div><p class="hint">${state.language === 'en' ? 'Read-only here because the current creation Backend provides this fixed combination' : '当前新建后端只生成这一组通信配置，此处展示实际支持组合，不提供无效选项'}</p></details><div class="row"><div class="field"><label>${t('hardwareDriver')}</label><select id="draft-hardware"><option value="serial_arm_hardware_damiao" ${d.hardware_plugin === 'serial_arm_hardware_damiao' ? 'selected' : ''}>DAMIÃO</option><option value="" ${!d.hardware_plugin ? 'selected' : ''}>${state.language === 'en' ? 'Configure later' : '稍后配置'}</option></select></div><div class="field"><label>${t('bus')}</label><input id="draft-bus" value="${esc(d.bus)}"></div></div><div class="row"><div class="field"><label>${t('serial')}</label><input id="draft-device" value="${esc(d.device)}"></div><div class="field"><label>${t('baudrate')}</label><input id="draft-baudrate" value="${esc(d.baudrate)}"></div></div><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actuatorName')}</th><th>${t('motorId')}</th><th>${t('masterId')}</th><th>${t('motorType')}</th></tr></thead><tbody>${actuators}</tbody></table></div><hr><h3>${t('createProfile')}</h3><div class="field"><label>${t('profileId')}</label><input id="draft-profile" value="${esc(d.profile)}"></div><div class="field"><label>${t('destination')}</label><div class="input-row"><input id="draft-destination" value="${esc(d.destination)}"><button id="draft-destination-browse" class="button">${t('chooseDirectory')}</button></div></div><button id="draft-create" class="button primary">${t('createProfile')}</button></div></section></div>`;
 }
 function lifecyclePage() {
     const r = state.readiness || {}; const checks = r.checks || {};
@@ -342,10 +343,149 @@ function lifecyclePage() {
     const rows = stages.map(([id, key, page]) => { const value = checks[id] || 'pending'; const mark = !['description', 'profile_setup'].includes(id); return `<article class="lifecycle-step ${value}"><span class="stage-dot"></span><div><b>${t(key)}</b><small>${value === 'verified' ? (state.language === 'en' ? 'Completed' : '已完成') : value === 'stale' ? (state.language === 'en' ? 'Files changed; verify again' : '文件已变化，需要重新验证') : value === 'failed' ? (state.language === 'en' ? 'Configuration error' : '配置有错误') : (state.language === 'en' ? 'Pending' : '待完成')}</small></div><div class="lifecycle-actions">${page ? `<button class="button" data-stage-open="${page}" data-stage="${id}">${state.language === 'en' ? 'Open' : '进入'}</button>` : ''}${mark ? `<button class="button ${id === r.next_stage ? 'primary' : ''}" data-confirm-stage="${id}">${t('confirmStage')}</button>` : ''}</div></article>` }).join('');
     return pageHead('readiness', 'readinessDesc', `<span class="readiness-chip ${libraryStateClass(r.state)}">${readinessStateText(r.state)}</span>`) + `<div class="readiness-summary card"><div><div class="eyebrow">${esc(state.config.profile || '—')}</div><h3>${r.state === 'ready' ? t('usable') : t('nextStep') + ' · ' + readinessStageText(r.next_stage)}</h3><p>${state.language === 'en' ? 'Readiness is derived from the current Profile and verification evidence. File changes invalidate affected confirmations' : '准备状态由当前 Profile 和验证证据动态计算，文件发生变化后相关确认会自动失效'}</p></div>${r.state === 'ready' ? `<button id="ready-control" class="button primary">${t('useProfile')}</button>` : ''}</div><div class="lifecycle-list">${rows}</div>`;
 }
+// One authoritative draft is shared by creation and continued configuration
+const profileGroups = [
+    ['model', '模型与重力', 'model'],
+    ['mapping', '关节映射', 'calibration'],
+    ['runtime', '运行参数', 'control.runtime'],
+    ['gains', '控制增益', 'control.controller'],
+    ['safety', '安全策略', 'safety_policy'],
+    ['shutdown', '安全停放', 'shutdown'],
+    ['admittance', '导纳能力', 'capability.admittance'],
+    ['hardware', '硬件与总线', 'hardware'],
+];
+const profileEnums = {
+    'core.control.runtime.model_feedforward_mode': ['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'],
+    'core.control.runtime.tracking_impedance_mode': ['RIGID_TRACKING', 'COMPLIANT_TRACKING'],
+    'core.safety_policy.fault_recovery.default_mode': ['rigid_hold'],
+    'core.capability.admittance.observer.mode': ['MOMENTUM', 'FULL_ID'],
+};
+// GUI suggestions mirror the existing Damiao Backend parser
+// Other plugins and transport backends remain editable by their own exact identifiers
+const knownMotorTypes = ['DM4310', 'DM4310_48V', 'DM4340', 'DM4340_48V', 'DM6006', 'DM6248P', 'DM8006', 'DM8009', 'DM10010L', 'DM10010', 'DMH3510', 'DMH6215', 'DMG6220', 'DMJH11'];
+const knownHardwarePlugins = ['serial_arm_hardware_damiao'];
+const knownBusTypes = ['can'];
+const knownBusBackends = ['damiao_usb2can'];
+function hardwareFieldOptions(path) {
+    const joined = path.join('.');
+    if (joined === 'profile_entry.hardware.plugin') return ['', ...knownHardwarePlugins];
+    if (/^hardware\.buses\.[^.]+\.type$/.test(joined)) return knownBusTypes;
+    if (/^hardware\.buses\.[^.]+\.backend$/.test(joined)) return knownBusBackends;
+    if (/^hardware\.damiao\.actuators\.[^.]+\.motor_type$/.test(joined)) return ['', ...knownMotorTypes];
+    return null;
+}
+function hardwareChoiceField(path, value, disabled = false) {
+    const options = hardwareFieldOptions(path);
+    if (!options) return null;
+    const custom = !options.includes(value);
+    const data = esc(JSON.stringify(path));
+    const label = state.language === 'en' ? 'Custom identifier…' : '自定义标识…';
+    const note = state.language === 'en' ? 'Custom values require support from the actual installed Backend' : '自定义项必须由实际安装的硬件后端支持';
+    const labelFor = x => x || (state.language === 'en' ? 'Not configured' : '未配置');
+    return `<div class="hardware-choice" data-hardware-choice="${data}"><select data-choice-selector="${data}" ${disabled ? 'disabled' : ''} aria-label="${esc(path.at(-1))}">${options.map(x => `<option value="${esc(x)}" ${!custom && x === value ? 'selected' : ''}>${esc(labelFor(x))}</option>`).join('')}<option value="__custom__" ${custom ? 'selected' : ''}>${label}</option></select><input type="text" data-profile-field="${data}" value="${esc(value)}" class="hardware-custom-value" ${custom ? '' : 'hidden'} ${disabled ? 'disabled' : ''} placeholder="${label}"><small class="hardware-custom-hint" ${custom ? '' : 'hidden'}>${note}</small></div>`;
+}
+const profileLabels = {
+    urdf_path: 'URDF 路径', joint_names: '受控关节顺序', base_frame: '基坐标系', tool_frame: '工具坐标系',
+    gravity: '重力向量', gravity_scale: '重力补偿比例', gravity_correction_path: '重力校正文件',
+    joints: '关节标定参数', direction: '方向', pos_ratio: '位置比例', tor_ratio: '力矩比例',
+    joint_zero_offset: '关节零位偏置', actuator_zero_offset: '电机零位偏置',
+    ctrl_frequency_hz: '控制频率 Hz', joint_acc_filter_alpha: '加速度滤波系数',
+    write_enabled: '允许硬件命令写入', model_feedforward_mode: '模型前馈', tracking_impedance_mode: '默认跟踪阻抗',
+    allow_full_cmd: '允许完整关节命令', rigid_hold: '刚性保持', rigid_tracking: '刚性跟踪',
+    compliant_hold: '柔性保持', compliant_drag: '柔性拖拽', compliant_tracking: '柔性跟踪',
+    identification_tracking: '辨识跟踪', kp: '位置刚度 Kp', kd: '速度阻尼 Kd',
+    position_margin: '关节位置余量 rad', cmd_vel_scale: '命令速度比例', state_vel_scale: '状态速度比例',
+    max_acc: '关节最大加速度 rad/s²', max_effort_override: '最大力矩覆盖 Nm',
+    max_kp_override: 'Kp 安全上限', max_kd_override: 'Kd 安全上限',
+    max_dt_s: '最大控制周期 s', state_timeout_s: '反馈超时 s', cmd_timeout_s: '命令超时 s',
+    require_all_actuators_online: '要求全部电机在线', require_all_actuators_enabled: '要求全部电机使能',
+    reject_motor_error: '拒绝电机故障', require_continuous_cmd: '强制命令连续',
+    fault_recovery: '故障恢复', default_mode: '故障保持模式', allow_compliant_recovery: '允许受限柔性恢复',
+    require_operator_request: '恢复需人工请求', gravity_model_validated: '重力模型已验证',
+    recovery_timeout_s: '恢复超时 s', compliant_recovery: '柔性恢复参数',
+    max_vel: '最大恢复速度 rad/s', effort_scale: '力矩比例',
+    park_before_disable: '停放后失能', park_pos: '停放目标 rad', speed_scale: '停放速度比例',
+    compliant_phase_ratio: '柔性回位时间比例', position_tolerance: '位置容差 rad',
+    velocity_tolerance: '速度容差 rad/s', settle_time_s: '到位稳定时间 s',
+    relaxed_tolerance_ratio: '超时前宽松容差倍率', timeout_s: '停放超时 s',
+    enabled: '启用', joint_enabled: '参与导纳的关节', observer: '力矩观测器',
+    mode: '模式', momentum_gain: '动量观测器增益', calibration: '标定参数',
+    torque_bias: '残差偏置 Nm', torque_threshold: '残差死区 Nm', friction: '摩擦补偿',
+    velocity_transition: '摩擦速度过渡 rad/s', positive_coulomb: '正向库仑项',
+    positive_viscous: '正向黏性项', negative_coulomb: '反向库仑项', negative_viscous: '反向黏性项',
+    controller: '控制参数', mass: '虚拟质量 M', damping: '虚拟阻尼 D', stiffness: '虚拟刚度 K',
+    max_delta_q: '最大位置退让 rad', max_delta_q_dot: '最大速度退让 rad/s',
+    buses: '总线配置', damiao: '达妙执行器', bus: '使用总线', type: '总线类型', backend: '通信后端',
+    device: '设备路径', baudrate: '波特率', refresh_state_in_read: '读取时刷新状态',
+    feedback_timeout_s: '电机反馈超时 s', activation_retries: '使能重试次数',
+    startup_read_cycles: '启动读取周期数', stop_kp: '停止 Kp', stop_kd: '停止 Kd',
+    stop_cycles: '停止周期数', actuators: '执行器映射', name: '名称',
+    motor_id: '电机 ID', master_id: '主机 ID', motor_type: '电机型号', plugin: '硬件驱动',
+};
+const paramLabel = key => profileLabels[key] || key;
+function profileGet(draft, path) { return path.reduce((item, key) => item?.[key], draft); }
+function profileField(path, value) {
+    const id = path.join('.');
+    const label = paramLabel(path.at(-1));
+    const readonly = id === 'core.model.joint_names' || id === 'core.safety_policy.fault_recovery.gravity_model_validated' || (id === 'core.capability.admittance.enabled' && !value);
+    const opts = profileEnums[id] ? [...new Set([...profileEnums[id], String(value)])] : null;
+    const hardwareChoice = typeof value === 'string' ? hardwareChoiceField(path, value, readonly) : null;
+    const data = `data-profile-field="${esc(JSON.stringify(path))}"`;
+    const units = id.includes('gravity_model_validated') ? (state.language === 'en' ? 'Only validated by the later hardware workflow' : '须经后续真机验证后再确认') :
+        id.includes('joint_names') ? (state.language === 'en' ? 'Determined when creating the control chain' : '关节顺序由新建时选择的控制链决定') :
+        id === 'core.capability.admittance.enabled' ? (state.language === 'en' ? 'Enable after verification' : '仅在完成后续验证后启用') : '';
+    let input;
+    if (hardwareChoice) input = hardwareChoice;
+    else if (opts) input = `<select ${data} ${readonly ? 'disabled' : ''}>${opts.map(o => `<option value="${esc(o)}" ${value === o ? 'selected' : ''}>${esc(o || '未配置')}</option>`).join('')}</select>`;
+    else if (typeof value === 'boolean') input = `<div class="parameter-switch" data-switch-state="${value ? 'on' : 'off'}"><span class="switch-value switch-on">ON</span><input type="checkbox" role="switch" aria-label="${esc(label)}" aria-checked="${value}" ${data} ${value ? 'checked' : ''} ${readonly ? 'disabled' : ''}><span class="switch-value switch-off">OFF</span></div>`;
+    else if (typeof value === 'number') input = `<input type="number" step="any" ${data} value="${esc(value)}" ${readonly ? 'disabled' : ''}>`;
+    else if (typeof value === 'string') input = `<input type="text" ${data} value="${esc(value)}" ${readonly ? 'disabled' : ''}>`;
+    else if (Array.isArray(value)) input = `<input type="text" ${data} value="${esc(value.join(', '))}" ${readonly ? 'disabled' : ''} title="${state.language === 'en' ? 'Comma-separated values' : '用英文逗号分隔多个值'}">`;
+    else return '';
+    const err = state.profileError?.startsWith(id) ? state.profileError : '';
+    return `<label class="parameter-field ${err ? 'invalid' : ''}"><span>${esc(label)}</span>${input}<small>${esc(id)}${units ? ' · ' + esc(units) : ''}</small>${err ? `<em>${esc(err)}</em>` : ''}</label>`;
+}
+function profileTree(value, path, depth = 0) {
+    if (value && !Array.isArray(value) && typeof value === 'object') {
+        const children = Object.entries(value).map(([key, child]) => profileTree(child, [...path,key], depth+1)).join('');
+        if (depth === 0) return `<div class="parameter-fields">${children}</div>`;
+        const leaves = Object.keys(value).length;
+        const isHardware = path[0] === 'hardware';
+        if (!isHardware && depth > 1 && leaves <= 12 && Object.values(value).every(item => item === null || typeof item !== 'object' || Array.isArray(item)))
+            return `<fieldset class="parameter-subgroup"><legend>${esc(paramLabel(path.at(-1)))}</legend><div class="parameter-fields">${children}</div></fieldset>`;
+        const expanded = isHardware ? depth <= 1 : true;
+        return `<details class="parameter-subgroup ${isHardware ? 'hardware-subgroup' : ''}" ${expanded ? 'open' : ''}><summary>${esc(paramLabel(path.at(-1)))}${isHardware ? `<small>${leaves} ${state.language === 'en' ? 'items' : '项'}</small>` : ''}</summary><div class="parameter-fields">${children}</div></details>`;
+    }
+    return profileField(path, value);
+}
+function profileHardwareDefaults(names) {
+    const a = Object.fromEntries(names.map((j,i) => [j,{name:`actuator${i+1}`,motor_id:i+1,master_id:0,motor_type:''}]));
+    return {buses:{main_can:{type:'can',backend:'damiao_usb2can',device:'/dev/ttyACM0',baudrate:921600}},damiao:{bus:'main_can',refresh_state_in_read:false,feedback_timeout_s:0.05,activation_retries:3,startup_read_cycles:5,stop_kp:10,stop_kd:0.15,stop_cycles:5,actuators:a}};
+}
 function profileSetupPage() {
-    const e = state.profileEditor; if (!e) return pageHead('profileSetup', 'profileManagedHint') + `<div class="empty-state">${state.language === 'en' ? 'Loading Profile configuration...' : '正在加载 Profile 配置...'}</div>`;
-    const calibration = e.joint_names.map(j => { const c = e.calibration[j] || {}, a = e.actuators[j] || {}; return `<tr><td>${esc(j)}</td><td><input data-edit="direction" data-joint="${esc(j)}" type="number" step="1" value="${Number(c.direction ?? 1)}"></td><td><input data-edit="pos_ratio" data-joint="${esc(j)}" type="number" step="0.0001" value="${Number(c.pos_ratio ?? 1)}"></td><td><input data-edit="tor_ratio" data-joint="${esc(j)}" type="number" step="0.0001" value="${Number(c.tor_ratio ?? 1)}"></td><td><input data-edit="joint_zero_offset" data-joint="${esc(j)}" type="number" step="0.0001" value="${Number(c.joint_zero_offset ?? 0)}"></td><td><input data-edit="actuator_zero_offset" data-joint="${esc(j)}" type="number" step="0.0001" value="${Number(c.actuator_zero_offset ?? 0)}"></td><td><input data-edit-act="motor_id" data-joint="${esc(j)}" type="number" min="1" value="${Number(a.motor_id ?? 0)}"></td><td><input data-edit-act="motor_type" data-joint="${esc(j)}" value="${esc(a.motor_type || '')}"></td></tr>` }).join('');
-    return pageHead('profileSetup', 'profileManagedHint', `<button id="profile-save" class="button primary">${t('saveProfile')}</button>`) + `<div class="grid"><section class="card"><div class="card-head">${icon('plug')}<div><h3>${t('connection')}</h3><p>${esc(e.hardware_plugin || (state.language === 'en' ? 'Not configured' : '未配置'))}</p></div></div><div class="card-body"><div class="field"><label>${t('hardwareDriver')}</label><select id="edit-hardware-plugin"><option value="serial_arm_hardware_damiao" ${e.hardware_plugin === 'serial_arm_hardware_damiao' ? 'selected' : ''}>DAMIÃO</option><option value="" ${!e.hardware_plugin ? 'selected' : ''}>${state.language === 'en' ? 'Not configured' : '未配置'}</option></select></div><label class="confirmation"><input id="edit-write-enabled" type="checkbox" ${e.write_enabled ? 'checked' : ''}><span>${t('writeEnabled')}</span></label><div class="row"><div class="field"><label>${t('bus')}</label><input id="edit-bus" value="${esc(e.bus || '')}"></div><div class="field"><label>${t('serial')}</label><input id="edit-device" value="${esc(e.device || '')}"></div><div class="field"><label>${t('baudrate')}</label><input id="edit-baudrate" value="${esc(e.baudrate || '')}"></div></div><p class="callout">${state.language === 'en' ? 'Keep actuator writes disabled until communication, mapping, direction, zero, and limits have been checked' : '在完成通信、映射、方向、零位和限位检查前，建议保持执行器写入关闭'}</p></div></section><section class="card"><div class="card-head">${icon('robot')}<div><h3>${state.language === 'en' ? 'Mapping and calibration' : '映射与校准'}</h3><p>${esc(e.core_path)}</p></div></div><div class="card-body table-scroll"><table class="workspace-table profile-edit-table"><thead><tr><th>${t('joint')}</th><th>direction</th><th>pos_ratio</th><th>tor_ratio</th><th>joint_zero_offset</th><th>actuator_zero_offset</th><th>${t('motorId')}</th><th>${t('motorType')}</th></tr></thead><tbody>${calibration}</tbody></table></div></section></div>`;
+    const e = state.profileEditor;
+    if (!e) return pageHead('profileSetup', 'profileManagedHint') + `<div class="empty-state">${state.language === 'en' ? 'Loading configuration' : '正在加载机械臂参数'}</div>`;
+    const key = state.profileGroup || 'model';
+    const current = profileGroups.find(g => g[0] === key) || profileGroups[0];
+    const value = key === 'hardware' ? e.hardware : profileGet(e.core, current[2].split('.'));
+    const info = key === 'gains' ? (state.language === 'en' ? 'Unverified gains are only valid numeric placeholders and are not proof of safe operation' : '未标定增益只是合法数值占位，拖拽全零阻尼不代表安全，也不表示控制模式已可使用') :
+        key === 'model' ? (state.language === 'en' ? 'URDF model and joint ordering are shared by all groups' : '模型和受控关节顺序由全部参数分组共享') :
+        key === 'hardware' ? (state.language === 'en' ? 'Choose the supported hardware plugin and complete every actuator type before validation' : '选择已支持的硬件驱动并完成执行器型号与总线配置') : '';
+    const profilePlugin = profileField(['profile_entry','hardware','plugin'], e.profile_entry?.hardware?.plugin || '');
+    const optional = [
+        key === 'gains' && !('identification_tracking' in e.core.control.controller) ? `<button class="button" id="profile-add-identification">${state.language === 'en' ? 'Add identification tracking gains' : '添加辨识跟踪增益'}</button>` : '',
+        key === 'model' && !('gravity_correction_path' in e.core.model) ? `<button class="button" id="profile-add-correction">${state.language === 'en' ? 'Add optional correction path' : '添加可选重力校正文件路径'}</button>` : '',
+        key === 'safety' && !('max_effort_override' in e.core.safety_policy) ? `<button class="button" id="profile-add-effort">${state.language === 'en' ? 'Add optional torque limits' : '添加可选最大力矩覆盖'}</button>` : '',
+        key === 'runtime' && !('joint_acc_filter_alpha' in e.core.control.runtime) ? `<button class="button" id="profile-add-filter">${state.language === 'en' ? 'Add acceleration filter' : '添加加速度滤波系数'}</button>` : '',
+        key === 'shutdown' && !('compliant_phase_ratio' in e.core.shutdown) ? `<button class="button" id="profile-add-park-ratio">${state.language === 'en' ? 'Add compliant park ratio' : '添加柔性停放时间比例'}</button>` : '',
+        key === 'safety' && !('require_continuous_cmd' in e.core.safety_policy) ? `<button class="button" id="profile-add-continuity">${state.language === 'en' ? 'Add command continuity check' : '添加命令连续性配置'}</button>` : '',
+    ].join('');
+    const noHardware = key === 'hardware' && !Object.keys(e.hardware || {}).length;
+    const hardwarePanel = noHardware ? `<div class="parameter-empty">${state.language === 'en' ? 'Hardware parameters are not configured yet' : '还未配置硬件参数'}<button id="profile-init-damiao" class="button">${state.language === 'en' ? 'Initialize supported Damiao fields' : '初始化达妙硬件字段'}</button></div>` : profileTree(value, ['hardware']);
+    const body = key === 'hardware' ? `${profilePlugin}${hardwarePanel}` : profileTree(value, ['core', ...current[2].split('.')]);
+    const changed = state.profileDirty;
+    const err = state.profileError ? `<div class="parameter-error" role="alert">${esc(state.profileError)}</div>` : '';
+    return pageHead('profileSetup', 'profileManagedHint', `<div class="parameter-top-actions"><span id="profile-dirty-state" class="hint">${changed ? (state.language === 'en' ? 'Unsaved changes' : '存在未保存修改') : (state.language === 'en' ? 'Saved on disk' : '当前内容已从磁盘加载')}</span><button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div>`) + `<section class="parameter-layout"><nav class="parameter-groups">${profileGroups.map(([id,title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}">${esc(title)}${id==='gains'?'<small>6 Modes · Kp / Kd</small>':''}</button>`).join('')}</nav><section class="card parameter-card"><div class="card-head"><div><h3>${esc(current[1])}</h3><p>${esc(key === 'hardware' ? e.hardware_path : e.core_path)}</p></div></div><div class="card-body">${info ? `<p class="parameter-guidance">${info}</p>` : ''}${err}${body}${optional}</div></section></section>`;
 }
 function robotPage() {
     const info = state.info;
@@ -1339,7 +1479,13 @@ async function openLibraryEntry(id) {
     state.activeLibraryId = id; state.source = entry.source === 'builtin' ? 'builtin' : 'external';
     state.config = { profile: entry.profile, profile_file: entry.source === 'builtin' ? '' : entry.profile_file, resource_paths: entry.resource_paths || '', serial_port: '', baudrate: '', bus: '' };
     const listing = await api.request('profiles', state.config); state.profiles = listing.profiles || []; state.info = null; state.modelData = null; state.profileEditor = null;
-    await inspect(); state.readiness = await api.request('readiness', { config: state.config }); state.page = 'lifecycle'; await save(); shell();
+    await inspect(); state.readiness = await api.request('readiness', { config: state.config });
+    state.profileDirty = false; state.profileError = ''; state.profileGroup = 'model';
+    if (state.entryIntent === 'continue') {
+        state.profileEditor = await api.request('profile_editor_load', {config:state.config});
+        state.page = 'profile_setup';
+    } else state.page = 'lifecycle';
+    await save(); shell();
 }
 async function importProfileSource(source) {
     const found = await blockingOperation(busyText('正在检查 Profile...', 'Inspecting Profile...'), () => api.request('profile_source_inspect', { source }));
@@ -1369,7 +1515,7 @@ function collectDescriptionDraft() {
     if ($('draft-hardware')) d.hardware_plugin = $('draft-hardware').value; if ($('draft-bus')) d.bus = $('draft-bus').value.trim(); if ($('draft-device')) d.device = $('draft-device').value.trim(); if ($('draft-baudrate')) d.baudrate = $('draft-baudrate').value.trim();
     if ($('draft-profile')) d.profile = $('draft-profile').value.trim(); if ($('draft-destination')) d.destination = $('draft-destination').value.trim();
     syncDescriptionChain();
-    d.actuators = d.joint_names.map((name, i) => ({ name: document.querySelector(`[data-act-name="${i}"]`)?.value?.trim() || `actuator${i + 1}`, motor_id: Number(document.querySelector(`[data-act-id="${i}"]`)?.value || i + 1), master_id: Number(document.querySelector(`[data-master-id="${i}"]`)?.value || 0), motor_type: document.querySelector(`[data-motor-type="${i}"]`)?.value || '' }));
+    d.actuators = d.joint_names.map((name, i) => ({ name: document.querySelector(`[data-act-name="${i}"]`)?.value?.trim() || `actuator${i + 1}`, motor_id: Number(document.querySelector(`[data-act-id="${i}"]`)?.value || i + 1), master_id: Number(document.querySelector(`[data-master-id="${i}"]`)?.value || 0), motor_type: (document.querySelector(`[data-draft-motor-choice="${i}"]`)?.value === '__custom__' ? document.querySelector(`[data-motor-type="${i}"]`)?.value.trim() : document.querySelector(`[data-draft-motor-choice="${i}"]`)?.value) || '' }));
 }
 async function analyzeDescription() {
     collectDescriptionDraft(); if (!state.descriptionDraft.source) throw new Error(state.language === 'en' ? 'Choose a Description first' : '请先选择 Description 文件');
@@ -1381,12 +1527,51 @@ async function createDescriptionProfile() {
     if (!d.destination) throw new Error(state.language === 'en' ? 'Choose a destination directory' : '请选择 Profile 保存目录');
     const result = await api.request('description_create_profile', { ...d });
     const dialog = $('confirm-dialog'); dialog.innerHTML = `<div class="eyebrow">${t('createProfile')}</div><h3>${esc(result.profile)}</h3><p>${state.language === 'en' ? 'The Profile package was created. Add it to Profile Library now?' : 'Profile 包已创建，是否现在加入 Profile Library？'}</p><dl class="kv"><dt>${t('destination')}</dt><dd>${esc(result.package)}</dd><dt>${t('hardwareMapping')}</dt><dd>${result.hardware_complete ? (state.language === 'en' ? 'Configured' : '已配置') : (state.language === 'en' ? 'Continue later' : '待继续配置')}</dd></dl><div class="actions"><button id="created-not-now" class="button">${t('notNow')}</button><button id="created-add" class="button primary">${t('addToLibrary')}</button></div>`; dialog.showModal();
-    const openExternal = async () => { state.config = { ...result.config }; state.source = 'external'; state.info = null; await inspect(); state.readiness = await api.request('readiness', { config: state.config }); state.page = 'lifecycle'; dialog.close(); shell(); };
+    const openExternal = async () => { state.config = { ...result.config }; state.source = 'external'; state.info = null; await inspect(); state.readiness = await api.request('readiness', { config: state.config }); state.page = 'profile_setup'; state.profileEditor = await api.request('profile_editor_load', {config:state.config}); state.profileGroup = 'model'; state.profileDirty = false; dialog.close(); shell(); };
     $('created-not-now').onclick = () => operation(openExternal);
-    $('created-add').onclick = () => blockingOperation(busyText('正在加入 Profile Library...', 'Adding to Profile Library...'), async () => { await api.request('profile_library_register', { profile_file: result.profile_file, profile: result.profile, resource_paths: result.resource_paths, policy: 'suffix' }); await refreshLibrary(); const entry = state.library.find(x => x.profile === result.profile && x.profile_file === result.profile_file); dialog.close(); if (entry) await openLibraryEntry(entry.id); else await openExternal(); });
+    $('created-add').onclick = () => blockingOperation(busyText('正在加入 Profile Library...', 'Adding to Profile Library...'), async () => { await api.request('profile_library_register', { profile_file: result.profile_file, profile: result.profile, resource_paths: result.resource_paths, policy: 'suffix' }); await refreshLibrary(); const entry = state.library.find(x => x.profile === result.profile && x.profile_file === result.profile_file); dialog.close(); if (entry) { state.activeLibraryId = entry.id; } await openExternal(); });
 }
 async function markReadinessStage(stage) { state.readiness = await api.request('readiness_mark', { config: state.config, stage, confirmed: true }); await refreshLibrary(); render(); }
-function collectProfileEditor() { const e = state.profileEditor; if (!e) return null; const payload = { core_sha: e.core_sha, hardware_sha: e.hardware_sha, hardware_plugin: $('edit-hardware-plugin')?.value || e.hardware_plugin || '', write_enabled: !!$('edit-write-enabled')?.checked, bus: $('edit-bus')?.value || '', device: $('edit-device')?.value || '', baudrate: $('edit-baudrate')?.value || '', calibration: {}, actuators: {}, park_pos: e.park_pos || {} }; for (const j of e.joint_names) { payload.calibration[j] = {}; for (const key of ['direction', 'pos_ratio', 'tor_ratio', 'joint_zero_offset', 'actuator_zero_offset']) payload.calibration[j][key] = Number(document.querySelector(`[data-edit="${key}"][data-joint="${CSS.escape(j)}"]`)?.value); payload.actuators[j] = { motor_id: Number(document.querySelector(`[data-edit-act="motor_id"][data-joint="${CSS.escape(j)}"]`)?.value || 0), motor_type: document.querySelector(`[data-edit-act="motor_type"][data-joint="${CSS.escape(j)}"]`)?.value || '', name: e.actuators?.[j]?.name || '', master_id: Number(e.actuators?.[j]?.master_id || 0) }; } return payload; }
+function collectProfileEditor() {
+    const e = state.profileEditor;
+    if (!e) return null;
+    return {core_sha:e.core_sha,hardware_sha:e.hardware_sha,profile_sha:e.profile_sha,
+        core:e.core,hardware:e.hardware,profile_entry:e.profile_entry};
+}
+function updateProfileSwitch(input) {
+    const switchNode = input.closest('.parameter-switch');
+    if (!switchNode) return;
+    switchNode.dataset.switchState = input.checked ? 'on' : 'off';
+    input.setAttribute('aria-checked', String(input.checked));
+}
+function readProfileInput(input) {
+    const path = JSON.parse(input.dataset.profileField);
+    const root = state.profileEditor;
+    if (!root) return;
+    let target = root;
+    for (const key of path.slice(0,-1)) target = target[key];
+    const key = path.at(-1);
+    const old = target[key];
+    let value;
+    if (typeof old === 'boolean') value = input.checked;
+    else if (typeof old === 'number') {
+        if (!input.value.trim() || !Number.isFinite(Number(input.value))) throw new Error(path.join('.') + ' 请输入有限数值');
+        value = Number(input.value);
+    } else if (Array.isArray(old)) {
+        value = input.value.split(',').map(x => x.trim());
+        if (typeof old[0] === 'number') {
+            if (value.some(x => !x || !Number.isFinite(Number(x)))) throw new Error(path.join('.') + ' 数组需要有效数字');
+            value = value.map(Number);
+        }
+        if (value.length !== old.length) throw new Error(path.join('.') + ' 数组长度不能改变');
+    } else value = input.value;
+    target[key] = value;
+    state.profileDirty = true;
+    state.profileError = '';
+    const label = $('profile-dirty-state');
+    if (label) label.textContent = state.language === 'en' ? 'Unsaved changes' : '存在未保存修改';
+    input.closest('.parameter-field')?.classList.remove('invalid');
+}
 let previewFrame = 0, previewInFlight = false, previewDirty = false;
 let renderedPage = '';
 let calibrationRefreshPending = false;
@@ -1458,9 +1643,13 @@ async function inspect() {
 }
 async function navigate(page) {
     if (page === state.page) return;
+    if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameter changes' : '尚有未保存参数，确认放弃后离开')) return;
     capture(); await operation(save); await pageExit(); state.page = page;
     if (page === 'lifecycle' && state.config.profile) state.readiness = await api.request('readiness', { config: state.config });
-    if (page === 'profile_setup' && state.config.profile) state.profileEditor = await api.request('profile_editor_load', { config: state.config });
+    if (page === 'profile_setup' && state.config.profile) {
+        state.profileEditor = await api.request('profile_editor_load', {config:state.config});
+        state.profileDirty = false; state.profileError = '';
+    }
     if (['run', 'model', 'workbench', 'diagnostics'].includes(page)) await operation(inspect);
     if (['model', 'workbench'].includes(page) && !state.modelData && state.info?.available?.model) await operation(() => loadModelData());
     render();
@@ -1480,12 +1669,83 @@ function bindPage() {
     if ($('draft-base')) $('draft-base').onchange = () => { collectDescriptionDraft(); render(); };
     if ($('draft-tool')) $('draft-tool').onchange = () => { collectDescriptionDraft(); render(); };
     if ($('draft-hardware')) $('draft-hardware').onchange = () => { state.descriptionDraft.hardware_plugin = $('draft-hardware').value; };
+    document.querySelectorAll('[data-draft-motor-choice]').forEach(select => select.onchange = () => {
+        const input = document.querySelector(`[data-motor-type="${select.dataset.draftMotorChoice}"]`);
+        if (!input) return;
+        input.hidden = select.value !== '__custom__';
+        if (select.value !== '__custom__') input.value = select.value;
+        else { input.value = ''; input.focus(); }
+    });
     if ($('draft-destination-browse')) $('draft-destination-browse').onclick = () => operation(async () => { const dir = await api.selectDestination(); if (dir) { state.descriptionDraft.destination = dir; $('draft-destination').value = dir; } });
     if ($('draft-create')) $('draft-create').onclick = () => blockingOperation(busyText('正在生成 Profile 包...', 'Creating Profile package...'), createDescriptionProfile);
     document.querySelectorAll('[data-stage-open]').forEach(button => button.onclick = () => { if (button.dataset.stage === 'dynamics_calibration') state.workbenchTab = 'calibration'; navigate(button.dataset.stageOpen); });
     document.querySelectorAll('[data-confirm-stage]').forEach(button => button.onclick = () => blockingOperation(busyText('正在记录验证结果...', 'Recording verification evidence...'), () => markReadinessStage(button.dataset.confirmStage)));
     if ($('ready-control')) $('ready-control').onclick = () => navigate('workbench');
-    if ($('profile-save')) $('profile-save').onclick = () => blockingOperation(busyText('正在保存 Profile...', 'Saving Profile...'), async () => { const payload = collectProfileEditor(); state.profileEditor = await api.request('profile_editor_save', { config: state.config, payload }); state.info = null; await inspect(); state.readiness = await api.request('readiness', { config: state.config }); await refreshLibrary(); toast(t('saved')); render(); });
+    document.querySelectorAll('[data-profile-group]').forEach(button => button.onclick = () => {
+        state.profileGroup = button.dataset.profileGroup;
+        state.profileError = ''; render();
+    });
+    document.querySelectorAll('[data-choice-selector]').forEach(select => select.addEventListener('change', () => {
+        const wrapper = select.closest('.hardware-choice');
+        const input = wrapper?.querySelector('[data-profile-field]');
+        if (!input) return;
+        const custom = select.value === '__custom__';
+        input.hidden = !custom;
+        const hint = wrapper.querySelector('.hardware-custom-hint');
+        if (hint) hint.hidden = !custom;
+        if (custom) { input.focus(); return; }
+        input.value = select.value;
+        try { readProfileInput(input); }
+        catch(error) { state.profileError = error.message; toast(error.message,true); }
+    }));
+    document.querySelectorAll('[data-profile-field]').forEach(field => {
+        field.addEventListener('change', () => {
+            try { readProfileInput(field); updateProfileSwitch(field); }
+            catch(error) { state.profileError = error.message; field.closest('.parameter-field')?.classList.add('invalid'); toast(error.message,true); }
+        });
+        field.addEventListener('input', () => {
+            if (field.type === 'number' && !field.value.trim()) return;
+            try { readProfileInput(field); updateProfileSwitch(field); }
+            catch { /* Validate incomplete fields on change */ }
+        });
+    });
+    if ($('profile-add-identification')) $('profile-add-identification').onclick = () => { state.profileEditor.core.control.controller.identification_tracking = structuredClone(state.profileEditor.core.control.controller.rigid_tracking); state.profileDirty = true; render(); };
+    if ($('profile-add-filter')) $('profile-add-filter').onclick = () => { state.profileEditor.core.control.runtime.joint_acc_filter_alpha=0.2;state.profileDirty=true;render(); };
+    if ($('profile-add-park-ratio')) $('profile-add-park-ratio').onclick = () => { state.profileEditor.core.shutdown.compliant_phase_ratio=0.75;state.profileDirty=true;render(); };
+    if ($('profile-add-continuity')) $('profile-add-continuity').onclick = () => { state.profileEditor.core.safety_policy.require_continuous_cmd=false;state.profileDirty=true;render(); };
+    if ($('profile-add-correction')) $('profile-add-correction').onclick = () => { state.profileEditor.core.model.gravity_correction_path=''; state.profileDirty = true; render(); };
+    if ($('profile-add-effort')) $('profile-add-effort').onclick = () => {
+        const names = state.profileEditor.joint_names;
+        const limit = state.profileEditor.urdf_effort_limits || {};
+        state.profileEditor.core.safety_policy.max_effort_override = Object.fromEntries(names.map(j=>[j,Math.max(0,Number(limit[j] ?? 0))]));
+        state.profileDirty = true; render();
+    };
+    if ($('profile-init-damiao')) $('profile-init-damiao').onclick = () => {
+        state.profileEditor.hardware = profileHardwareDefaults(state.profileEditor.joint_names);
+        state.profileEditor.profile_entry.hardware.plugin = 'serial_arm_hardware_damiao';
+        state.profileDirty = true; render();
+    };
+    if ($('profile-reload')) $('profile-reload').onclick = () => operation(async () => {
+        if (state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved changes' : '放弃未保存的修改并重新读取磁盘配置')) return;
+        state.profileEditor = await api.request('profile_editor_load',{config:state.config});
+        state.profileDirty = false; state.profileError = ''; render();
+    });
+    if ($('profile-save')) $('profile-save').onclick = () => blockingOperation(busyText('正在验证并保存参数...', 'Validating and saving configuration...'), async () => {
+        try {
+            const payload = collectProfileEditor();
+            state.profileEditor = await api.request('profile_editor_save',{config:state.config,payload});
+            state.profileDirty=false; state.profileError='';
+            state.info=null; await inspect();
+            state.readiness=await api.request('readiness',{config:state.config});
+            await refreshLibrary(); toast(t('saved')); render();
+        } catch(error) {
+            state.profileError = error.message || String(error);
+            const found = profileGroups.find(([, , path]) => state.profileError.startsWith('core.'+path) || state.profileError.startsWith(path));
+            if (found) state.profileGroup = found[0];
+            else if (state.profileError.startsWith('hardware.') || state.profileError.startsWith('profile.')) state.profileGroup='hardware';
+            render(); throw error;
+        }
+    });
     if ($('settings-back')) $('settings-back').onclick = async () => { await pageExit(); state.page = state.previousPage || 'start'; renderedPage = ''; shell(); };
     for (const key of Object.keys(state.config)) {
         const element = $(key); if (element) element.onchange = () => { capture(); state.info = null; operation(save); };
