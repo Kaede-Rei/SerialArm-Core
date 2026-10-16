@@ -276,7 +276,12 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .calibration-link-option input{accent-color:var(--accent, #df7800)}
 
 /* Unified calibration entry points and scoped offline candidates */
+.calibration-entry-stack{display:flex;flex-direction:column;gap:12px;min-width:0}
 .calibration-entry-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.calibration-entry.calibration-entry-featured{width:100%;min-height:82px;flex-direction:row;align-items:center;justify-content:space-between;gap:18px}
+.calibration-entry-featured-main{display:flex;flex-direction:column;gap:6px;min-width:0}
+.calibration-entry-featured .readiness-chip{flex:none;white-space:nowrap;opacity:1}
+@media(max-width:560px){.calibration-entry.calibration-entry-featured{align-items:flex-start;flex-direction:column;gap:9px}}
 .calibration-entry{display:flex;flex-direction:column;align-items:flex-start;gap:9px;text-align:left;padding:17px;min-width:0;border-radius:13px;border:1px solid var(--line);background:var(--card);color:inherit;font:inherit;cursor:pointer}
 .calibration-entry.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 .calibration-entry:disabled{cursor:not-allowed;opacity:.55}
@@ -470,3 +475,16 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .gravity-verify-joint input[type=number]{min-width:0;width:100%}
 .gravity-verify-head{font-size:11px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:7px}
 @media(max-width:680px){.gravity-verify-joint{grid-template-columns:minmax(65px,1fr) minmax(80px,2fr) minmax(75px,1fr);gap:8px}.gravity-verify-joint>*:last-child{display:none}}
+.workspace-provenance{display:flex;gap:12px;align-items:flex-start;background:var(--subtle);border:1px solid var(--line);border-radius:10px;padding:12px 15px;margin:0 0 16px;font-size:11px;line-height:1.7;color:var(--muted)}
+.workspace-provenance b{font-size:11px;color:var(--text);white-space:nowrap}
+.workspace-provenance span{min-width:0}
+.diagnostic-settings{border:1px solid var(--line);border-radius:12px;padding:14px 18px;background:var(--subtle);margin:0 0 20px}
+.diagnostic-settings>summary{font-size:13px;font-weight:650;cursor:pointer;list-style-position:inside;color:var(--text);padding:3px 0}
+.diagnostic-settings[open]>summary{margin-bottom:16px}
+.diagnostic-settings .card{box-shadow:none}
+.diagnostic-live{margin-top:18px}
+.diagnostic-live .workspace-status{margin-bottom:14px;flex-wrap:wrap}
+.diagnostic-live .workspace-panel{width:100%}
+.mode-card .mode-type.is-ready{color:var(--green)}
+.mode-card .mode-type.is-unavailable{color:var(--dim)}
+@media(max-width:780px){.workspace-provenance{flex-direction:column;gap:3px}.diagnostic-settings{padding:12px}.diagnostic-settings .grid{grid-template-columns:minmax(0,1fr)}}
