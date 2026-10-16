@@ -438,3 +438,22 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .description-hardware-extra>.row{margin-top:12px}
 .description-hardware-extra select:disabled{opacity:.65}
 .setup-form .hardware-choice>select,.setup-form .hardware-choice>input{min-width:146px}
+
+/* Profile creation keeps transport and actuator setup in the profile editor */
+.setup-stepper.setup-stepper-four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.setup-stepper span.complete{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 32%,var(--line));background:color-mix(in srgb,var(--accent) 6%,var(--subtle))}
+.wizard-check{display:flex;align-items:center;gap:12px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--subtle);margin:18px 0}
+.wizard-check>span{display:grid;place-items:center;flex:0 0 32px;height:32px;border-radius:50%;font-weight:800}
+.wizard-check.passed>span{color:#2fbf8f;background:color-mix(in srgb,#2fbf8f 12%,var(--card))}
+.wizard-check.warning>span{color:#e0a323;background:color-mix(in srgb,#e0a323 12%,var(--card))}
+.wizard-check b,.wizard-check small{display:block}
+.wizard-check small{font-size:12px;color:var(--muted);margin-top:5px}
+.wizard-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px;flex-wrap:wrap}
+.wizard-summary{display:grid;gap:14px;padding:15px;border:1px solid var(--line);border-radius:12px;background:var(--subtle);margin:16px 0}
+.wizard-summary small{display:block;color:var(--muted);font-size:11px;margin-bottom:5px}
+.wizard-summary b{display:block;font-size:13px;overflow-wrap:anywhere}
+.wizard-profile-note{padding:12px 15px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));background:var(--subtle);border-radius:10px;margin-bottom:18px;color:var(--muted);font-size:13px}
+@media(max-width:720px){.setup-stepper.setup-stepper-four{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.description-head-actions{justify-content:flex-end;flex-shrink:0}
+@media(max-width:720px){.page-head:has(.description-head-actions){align-items:flex-start;flex-wrap:wrap}.description-head-actions{width:100%;justify-content:flex-start}}

@@ -31,7 +31,7 @@ const words = {
     newDescription: ['新的机械臂', 'New manipulator description'], newDescriptionDesc: ['从 SerialArm Description 包、URDF 或 Xacro 创建新的 Profile', 'Create a Profile from a SerialArm Description package, URDF, or Xacro'],
     continueProfile: ['继续配置机械臂', 'Continue configuring a manipulator'], continueProfileDesc: ['打开仍需检查、校准、标定或验证的 Profile', 'Open a Profile that still needs inspection, calibration, or validation'],
     useProfile: ['使用机械臂', 'Use a manipulator'], useProfileDesc: ['打开已经验证完成的 Profile 并进入正常控制流程', 'Open a validated Profile and enter the normal control workflow'],
-    profileLibrary: ['Profile Library', 'Profile Library'], manageProfiles: ['管理 Profile', 'Manage Profiles'], importExternalProfile: ['导入外部 Profile', 'Import external Profile'], removeFromLibrary: ['从 Library 移除', 'Remove from Library'],
+    continueLibrary: ['待配置的 Profile', 'Profiles to configure'], readyLibrary: ['可使用的 Profile', 'Ready Profiles'], newModelCheck: ['模型检查', 'Model check'], newModelHint: ['仅检查模型能否解析和控制链是否完整，不代表已完成真机或动力学验证', 'Checks model parsing and chain structure only, not hardware or dynamics validation'], newHardwareHint: ['硬件驱动、总线、通信协议及执行器映射请在下一步 Profile 配置中填写', 'Configure hardware, buses, communication and actuators in the next Profile setup step'], wizardBack: ['上一步', 'Back'], wizardNext: ['下一步', 'Continue'], profileLibrary: ['Profile Library', 'Profile Library'], manageProfiles: ['管理 Profile', 'Manage Profiles'], importExternalProfile: ['导入外部 Profile', 'Import external Profile'], removeFromLibrary: ['从 Library 移除', 'Remove from Library'],
     configuring: ['配置中', 'Configuring'], pendingValidation: ['待验证', 'Pending validation'], needsRevalidation: ['需要重新验证', 'Needs revalidation'], usable: ['可使用', 'Ready to use'],
     descriptionImport: ['Description 导入', 'Description import'], selectDescription: ['选择 Description 文件', 'Choose Description'], descriptionSource: ['Description 来源', 'Description source'], analyzeDescription: ['分析 Description', 'Analyze Description'],
     controlChain: ['控制链', 'Controlled chain'], hardwareMapping: ['硬件映射', 'Hardware mapping'], createProfile: ['生成 Profile', 'Create Profile'], addToLibrary: ['加入 Profile Library', 'Add to Profile Library'], notNow: ['暂不加入', 'Not now'],
@@ -45,7 +45,7 @@ const paths = { workbench: '<path d="M4 5h16v14H4zM8 9h8M8 13h5M6 3v4M18 3v4"/>'
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: {teaching:[],gain:[],gravity:[],dynamics:[]}, calibrationToolSelected: {teaching:null,gain:null,gravity:null,dynamics:null}, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: true, jointAxes: true, com: true, inertia: true, labels: true }, modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: {teaching:[],gain:[],gravity:[],dynamics:[]}, calibrationToolSelected: {teaching:null,gain:null,gravity:null,dynamics:null}, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -306,7 +306,7 @@ async function resetToStart() {
     if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameters' : '有未保存的参数，确认放弃修改后返回首页')) return;
     if (active()) { toast(state.language === 'en' ? 'Stop the active session before returning to the start page' : '请先停止当前运行会话', true); return; }
     await pageExit();
-    state.page = 'start'; state.entryIntent = ''; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
+    state.page = 'start'; state.entryIntent = ''; state.descriptionStep = 1; state.createdProfileWizard = false; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
 }
 function startPage() {
     const option = (intent, title, desc, ico) => `<button class="start-choice" data-start-intent="${intent}"><span class="start-choice-icon">${icon(ico)}</span><span><b>${t(title)}</b><small>${t(desc)}</small></span><span class="choice-arrow">›</span></button>`;
@@ -314,28 +314,50 @@ function startPage() {
 }
 function libraryStateClass(value) { return value === 'ready' ? 'ready' : value === 'needs_revalidation' ? 'warning' : value === 'configuring' ? 'muted' : 'pending'; }
 function libraryPage() {
-    const intent = state.entryIntent || 'manage';
-    let items = state.library.slice();
-    // A previously supplied Profile can always be reopened for parameter maintenance
-    if (intent === 'use') items = items.filter(x => x.readiness?.state === 'ready');
-    const cards = items.map(item => `<article class="library-card"><div class="library-card-main"><div><span class="readiness-chip ${libraryStateClass(item.readiness?.state)}">${readinessStateText(item.readiness?.state)}</span><h3>${esc(item.profile)}</h3><p>${item.source === 'builtin' ? (state.language === 'en' ? 'Built-in Profile' : '内置 Profile') : esc(item.profile_file)}</p><small>${state.language === 'en' ? 'Next: ' : '下一步'}${readinessStageText(item.readiness?.next_stage)}</small></div><div class="library-actions"><button class="button primary" data-library-open="${esc(item.id)}">${intent === 'use' ? t('useProfile') : state.language === 'en' ? 'Open' : '打开'}</button><button class="button" data-library-remove="${esc(item.id)}">${t('removeFromLibrary')}</button></div></div></article>`).join('');
-    const empty = `<div class="empty-state">${intent === 'use' ? (state.language === 'en' ? 'No validated Profiles are ready to use' : '当前没有已完成验证、可直接使用的 Profile') : (state.language === 'en' ? 'No matching Profiles' : '没有符合当前入口的 Profile')}</div>`;
-    return pageHead('profileLibrary', 'profileManagedHint', `<button id="library-home" class="button">${t('backHome')}</button>`) + `<div class="library-toolbar"><button id="library-import-dir" class="button primary">${t('importExternalProfile')}</button><button id="library-import-file" class="button">${state.language === 'en' ? 'Choose robot_profiles.yaml' : '选择 robot_profiles.yaml'}</button><span class="hint">${esc(state.libraryPath || '')}</span></div><div class="library-list">${cards || empty}</div>`;
+    const intent = state.entryIntent || 'continue';
+    // The two entrances are filtered views of one Library, not duplicate stores
+    const items = state.library.filter(item => intent === 'use' ? item.readiness?.state === 'ready' : item.readiness?.state !== 'ready');
+    const cards = items.map(item => `<article class="library-card"><div class="library-card-main"><div><span class="readiness-chip ${libraryStateClass(item.readiness?.state)}">${readinessStateText(item.readiness?.state)}</span><h3>${esc(item.profile)}</h3><p>${item.source === 'builtin' ? (state.language === 'en' ? 'Built-in Profile' : '内置 Profile') : esc(item.profile_file)}</p><small>${state.language === 'en' ? 'Next: ' : '下一步'}${readinessStageText(item.readiness?.next_stage)}</small></div><div class="library-actions"><button class="button primary" data-library-open="${esc(item.id)}">${intent === 'use' ? t('useProfile') : t('editProfile')}</button><button class="button" data-library-remove="${esc(item.id)}">${t('removeFromLibrary')}</button></div></div></article>`).join('');
+    const empty = `<div class="empty-state">${intent === 'use' ? (state.language === 'en' ? 'No ready Profiles in the Library' : '暂无可使用的 Profile') : (state.language === 'en' ? 'No Profiles waiting for configuration' : '暂无需要继续配置的 Profile')}</div>`;
+    const importTools = intent === 'use' ? '' : `<div class="library-toolbar"><button id="library-import-dir" class="button primary">${t('importExternalProfile')}</button><button id="library-import-file" class="button">${state.language === 'en' ? 'Choose robot_profiles.yaml' : '选择 robot_profiles.yaml'}</button><span class="hint">${esc(state.libraryPath || '')}</span></div>`;
+    return pageHead(intent === 'use' ? 'readyLibrary' : 'continueLibrary', intent === 'use' ? 'useProfileDesc' : 'continueProfileDesc', `<button id="library-home" class="button">${t('backHome')}</button>`) + importTools + `<div class="library-list">${cards || empty}</div>`;
 }
 function readinessStageText(value) { const keys = { description: 'descriptionStage', profile_setup: 'profileSetupStage', model_check: 'modelCheckStage', bringup: 'bringupStage', mapping_calibration: 'mappingStage', geometry_calibration: 'geometryStage', dynamics_calibration: 'dynamicsStage', validation: 'validationStage', ready: 'readyStage' }; return t(keys[value] || 'unknown'); }
 function computeChain(base, tool, joints) { const byChild = new Map(joints.map(j => [j.child, j])); const reverse = []; let node = tool; const seen = new Set(); while (node && node !== base && !seen.has(node)) { seen.add(node); const j = byChild.get(node); if (!j) return []; reverse.push(j); node = j.parent; } if (node !== base) return []; return reverse.reverse(); }
-function syncDescriptionChain() { const a = state.descriptionAnalysis, d = state.descriptionDraft; if (!a) return; const chain = computeChain(d.base_frame, d.tool_frame, a.joints); d.joint_names = chain.filter(j => j.type !== 'fixed' && !j.mimic).map(j => j.name); if (!d.actuators || d.actuators.length !== d.joint_names.length) d.actuators = d.joint_names.map((j, i) => ({ name: `actuator${i + 1}`, motor_id: i + 1, master_id: 0, motor_type: '' })); }
+function syncDescriptionChain() {
+    const a = state.descriptionAnalysis, d = state.descriptionDraft;
+    if (!a) return;
+    const chain = computeChain(d.base_frame, d.tool_frame, a.joints);
+    d.joint_names = chain.filter(j => j.type !== 'fixed' && !j.mimic).map(j => j.name);
+}
+function descriptionStepper(step = state.descriptionStep) {
+    const stages = ['newModelCheck', 'controlChain', 'createProfile', 'profileSetup'];
+    return `<div class="setup-stepper setup-stepper-four" aria-label="${state.language === 'en' ? 'Creation steps' : '新建机械臂步骤'}">${stages.map((key, i) => `<span class="${i + 1 === step ? 'active' : i + 1 < step ? 'complete' : ''}" ${i + 1 === step ? 'aria-current="step"' : ''}>${i + 1} ${t(key)}</span>`).join('')}</div>`;
+}
 function descriptionPage() {
     const d = state.descriptionDraft, a = state.descriptionAnalysis;
-    if (!a) return pageHead('descriptionImport', 'newDescriptionDesc', `<button id="description-home" class="button">${t('backHome')}</button>`) + `<div class="description-empty card"><div class="card-body"><div class="field"><label>${t('descriptionSource')}</label><div class="input-row"><input id="description-source" value="${esc(d.source)}" placeholder=".zip / .urdf / .xacro"><button id="description-browse" class="button">${t('selectDescription')}</button><button id="description-browse-dir" class="button">${state.language === 'en' ? 'Choose directory' : '选择目录'}</button></div></div><div class="actions"><button id="description-analyze" class="button primary">${t('analyzeDescription')}</button></div><p class="hint">${state.language === 'en' ? 'Only the Description is read here. No actuator is opened and no control command is sent' : '这里只读取 Description，不打开执行器，也不会发送控制命令'}</p></div></div>`;
+    const step = a ? state.descriptionStep : 1;
+    const pageTitle = pageHead('newDescription', 'newDescriptionDesc', `<div class="actions description-head-actions"><button id="description-home" class="button">${t('backHome')}</button>${a ? `<button id="description-reset" class="button">${state.language === 'en' ? 'Choose another Description' : '重新选择模型'}</button>` : ''}</div>`);
+    const upload = `<div class="description-empty card"><div class="card-body"><div class="field"><label>${t('descriptionSource')}</label><div class="input-row"><input id="description-source" value="${esc(d.source)}" placeholder=".zip / .urdf / .xacro"><button id="description-browse" class="button">${t('selectDescription')}</button><button id="description-browse-dir" class="button">${state.language === 'en' ? 'Choose directory' : '选择目录'}</button></div></div><div class="actions"><button id="description-analyze" class="button primary">${t('analyzeDescription')}</button></div><p class="hint">${t('newModelHint')}</p></div></div>`;
+    if (!a) return pageTitle + descriptionStepper(1) + upload;
     syncDescriptionChain();
+    const movable = a.joints.filter(j => j.type !== 'fixed' && !j.mimic);
+    const basicOk = !!(a.links.length && a.roots?.length && movable.length);
     const linkOptions = a.links.map(x => `<option value="${esc(x)}" ${x === d.base_frame ? 'selected' : ''}>${esc(x)}</option>`).join('');
     const toolOptions = a.links.map(x => `<option value="${esc(x)}" ${x === d.tool_frame ? 'selected' : ''}>${esc(x)}</option>`).join('');
     const chain = computeChain(d.base_frame, d.tool_frame, a.joints);
-    const jointSummary = chain.map(j => `<span class="chain-joint ${j.type === 'fixed' ? 'fixed' : ''}">${esc(j.name)}<small>${esc(j.type)}</small></span>`).join('') || `<span class="warning-text">${state.language === 'en' ? 'The selected frames do not form one descendant chain' : '所选 Base / Tool 之间不是一条连续的后代链'}</span>`;
-    const motorOptions = ['', ...knownMotorTypes];
-    const actuators = d.joint_names.map((j, i) => { const x = d.actuators[i] || {}; const isOther = !motorOptions.includes(x.motor_type || ''); return `<tr><td>${esc(j)}</td><td><input data-act-name="${i}" value="${esc(x.name || `actuator${i + 1}`)}"></td><td><input data-act-id="${i}" type="number" min="1" value="${Number(x.motor_id || i + 1)}"></td><td><input data-master-id="${i}" type="number" min="0" value="${Number(x.master_id || 0)}"></td><td><div class="hardware-choice"><select data-draft-motor-choice="${i}">${motorOptions.map(m => `<option value="${esc(m)}" ${!isOther && m === (x.motor_type || '') ? 'selected' : ''}>${esc(m || (state.language === 'en' ? 'Choose motor type' : '选择电机型号'))}</option>`).join('')}<option value="__custom__" ${isOther ? 'selected' : ''}>${state.language === 'en' ? 'Custom identifier…' : '自定义标识…'}</option></select><input data-motor-type="${i}" value="${esc(x.motor_type || '')}" class="hardware-custom-value" ${isOther ? '' : 'hidden'} placeholder="${state.language === 'en' ? 'Custom motor model' : '自定义电机型号'}"></div></td></tr>` }).join('');
-    return pageHead('newDescription', 'newDescriptionDesc', `<button id="description-reset" class="button">${state.language === 'en' ? 'Choose another Description' : '重新选择 Description 文件'}</button>`) + `<div class="setup-stepper"><span class="active">1 ${t('descriptionStage')}</span><span class="active">2 ${t('controlChain')}</span><span>3 ${t('hardwareMapping')}</span><span>4 ${t('createProfile')}</span><span>5 ${t('profileSetup')}</span></div><div class="description-layout"><section class="card description-preview"><div class="card-head">${icon('model')}<div><h3>${esc(a.package_name)}</h3><p>${esc(a.urdf)}</p></div></div><div id="description-viewport"></div><div class="description-facts"><span>${a.links.length} Links</span><span>${a.joints.length} Joints</span><span>${esc(a.fingerprint.slice(0, 12))}</span></div></section><section class="card setup-form"><div class="card-body"><h3>${t('controlChain')}</h3><div class="row"><div class="field"><label>${t('baseFrame')}</label><select id="draft-base">${linkOptions}</select></div><div class="field"><label>${t('toolFrame')}</label><select id="draft-tool">${toolOptions}</select></div></div><div class="chain-preview">${jointSummary}</div><div class="field"><label>${t('controlledJoints')}</label><div class="chip-row">${d.joint_names.map(x => `<span class="chip">${esc(x)}</span>`).join('') || '—'}</div></div><hr><h3>${t('hardwareMapping')}</h3><p class="parameter-guidance">${state.language === 'en' ? 'Creation currently supports Damiao only; other plugins can be configured after creating the Profile when their Backend is installed' : '新建时仅支持现有达妙硬件生成逻辑，其他驱动可在创建 Profile 后通过硬件参数编辑接入'}</p><details class="description-hardware-extra"><summary>${state.language === 'en' ? 'Transport and Backend details' : '总线类型与通信后端'}</summary><div class="row"><div class="field"><label>${state.language === 'en' ? 'Bus type' : '总线类型'}</label><select disabled><option>can</option></select></div><div class="field"><label>${state.language === 'en' ? 'Communication Backend' : '通信后端'}</label><select disabled><option>damiao_usb2can</option></select></div></div><p class="hint">${state.language === 'en' ? 'Read-only here because the current creation Backend provides this fixed combination' : '当前新建后端只生成这一组通信配置，此处展示实际支持组合，不提供无效选项'}</p></details><div class="row"><div class="field"><label>${t('hardwareDriver')}</label><select id="draft-hardware"><option value="serial_arm_hardware_damiao" ${d.hardware_plugin === 'serial_arm_hardware_damiao' ? 'selected' : ''}>DAMIÃO</option><option value="" ${!d.hardware_plugin ? 'selected' : ''}>${state.language === 'en' ? 'Configure later' : '稍后配置'}</option></select></div><div class="field"><label>${t('bus')}</label><input id="draft-bus" value="${esc(d.bus)}"></div></div><div class="row"><div class="field"><label>${t('serial')}</label><input id="draft-device" value="${esc(d.device)}"></div><div class="field"><label>${t('baudrate')}</label><input id="draft-baudrate" value="${esc(d.baudrate)}"></div></div><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actuatorName')}</th><th>${t('motorId')}</th><th>${t('masterId')}</th><th>${t('motorType')}</th></tr></thead><tbody>${actuators}</tbody></table></div><hr><h3>${t('createProfile')}</h3><div class="field"><label>${t('profileId')}</label><input id="draft-profile" value="${esc(d.profile)}"></div><div class="field"><label>${t('destination')}</label><div class="input-row"><input id="draft-destination" value="${esc(d.destination)}"><button id="draft-destination-browse" class="button">${t('chooseDirectory')}</button></div></div><button id="draft-create" class="button primary">${t('createProfile')}</button></div></section></div>`;
+    const jointSummary = chain.map(j => `<span class="chain-joint ${j.type === 'fixed' ? 'fixed' : ''}">${esc(j.name)}<small>${esc(j.type)}</small></span>`).join('') || `<span class="warning-text">${state.language === 'en' ? 'Base and Tool are not on one connected chain' : 'Base 与 Tool 不构成连续控制链'}</span>`;
+    const stats = `<div class="description-facts"><span>${a.links.length} Links</span><span>${a.joints.length} Joints</span><span>${movable.length} ${state.language === 'en' ? 'Movable' : '可动关节'}</span></div>`;
+    const preview = `<section class="card description-preview"><div class="card-head">${icon('model')}<div><h3>${esc(a.package_name)}</h3><p>${esc(a.urdf)}</p></div></div><div id="description-viewport"></div>${stats}</section>`;
+    let form = '';
+    if (step === 1) {
+        form = `<h3>${t('newModelCheck')}</h3><p class="parameter-guidance">${t('newModelHint')}</p><div class="wizard-check ${basicOk ? 'passed' : 'warning'}"><span>${basicOk ? '✓' : '!'}</span><div><b>${basicOk ? (state.language === 'en' ? 'Basic model check passed' : '模型基础检查通过') : (state.language === 'en' ? 'Missing a movable chain' : '模型缺少可动控制链')}</b><small>${state.language === 'en' ? 'URDF parsed and model topology loaded' : 'URDF 已解析，模型结构已读取'}</small></div></div><dl class="kv"><dt>Base</dt><dd>${esc(a.roots?.[0] || '—')}</dd><dt>Tool</dt><dd>${esc(d.tool_frame || '—')}</dd><dt>${t('controlledJoints')}</dt><dd>${movable.length}</dd></dl><div class="wizard-actions"><button id="description-next-chain" class="button primary" ${basicOk ? '' : 'disabled'}>${t('wizardNext')} →</button></div>`;
+    } else if (step === 2) {
+        form = `<h3>${t('controlChain')}</h3><p class="parameter-guidance">${state.language === 'en' ? 'Select Base and Tool to derive the controlled joint sequence' : '选择 Base 与 Tool，自动识别沿途受控关节及其顺序'}</p><div class="row"><div class="field"><label>${t('baseFrame')}</label><select id="draft-base">${linkOptions}</select></div><div class="field"><label>${t('toolFrame')}</label><select id="draft-tool">${toolOptions}</select></div></div><div class="chain-preview">${jointSummary}</div><div class="field"><label>${t('controlledJoints')}</label><div class="chip-row">${d.joint_names.map(x => `<span class="chip">${esc(x)}</span>`).join('') || '—'}</div></div><div class="wizard-actions"><button id="description-back" class="button">← ${t('wizardBack')}</button><button id="description-next-profile" class="button primary" ${d.joint_names.length ? '' : 'disabled'}>${t('wizardNext')} →</button></div>`;
+    } else {
+        form = `<h3>${t('createProfile')}</h3><p class="parameter-guidance">${t('newHardwareHint')}</p><div class="wizard-summary"><div><small>Base → Tool</small><b>${esc(d.base_frame)} → ${esc(d.tool_frame)}</b></div><div><small>${t('controlledJoints')}</small><b>${d.joint_names.map(esc).join(' · ')}</b></div></div><div class="field"><label>${t('profileId')}</label><input id="draft-profile" value="${esc(d.profile)}"></div><div class="field"><label>${t('destination')}</label><div class="input-row"><input id="draft-destination" value="${esc(d.destination)}"><button id="draft-destination-browse" class="button">${t('chooseDirectory')}</button></div></div><div class="wizard-actions"><button id="description-back" class="button">← ${t('wizardBack')}</button><button id="draft-create" class="button primary">${t('createProfile')} →</button></div>`;
+    }
+    return pageTitle + descriptionStepper(step) + `<div class="description-layout">${preview}<section class="card setup-form"><div class="card-body">${form}</div></section></div>`;
 }
 function lifecyclePage() {
     const r = state.readiness || {}; const checks = r.checks || {};
@@ -485,7 +507,7 @@ function profileSetupPage() {
     const body = key === 'hardware' ? `${profilePlugin}${hardwarePanel}` : profileTree(value, ['core', ...current[2].split('.')]);
     const changed = state.profileDirty;
     const err = state.profileError ? `<div class="parameter-error" role="alert">${esc(state.profileError)}</div>` : '';
-    return pageHead('profileSetup', 'profileManagedHint', `<div class="parameter-top-actions"><span id="profile-dirty-state" class="hint">${changed ? (state.language === 'en' ? 'Unsaved changes' : '存在未保存修改') : (state.language === 'en' ? 'Saved on disk' : '当前内容已从磁盘加载')}</span><button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div>`) + `<section class="parameter-layout"><nav class="parameter-groups">${profileGroups.map(([id,title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}">${esc(title)}${id==='gains'?'<small>6 Modes · Kp / Kd</small>':''}</button>`).join('')}</nav><section class="card parameter-card"><div class="card-head"><div><h3>${esc(current[1])}</h3><p>${esc(key === 'hardware' ? e.hardware_path : e.core_path)}</p></div></div><div class="card-body">${info ? `<p class="parameter-guidance">${info}</p>` : ''}${err}${body}${optional}</div></section></section>`;
+    return (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + pageHead('profileSetup', 'profileManagedHint', `<div class="parameter-top-actions"><span id="profile-dirty-state" class="hint">${changed ? (state.language === 'en' ? 'Unsaved changes' : '存在未保存修改') : (state.language === 'en' ? 'Saved on disk' : '当前内容已从磁盘加载')}</span><button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div>`) + `<section class="parameter-layout"><nav class="parameter-groups">${profileGroups.map(([id,title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}">${esc(title)}${id==='gains'?'<small>6 Modes · Kp / Kd</small>':''}</button>`).join('')}</nav><section class="card parameter-card"><div class="card-head"><div><h3>${esc(current[1])}</h3><p>${esc(key === 'hardware' ? e.hardware_path : e.core_path)}</p></div></div><div class="card-body">${info ? `<p class="parameter-guidance">${info}</p>` : ''}${err}${body}${optional}</div></section></section>`;
 }
 function robotPage() {
     const info = state.info;
@@ -1476,7 +1498,7 @@ async function refreshLibrary() {
 }
 async function openLibraryEntry(id) {
     const entry = state.library.find(x => x.id === id); if (!entry) throw new Error('Profile Library entry not found');
-    state.activeLibraryId = id; state.source = entry.source === 'builtin' ? 'builtin' : 'external';
+    state.activeLibraryId = id; state.createdProfileWizard = false; state.source = entry.source === 'builtin' ? 'builtin' : 'external';
     state.config = { profile: entry.profile, profile_file: entry.source === 'builtin' ? '' : entry.profile_file, resource_paths: entry.resource_paths || '', serial_port: '', baudrate: '', bus: '' };
     const listing = await api.request('profiles', state.config); state.profiles = listing.profiles || []; state.info = null; state.modelData = null; state.profileEditor = null;
     await inspect(); state.readiness = await api.request('readiness', { config: state.config });
@@ -1511,25 +1533,49 @@ async function importProfileSource(source) {
 function collectDescriptionDraft() {
     const d = state.descriptionDraft;
     if ($('description-source')) d.source = $('description-source').value.trim();
-    if ($('draft-base')) d.base_frame = $('draft-base').value; if ($('draft-tool')) d.tool_frame = $('draft-tool').value;
-    if ($('draft-hardware')) d.hardware_plugin = $('draft-hardware').value; if ($('draft-bus')) d.bus = $('draft-bus').value.trim(); if ($('draft-device')) d.device = $('draft-device').value.trim(); if ($('draft-baudrate')) d.baudrate = $('draft-baudrate').value.trim();
-    if ($('draft-profile')) d.profile = $('draft-profile').value.trim(); if ($('draft-destination')) d.destination = $('draft-destination').value.trim();
+    if ($('draft-base')) d.base_frame = $('draft-base').value;
+    if ($('draft-tool')) d.tool_frame = $('draft-tool').value;
+    if ($('draft-profile')) d.profile = $('draft-profile').value.trim();
+    if ($('draft-destination')) d.destination = $('draft-destination').value.trim();
     syncDescriptionChain();
-    d.actuators = d.joint_names.map((name, i) => ({ name: document.querySelector(`[data-act-name="${i}"]`)?.value?.trim() || `actuator${i + 1}`, motor_id: Number(document.querySelector(`[data-act-id="${i}"]`)?.value || i + 1), master_id: Number(document.querySelector(`[data-master-id="${i}"]`)?.value || 0), motor_type: (document.querySelector(`[data-draft-motor-choice="${i}"]`)?.value === '__custom__' ? document.querySelector(`[data-motor-type="${i}"]`)?.value.trim() : document.querySelector(`[data-draft-motor-choice="${i}"]`)?.value) || '' }));
 }
 async function analyzeDescription() {
-    collectDescriptionDraft(); if (!state.descriptionDraft.source) throw new Error(state.language === 'en' ? 'Choose a Description first' : '请先选择 Description 文件');
-    state.descriptionAnalysis = await api.request('description_inspect', { source: state.descriptionDraft.source }); const a = state.descriptionAnalysis, d = state.descriptionDraft;
-    d.base_frame = a.roots?.[0] || a.links?.[0] || ''; d.tool_frame = a.preview?.native?.config?.tool_frame || a.leaves?.[0] || ''; d.profile = (a.package_name || 'serial_arm').replace(/_description$/, '').replace(/[^A-Za-z0-9_-]/g, '_'); syncDescriptionChain(); render();
+    collectDescriptionDraft();
+    if (!state.descriptionDraft.source) throw new Error(state.language === 'en' ? 'Choose a Description first' : '请先选择 Description 文件');
+    state.descriptionAnalysis = await api.request('description_inspect', { source: state.descriptionDraft.source });
+    const a = state.descriptionAnalysis, d = state.descriptionDraft;
+    d.base_frame = a.roots?.[0] || a.links?.[0] || '';
+    d.tool_frame = a.preview?.native?.config?.tool_frame || a.leaves?.[0] || '';
+    d.profile = (a.package_name || 'serial_arm').replace(/_description$/, '').replace(/[^A-Za-z0-9_-]/g, '_');
+    state.descriptionStep = 1;
+    syncDescriptionChain(); render();
 }
 async function createDescriptionProfile() {
-    collectDescriptionDraft(); const d = state.descriptionDraft;
+    collectDescriptionDraft();
+    const d = state.descriptionDraft;
+    if (!d.joint_names.length) throw new Error(state.language === 'en' ? 'Choose a valid controlled chain first' : '请先选择有效控制链');
+    if (!d.profile || !/^[A-Za-z0-9_-]+$/.test(d.profile)) throw new Error(state.language === 'en' ? 'Use letters, numbers, underscores or hyphens for the Profile name' : 'Profile 标识只能包含英文数字下划线及连字符');
     if (!d.destination) throw new Error(state.language === 'en' ? 'Choose a destination directory' : '请选择 Profile 保存目录');
-    const result = await api.request('description_create_profile', { ...d });
-    const dialog = $('confirm-dialog'); dialog.innerHTML = `<div class="eyebrow">${t('createProfile')}</div><h3>${esc(result.profile)}</h3><p>${state.language === 'en' ? 'The Profile package was created. Add it to Profile Library now?' : 'Profile 包已创建，是否现在加入 Profile Library？'}</p><dl class="kv"><dt>${t('destination')}</dt><dd>${esc(result.package)}</dd><dt>${t('hardwareMapping')}</dt><dd>${result.hardware_complete ? (state.language === 'en' ? 'Configured' : '已配置') : (state.language === 'en' ? 'Continue later' : '待继续配置')}</dd></dl><div class="actions"><button id="created-not-now" class="button">${t('notNow')}</button><button id="created-add" class="button primary">${t('addToLibrary')}</button></div>`; dialog.showModal();
-    const openExternal = async () => { state.config = { ...result.config }; state.source = 'external'; state.info = null; await inspect(); state.readiness = await api.request('readiness', { config: state.config }); state.page = 'profile_setup'; state.profileEditor = await api.request('profile_editor_load', {config:state.config}); state.profileGroup = 'model'; state.profileDirty = false; dialog.close(); shell(); };
-    $('created-not-now').onclick = () => operation(openExternal);
-    $('created-add').onclick = () => blockingOperation(busyText('正在加入 Profile Library...', 'Adding to Profile Library...'), async () => { await api.request('profile_library_register', { profile_file: result.profile_file, profile: result.profile, resource_paths: result.resource_paths, policy: 'suffix' }); await refreshLibrary(); const entry = state.library.find(x => x.profile === result.profile && x.profile_file === result.profile_file); dialog.close(); if (entry) { state.activeLibraryId = entry.id; } await openExternal(); });
+    // Do not invent hardware mappings before the user reaches Profile setup
+    const result = await api.request('description_create_profile', { source:d.source, profile:d.profile, destination:d.destination,
+        base_frame:d.base_frame, tool_frame:d.tool_frame, joint_names:d.joint_names, hardware_plugin:'' });
+    state.config = { ...result.config };
+    state.source = 'external'; state.info = null; state.modelData = null;
+    // Creation succeeds independently of Library registration so the generated files remain recoverable
+    try {
+        const entry = await api.request('profile_library_register', { profile_file:result.profile_file, profile:result.profile,
+            resource_paths:result.resource_paths, policy:'suffix' });
+        state.activeLibraryId = entry.id;
+        await refreshLibrary();
+    } catch (error) {
+        toast((state.language === 'en' ? 'Profile created, but Library registration failed: ' : 'Profile 已生成，但加入 Library 失败：') + error.message, true);
+    }
+    await inspect();
+    state.readiness = await api.request('readiness', { config:state.config });
+    state.profileEditor = await api.request('profile_editor_load', { config:state.config });
+    state.profileGroup = 'hardware'; state.profileDirty = false; state.profileError = '';
+    state.createdProfileWizard = true; state.descriptionStep = 4;
+    state.page = 'profile_setup'; await save(); shell();
 }
 async function markReadinessStage(stage) { state.readiness = await api.request('readiness_mark', { config: state.config, stage, confirmed: true }); await refreshLibrary(); render(); }
 function collectProfileEditor() {
@@ -1644,7 +1690,9 @@ async function inspect() {
 async function navigate(page) {
     if (page === state.page) return;
     if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameter changes' : '尚有未保存参数，确认放弃后离开')) return;
-    capture(); await operation(save); await pageExit(); state.page = page;
+    capture(); await operation(save); await pageExit();
+    if (state.page === 'profile_setup') state.createdProfileWizard = false;
+    state.page = page;
     if (page === 'lifecycle' && state.config.profile) state.readiness = await api.request('readiness', { config: state.config });
     if (page === 'profile_setup' && state.config.profile) {
         state.profileEditor = await api.request('profile_editor_load', {config:state.config});
@@ -1655,7 +1703,7 @@ async function navigate(page) {
     render();
 }
 function bindPage() {
-    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { await pageExit(); state.entryIntent = 'description'; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); await pageExit(); state.page = 'library'; render(); }));
+    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { await pageExit(); state.entryIntent = 'description'; state.descriptionStep = 1; state.createdProfileWizard = false; state.descriptionAnalysis = null; state.descriptionDraft = {source:'',profile:'',destination:'',base_frame:'',tool_frame:'',joint_names:[]}; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); await pageExit(); state.page = 'library'; render(); }));
     if ($('library-home')) $('library-home').onclick = resetToStart;
     if ($('library-import-dir')) $('library-import-dir').onclick = () => operation(async () => { const source = await api.selectProfilePackage(); if (source) await importProfileSource(source); });
     if ($('library-import-file')) $('library-import-file').onclick = () => operation(async () => { const source = await api.selectProfile(); if (source) await importProfileSource(source); });
@@ -1665,17 +1713,16 @@ function bindPage() {
     if ($('description-browse')) $('description-browse').onclick = () => operation(async () => { const file = await api.selectDescription(); if (file) { state.descriptionDraft.source = file; const node = $('description-source'); if (node) node.value = file; } });
     if ($('description-browse-dir')) $('description-browse-dir').onclick = () => operation(async () => { const dir = await api.selectProfilePackage(); if (dir) { state.descriptionDraft.source = dir; const node = $('description-source'); if (node) node.value = dir; } });
     if ($('description-analyze')) $('description-analyze').onclick = () => blockingOperation(busyText('正在分析 Description...', 'Analyzing Description...'), analyzeDescription);
-    if ($('description-reset')) $('description-reset').onclick = () => { state.descriptionAnalysis = null; state.descriptionDraft = { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }; render(); };
+    if ($('description-reset')) $('description-reset').onclick = () => { state.descriptionAnalysis = null; state.descriptionStep = 1; state.descriptionDraft = { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [] }; render(); };
     if ($('draft-base')) $('draft-base').onchange = () => { collectDescriptionDraft(); render(); };
     if ($('draft-tool')) $('draft-tool').onchange = () => { collectDescriptionDraft(); render(); };
-    if ($('draft-hardware')) $('draft-hardware').onchange = () => { state.descriptionDraft.hardware_plugin = $('draft-hardware').value; };
-    document.querySelectorAll('[data-draft-motor-choice]').forEach(select => select.onchange = () => {
-        const input = document.querySelector(`[data-motor-type="${select.dataset.draftMotorChoice}"]`);
-        if (!input) return;
-        input.hidden = select.value !== '__custom__';
-        if (select.value !== '__custom__') input.value = select.value;
-        else { input.value = ''; input.focus(); }
-    });
+    if ($('description-next-chain')) $('description-next-chain').onclick = () => { state.descriptionStep = 2; render(); };
+    if ($('description-next-profile')) $('description-next-profile').onclick = () => {
+        collectDescriptionDraft();
+        if (!state.descriptionDraft.joint_names.length) { toast(state.language === 'en' ? 'Select a valid controlled chain' : '请先选择有效控制链', true); return; }
+        state.descriptionStep = 3; render();
+    };
+    if ($('description-back')) $('description-back').onclick = () => { collectDescriptionDraft(); state.descriptionStep = Math.max(1, state.descriptionStep - 1); render(); };
     if ($('draft-destination-browse')) $('draft-destination-browse').onclick = () => operation(async () => { const dir = await api.selectDestination(); if (dir) { state.descriptionDraft.destination = dir; $('draft-destination').value = dir; } });
     if ($('draft-create')) $('draft-create').onclick = () => blockingOperation(busyText('正在生成 Profile 包...', 'Creating Profile package...'), createDescriptionProfile);
     document.querySelectorAll('[data-stage-open]').forEach(button => button.onclick = () => { if (button.dataset.stage === 'dynamics_calibration') state.workbenchTab = 'calibration'; navigate(button.dataset.stageOpen); });
