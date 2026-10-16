@@ -811,6 +811,9 @@ public:
         else if(robot_.get_state() == RobotState::FAULT) {
             (void)robot_.force_deactivate();
         }
+        if(gravity_verify_active_ && robot_.get_state() == RobotState::INACTIVE) {
+            try { gravity_verify_restore_locked(); } catch(...) { }
+        }
     }
 
     tl::expected<void, std::string> initialize() {
@@ -1005,6 +1008,7 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "park") {
+                        if(gravity_verify_active_) throw std::runtime_error("automatic park uses tracking modes; use supported gravity verification stop");
                         // The demonstration is already stopped in this phase.
                         // Parking is an explicit operator decision to abandon
                         // pending replay, preserving its saved task data. Do
@@ -1044,6 +1048,36 @@ public:
                     else if(method == "set_gravity_scale") {
                         machine_set_gravity_scale(machine_node_vector(params["values"], "values"));
                         emit_reply(id, "true");
+                    }
+                    else if(method == "gravity_verify_begin") {
+                        machine_gravity_verify_begin();
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_drag") {
+                        machine_gravity_verify_drag();
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_target") {
+                        machine_gravity_verify_target(machine_node_vector(params["values"], "values"));
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_sample") {
+                        machine_gravity_verify_sample();
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_stop") {
+                        if(!params || !params["supported"] || !params["supported"].as<bool>())
+                            throw std::runtime_error("explicit physical support confirmation is required");
+                        machine_gravity_verify_stop();
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_finish") {
+                        machine_gravity_verify_finish();
+                        emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "gravity_verify_cancel") {
+                        machine_gravity_verify_cancel();
+                        emit_reply(id, machine_snapshot_json());
                     }
                     else if(method == "move_to") {
                         const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
@@ -1174,6 +1208,9 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "shutdown") {
+                        if(gravity_verify_active_ && machine_robot_state() != RobotState::INACTIVE)
+                            throw std::runtime_error("gravity verification must be stopped with physical support before shutdown");
+                        if(gravity_verify_active_) machine_gravity_verify_cancel();
                         if(machine_calibration_kind_ != "none") machine_calibration_cancel();
                         if(model_calibration_task_active()) { machine_model_calibration_cancel(); if(model_calibration_worker_.joinable()) model_calibration_worker_.join(); }
                         park_and_deactivate();
@@ -1204,8 +1241,18 @@ public:
             machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
         }
         stop_telemetry();
-        if(machine_robot_state() == RobotState::ACTIVE) park_and_deactivate();
+        if(machine_robot_state() == RobotState::ACTIVE) {
+            if(gravity_verify_active_) {
+                // The IPC peer disappeared while the arm used an unverified drag controller
+                // Do not start an automatic trajectory with unvalidated tracking gains
+                machine_deactivate();
+            } else {
+                park_and_deactivate();
+            }
+        }
         if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
+        if(gravity_verify_active_ && machine_robot_state() == RobotState::INACTIVE)
+            machine_gravity_verify_cancel();
         quit_.store(true);
         return 0;
     }
@@ -1342,6 +1389,7 @@ private:
             clear_command_sources();
             const auto result = robot_.force_deactivate();
             if(!result) throw machine_robot_error("deactivate", result.error());
+            if(gravity_verify_active_) { gravity_verify_restore_locked(); gravity_verify_result_ = "cancelled"; }
             last_output_.reset();
             feedback_time_ns_ = 0;
             background_fault_reported_ = false;
@@ -1387,6 +1435,7 @@ private:
 
     void machine_set_impedance_mode(JointImpedanceMode mode) {
         machine_require_no_calibration("set_impedance_mode");
+        if(gravity_verify_active_) throw std::runtime_error("impedance mode is owned by gravity verification");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.set_impedance_mode(mode);
@@ -1398,6 +1447,7 @@ private:
 
     void machine_set_model_feedforward_mode(ModelFeedforwardMode mode) {
         machine_require_no_calibration("set_model_feedforward_mode");
+        if(gravity_verify_active_) throw std::runtime_error("feedforward mode is owned by gravity verification");
         if(dynamics_.has_gravity_first_moment_override() && mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS) {
             throw std::runtime_error("FULL_INVERSE_DYNAMICS is unavailable while gravity correction is active");
         }
@@ -1407,8 +1457,192 @@ private:
         cfg_.runtime.model_feedforward_mode = mode;
     }
 
+    void gravity_verify_restore_locked() {
+        if(!gravity_verify_active_) return;
+        if(robot_.get_state() != RobotState::INACTIVE) throw std::runtime_error("gravity verification restore requires INACTIVE");
+        const auto result = dynamics_.set_gravity_scale(gravity_verify_original_scale_);
+        if(!result) throw std::runtime_error("gravity verification scale restore failed: " + to_string(result.error()));
+        cfg_.dynamics.gravity_scale = gravity_verify_original_scale_;
+        const auto feed = robot_.set_model_feedforward_mode(gravity_verify_original_feed_);
+        if(!feed) throw machine_robot_error("gravity verification feedforward restore", feed.error());
+        cfg_.runtime.model_feedforward_mode = gravity_verify_original_feed_;
+        gravity_verify_active_ = false;
+        gravity_verify_target_scale_.clear();
+    }
+
+    void machine_gravity_verify_begin() {
+        machine_require_no_calibration("gravity_verify_begin");
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(gravity_verify_active_) throw std::runtime_error("gravity verification is already active");
+        if(robot_.get_state() != RobotState::INACTIVE || !cfg_.runtime.write_enabled)
+            throw std::runtime_error("gravity verification requires a real INACTIVE hardware session");
+        if(dynamics_.has_gravity_first_moment_override() || model_calibration_candidate_applied_ ||
+           runtime_gravity_applied_ || runtime_gain_applied_ || runtime_dynamics_applied_)
+            throw std::runtime_error("restore temporary calibration candidates before gravity verification");
+        const auto& gains = cfg_.ctrller.compliant_drag_gains;
+        if(gains.kd.size() != cfg_.joint_names.size() ||
+           !std::all_of(gains.kd.begin(), gains.kd.end(), [](double d) { return std::isfinite(d) && d > 0.0; }))
+            throw std::runtime_error("gravity verification requires positive COMPLIANT_DRAG damping on every joint");
+        gravity_verify_original_scale_ = dynamics_.get_gravity_scale();
+        if(!std::any_of(gravity_verify_original_scale_.begin(), gravity_verify_original_scale_.end(),
+                        [](double value) { return value > 0.0; }))
+            throw std::runtime_error("gravity verification requires a nonzero baseline gravity model");
+        gravity_verify_original_feed_ = robot_.get_model_feedforward_mode();
+        const JointVector zero(cfg_.joint_names.size(), 0.0);
+        const auto reset = dynamics_.set_gravity_scale(zero);
+        if(!reset) throw std::runtime_error("gravity verification initial scale failed");
+        const auto feed = robot_.set_model_feedforward_mode(ModelFeedforwardMode::GRAVITY);
+        if(!feed) {
+            (void)dynamics_.set_gravity_scale(gravity_verify_original_scale_);
+            throw machine_robot_error("gravity verification feedforward", feed.error());
+        }
+        cfg_.dynamics.gravity_scale = zero;
+        cfg_.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
+        gravity_verify_target_scale_ = gravity_verify_original_scale_;
+        gravity_verify_samples_.clear();
+        gravity_verify_result_ = "prepared";
+        gravity_verify_active_ = true;
+        gravity_verify_drag_entered_ = false;
+        gravity_verify_stopped_safely_ = false;
+    }
+
+    void machine_gravity_verify_require_feedback_locked() const {
+        if(robot_.get_state() != RobotState::ACTIVE || !last_output_)
+            throw std::runtime_error("gravity verification requires valid ACTIVE feedback");
+        const auto now_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            Robot::Clock::now().time_since_epoch()).count());
+        if(!feedback_time_ns_ || now_ns < feedback_time_ns_ || now_ns - feedback_time_ns_ > 150000000)
+            throw std::runtime_error("gravity verification feedback is stale");
+        if(last_output_->joint_state.vel.size() != cfg_.joint_names.size() ||
+           std::any_of(last_output_->joint_state.vel.begin(), last_output_->joint_state.vel.end(),
+                       [](double value) { return !std::isfinite(value) || std::abs(value) > 0.35; }))
+            throw std::runtime_error("gravity verification requires stationary joints");
+    }
+
+    void machine_gravity_verify_drag() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_ || gravity_verify_result_ != "prepared")
+            throw std::runtime_error("start gravity verification before entering drag");
+        machine_gravity_verify_require_feedback_locked();
+        if(robot_.get_impedance_mode() != JointImpedanceMode::RIGID_HOLD ||
+           robot_.get_model_feedforward_mode() != ModelFeedforwardMode::GRAVITY)
+            throw std::runtime_error("gravity verification requires RIGID_HOLD with GRAVITY feedforward");
+        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i)
+            if(std::abs(cfg_.dynamics.gravity_scale[i] - gravity_verify_target_scale_[i]) > 0.005)
+                throw std::runtime_error("gravity compensation ramp has not settled");
+        clear_command_sources();
+        const auto result = robot_.set_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG);
+        if(!result) throw machine_robot_error("gravity verification drag", result.error());
+        gravity_verify_drag_entered_ = true;
+        gravity_verify_result_ = "dragging";
+    }
+
+    void machine_gravity_verify_target(const JointVector& values) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_ || !gravity_verify_drag_entered_ || gravity_verify_result_ != "dragging" ||
+           robot_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG)
+            throw std::runtime_error("gravity scale online adjustment requires active gravity verification drag");
+        machine_gravity_verify_require_feedback_locked();
+        if(dynamics_.has_gravity_first_moment_override() || model_calibration_task_active())
+            throw std::runtime_error("gravity verification conflicts with calibration");
+        if(values.size() != cfg_.joint_names.size() ||
+           !std::all_of(values.begin(), values.end(), [](double x) { return std::isfinite(x) && x >= 0.0 && x <= 2.0; }))
+            throw std::runtime_error("gravity scale must contain finite values in [0,2] for all joints");
+        if(!std::any_of(values.begin(), values.end(), [](double value) { return value > 0.0; }))
+            throw std::runtime_error("all-zero gravity compensation is unsafe during drag");
+        gravity_verify_target_scale_ = values;
+    }
+
+    void machine_gravity_verify_sample() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_ || gravity_verify_result_ != "dragging" ||
+           robot_.get_impedance_mode() != JointImpedanceMode::COMPLIANT_DRAG)
+            throw std::runtime_error("gravity verification sampling requires COMPLIANT_DRAG");
+        machine_gravity_verify_require_feedback_locked();
+        if(!gravity_verify_target_scale_.empty())
+            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i)
+                if(std::abs(gravity_verify_target_scale_[i] - cfg_.dynamics.gravity_scale[i]) > 0.005)
+                    throw std::runtime_error("wait until gravity scale is settled before sampling");
+        const auto& position = last_output_->joint_state.pos;
+        if(position.size() != cfg_.joint_names.size() ||
+           !std::all_of(position.begin(), position.end(), [](double x) { return std::isfinite(x); }))
+            throw std::runtime_error("invalid joint positions");
+        for(const auto& prior : gravity_verify_samples_) {
+            double max_shift = 0.0;
+            for(std::size_t i = 0; i < position.size(); ++i)
+                max_shift = std::max(max_shift, std::abs(position[i] - prior[i]));
+            if(max_shift < 0.08) throw std::runtime_error("move to a distinct stable pose before the next sample");
+        }
+        gravity_verify_samples_.push_back(position);
+    }
+
+    void machine_gravity_verify_stop() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_ || robot_.get_state() != RobotState::ACTIVE)
+            throw std::runtime_error("gravity verification controlled stop requires ACTIVE");
+        machine_gravity_verify_require_feedback_locked();
+        clear_command_sources();
+        const auto hold = robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+        if(!hold) throw machine_robot_error("gravity verification hold", hold.error());
+        const auto disabled = robot_.force_deactivate();
+        if(!disabled) throw machine_robot_error("gravity verification supported disable", disabled.error());
+        last_output_.reset();
+        feedback_time_ns_ = 0;
+        gravity_verify_stopped_safely_ = true;
+        gravity_verify_result_ = "stopped";
+    }
+
+    void machine_gravity_verify_finish() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_ || !gravity_verify_drag_entered_ ||
+           !gravity_verify_stopped_safely_ || gravity_verify_samples_.size() < 3)
+            throw std::runtime_error("gravity verification requires three poses and a supported controlled stop");
+        if(robot_.get_state() != RobotState::INACTIVE)
+            throw std::runtime_error("supported disable is required before completing gravity verification");
+        gravity_verify_restore_locked();
+        gravity_verify_result_ = "completed";
+    }
+
+    void machine_gravity_verify_cancel() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(!gravity_verify_active_) return;
+        if(robot_.get_state() != RobotState::INACTIVE)
+            throw std::runtime_error("deactivate under physical support before cancelling gravity verification");
+        gravity_verify_restore_locked();
+        gravity_verify_result_ = "cancelled";
+    }
+
+    void gravity_verify_cycle_update() {
+        if(!gravity_verify_active_ || gravity_verify_target_scale_.size() != cfg_.joint_names.size() ||
+           robot_.get_state() != RobotState::ACTIVE) return;
+        // Updates use the same mutex and period as Robot::cycle, not the GUI event cadence
+        const double dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
+        JointVector next = cfg_.dynamics.gravity_scale;
+        const auto& gravity = dynamics_.get_state().gravity;
+        bool changed = false;
+        for(std::size_t i = 0; i < next.size(); ++i) {
+            const double gravity_nm = i < gravity.size() && std::isfinite(gravity[i]) ? std::abs(gravity[i]) : 0.0;
+            // Bound both the scale slew and expected gravity torque slew per control period
+            const double step = std::min(0.20 * dt, 6.0 * dt / std::max(1.0, gravity_nm));
+            const double goal = gravity_verify_target_scale_[i];
+            const double value = next[i] + std::clamp(goal - next[i], -step, step);
+            changed |= value != next[i];
+            next[i] = value;
+        }
+        if(changed) {
+            const auto result = dynamics_.set_gravity_scale(next);
+            if(!result) {
+                gravity_verify_result_ = "failed";
+                gravity_verify_target_scale_ = cfg_.dynamics.gravity_scale;
+                return;
+            }
+            cfg_.dynamics.gravity_scale = next;
+        }
+    }
+
     void machine_set_gravity_scale(const JointVector& values) {
         machine_require_no_calibration("set_gravity_scale");
+        if(gravity_verify_active_) throw std::runtime_error("gravity scale is owned by the active verification task");
         if(dynamics_.has_gravity_first_moment_override()) throw std::runtime_error("gravity_scale cannot be changed while gravity correction is active");
         if(values.size() != cfg_.joint_names.size()) throw std::runtime_error("gravity scale size does not match joint count");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1431,6 +1665,7 @@ private:
 
     void machine_move_to(const JointVector& values, double speed_scale, bool relative) {
         machine_require_no_calibration("motion");
+        if(gravity_verify_active_) throw std::runtime_error("tracking commands are blocked during gravity verification");
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("motion requires RobotState::ACTIVE");
         if(!is_tracking_mode(robot_.get_impedance_mode())) throw std::runtime_error("motion requires a tracking impedance mode");
@@ -4071,6 +4306,16 @@ private:
         else out << ",\"feedback_age_ms\":null";
         out << ",\"write_enabled\":" << (cfg_.runtime.write_enabled ? "true" : "false");
         out << ",\"gravity_scale\":"; machine_json_joint_vector(out, cfg_.dynamics.gravity_scale);
+        out << ",\"gravity_verification\":{\"active\":" << (gravity_verify_active_ ? "true" : "false")
+            << ",\"phase\":\"" << gravity_verify_result_ << "\""
+            << ",\"sample_count\":" << gravity_verify_samples_.size()
+            << ",\"ramp_settled\":";
+        bool settled = gravity_verify_target_scale_.size() == cfg_.dynamics.gravity_scale.size();
+        if(settled) for(std::size_t i = 0; i < gravity_verify_target_scale_.size(); ++i)
+            if(std::abs(gravity_verify_target_scale_[i] - cfg_.dynamics.gravity_scale[i]) > 0.005) settled = false;
+        out << (settled ? "true" : "false") << ",\"target\":";
+        machine_json_joint_vector(out, gravity_verify_target_scale_);
+        out << '}';
         out << ",\"calibration\":" << machine_calibration_status_json();
         out << ",\"model_calibration\":" << machine_model_calibration_status_json();
         out << ",\"joint_names\":[";
@@ -4234,7 +4479,10 @@ private:
                 std::lock_guard<std::mutex> lock(mutex_);
                 const auto now = Robot::Clock::now();
                 if(now > next_wakeup) next_wakeup = now;
-                if(robot_.get_state() == RobotState::ACTIVE) run_control_cycle(now);
+                if(robot_.get_state() == RobotState::ACTIVE) {
+                    gravity_verify_cycle_update();
+                    run_control_cycle(now);
+                }
                 else if(robot_.get_state() == RobotState::FAULT && robot_.is_fault_holding()) {
                     const auto hold_result = robot_.maintain_fault_hold();
                     if(!hold_result) {
@@ -6740,6 +6988,14 @@ private:
     std::optional<AdmittanceStaticValidationResult> last_static_validation_result_;
     std::optional<AdmittanceFrictionCalibrationResult> last_friction_calibration_result_;
     std::optional<AdmittanceFrictionCalibrationResult> last_full_id_friction_calibration_result_;
+    bool gravity_verify_active_{ false };
+    bool gravity_verify_drag_entered_{ false };
+    bool gravity_verify_stopped_safely_{ false };
+    std::string gravity_verify_result_{ "idle" };
+    JointVector gravity_verify_original_scale_;
+    JointVector gravity_verify_target_scale_;
+    ModelFeedforwardMode gravity_verify_original_feed_{ ModelFeedforwardMode::NONE };
+    std::vector<JointVector> gravity_verify_samples_;
     std::uint64_t cycle_counter_{ 0 };
     bool background_fault_reported_{ false };
     std::optional<DynamicsErr> last_dynamics_err_;

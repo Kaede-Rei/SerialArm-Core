@@ -297,7 +297,7 @@ class ProfileLibrary:
         return self._readiness(config)
 
     def record_stage(self, config, stage, answers, native=None):
-        if stage not in ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration', 'validation', 'startup_hold'):
+        if stage not in ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration', 'gravity_verification', 'validation', 'startup_hold'):
             raise ValueError('当前阶段尚无可记录的验收流程')
         if not isinstance(answers, dict): raise ValueError('验收数据必须是对象')
         info = self.inspector.inspect(config)
@@ -309,6 +309,7 @@ class ProfileLibrary:
             'startup_hold': ('hold_gains', 'supported', 'emergency_stop'),
             'mapping_calibration': ('joint_ids', 'directions', 'offsets'),
             'geometry_calibration': ('frames', 'zero_pose', 'tool_pose'),
+            'gravity_verification': ('distinct_poses', 'support', 'restored'),
             'validation': ('tracking', 'stopping', 'faults'),
         }
         if any(answers.get(k) is not True for k in requirements[stage]):
@@ -320,6 +321,7 @@ class ProfileLibrary:
             'model_check': ('profile_setup',), 'bringup': ('model_check',),
             'startup_hold': ('bringup',), 'mapping_calibration': ('bringup',),
             'geometry_calibration': ('mapping_calibration',),
+            'gravity_verification': ('geometry_calibration',),
             'validation': ('dynamics_calibration',),
         }
         for needed in prerequisites[stage]:
@@ -346,6 +348,21 @@ class ProfileLibrary:
                 age = sample.get('feedback_age_ms')
                 if not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0 or age > 250 or sample.get('sequence', 0) < 1:
                     raise ValueError('实时反馈已过期或没有有效控制周期，不能记录验收')
+            if stage == 'gravity_verification':
+                proof = sample.get('gravity_verification') or {}
+                if (sample['robot_state'] != 'INACTIVE' or proof.get('active') is not False or
+                    proof.get('phase') != 'completed' or proof.get('sample_count', 0) < 3):
+                    raise ValueError('先在真机完成三个不同姿态的重力验证，并在机械支撑下失能及恢复临时参数')
+                if sample.get('model_feedforward_mode') != (read_yaml(info['resources']['core']).get('control') or {}).get('runtime', {}).get('model_feedforward_mode'):
+                    raise ValueError('原有模型前馈模式尚未恢复')
+                stored_scale = (read_yaml(info['resources']['core']).get('model') or {}).get('gravity_scale')
+                if not isinstance(stored_scale, dict): raise ValueError('重力比例配置缺失')
+                ordered = [stored_scale.get(j) for j in sample.get('joint_names', [])]
+                if len(ordered) != len(sample.get('gravity_scale') or []) or any(
+                    not isinstance(a,(int,float)) or abs(a-b)>1.0e-6 for a,b in zip(ordered,sample['gravity_scale'])):
+                    raise ValueError('临时重力比例尚未恢复到 Profile 原值')
+                if not isinstance(sample.get('actuator_info'),list) or len(sample['actuator_info']) != len(ordered):
+                    raise ValueError('无法验证所有关节的硬件反馈')
             if stage in ('bringup', 'startup_hold'):
                 if sample['robot_state'] != 'INACTIVE':
                     raise ValueError('请先进入 INACTIVE 状态完成连接与启动保持检查')
@@ -364,6 +381,13 @@ class ProfileLibrary:
             'runtime': {'robot_state': sample.get('robot_state'), 'joint_names': sample.get('joint_names')}
                        if sample else {},
         }
+        if stage == 'gravity_verification':
+            data['stages'][stage]['runtime']['sample_count'] = sample['gravity_verification']['sample_count']
+            data.setdefault('modes', {})['COMPLIANT_DRAG'] = {
+                'result': 'passed', 'scope': scopes['modes']['COMPLIANT_DRAG'],
+                'kind': 'operator_and_live', 'note': note, 'recorded_at': time.time(),
+                'sample_count': sample['gravity_verification']['sample_count'],
+            }
         _atomic_yaml(path, data)
         return self._readiness(config)
 

@@ -60,6 +60,11 @@ def restore_temporary_candidates_for_disconnect(native):
 
     Keep the session running if restoration cannot be verified
     """
+    snapshot = native.request('status', {}, timeout=8)
+    if (snapshot.get('gravity_verification') or {}).get('active'):
+        if snapshot.get('robot_state') != 'INACTIVE':
+            raise ValueError('验证任务尚未在机械支撑下失能，请完成受控停止或紧急失能后再断开')
+        native.request('gravity_verify_cancel', {}, timeout=8)
     overrides = native.request('candidate_overrides', {}, timeout=8)
     enabled = [kind for kind in ('dynamics', 'gravity', 'gain')
                if overrides.get(kind + '_applied')]
@@ -87,6 +92,10 @@ _READ_ONLY_MACHINE = {
 }
 _SAFE_EXIT_MACHINE = {'deactivate'}
 _TRACKING_MACHINE = {'move_to', 'move_relative'}
+_GRAVITY_VERIFY_MACHINE = {
+    'gravity_verify_begin', 'gravity_verify_drag', 'gravity_verify_target',
+    'gravity_verify_sample', 'gravity_verify_stop', 'gravity_verify_finish', 'gravity_verify_cancel',
+}
 
 
 def verify_machine_admission(library, config, method, params, native):
@@ -97,13 +106,30 @@ def verify_machine_admission(library, config, method, params, native):
         raise ValueError('执行器写入已关闭，当前会话不可发送硬件控制命令')
     if readiness['checks'].get('profile_setup') != 'verified':
         raise ValueError('Profile 配置未完成，拒绝硬件控制')
+    status = native.request('status', {}, timeout=8)
+    gravity_active = (status.get('gravity_verification') or {}).get('active') is True
+    if gravity_active and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
+        raise ValueError('重力验证期间由独立流程管理控制模式与临时参数')
+    if method in _GRAVITY_VERIFY_MACHINE:
+        if any(readiness['checks'].get(stage) != 'verified' for stage in
+               ('bringup', 'mapping_calibration', 'geometry_calibration')) or readiness['modes'].get('RIGID_HOLD') != 'verified':
+            raise ValueError('重力验证前必须完成真机检查、映射、几何与启动保持验收')
+        if method == 'gravity_verify_begin':
+            if status.get('robot_state') != 'INACTIVE' or gravity_active:
+                raise ValueError('开始验证前需要失能且不存在活动任务')
+            overrides = native.request('candidate_overrides', {}, timeout=8)
+            if any(overrides.get(k + '_applied') for k in ('gain', 'gravity', 'dynamics')):
+                raise ValueError('请先撤销所有临时标定候选')
+        elif method not in ('gravity_verify_finish', 'gravity_verify_cancel') and not gravity_active:
+            raise ValueError('当前没有正在执行的重力验证任务')
+        return
     if method == 'park':
         # Parking moves the arm using the configured gains; safe emergency disable remains available
         if readiness['modes'].get('RIGID_HOLD') != 'verified':
             raise ValueError('启动保持增益未验收，不能执行自动停放，请确保硬件安全后失能')
         return
     if method == 'set_gravity_scale':
-        # Existing Machine accepts process-local changes only while INACTIVE
+        # Outside verification the legacy setting remains INACTIVE-only
         return
     if method == 'set_model_feedforward_mode':
         value = params.get('mode')
@@ -124,6 +150,10 @@ def verify_machine_admission(library, config, method, params, native):
         if readiness['checks'].get('bringup') != 'verified' or readiness['modes'].get('RIGID_HOLD') != 'verified':
             raise ValueError('真机检查或启动保持增益尚未通过验收，拒绝使能')
         status = native.request('status', {}, timeout=8)
+        if ((status.get('gravity_verification') or {}).get('active') is True and
+                (status.get('gravity_verification') or {}).get('phase') == 'prepared' and
+                status.get('model_feedforward_mode') == 'GRAVITY'):
+            return
         if (status.get('model_feedforward_mode') != 'NONE' and
                 readiness['checks'].get('gravity_verification') != 'verified'):
             raise ValueError('重力验证未完成，使能前请先将模型前馈设置为 NONE')
@@ -132,6 +162,12 @@ def verify_machine_admission(library, config, method, params, native):
         mode = params.get('mode')
         if mode not in readiness['modes'] or readiness['modes'][mode] != 'verified':
             raise ValueError(f'{mode} 未通过独立模式增益验收，已拒绝切换')
+        if mode == 'COMPLIANT_DRAG':
+            if status.get('robot_state') != 'ACTIVE' or status.get('model_feedforward_mode') != 'GRAVITY':
+                raise ValueError('柔性拖拽必须在 ACTIVE 且已启用重力前馈时进入')
+            values = status.get('gravity_scale') or []
+            if not values or not any(isinstance(v, (int, float)) and v > 0 for v in values):
+                raise ValueError('重力补偿未提供有效比例，禁止进入柔性拖拽')
         return
     if method in _TRACKING_MACHINE:
         if any(readiness['checks'].get(stage) != 'verified' for stage in
@@ -265,12 +301,16 @@ def main():
                     active_workbench_config = None
                     active_workbench_fingerprint = None
                 elif method == 'workbench_config_preview':
+                    if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
+                        raise ValueError('重力验证进行中不得保存临时参数')
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     runtime = native.request('get_admittance', {}, timeout=8)
                     snapshot = native.request('status', {}, timeout=8)
                     result = preview_config(info['resources']['core'], snapshot['joint_names'], runtime, snapshot['gravity_scale'])
                 elif method == 'workbench_config_save':
+                    if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
+                        raise ValueError('重力验证进行中不得保存临时参数')
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     runtime = native.request('get_admittance', {}, timeout=8)
