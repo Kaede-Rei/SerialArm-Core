@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 import copy
 import math
 import os
@@ -108,63 +110,302 @@ class ProfileLibrary:
         except ValueError:
             return profile_path.parent / '.serialarm' / 'readiness' / f'{safe}.yaml'
 
+    _STAGES = ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration',
+               'gravity_verification', 'dynamics_calibration', 'validation')
+    _MODES = ('RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD',
+              'COMPLIANT_DRAG', 'COMPLIANT_TRACKING', 'IDENTIFICATION_TRACKING')
+    _MODE_KEYS = {name: name.lower() for name in _MODES}
+
+    @staticmethod
+    def _native_file_fingerprint(path):
+        # Match the native calibration FNV-1a implementation exactly
+        hash_value = 1469598103934665603
+        with Path(path).open('rb') as stream:
+            while True:
+                block = stream.read(4096)
+                if not block: break
+                for value in block:
+                    hash_value = ((hash_value ^ value) * 1099511628211) & 0xffffffffffffffff
+        return f'{hash_value:016x}'
+
+    @staticmethod
+    def _digest(*values):
+        return hashlib.sha256(json.dumps(values, sort_keys=True, ensure_ascii=False,
+                                         separators=(',', ':'), default=str).encode()).hexdigest()
+
+    def _dependencies(self, info, core, hardware):
+        model = core.get('model') or {}
+        description_path = Path(info['resources'].get('description', ''))
+        urdf_path = (Path(info['resources']['core']).parent / model.get('urdf_path', '')).resolve()
+        def content_digest(path):
+            return _sha(path) if path.is_file() and path.is_file() else ''
+        # Scope hashes follow the actual resource dependencies rather than one global fingerprint
+        source = self._digest(info['profile'], str(info['profile_file']),
+                              content_digest(description_path), content_digest(urdf_path),
+                              model.get('joint_names'), model.get('base_frame'), model.get('tool_frame'))
+        calibration = core.get('calibration') or {}
+        runtime = (core.get('control') or {}).get('runtime') or {}
+        safety = core.get('safety_policy') or {}
+        controller = (core.get('control') or {}).get('controller') or {}
+        shutdown = core.get('shutdown') or {}
+        capability = core.get('capability') or {}
+        hardware_hash = self._digest(info.get('hardware_plugin'), hardware, info.get('devices'))
+        model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path')}
+        model_hash = self._digest(source, model_chain)
+        startup_hash = self._digest(model_hash, hardware_hash, runtime, safety, shutdown,
+                                    controller.get('rigid_hold'))
+        mapping_hash = self._digest(source, hardware_hash, calibration)
+        geometry_hash = self._digest(source, calibration)
+        correction_path = model.get('gravity_correction_path') or ''
+        correction_sha = content_digest((Path(info['resources']['core']).parent / correction_path).resolve()) if correction_path else ''
+        gravity_hash = self._digest(geometry_hash, model.get('gravity'), model.get('gravity_scale'),
+                                    model.get('gravity_correction_path'), correction_sha, hardware_hash, runtime, safety,
+                                    controller.get('compliant_drag'), controller.get('rigid_hold'))
+        dynamics_hash = self._digest(gravity_hash, controller, capability)
+        scopes = {
+            'model_check': model_hash, 'bringup': self._digest(hardware_hash, runtime, safety),
+            'mapping_calibration': mapping_hash, 'geometry_calibration': geometry_hash,
+            'gravity_verification': gravity_hash, 'dynamics_calibration': dynamics_hash,
+            'validation': self._digest(geometry_hash, gravity_hash, safety, shutdown,
+                                       controller.get('rigid_hold'), controller.get('rigid_tracking')),
+            'startup_hold': startup_hash,
+        }
+        scopes['modes'] = {name: self._digest(model_hash, hardware_hash, calibration, runtime, safety, shutdown,
+            model.get('gravity'), model.get('gravity_scale'), model.get('gravity_correction_path'),
+            controller.get(self._MODE_KEYS[name]),
+            controller.get('rigid_tracking') if name == 'COMPLIANT_TRACKING' else None)
+            for name in self._MODES}
+        return scopes
+
+    def _readiness_meta(self, info):
+        path = self._readiness_path(info['profile_file'], info['profile'])
+        try:
+            meta = yaml.safe_load(path.read_text()) if path.is_file() else {}
+        except (OSError, yaml.YAMLError):
+            meta = {}
+        return path, meta if isinstance(meta, dict) else {}
+
     def _readiness(self, config):
         try:
             info = self.inspector.inspect(config)
         except Exception as error:
-            return {'state':'configuring','next_stage':'profile_setup','checks':{},'reason':str(error),'fingerprint':''}
+            return {'state': 'configuring', 'next_stage': 'profile_setup', 'checks': {},
+                    'modes': {}, 'reason': str(error), 'fingerprint': ''}
         checks = {item['name']: bool(item['ok']) for item in info.get('checks', [])}
-        profile_setup = all(checks.get(k, False) for k in ('core','description','hardware')) and bool(info.get('hardware_plugin'))
         core = read_yaml(info['resources']['core']) if checks.get('core') else {}
-        model = core.get('model') or {}; safety = core.get('safety_policy') or {}
+        hardware = read_yaml(info['resources']['hardware']) if checks.get('hardware') else {}
+        model = core.get('model') or {}
         joints = model.get('joint_names') or []
-        profile_setup = profile_setup and bool(joints) and bool(model.get('base_frame')) and bool(model.get('tool_frame'))
-        if profile_setup and info.get('hardware_plugin') == 'serial_arm_hardware_damiao':
-            hardware = read_yaml(info['resources']['hardware'])
+        profile_setup = all(checks.get(k, False) for k in ('core', 'description', 'hardware'))
+        profile_setup &= bool(info.get('hardware_plugin') and joints and model.get('base_frame') and model.get('tool_frame'))
+        if profile_setup and info['hardware_plugin'] == 'serial_arm_hardware_damiao':
             damiao = hardware.get('damiao') or {}
             acts = damiao.get('actuators') or {}
             buses = hardware.get('buses') or {}
-            ids = [a.get('motor_id') for a in acts.values() if isinstance(a,dict)]
+            ids = [a.get('motor_id') for a in acts.values() if isinstance(a, dict)]
             profile_setup = (set(acts) == set(joints) and bool(damiao.get('bus') in buses)
-                and all(isinstance(a,dict) and a.get('motor_type') and isinstance(a.get('motor_id'),int)
+                and all(isinstance(a, dict) and a.get('motor_type') and
+                    isinstance(a.get('motor_id'), int) and not isinstance(a.get('motor_id'), bool)
                     and a['motor_id'] > 0 for a in acts.values()) and len(set(ids)) == len(joints))
-        gravity_valid = bool(((safety.get('fault_recovery') or {}).get('gravity_model_validated')))
-        meta_path = self._readiness_path(info['profile_file'], info['profile'])
-        meta = yaml.safe_load(meta_path.read_text()) if meta_path.is_file() else {}
-        stages = meta.get('stages') if isinstance(meta, dict) else {}
-        if not isinstance(stages, dict): stages = {}
-        fingerprint = info['fingerprint']
-        def evidence(name):
-            item = stages.get(name) or {}
-            if not isinstance(item, dict) or not item.get('confirmed'): return 'pending'
-            return 'verified' if item.get('fingerprint') == fingerprint else 'stale'
-        result = {
+        reason = ''
+        if profile_setup:
+            try:
+                entry = (read_yaml(info['profile_file']).get('profiles') or {})[info['profile']]
+                self._validate_core_profile(core, hardware, entry, Path(info['resources']['core']), core)
+            except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
+                profile_setup = False
+                reason = str(error)
+        scopes = self._dependencies(info, core, hardware) if checks.get('core') else {}
+        _, meta = self._readiness_meta(info)
+        stages = meta.get('stages') or {}
+        modes = meta.get('modes') or {}
+        def status(item, scope):
+            if not isinstance(item, dict) or item.get('result') != 'passed': return 'pending'
+            if item.get('scope') != scope: return 'stale'
+            candidate_path = item.get('candidate_path')
+            if candidate_path:
+                path = Path(candidate_path)
+                if not path.is_file() or _sha(path) != item.get('candidate_sha256'):
+                    return 'stale'
+            return 'verified'
+        values = {
             'description': 'verified' if checks.get('description') and checks.get('core') else 'failed',
             'profile_setup': 'verified' if profile_setup else 'pending',
-            'model_check': evidence('model_check'),
-            'bringup': evidence('bringup'),
-            'mapping_calibration': evidence('mapping_calibration'),
-            'geometry_calibration': evidence('geometry_calibration'),
-            'dynamics_calibration': 'verified' if gravity_valid else evidence('dynamics_calibration'),
-            'validation': evidence('validation'),
         }
-        required = ['description','profile_setup','model_check','bringup','mapping_calibration','geometry_calibration','dynamics_calibration','validation']
-        stale = any(result[x] == 'stale' for x in required)
-        missing = [x for x in required if result[x] not in ('verified',)]
+        deps = {
+            'model_check': ('description', 'profile_setup'),
+            'bringup': ('model_check',),
+            'mapping_calibration': ('bringup',),
+            'geometry_calibration': ('mapping_calibration',),
+            'gravity_verification': ('geometry_calibration',),
+            'dynamics_calibration': ('gravity_verification',),
+            'validation': ('dynamics_calibration',),
+        }
+        for key in self._STAGES:
+            own = status(stages.get(key), scopes.get(key))
+            values[key] = own if own != 'verified' or all(values.get(d) == 'verified' for d in deps[key]) else 'blocked'
+        hold = status(modes.get('RIGID_HOLD'), scopes.get('startup_hold'))
+        if hold == 'verified' and values['bringup'] != 'verified': hold = 'blocked'
+        mode_states = {}
+        controller = (core.get('control') or {}).get('controller') or {}
+        safety = core.get('safety_policy') or {}
+        for name in self._MODES:
+            key = self._MODE_KEYS[name]
+            gains = controller.get(key) or {}
+            valid = (bool(joints) and all(
+                isinstance(gains.get(axis), dict) and set(gains[axis]) == set(joints)
+                and all(isinstance(gains[axis][j], (int, float)) and not isinstance(gains[axis][j], bool)
+                        and math.isfinite(gains[axis][j]) and gains[axis][j] >= 0 and
+                        gains[axis][j] <= (safety.get('max_' + axis + '_override') or {}).get(j, float('inf'))
+                        for j in joints) for axis in ('kp', 'kd')))
+            if name == 'RIGID_HOLD': valid = valid and all(gains['kp'][j] > 0 and gains['kd'][j] > 0 for j in joints) if valid else False
+            if name == 'COMPLIANT_DRAG': valid = valid and all(gains['kd'][j] > 0 for j in joints) if valid else False
+            scope = scopes.get('startup_hold') if name == 'RIGID_HOLD' else (scopes.get('modes') or {}).get(name)
+            own = status(modes.get(name), scope)
+            prerequisites = ('bringup',) if name == 'RIGID_HOLD' else (
+                'gravity_verification',) if name == 'COMPLIANT_DRAG' else (
+                'gravity_verification',)
+            if not valid: own = 'unconfigured'
+            elif own == 'verified' and any(values.get(stage) != 'verified' for stage in prerequisites): own = 'blocked'
+            mode_states[name] = own
+        # Dynamic calibration is an actual validated result, not a generic operator checkbox
+        if values['dynamics_calibration'] == 'pending' and any(mode_states.get(n) == 'verified' for n in ('RIGID_TRACKING','COMPLIANT_TRACKING')):
+            values['dynamics_calibration'] = 'verified'
+        # Re-evaluate the final dependency after processing validated mode evidence
+        if values['validation'] == 'blocked' and status(stages.get('validation'), scopes.get('validation')) == 'verified' and values['dynamics_calibration'] == 'verified':
+            values['validation'] = 'verified'
+        # Validation additionally requires a separately verified tracking mode
+        if values['validation'] == 'verified' and mode_states.get('RIGID_TRACKING') != 'verified':
+            values['validation'] = 'blocked'
+        required = ('description', 'profile_setup', *self._STAGES)
+        missing = [k for k in required if values[k] != 'verified']
+        stale = any(v == 'stale' for v in list(values.values()) + list(mode_states.values()))
         if not profile_setup: state = 'configuring'
         elif stale: state = 'needs_revalidation'
-        elif not missing: state = 'ready'
+        elif not missing and mode_states['RIGID_HOLD'] == mode_states['RIGID_TRACKING'] == 'verified': state = 'ready'
+        elif mode_states.get('RIGID_TRACKING') == 'verified': state = 'control_partial'
+        elif mode_states.get('COMPLIANT_DRAG') == 'verified': state = 'drag_ready'
         else: state = 'pending_validation'
-        return {'state':state,'next_stage':missing[0] if missing else 'ready','checks':result,'reason':'','fingerprint':fingerprint,'info':info}
+        return {'state': state, 'next_stage': missing[0] if missing else 'ready', 'checks': values,
+                'modes': mode_states, 'reason': reason, 'fingerprint': info['fingerprint'], 'info': info,
+                'source_trusted': str(info['profile_file']).startswith(str(self.root / 'src/robot_supports/profiles')),
+                'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', '')}
+                             for k, v in stages.items() if isinstance(v, dict)}}
 
     def _builtin_readiness(self, config):
-        readiness = self._readiness(config)
-        if not readiness.get('info'):
-            return readiness
-        checks = {stage: 'verified' for stage in (
-            'description', 'profile_setup', 'model_check', 'bringup',
-            'mapping_calibration', 'geometry_calibration', 'dynamics_calibration', 'validation')}
-        return {**readiness, 'state':'ready', 'next_stage':'ready', 'checks':checks, 'reason':''}
+        # A bundled configuration is trusted as a source, never as proof of this machine's tests
+        return self._readiness(config)
+
+    def record_stage(self, config, stage, answers, native=None):
+        if stage not in ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration', 'validation', 'startup_hold'):
+            raise ValueError('当前阶段尚无可记录的验收流程')
+        if not isinstance(answers, dict): raise ValueError('验收数据必须是对象')
+        info = self.inspector.inspect(config)
+        current = self._readiness(config)
+        if current['checks'].get('profile_setup') != 'verified': raise ValueError('请先完成 Profile 配置')
+        requirements = {
+            'model_check': ('chain', 'limits', 'inertial'),
+            'bringup': ('connection',),
+            'startup_hold': ('hold_gains', 'supported', 'emergency_stop'),
+            'mapping_calibration': ('joint_ids', 'directions', 'offsets'),
+            'geometry_calibration': ('frames', 'zero_pose', 'tool_pose'),
+            'validation': ('tracking', 'stopping', 'faults'),
+        }
+        if any(answers.get(k) is not True for k in requirements[stage]):
+            raise ValueError('验收检查项尚未全部确认')
+        note = str(answers.get('note') or '').strip()
+        if len(note) < 12 or len(note) > 600:
+            raise ValueError('请填写至少 12 字的实际检查记录，注明观察结果')
+        prerequisites = {
+            'model_check': ('profile_setup',), 'bringup': ('model_check',),
+            'startup_hold': ('bringup',), 'mapping_calibration': ('bringup',),
+            'geometry_calibration': ('mapping_calibration',),
+            'validation': ('dynamics_calibration',),
+        }
+        for needed in prerequisites[stage]:
+            if current['checks'].get(needed) != 'verified':
+                raise ValueError(f'请先完成 {needed} 的验收')
+        if stage in ('mapping_calibration', 'geometry_calibration') and current['modes'].get('RIGID_HOLD') != 'verified':
+            raise ValueError('请先检查并验证启动保持增益')
+        if stage == 'validation' and current['modes'].get('RIGID_TRACKING') != 'verified':
+            raise ValueError('尚无通过质量验证的刚性跟踪增益')
+        sample = None
+        if stage != 'model_check':
+            if not native or native.status().get('state') != 'running':
+                raise ValueError('当前验收必须连接真实工作台并获得实时硬件反馈')
+            if info['write_enabled'] is False:
+                raise ValueError('当前 Profile 的执行器写入未启用，无法形成真机证据')
+            sample = native.request('status', {}, timeout=8)
+            if (sample.get('robot_state') not in ('ACTIVE', 'INACTIVE') or
+                (sample.get('fault') or {}).get('code') not in (None, '', 'NONE', 'OK') or
+                sample.get('joint_names') != (read_yaml(info['resources']['core']).get('model') or {}).get('joint_names')):
+                raise ValueError('运行状态、故障或关节反馈不满足验收条件')
+            if stage in ('mapping_calibration', 'geometry_calibration', 'validation'):
+                if sample['robot_state'] != 'ACTIVE':
+                    raise ValueError('需要在受控 ACTIVE 状态下完成对应实际操作并检查反馈')
+                age = sample.get('feedback_age_ms')
+                if not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0 or age > 250 or sample.get('sequence', 0) < 1:
+                    raise ValueError('实时反馈已过期或没有有效控制周期，不能记录验收')
+            if stage in ('bringup', 'startup_hold'):
+                if sample['robot_state'] != 'INACTIVE':
+                    raise ValueError('请先进入 INACTIVE 状态完成连接与启动保持检查')
+                if len(sample.get('actuator_info') or []) != len((read_yaml(info['resources']['core']).get('model') or {}).get('joint_names') or []):
+                    raise ValueError('未能核对所有执行器的硬件能力信息')
+        core = read_yaml(info['resources']['core'])
+        hw = read_yaml(info['resources']['hardware'])
+        scopes = self._dependencies(info, core, hw)
+        path, data = self._readiness_meta(info)
+        field = 'modes' if stage == 'startup_hold' else 'stages'
+        key = 'RIGID_HOLD' if stage == 'startup_hold' else stage
+        data.setdefault(field, {})[key] = {
+            'result': 'passed', 'scope': scopes[stage], 'kind': 'operator_and_live' if sample else 'operator_model_review',
+            'note': note, 'observations': {k: True for k in requirements[stage]},
+            'recorded_at': time.time(),
+            'runtime': {'robot_state': sample.get('robot_state'), 'joint_names': sample.get('joint_names')}
+                       if sample else {},
+        }
+        _atomic_yaml(path, data)
+        return self._readiness(config)
+
+    def approve_gain_mode(self, config, mode, path, native=None):
+        if mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
+            raise ValueError('该模式尚无可用的独立增益验收流程')
+        current = self._readiness(config)
+        if current['checks'].get('gravity_verification') != 'verified':
+            raise ValueError('先完成独立的重力补偿验证')
+        if current['modes'].get('RIGID_HOLD') != 'verified':
+            raise ValueError('启动保持模式未通过验收')
+        info = self.inspector.inspect(config)
+        from workflow_registry import prepare_gain_candidate
+        candidate_info = prepare_gain_candidate(str(Path(path).expanduser().resolve().parent))
+        candidate_path = Path(candidate_info['candidate_path'])
+        candidate = json.loads(candidate_path.read_text())
+        targets = candidate.get('targets') or {}
+        target = mode.lower()
+        selected = targets.get(target) if candidate.get('category') == 'all' else candidate if candidate.get('category') == target else None
+        if not isinstance(selected, dict) or selected.get('validated', True) is not True:
+            raise ValueError('候选中没有经独立验证的对应控制模式')
+        core = read_yaml(info['resources']['core']); hw = read_yaml(info['resources']['hardware'])
+        urdf_path = (Path(info['resources']['core']).parent / core['model']['urdf_path']).resolve()
+        if not urdf_path.is_file() or candidate.get('urdf_fingerprint') != self._native_file_fingerprint(urdf_path):
+            raise ValueError('增益验收候选与当前 URDF 不一致')
+        joints = core['model']['joint_names']
+        gains = core['control']['controller'][target]
+        for axis in ('kp', 'kd'):
+            vector = selected.get(axis)
+            if not isinstance(vector, list) or len(vector) != len(joints):
+                raise ValueError('候选参数的关节维度不一致')
+            if any(abs(gains[axis][joint] - float(value)) > 1e-5 for joint, value in zip(joints, vector)):
+                raise ValueError('当前 Core 增益与通过验证的候选不一致，请先保存已验证增益')
+        scopes = self._dependencies(info, core, hw)
+        meta_path, meta = self._readiness_meta(info)
+        meta.setdefault('modes', {})[mode] = {
+            'result': 'passed', 'scope': scopes['modes'][mode], 'kind': 'validated_gain_candidate',
+            'candidate_sha256': _sha(candidate_path), 'candidate_path': str(candidate_path), 'note': '增益候选已通过独立验证且与当前 Core 增益一致',
+            'recorded_at': time.time(),
+        }
+        _atomic_yaml(meta_path, meta)
+        return self._readiness(config)
 
     def list(self):
         data = self._library_data(); items=[]
@@ -354,14 +595,7 @@ class ProfileLibrary:
         return {'package':str(package_dir),'profile_file':str(profile_file),'profile':profile,'resource_paths':str(package_dir),'hardware_complete':complete,'config':{'profile':profile,'profile_file':str(profile_file),'resource_paths':str(package_dir),'serial_port':'','baudrate':'','bus':''}}
 
     def mark_stage(self, config, stage, confirmed=True):
-        allowed={'model_check','bringup','mapping_calibration','geometry_calibration','dynamics_calibration','validation'}
-        if stage not in allowed: raise ValueError('unknown readiness stage')
-        info=self.inspector.inspect(config); path=self._readiness_path(info['profile_file'], info['profile']); data=yaml.safe_load(path.read_text()) if path.is_file() else {}
-        if not isinstance(data,dict):
-            data={}
-        stages=data.setdefault('stages',{})
-        stages[stage]={'confirmed':bool(confirmed),'fingerprint':info['fingerprint'] if confirmed else ''}
-        _atomic_yaml(path,data); return self._readiness(config)
+        raise ValueError('已停用单击确认，请使用带观察记录和运行证据的阶段验收')
 
     def _profile_config_paths(self, config):
         info = self.inspector.inspect(config)

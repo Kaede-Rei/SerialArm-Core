@@ -457,3 +457,5 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 
 .description-head-actions{justify-content:flex-end;flex-shrink:0}
 @media(max-width:720px){.page-head:has(.description-head-actions){align-items:flex-start;flex-wrap:wrap}.description-head-actions{width:100%;justify-content:flex-start}}
+
+.mode-admission{margin-top:18px}.mode-admission-row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid var(--line)}.mode-admission-row:last-of-type{border-bottom:0}.mode-admission-row code{overflow-wrap:anywhere}.readiness-review-items{display:grid;gap:12px;margin:16px 0}.readiness-review-items label{display:flex;align-items:flex-start;gap:10px}.readiness-review-items input{margin-top:4px}.lifecycle-step.blocked .stage-dot,.lifecycle-step.unconfigured .stage-dot{background:var(--muted)}
