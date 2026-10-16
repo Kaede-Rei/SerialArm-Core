@@ -11,10 +11,16 @@ const decode = value => {
   return bytes.buffer;
 };
 
-const euler = rpy => new THREE.Euler(rpy?.[0] || 0, rpy?.[1] || 0, rpy?.[2] || 0, 'XYZ');
+// URDF RPY is a fixed-axis rotation Rz(yaw) * Ry(pitch) * Rx(roll)
+const originQuaternion = rpy => {
+  const [roll, pitch, yaw] = rpy || [0, 0, 0];
+  return new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), yaw)
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), pitch))
+    .multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), roll));
+};
 const originMatrix = origin => new THREE.Matrix4().compose(
   new THREE.Vector3(...(origin?.xyz || [0, 0, 0])),
-  new THREE.Quaternion().setFromEuler(euler(origin?.rpy || [0, 0, 0])),
+  originQuaternion(origin?.rpy),
   new THREE.Vector3(1, 1, 1),
 );
 const frameMatrix = frame => new THREE.Matrix4().compose(
@@ -96,7 +102,8 @@ export class SerialArmModelView {
     this.grid = new THREE.GridHelper(2.5, 25, 0x6b7280, 0x343841); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
     this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
     this.comGroup = new THREE.Group(); this.root.add(this.comGroup);
-    this.layers = {visual:true, collision:false, linkFrames:true, jointAxes:true, com:true, inertia:true, labels:true};
+    this.layers = {visual:true, collision:false, linkFrames:false, jointAxes:true, com:false, inertia:false, labels:false};
+    this.inertiaSource = 'urdf';
     this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
     this.running = true; this.animate();
   }
@@ -200,26 +207,31 @@ export class SerialArmModelView {
     const label=this.makeLabel(joint.name,[0,0,0]); label.userData.ownerKind='joints'; label.userData.ownerName=joint.name; label.position.copy(position).add(new THREE.Vector3(0.025,0.025,0.025)); this.root.add(label); this.jointAxes.push({joint,arrow,origin,label});
   }
 
-  jointTransform(joint,frames) {
-    const parent=frames.get(joint.parent);
-    if(!parent && joint.parent)return null;
-    return (parent?frameMatrix(parent):new THREE.Matrix4()).multiply(originMatrix(joint.origin));
+  jointTransform(joint, frames) {
+    // In URDF the child link frame coincides with its joint frame after motion
+    // A static parent * joint origin transform loses revolute and prismatic motion
+    const child = frames.get(joint.child);
+    if (child) return frameMatrix(child);
+    const jointFrame = frames.get(joint.name);
+    if (jointFrame) return frameMatrix(jointFrame);
+    // Without live frame data, never misplace an inertial body on a moving joint
+    if (['revolute', 'continuous', 'prismatic', 'planar', 'floating'].includes(joint.type)) return null;
+    const parent = frames.get(joint.parent);
+    if (!parent && joint.parent) return null;
+    return (parent ? frameMatrix(parent) : new THREE.Matrix4()).multiply(originMatrix(joint.origin));
   }
 
   addInertia(group, inertial) {
     const xyz=inertial.origin?.xyz||[0,0,0];
     const lineGeometry=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(...xyz)]);
-    const line=new THREE.Line(lineGeometry,new THREE.LineBasicMaterial({color:0xff4f87,transparent:true,opacity:0.95,depthTest:false})); line.userData.layer='com'; group.add(line);
+    const line=new THREE.Line(lineGeometry,new THREE.LineBasicMaterial({color:0xff4f87,transparent:true,opacity:0.95,depthTest:false})); line.userData.layer='com'; line.userData.inertiaKind='raw'; group.add(line);
     const local=new THREE.Group(); local.userData.inertiaKind='raw'; local.matrix.copy(originMatrix(inertial.origin)); local.matrixAutoUpdate=false;
-    const inertialAxes=new THREE.AxesHelper(0.085); inertialAxes.userData.layer='inertia'; inertialAxes.userData.inertiaFrame='urdf'; local.add(inertialAxes);
-    const point=new THREE.Mesh(new THREE.SphereGeometry(0.018,20,14),new THREE.MeshBasicMaterial({color:0xff4f87,depthTest:false})); point.userData.layer='com'; local.add(point);
-    const halo=new THREE.Mesh(new THREE.RingGeometry(0.024,0.03,24),new THREE.MeshBasicMaterial({color:0xff4f87,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthTest:false})); halo.userData.layer='com'; local.add(halo);
+    const point=new THREE.Mesh(new THREE.SphereGeometry(0.009,20,14),new THREE.MeshBasicMaterial({color:0xff4f87,depthTest:false})); point.userData.layer='com'; local.add(point);
+    const halo=new THREE.Mesh(new THREE.RingGeometry(0.012,0.015,24),new THREE.MeshBasicMaterial({color:0xff4f87,side:THREE.DoubleSide,transparent:true,opacity:0.9,depthTest:false})); halo.userData.layer='com'; local.add(halo);
     const shape=inertiaShape(inertial);
     if(shape){
-      const max=Math.max(...shape.radii),scale=max>0?Math.min(0.16/max,1):1;
-      const ellipsoid=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),new THREE.MeshBasicMaterial({color:0xff4f87,wireframe:true,transparent:true,opacity:0.72,depthTest:false}));
-      ellipsoid.scale.set(shape.radii[0]*scale,shape.radii[1]*scale,shape.radii[2]*scale); ellipsoid.applyMatrix4(shape.rotation); ellipsoid.userData.layer='inertia'; local.add(ellipsoid);
-      const principal=new THREE.AxesHelper(0.11); principal.applyMatrix4(shape.rotation); principal.userData.layer='inertia'; principal.userData.inertiaFrame='principal'; local.add(principal);
+      const ellipsoid=new THREE.Mesh(new THREE.SphereGeometry(1,24,16),new THREE.MeshBasicMaterial({color:0xff4f87,wireframe:true,transparent:true,opacity:0.52,depthTest:false}));
+      ellipsoid.scale.set(...shape.radii); ellipsoid.applyMatrix4(shape.rotation); ellipsoid.userData.layer='inertia'; local.add(ellipsoid);
     }
     group.add(local);
   }
@@ -228,12 +240,12 @@ export class SerialArmModelView {
     const joints=new Map((payload.model?.joints||[]).map(j=>[j.name,j]));
     for(const item of payload.native?.info?.effective_inertias||[]){
       const joint=joints.get(item.joint_name); if(!joint)continue; const transform=this.jointTransform(joint,frames); if(!transform)continue;
-      const holder=new THREE.Group(); holder.userData.inertiaKind='effective'; holder.userData.ownerKind='joints'; holder.userData.ownerName=joint.name; holder.matrix.copy(transform); holder.matrixAutoUpdate=false;
+      const holder=new THREE.Group(); holder.userData.inertiaKind='effective'; holder.userData.ownerKind='links'; holder.userData.ownerName=joint.child; holder.matrix.copy(transform); holder.matrixAutoUpdate=false;
       const local=new THREE.Group(); local.position.set(...(item.center_of_mass||[0,0,0]));
       const point=new THREE.Mesh(new THREE.SphereGeometry(0.013,16,12),new THREE.MeshBasicMaterial({color:0xffb02e,depthTest:false})); point.userData.layer='com'; local.add(point);
       const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(...(item.center_of_mass||[0,0,0]))]),new THREE.LineBasicMaterial({color:0xffb02e,transparent:true,opacity:0.9,depthTest:false})); line.userData.layer='com'; holder.add(line);
       const shape=inertiaShape({valid:true,mass:item.mass,inertia:item.inertia});
-      if(shape){const max=Math.max(...shape.radii),scale=max>0?Math.min(0.18/max,1):1;const ellipsoid=new THREE.Mesh(new THREE.SphereGeometry(1,20,14),new THREE.MeshBasicMaterial({color:0xffa928,wireframe:true,transparent:true,opacity:0.28}));ellipsoid.scale.set(shape.radii[0]*scale,shape.radii[1]*scale,shape.radii[2]*scale);ellipsoid.applyMatrix4(shape.rotation);ellipsoid.userData.layer='inertia';local.add(ellipsoid);}
+      if(shape){const ellipsoid=new THREE.Mesh(new THREE.SphereGeometry(1,20,14),new THREE.MeshBasicMaterial({color:0xffa928,wireframe:true,transparent:true,opacity:0.5,depthTest:false}));ellipsoid.scale.set(...shape.radii);ellipsoid.applyMatrix4(shape.rotation);ellipsoid.userData.layer='inertia';local.add(ellipsoid);}
       holder.add(local); this.root.add(holder); this.effectiveGroups.push({joint,holder});
     }
   }
@@ -317,6 +329,12 @@ export class SerialArmModelView {
     this.refreshVisibility();
   }
 
+  setInertiaSource(source) {
+    if (!['urdf', 'core'].includes(source)) return;
+    this.inertiaSource = source;
+    this.refreshVisibility();
+  }
+
   setObjectVisible(kind,name,visible) {
     if(kind==='linkFrames') { this.setLinkFrameVisible(name,visible); return; }
     if(!this.objectVisibility[kind])return;
@@ -335,6 +353,9 @@ export class SerialArmModelView {
     this.root.traverse(node => {
       const requiredLayers=Array.isArray(node.userData?.layers) ? node.userData.layers : (node.userData?.layer ? [node.userData.layer] : []);
       let visible=requiredLayers.every(layer => !(layer in this.layers) || !!this.layers[layer]);
+      const inertiaKind=node.userData?.inertiaKind;
+      if(inertiaKind==='raw') visible=visible && this.inertiaSource==='urdf';
+      if(inertiaKind==='effective') visible=visible && this.inertiaSource==='core';
       const kind=node.userData?.ownerKind,name=node.userData?.ownerName;
       if(kind&&name&&this.objectVisibility[kind])visible=visible&&this.objectVisibility[kind].get(name)!==false;
       node.visible=visible;

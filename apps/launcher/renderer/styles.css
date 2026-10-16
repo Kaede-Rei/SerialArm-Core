@@ -488,3 +488,11 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .mode-card .mode-type.is-ready{color:var(--green)}
 .mode-card .mode-type.is-unavailable{color:var(--dim)}
 @media(max-width:780px){.workspace-provenance{flex-direction:column;gap:3px}.diagnostic-settings{padding:12px}.diagnostic-settings .grid{grid-template-columns:minmax(0,1fr)}}
+
+.inertia-source-options{display:inline-flex;align-items:center;gap:7px;padding:4px 7px;border:1px solid var(--line);border-radius:8px;background:var(--subtle);font-size:10px;flex-wrap:wrap}
+.inertia-source-options>span{color:var(--muted);white-space:nowrap}
+.inertia-source-options label{display:inline-flex;align-items:center;gap:4px;white-space:nowrap;padding:5px 7px;border-radius:6px;cursor:pointer;margin:0}
+.inertia-source-options label:has(input:checked){background:var(--tint);color:var(--accent)}
+.inertia-source-options input{accent-color:var(--accent)}
+.inertia-description{font-size:10px;line-height:1.65;color:var(--muted);margin:10px 0 0}
+.model-legend #model-com-legend{display:inline-flex;gap:4px;align-items:center}.model-legend .legend-effective{background:#ffb02e}
