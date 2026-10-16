@@ -292,4 +292,10 @@
         <axis xyz="-1 0 0" />
         <limit lower="0" upper="0.042" effort="20" velocity="0.02322" />
     </joint>
+    <link name="tip" />
+    <joint name="tip_joint" type="fixed">
+        <origin xyz="0 0 0.101" rpy="0 0 0" />
+        <parent link="tool0" />
+        <child link="tip" />
+    </joint>
 </robot>
