@@ -152,29 +152,29 @@ class ProfileLibrary:
         hardware_hash = self._digest(info.get('hardware_plugin'), hardware, info.get('devices'))
         model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path')}
         model_hash = self._digest(source, model_chain)
-        startup_hash = self._digest(model_hash, hardware_hash, runtime, safety, shutdown,
+        startup_hash = self._digest(model_hash, hardware_hash, calibration,
+                                    safety.get('max_kp_override'), safety.get('max_kd_override'),
                                     controller.get('rigid_hold'))
         mapping_hash = self._digest(source, hardware_hash, calibration)
         geometry_hash = self._digest(source, calibration)
         correction_path = model.get('gravity_correction_path') or ''
         correction_sha = content_digest((Path(info['resources']['core']).parent / correction_path).resolve()) if correction_path else ''
-        gravity_hash = self._digest(geometry_hash, model.get('gravity'), model.get('gravity_scale'),
-                                    model.get('gravity_correction_path'), correction_sha, hardware_hash, runtime, safety,
+        gravity_hash = self._digest(mapping_hash, model_hash, model.get('gravity'), model.get('gravity_scale'),
+                                    model.get('gravity_correction_path'), correction_sha,
                                     controller.get('compliant_drag'), controller.get('rigid_hold'))
-        dynamics_hash = self._digest(gravity_hash, controller, capability)
+        dynamics_hash = self._digest(model_hash, mapping_hash, model.get('gravity'),
+                                     controller.get('identification_tracking'), capability)
         scopes = {
             'model_check': model_hash, 'bringup': self._digest(hardware_hash, runtime, safety),
             'mapping_calibration': mapping_hash, 'geometry_calibration': geometry_hash,
             'gravity_verification': gravity_hash, 'dynamics_calibration': dynamics_hash,
-            'validation': self._digest(geometry_hash, gravity_hash, safety, shutdown,
+            'validation': self._digest(mapping_hash, geometry_hash, safety, shutdown,
                                        controller.get('rigid_hold'), controller.get('rigid_tracking')),
             'startup_hold': startup_hash,
         }
-        scopes['modes'] = {name: self._digest(model_hash, hardware_hash, calibration, runtime, safety, shutdown,
-            model.get('gravity'), model.get('gravity_scale'), model.get('gravity_correction_path'),
-            controller.get(self._MODE_KEYS[name]),
-            controller.get('rigid_tracking') if name == 'COMPLIANT_TRACKING' else None)
-            for name in self._MODES}
+        scopes['modes'] = {name: self._digest(model_hash, mapping_hash,
+            safety.get('max_kp_override'), safety.get('max_kd_override'),
+            controller.get(self._MODE_KEYS[name])) for name in self._MODES}
         return scopes
 
     def _readiness_meta(self, info):
@@ -184,6 +184,16 @@ class ProfileLibrary:
         except (OSError, yaml.YAMLError):
             meta = {}
         return path, meta if isinstance(meta, dict) else {}
+
+    def _is_official_profile(self, info):
+        # Identity must come from the actual built-in profile catalogue, never
+        # from a user-supplied display name or a claimed source flag
+        try:
+            catalogue = self.inspector.profiles({})
+            return (Path(info['profile_file']).resolve() == Path(catalogue['profile_file']).resolve()
+                    and info['profile'] in {item['name'] for item in catalogue['profiles']})
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
 
     def _readiness(self, config):
         try:
@@ -232,20 +242,10 @@ class ProfileLibrary:
             'description': 'verified' if checks.get('description') and checks.get('core') else 'failed',
             'profile_setup': 'verified' if profile_setup else 'pending',
         }
-        deps = {
-            'model_check': ('description', 'profile_setup'),
-            'bringup': ('model_check',),
-            'mapping_calibration': ('bringup',),
-            'geometry_calibration': ('mapping_calibration',),
-            'gravity_verification': ('geometry_calibration',),
-            'dynamics_calibration': ('gravity_verification',),
-            'validation': ('dynamics_calibration',),
-        }
+        # Independent evidence describes what was checked, not what may be opened
         for key in self._STAGES:
-            own = status(stages.get(key), scopes.get(key))
-            values[key] = own if own != 'verified' or all(values.get(d) == 'verified' for d in deps[key]) else 'blocked'
+            values[key] = status(stages.get(key), scopes.get(key))
         hold = status(modes.get('RIGID_HOLD'), scopes.get('startup_hold'))
-        if hold == 'verified' and values['bringup'] != 'verified': hold = 'blocked'
         mode_states = {}
         controller = (core.get('control') or {}).get('controller') or {}
         safety = core.get('safety_policy') or {}
@@ -258,37 +258,60 @@ class ProfileLibrary:
                         and math.isfinite(gains[axis][j]) and gains[axis][j] >= 0 and
                         gains[axis][j] <= (safety.get('max_' + axis + '_override') or {}).get(j, float('inf'))
                         for j in joints) for axis in ('kp', 'kd')))
-            if name == 'RIGID_HOLD': valid = valid and all(gains['kp'][j] > 0 and gains['kd'][j] > 0 for j in joints) if valid else False
-            if name == 'COMPLIANT_DRAG': valid = valid and all(gains['kd'][j] > 0 for j in joints) if valid else False
+            if valid and name == 'RIGID_HOLD':
+                valid = all(gains['kp'][j] > 0 and gains['kd'][j] > 0 for j in joints)
+            if valid and name == 'COMPLIANT_DRAG':
+                valid = all(gains['kd'][j] > 0 for j in joints)
             scope = scopes.get('startup_hold') if name == 'RIGID_HOLD' else (scopes.get('modes') or {}).get(name)
             own = status(modes.get(name), scope)
-            prerequisites = ('bringup',) if name == 'RIGID_HOLD' else (
-                'gravity_verification',) if name == 'COMPLIANT_DRAG' else (
-                'gravity_verification',)
-            if not valid: own = 'unconfigured'
-            elif own == 'verified' and any(values.get(stage) != 'verified' for stage in prerequisites): own = 'blocked'
-            mode_states[name] = own
-        # Dynamic calibration is an actual validated result, not a generic operator checkbox
-        if values['dynamics_calibration'] == 'pending' and any(mode_states.get(n) == 'verified' for n in ('RIGID_TRACKING','COMPLIANT_TRACKING')):
-            values['dynamics_calibration'] = 'verified'
-        # Re-evaluate the final dependency after processing validated mode evidence
-        if values['validation'] == 'blocked' and status(stages.get('validation'), scopes.get('validation')) == 'verified' and values['dynamics_calibration'] == 'verified':
-            values['validation'] = 'verified'
-        # Validation additionally requires a separately verified tracking mode
-        if values['validation'] == 'verified' and mode_states.get('RIGID_TRACKING') != 'verified':
-            values['validation'] = 'blocked'
+            mode_states[name] = own if valid and own != 'pending' else 'configured' if valid else 'unconfigured'
         required = ('description', 'profile_setup', *self._STAGES)
         missing = [k for k in required if values[k] != 'verified']
         stale = any(v == 'stale' for v in list(values.values()) + list(mode_states.values()))
-        if not profile_setup: state = 'configuring'
-        elif stale: state = 'needs_revalidation'
-        elif not missing and mode_states['RIGID_HOLD'] == mode_states['RIGID_TRACKING'] == 'verified': state = 'ready'
-        elif mode_states.get('RIGID_TRACKING') == 'verified': state = 'control_partial'
-        elif mode_states.get('COMPLIANT_DRAG') == 'verified': state = 'drag_ready'
-        else: state = 'pending_validation'
-        return {'state': state, 'next_stage': missing[0] if missing else 'ready', 'checks': values,
-                'modes': mode_states, 'reason': reason, 'fingerprint': info['fingerprint'], 'info': info,
-                'source_trusted': str(info['profile_file']).startswith(str(self.root / 'src/robot_supports/profiles')),
+        # Hardware use depends on structurally valid Core, URDF, hardware and Safety
+        # settings, not the provenance of a Profile or optional acceptance notes
+        accel = safety.get('max_acc') or {}
+        safety_configured = (isinstance(accel, dict) and set(accel) == set(joints)
+            and bool(joints) and all(isinstance(accel[j], (int, float))
+                and not isinstance(accel[j], bool) and math.isfinite(accel[j])
+                and accel[j] > 0 for j in joints))
+        values['safety_policy'] = 'verified' if safety_configured and profile_setup else 'unconfigured'
+        if profile_setup and not safety_configured:
+            profile_setup = False
+            values['profile_setup'] = 'pending'
+            reason = 'Safety 必须为各关节配置正值 max_acc，才能启用真实硬件'
+        state = 'ready' if profile_setup else 'configuring'
+        urdf_limits = {}
+        if profile_setup:
+            try:
+                urdf = (Path(info['resources']['core']).parent / model['urdf_path']).resolve()
+                joint_xml = {item.get('name'): item for item in ET.parse(urdf).getroot().findall('joint')}
+                for joint in joints:
+                    node = joint_xml.get(joint)
+                    limit = node.find('limit') if node is not None else None
+                    urdf_limits[joint] = {
+                        'lower': limit.get('lower') if limit is not None else None,
+                        'upper': limit.get('upper') if limit is not None else None,
+                        'velocity': limit.get('velocity') if limit is not None else None,
+                    }
+            except (ET.ParseError, OSError, KeyError, TypeError, ValueError):
+                urdf_limits = {}
+        safety_summary = {
+            'joint_names': joints, 'max_acc': accel if isinstance(accel, dict) else {},
+            'position_margin': safety.get('position_margin'),
+            'cmd_vel_scale': safety.get('cmd_vel_scale'),
+            'state_vel_scale': safety.get('state_vel_scale'),
+            'max_dt_s': safety.get('max_dt_s'),
+            'state_timeout_s': safety.get('state_timeout_s'),
+            'cmd_timeout_s': safety.get('cmd_timeout_s'),
+            'require_continuous_cmd': safety.get('require_continuous_cmd'),
+            'urdf_limits': urdf_limits,
+        }
+        return {'state': state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
+                'checks': values, 'modes': mode_states, 'reason': reason,
+                'fingerprint': info['fingerprint'], 'info': info,
+                'control_available': profile_setup, 'safety_summary': safety_summary,
+                'source_trusted': self._is_official_profile(info),
                 'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', '')}
                              for k, v in stages.items() if isinstance(v, dict)}}
 
@@ -302,7 +325,6 @@ class ProfileLibrary:
         if not isinstance(answers, dict): raise ValueError('验收数据必须是对象')
         info = self.inspector.inspect(config)
         current = self._readiness(config)
-        if current['checks'].get('profile_setup') != 'verified': raise ValueError('请先完成 Profile 配置')
         requirements = {
             'model_check': ('chain', 'limits', 'inertial'),
             'bringup': ('connection',),
@@ -315,22 +337,9 @@ class ProfileLibrary:
         if any(answers.get(k) is not True for k in requirements[stage]):
             raise ValueError('验收检查项尚未全部确认')
         note = str(answers.get('note') or '').strip()
-        if len(note) < 12 or len(note) > 600:
-            raise ValueError('请填写至少 12 字的实际检查记录，注明观察结果')
-        prerequisites = {
-            'model_check': ('profile_setup',), 'bringup': ('model_check',),
-            'startup_hold': ('bringup',), 'mapping_calibration': ('bringup',),
-            'geometry_calibration': ('mapping_calibration',),
-            'gravity_verification': ('geometry_calibration',),
-            'validation': ('dynamics_calibration',),
-        }
-        for needed in prerequisites[stage]:
-            if current['checks'].get(needed) != 'verified':
-                raise ValueError(f'请先完成 {needed} 的验收')
-        if stage in ('mapping_calibration', 'geometry_calibration') and current['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('请先检查并验证启动保持增益')
-        if stage == 'validation' and current['modes'].get('RIGID_TRACKING') != 'verified':
-            raise ValueError('尚无通过质量验证的刚性跟踪增益')
+        if len(note) > 600:
+            raise ValueError('检查记录不能超过 600 字')
+        # Checklists can be recorded in any order, without synthetic stage gates
         sample = None
         if stage != 'model_check':
             if not native or native.status().get('state') != 'running':
@@ -395,10 +404,6 @@ class ProfileLibrary:
         if mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
             raise ValueError('该模式尚无可用的独立增益验收流程')
         current = self._readiness(config)
-        if current['checks'].get('gravity_verification') != 'verified':
-            raise ValueError('先完成独立的重力补偿验证')
-        if current['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('启动保持模式未通过验收')
         info = self.inspector.inspect(config)
         from workflow_registry import prepare_gain_candidate
         candidate_info = prepare_gain_candidate(str(Path(path).expanduser().resolve().parent))

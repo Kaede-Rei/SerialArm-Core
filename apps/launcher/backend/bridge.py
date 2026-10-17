@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Line-delimited IPC; events and replies share stdout with serialized writes."""
 import json
+import math
 import os
 from pathlib import Path
 import signal
@@ -57,7 +58,7 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
         raise ValueError(f'{operation}进程没有返回有效 JSON') from error
 
 
-def restore_temporary_candidates_for_disconnect(native):
+def restore_temporary_candidates_for_disconnect(native, allow_park=False):
     """Park and restore process-local candidates before a normal disconnect
 
     Keep the session running if restoration cannot be verified
@@ -74,6 +75,8 @@ def restore_temporary_candidates_for_disconnect(native):
         return []
     status = native.request('status', {}, timeout=8)
     if status.get('robot_state') != 'INACTIVE':
+        if not allow_park:
+            raise ValueError('临时候选仍生效且自动停放未通过验收，请先机械支撑后失能，再撤销候选并断开')
         native.request('park', {}, timeout=120)
         status = native.request('status', {}, timeout=8)
     if status.get('robot_state') != 'INACTIVE':
@@ -92,7 +95,11 @@ _READ_ONLY_MACHINE = {
     'model_calibration_status', 'candidate_gain_status', 'candidate_gravity_status',
     'candidate_dynamics_status',
 }
-_SAFE_EXIT_MACHINE = {'deactivate'}
+_SAFE_EXIT_MACHINE = {
+    'deactivate', 'gravity_verify_stop', 'gravity_verify_cancel', 'gravity_verify_finish',
+    'model_calibration_cancel', 'model_calibration_teach_stop', 'model_calibration_pause',
+    'candidate_gain_restore', 'candidate_gravity_restore', 'candidate_dynamics_restore',
+}
 _TRACKING_MACHINE = {'move_to', 'move_relative'}
 _GRAVITY_VERIFY_MACHINE = {
     'gravity_verify_begin', 'gravity_verify_drag', 'gravity_verify_target',
@@ -101,95 +108,119 @@ _GRAVITY_VERIFY_MACHINE = {
 
 
 def verify_machine_admission(library, config, method, params, native):
-    if method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE: return
+    # Keep exit and read-only operations available even when the Profile is invalid
+    if method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE:
+        return
     readiness = library._readiness(config)
     info = readiness.get('info') or {}
-    if info.get('write_enabled') is False:
-        raise ValueError('执行器写入已关闭，当前会话不可发送硬件控制命令')
-    if readiness['checks'].get('profile_setup') != 'verified':
-        raise ValueError('Profile 配置未完成，拒绝硬件控制')
+    if info.get('write_enabled') is not True:
+        raise ValueError('当前 Profile 的硬件写入已关闭，请在参数配置中检查 write_enabled')
+    if not readiness.get('control_available'):
+        raise ValueError('Core、硬件映射或 Safety 配置无效，请先修正实际加载所需参数')
     status = native.request('status', {}, timeout=8)
+    robot_state = status.get('robot_state')
+    modes = readiness['modes']
+
+    def configured(mode):
+        return modes.get(mode) in ('configured', 'verified', 'stale')
+
+    def require_hold():
+        if not configured('RIGID_HOLD'):
+            raise ValueError('启动保持增益必须为正且不超过 Safety 上限')
+
+    def require_feedback():
+        age = status.get('feedback_age_ms')
+        fault = (status.get('fault') or {}).get('code')
+        if (robot_state != 'ACTIVE' or status.get('valid') is not True or
+            not isinstance(age, (int, float)) or isinstance(age, bool) or
+            not math.isfinite(age) or not 0 <= age <= 250 or
+            not isinstance(status.get('sequence'), int) or status['sequence'] < 1 or
+            fault not in (None, '', 'NONE', 'OK')):
+            raise ValueError('控制命令要求有效且未超时的真实反馈及无故障 ACTIVE 状态')
+
     gravity_active = (status.get('gravity_verification') or {}).get('active') is True
     if gravity_active and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
-        raise ValueError('重力验证期间由独立流程管理控制模式与临时参数')
+        raise ValueError('重力验证期间不能执行其他运动或参数调整')
     if method in _GRAVITY_VERIFY_MACHINE:
-        if any(readiness['checks'].get(stage) != 'verified' for stage in
-               ('bringup', 'mapping_calibration', 'geometry_calibration')) or readiness['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('重力验证前必须完成真机检查、映射、几何与启动保持验收')
+        require_hold()
         if method == 'gravity_verify_begin':
-            if status.get('robot_state') != 'INACTIVE' or gravity_active:
-                raise ValueError('开始验证前需要失能且不存在活动任务')
+            if robot_state != 'INACTIVE' or gravity_active:
+                raise ValueError('请在 INACTIVE 状态开始重力验证')
             overrides = native.request('candidate_overrides', {}, timeout=8)
             if any(overrides.get(k + '_applied') for k in ('gain', 'gravity', 'dynamics')):
-                raise ValueError('请先撤销所有临时标定候选')
+                raise ValueError('请先撤销临时标定候选')
         elif method not in ('gravity_verify_finish', 'gravity_verify_cancel') and not gravity_active:
-            raise ValueError('当前没有正在执行的重力验证任务')
-        return
-    if method == 'park':
-        # Parking moves the arm using the configured gains; safe emergency disable remains available
-        if readiness['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('启动保持增益未验收，不能执行自动停放，请确保硬件安全后失能')
-        return
-    if method == 'set_gravity_scale':
-        # Outside verification the legacy setting remains INACTIVE-only
-        return
-    if method == 'set_model_feedforward_mode':
-        value = params.get('mode')
-        if value == 'NONE': return
-        needed = 'gravity_verification' if value == 'GRAVITY' else 'dynamics_calibration'
-        if readiness['checks'].get(needed) != 'verified':
-            raise ValueError(f'{needed} 未验证，不能使用该模型前馈')
-        return
-    if method in ('fault_compliant',):
-        if readiness['checks'].get('gravity_verification') != 'verified':
-            raise ValueError('重力验证未完成，不允许柔性故障恢复')
-        return
-    if method in ('fault_rigid', 'hold', 'clear_fault'):
-        if readiness['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('刚性保持增益尚未通过本机验收')
+            raise ValueError('当前没有正在进行的重力验证任务')
+        # Native Machine enforces drag damping, force ramp, pose sampling and safe stop
         return
     if method == 'activate':
-        if readiness['checks'].get('bringup') != 'verified' or readiness['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('真机检查或启动保持增益尚未通过验收，拒绝使能')
-        status = native.request('status', {}, timeout=8)
-        if ((status.get('gravity_verification') or {}).get('active') is True and
-                (status.get('gravity_verification') or {}).get('phase') == 'prepared' and
-                status.get('model_feedforward_mode') == 'GRAVITY'):
-            return
-        if (status.get('model_feedforward_mode') != 'NONE' and
-                readiness['checks'].get('gravity_verification') != 'verified'):
-            raise ValueError('重力验证未完成，使能前请先将模型前馈设置为 NONE')
+        require_hold()
+        if robot_state not in ('INACTIVE', 'FAULT'):
+            raise ValueError('只允许从 INACTIVE 或可恢复的 FAULT 状态使能')
+        return
+    if method in ('hold', 'fault_rigid'):
+        require_hold()
+        return
+    if method == 'clear_fault':
+        # Native fault recovery is responsible for checking the robot state
+        return
+    if method == 'fault_compliant':
+        # Native fault recovery still checks gravity_model_validated and limits
+        return
+    if method == 'park':
+        require_feedback()
+        if not all(configured(mode) for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')):
+            raise ValueError('自动停放需要合法的刚性及柔性跟踪增益')
+        return
+    if method == 'set_model_feedforward_mode':
+        if params.get('mode') not in ('NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'):
+            raise ValueError('无效的模型前馈模式')
+        if robot_state != 'INACTIVE':
+            raise ValueError('模型前馈仅能在 INACTIVE 状态切换')
+        return
+    if method == 'set_gravity_scale':
+        if robot_state != 'INACTIVE':
+            raise ValueError('正常重力比例仅允许在 INACTIVE 状态调整')
         return
     if method == 'set_impedance_mode':
+        require_feedback()
         mode = params.get('mode')
-        if mode not in readiness['modes'] or readiness['modes'][mode] != 'verified':
-            raise ValueError(f'{mode} 未通过独立模式增益验收，已拒绝切换')
+        if not configured(mode):
+            raise ValueError('目标阻抗模式的 Kp/Kd 缺失或超过 Safety 上限')
         if mode == 'COMPLIANT_DRAG':
-            if status.get('robot_state') != 'ACTIVE' or status.get('model_feedforward_mode') != 'GRAVITY':
-                raise ValueError('柔性拖拽必须在 ACTIVE 且已启用重力前馈时进入')
-            values = status.get('gravity_scale') or []
-            if not values or not any(isinstance(v, (int, float)) and v > 0 for v in values):
-                raise ValueError('重力补偿未提供有效比例，禁止进入柔性拖拽')
+            if status.get('model_feedforward_mode') != 'GRAVITY':
+                raise ValueError('柔性拖拽需要启用 GRAVITY 前馈')
+            scales = status.get('gravity_scale') or []
+            if not scales or not any(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in scales):
+                raise ValueError('柔性拖拽需要非零的有效重力补偿')
         return
     if method in _TRACKING_MACHINE:
-        if any(readiness['checks'].get(stage) != 'verified' for stage in
-               ('mapping_calibration', 'geometry_calibration')):
-            raise ValueError('关节映射或几何校准尚未通过验证，禁止运动')
-        status = native.request('status', {}, timeout=8)
+        require_feedback()
         mode = status.get('impedance_mode')
-        if (status.get('robot_state') != 'ACTIVE' or mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')
-                or readiness['modes'].get(mode) != 'verified'):
-            raise ValueError('当前跟踪模式尚未通过验收，拒绝运动命令')
+        if mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING') or not configured(mode):
+            raise ValueError('请先进入已配置有效增益的跟踪模式')
+        speed = params.get('speed_scale', 1.0)
+        if (not isinstance(speed, (int, float)) or isinstance(speed, bool) or
+            not math.isfinite(speed) or not 0 < speed <= 1):
+            raise ValueError('运动速度比例必须在 (0,1]')
+        values = params.get('delta') if method == 'move_relative' else params.get('positions')
+        actual = (status.get('joint') or {}).get('pos') or []
+        if (not isinstance(values, list) or len(values) != len(actual) or not values or
+            not all(isinstance(x, (int, float)) and not isinstance(x, bool) and
+                math.isfinite(x) for x in values + actual)):
+            raise ValueError('运动目标维度无效或包含非有限数值')
+        # Native Core enforces applicable URDF and Safety bounds, and any enabled continuity checks
         return
-    if method.startswith(('model_calibration_', 'calibration_', 'friction_', 'candidate_',
-                          'set_admittance', 'gain_')):
-        # Calibration paths can internally switch to drag or tracking modes
-        if (readiness['checks'].get('gravity_verification') != 'verified' or
-                readiness['modes'].get('RIGID_HOLD') != 'verified'):
-            raise ValueError('当前标定动作需要先完成启动保持与重力验证')
+    if method == 'set_admittance':
+        require_feedback()
+        if status.get('impedance_mode') == 'COMPLIANT_DRAG':
+            raise ValueError('柔性拖拽时不允许修改导纳运行参数')
         return
-    if readiness['state'] != 'ready':
-        raise ValueError('控制方法缺少当前 Profile 对应的后端验收，拒绝执行')
+    if method.startswith(('model_calibration_', 'candidate_', 'calibration_',
+                          'friction_', 'gain_')):
+        # Leave native calibration state machine and parameter verification intact
+        return
+    raise ValueError('未知的硬件控制方法')
 
 
 def emit(data):
@@ -292,8 +323,6 @@ def main():
                     if not info['available'].get('workbench'): raise ValueError('structured workspace is unavailable; install Standalone terminal components')
                     admission = profile_library._readiness(config)
                     if admission['checks'].get('profile_setup') != 'verified': raise ValueError('请先完成硬件与 Profile 配置')
-                    if info['write_enabled'] is not False and admission['checks'].get('model_check') != 'verified':
-                        raise ValueError('请先完成模型检查，再接入真实硬件')
                     if params.get('fingerprint') != info['fingerprint']: raise ValueError('configuration changed; inspect and confirm again')
                     if info['write_enabled'] is not False:
                         if params.get('confirmed') is not True: raise ValueError('real hardware confirmation is required')
@@ -326,6 +355,13 @@ def main():
                     # When safe parking or restoration fails keep the session alive
                     force = params.get('force') is True
                     if not force and native.status().get('state') == 'running':
+                        admission = profile_library._readiness(active_workbench_config) if active_workbench_config else {}
+                        safe_park = (admission.get('control_available') is True and
+                            all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
+                                for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
+                        state_before = native.request('status', {}, timeout=8)
+                        if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
+                            raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
                         restore_temporary_candidates_for_disconnect(native)
                     result = native.stop(force)
                     active_workbench_config = None
@@ -510,8 +546,10 @@ def main():
                     if not info['available'].get(mode): raise ValueError('selected run mode is unavailable; inspect installation and resources')
                     if params.get('fingerprint') != info['fingerprint']: raise ValueError('configuration changed; inspect and confirm again')
                     if params.get('confirmed') is not True: raise ValueError('real hardware confirmation is required')
-                    if info['write_enabled'] is not False and profile_library._readiness(config)['state'] != 'ready':
-                        raise ValueError('当前 Profile 未获得完整控制验收，请使用受限制的控制工作台完成验证')
+                    if info['write_enabled'] is not False:
+                        admission = profile_library._readiness(config)
+                        if not admission.get('control_available'):
+                            raise ValueError('真实硬件控制需要完整有效的 Core、硬件映射与 Safety 参数')
                     if any(not c['ok'] for c in info['checks'] if c['name'] == 'device'):
                         raise ValueError('device is missing or not readable/writable')
                     config['profile_file'] = info['profile_file']
