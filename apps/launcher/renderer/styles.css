@@ -496,3 +496,16 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .inertia-source-options input{accent-color:var(--accent)}
 .inertia-description{font-size:10px;line-height:1.65;color:var(--muted);margin:10px 0 0}
 .model-legend #model-com-legend{display:inline-flex;gap:4px;align-items:center}.model-legend .legend-effective{background:#ffb02e}
+
+/* Capability workspace uses saved Profile metadata and live session state separately */
+.capability-workspace{gap:14px}
+.capability-overview .workspace-section-head{align-items:start;gap:12px}
+.capability-overview .workspace-section-head .readiness-chip{flex-shrink:0;white-space:nowrap}
+.capability-overview .kv{grid-template-columns:minmax(95px,130px) minmax(0,1fr)}
+.capability-overview .kv dd{overflow-wrap:anywhere}
+.capability-saved-summary{margin:12px 0;padding:10px 12px;border:1px solid var(--line);background:var(--subtle);border-radius:9px;font-size:11px;color:var(--muted);line-height:1.8;overflow-wrap:anywhere}
+.capability-tune-table{min-width:610px}
+.capability-tune-table .workspace-number{width:86px;min-width:0}
+.capability-runtime .workspace-section-head{gap:14px;flex-wrap:wrap}
+.capability-runtime .parameter-guidance{margin-top:8px}
+@media(max-width:760px){.capability-overview .workspace-section-head{flex-wrap:wrap}.capability-overview .kv{grid-template-columns:minmax(100px,.8fr) minmax(0,1fr)}}
