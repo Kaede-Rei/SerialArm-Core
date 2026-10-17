@@ -7,6 +7,7 @@ import signal
 import sys
 import subprocess
 import threading
+import time
 
 from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
@@ -14,6 +15,7 @@ from machine import NativeSession
 from model_runtime import ModelRuntime
 from persistence import (export_friction_candidate, export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 from profile_library import ProfileLibrary
+from tcp_calibration import TcpCalibration
 from model_calibration_alignment import compare_calibration_urdfs
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -202,6 +204,7 @@ def main():
     native = NativeSession(emit, lock_dir)
     model_runtime = ModelRuntime()
     profile_library = ProfileLibrary(ROOT, inspector)
+    tcp_calibration = TcpCalibration(profile_library)
     active_workbench_config = None
     active_workbench_fingerprint = None
     emit({'event': 'backend_ready'})
@@ -249,6 +252,33 @@ def main():
                             target_info['resources'] != active_info['resources']):
                             raise ValueError('验收 Profile 与当前真实控制会话不一致')
                     result = profile_library.record_stage(target, stage, params.get('answers', {}), native)
+                elif method.startswith('tcp_'):
+                    config = config_values(params.get('config', {}))
+                    if method in ('tcp_begin', 'tcp_capture'):
+                        if not active_workbench_config or native.status().get('state') != 'running':
+                            if method not in ('tcp_apply', 'tcp_discard'):
+                                raise ValueError('请先连接对应 Profile 的真机控制工作台')
+                        else:
+                            target_info = inspector.inspect(config)
+                            active_info = inspector.inspect(active_workbench_config)
+                            if (target_info['fingerprint'] != active_workbench_fingerprint or
+                                active_info['fingerprint'] != active_workbench_fingerprint or
+                                target_info['profile_file'] != active_info['profile_file'] or
+                                target_info['profile'] != active_info['profile']):
+                                raise ValueError('TCP 标定所用 Profile 与当前真机会话不一致')
+                    if method == 'tcp_state': result = tcp_calibration.state(config)
+                    elif method == 'tcp_begin': result = tcp_calibration.begin(config, str(params.get('frame') or ''))
+                    elif method == 'tcp_capture':
+                        before = native.request('status', {}, timeout=8)
+                        time.sleep(0.32)
+                        telemetry = native.request('status', {}, timeout=8)
+                        result = tcp_calibration.capture(config, params.get('phase'), telemetry, previous=before)
+                    elif method == 'tcp_solve': result = tcp_calibration.solve(config)
+                    elif method == 'tcp_validate': result = tcp_calibration.validate(config, params.get('rms_limit_mm', 1), params.get('max_limit_mm', 2))
+                    elif method == 'tcp_export': result = tcp_calibration.export(config)
+                    elif method == 'tcp_apply': result = tcp_calibration.apply(config, native_running=native.status().get('state') == 'running')
+                    elif method == 'tcp_discard': result = tcp_calibration.discard(config)
+                    else: raise ValueError('未知 TCP 标定操作')
                 elif method == 'readiness_approve_mode': result = profile_library.approve_gain_mode(config_values(params.get('config', {})), params.get('mode', ''), params.get('candidate_path', ''), native)
                 elif method == 'profile_editor_load': result = profile_library.profile_editor_load(config_values(params.get('config', params)))
                 elif method == 'profile_editor_save': result = profile_library.profile_editor_save(config_values(params.get('config', {})), params.get('payload', {}))

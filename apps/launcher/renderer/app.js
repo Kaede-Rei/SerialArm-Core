@@ -40,6 +40,7 @@ const words = {
     baseFrame: ['Base Frame', 'Base Frame'], toolFrame: ['Tool Frame', 'Tool Frame'], controlledJoints: ['受控关节', 'Controlled joints'], profileId: ['Profile 标识', 'Profile id'], destination: ['保存位置', 'Destination'], chooseDirectory: ['选择目录', 'Choose directory'],
     actuatorName: ['执行器名称', 'Actuator name'], motorId: ['Motor ID', 'Motor ID'], masterId: ['Master ID', 'Master ID'], motorType: ['电机型号', 'Motor type'], hardwareDriver: ['Hardware Driver', 'Hardware Driver'],
     gravityStage: ['重力补偿验证', 'Gravity verification'],
+    tcpNav: ['TCP 标定与针尖验证', 'TCP calibration and tip validation'], tcpDesc: ['固定点多姿态求解 TCP 平移，并通过新的接触姿态独立验证', 'Estimate the TCP translation from fixed-point poses and validate using new independent poses'],
     readiness: ['机械臂准备状态', 'Manipulator readiness'], readinessDesc: ['按机械臂生命周期完成检查、校准、标定与验证', 'Complete inspection, calibration, and validation along the manipulator lifecycle'], nextStep: ['下一步', 'Next step'], confirmStage: ['确认当前阶段完成', 'Confirm current stage'],
     descriptionStage: ['描述模型', 'Description'], profileSetupStage: ['Profile 配置', 'Profile Setup'], modelCheckStage: ['模型检查', 'Model check'], bringupStage: ['真机检查', 'Hardware bring-up'], mappingStage: ['映射校准', 'Mapping calibration'], geometryStage: ['几何校准', 'Geometry calibration'], dynamicsStage: ['动力学校准', 'Dynamics calibration'], validationStage: ['验证', 'Validation'], readyStage: ['可使用', 'Ready'],
     expertTools: ['专业工具', 'Expert tools'], backHome: ['返回开始页', 'Back to start'], profileSetup: ['参数配置', 'Parameter configuration'], editProfile: ['编辑 Profile', 'Edit Profile'], continueAction: ['继续配置', 'Continue configuration'], saveProfile: ['保存 Profile', 'Save Profile'], profileManagedHint: ['Profile Library 只管理引用，从 Library 移除不会删除磁盘文件', 'Profile Library manages references only; removing an entry does not delete files'],
@@ -48,7 +49,7 @@ const paths = { workbench: '<path d="M4 5h16v14H4zM8 9h8M8 13h5M6 3v4M18 3v4"/>'
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: {teaching:[],gain:[],gravity:[],dynamics:[]}, calibrationToolSelected: {teaching:null,gain:null,gravity:null,dynamics:null}, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', tcp: null, tcpStep: 0, tcpFrame: '', tcpRmsLimit: 1, tcpMaxLimit: 2, calibrationToolRecords: {teaching:[],gain:[],gravity:[],dynamics:[]}, calibrationToolSelected: {teaching:null,gain:null,gravity:null,dynamics:null}, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -311,7 +312,7 @@ async function resetToStart() {
     if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameters' : '有未保存的参数，确认放弃修改后返回首页')) return;
     if (active()) { toast(state.language === 'en' ? 'Stop the active session before returning to the start page' : '请先停止当前运行会话', true); return; }
     await pageExit();
-    state.page = 'start'; state.entryIntent = ''; state.descriptionStep = 1; state.createdProfileWizard = false; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.capabilityProfile = null; state.capabilityProfileError = ''; state.admittance = null; state.tuneDraft = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
+    state.page = 'start'; state.entryIntent = ''; state.descriptionStep = 1; state.createdProfileWizard = false; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.capabilityProfile = null; state.capabilityProfileError = ''; state.tcp = null; state.tcpFrame = ''; state.tcpStep = 0; state.admittance = null; state.tuneDraft = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
 }
 function startPage() {
     const option = (intent, title, desc, ico) => `<button class="start-choice" data-start-intent="${intent}"><span class="start-choice-icon">${icon(ico)}</span><span><b>${t(title)}</b><small>${t(desc)}</small></span><span class="choice-arrow">›</span></button>`;
@@ -381,7 +382,7 @@ function lifecyclePage() {
     const r = state.readiness || {}; const checks = r.checks || {}, modes = r.modes || {};
     const stages = [['description', 'descriptionStage', null], ['profile_setup', 'profileSetupStage', 'profile_setup'],
         ['model_check', 'modelCheckStage', 'model'], ['bringup', 'bringupStage', 'workbench'],
-        ['mapping_calibration', 'mappingStage', 'profile_setup'], ['geometry_calibration', 'geometryStage', 'model'],
+        ['mapping_calibration', 'mappingStage', 'profile_setup'], ['geometry_calibration', 'geometryStage', 'tcp'],
         ['gravity_verification', 'gravityStage', 'calibration'], ['dynamics_calibration', 'dynamicsStage', 'calibration'],
         ['validation', 'validationStage', 'workbench']];
     const rows = stages.map(([id, key, page]) => {
@@ -389,7 +390,8 @@ function lifecyclePage() {
         const canReview = Boolean(readinessReviews[id]);
         const evidence = r.evidence?.[id];
         const action = canReview && value !== 'verified' ? `<button class="button ${id === r.next_stage ? 'primary' : ''}" data-review-stage="${id}">${state.language === 'en' ? 'Review evidence' : '记录验收'}</button>` : '';
-        return `<article class="lifecycle-step ${esc(value)}"><span class="stage-dot"></span><div><b>${t(key)}</b><small>${readinessResultLabel(value)}</small>${evidence?.note ? `<small>${esc(evidence.note)}</small>` : ''}</div><div class="lifecycle-actions">${page ? `<button class="button" data-stage-open="${page}" data-stage="${id}">${state.language === 'en' ? 'Open' : '进入'}</button>` : ''}${action}</div></article>`;
+        const sub = id === 'geometry_calibration' ? `<small>${state.language === 'en' ? 'TCP fixed-point calibration is optional and completed before geometry review' : '可选 TCP 固定点标定与独立针尖验证，完成后再进行几何验收'}</small>` : '';
+        return `<article class="lifecycle-step ${esc(value)}"><span class="stage-dot"></span><div><b>${t(key)}</b><small>${readinessResultLabel(value)}</small>${sub}${evidence?.note ? `<small>${esc(evidence.note)}</small>` : ''}</div><div class="lifecycle-actions">${page ? `<button class="button" data-stage-open="${page}" data-stage="${id}">${state.language === 'en' ? 'Open' : '进入'}</button>` : ''}${action}</div></article>`;
     }).join('');
     const modeRows = Object.entries(modes).map(([mode,value]) => `<div class="mode-admission-row"><code>${esc(mode)}</code><span class="readiness-chip ${value === 'verified' ? 'ready' : value === 'stale' ? 'warning' : 'pending'}">${readinessResultLabel(value)}</span></div>`).join('');
     const startup = modes.RIGID_HOLD !== 'verified' ? `<button class="button" data-review-stage="startup_hold">${state.language === 'en' ? 'Review startup hold' : '启动保持验收'}</button>` : '';
@@ -397,6 +399,101 @@ function lifecyclePage() {
     return pageHead('readiness', 'readinessDesc', `<span class="readiness-chip ${libraryStateClass(r.state)}">${readinessStateText(r.state)}</span>`) +
         `<div class="readiness-summary card"><div><div class="eyebrow">${esc(state.config.profile || '—')}</div><h3>${r.state === 'ready' ? t('usable') : t('nextStep') + ' · ' + readinessStageText(r.next_stage)}</h3><p>${state.language === 'en' ? 'Bundled profiles still require local hardware evidence and per-mode approval' : '内置配置仅代表来源可信，不能代替本机实测与独立模式增益验收'}</p>${r.reason ? `<p class="workspace-error">${esc(r.reason)}</p>` : ''}</div>${r.state === 'ready' ? `<button id="ready-control" class="button primary">${t('useProfile')}</button>` : ''}</div><div class="lifecycle-list">${rows}</div>${admission}`;
 }
+function tcpCalibrationPage() {
+    const en = state.language === 'en';
+    const tx = (zh, eng) => en ? eng : zh;
+    const tcp = state.tcp || {};
+    const step = Math.max(0, Math.min(4, state.tcpStep || 0));
+    const steps = [[tx('准备','Prepare'), tx('选择参考 Frame 与固定治具','Select parent Frame and fixed-point fixture')],
+      [tx('采集','Capture'), tx('不同工具姿态接触同一个固定点','Touch the same fixed point from different orientations')],
+      [tx('求解','Solve'), tx('检查 TCP 求解可观测性与拟合残差','Check observability and fit residuals')],
+      [tx('验证','Validate'), tx('使用新的姿态进行独立验证','Validate with newly collected poses')],
+      [tx('应用','Apply'), tx('导出与受控应用候选结果','Export and apply candidate safely')]];
+    const stepper = `<div class="tcp-stepper">${steps.map(([name,description],i)=>`<button class="tcp-step ${i===step?'active':i<step?'done':''}" data-tcp-step="${i}" ${i>0&&!tcp.active?'disabled':''}><b>${i+1}</b><span>${name}</span></button>`).join('')}</div>`;
+    const connected = workbenchConnected() && state.telemetry?.robot_state === 'ACTIVE' && state.telemetry?.valid;
+    const valid = tcp.report?.passed === true;
+    const candidate = tcp.candidate;
+    const format = x => Number.isFinite(x) ? Number(x).toFixed(3) : '—';
+    const output = [];
+    output.push(`<section class="card tcp-wizard-card"><div class="card-body">${stepper}<div class="tcp-stage-intro"><h3>${steps[step][0]}</h3><p>${steps[step][1]}</p></div>`);
+    if (step === 0) {
+        const choices = (tcp.frame_options || []).map(name => `<option value="${esc(name)}" ${name===(state.tcpFrame || tcp.suggested_frame)?'selected':''}>${esc(name)}</option>`).join('');
+        output.push(`<div class="tcp-instructions"><b>${tx('操作准备','Before you start')}</b><p>${tx('牢固安装针尖与固定参考治具，清空运动空间，准备急停，并核对 Base、法兰 Frame、关节映射与零位','Mount a rigid tip and reference fixture, clear the work area, check the E-stop, base frame, flange frame, mapping and joint zero offsets')}</p><p>${tx('采集阶段仅读取真实关节反馈及 Core 正运动学，不发送运动指令','Capture only reads joint feedback and Core forward kinematics; this wizard never commands motion')}</p><p>${tx('可选择 tool0 或经固定关节连接的 tip 等 Link；选择已有 tip 时求得的是相对于该 Link 的针尖修正偏移','Select tool0 or a fixed child such as tip; choosing an existing tip estimates its residual offset rather than the entire flange-to-tip translation')}</p></div>`);
+        output.push(`<div class="field"><label>${tx('作为 TCP 父坐标系的法兰 / 工具安装 Link','Flange / tool-mount Link used as TCP parent')}</label><select id="tcp-frame" ${tcp.active?'disabled':''}>${choices}</select></div>`);
+        output.push(`<div class="tcp-facts"><span>Base <b>${esc(tcp.base_frame || '—')}</b></span><span>${tx('当前工具','Current tool')} <b>${esc(tcp.tool_frame || '—')}</b></span><span>${tx('会话','Session')} <b>${tcp.active?tx('进行中','Active'):tx('未开始','Not started')}</b></span></div>`);
+        output.push(`<div class="actions">${tcp.active?`<button class="button danger" id="tcp-discard">${tx('放弃本次标定','Discard calibration')}</button>`:`<button class="button primary" id="tcp-begin" ${!connected?'disabled':''}>${tx('开始固定点标定','Start fixed-point calibration')}</button>`}</div>`);
+        if (!connected) output.push(`<p class="hint">${tx('开始前请在「控制工作台」连接并安全使能真机，保持机器人处于 ACTIVE 后返回本页面','Connect and safely activate the real robot in Control workspace before starting, then return here')} <button type="button" class="button" id="tcp-open-workbench">${tx('前往控制工作台','Open control workspace')}</button></p>`);
+    }
+    if (step === 1) {
+        output.push(`<div class="tcp-instructions"><b>${tx('固定参考点不可移动','Do not move the reference point')}</b><p>${tx('每次低速移动机械臂，从不同方向将真实针尖对准同一固定点，完全停稳后点击采集','Carefully move the robot to touch the same point from several orientations, stop completely, then capture')}</p><p>${tx('至少 8 组标定姿态，系统拒绝与已采样姿态角度过近的重复数据','At least 8 training poses; duplicate orientations are rejected')}</p></div>`);
+        output.push(`<div class="tcp-count"><strong>${Number(tcp.train||0)} <small>/ 8</small></strong><span>${tx('标定姿态','Training poses')}</span></div><div class="actions"><button class="button primary" id="tcp-capture-train" ${!connected?'disabled':''}>${tx('采集当前接触姿态','Capture current contact')}</button><button class="button" id="tcp-to-solve" ${(tcp.train||0)<8?'disabled':''}>${tx('继续求解','Continue to solution')} →</button></div>`);
+    }
+    if (step === 2) {
+        output.push(`<div class="tcp-facts"><span>${tx('样本数量','Training samples')} <b>${tcp.train||0}</b></span><span>${tx('数值秩','Rank')} <b>${candidate?.rank??'—'}</b></span><span>${tx('条件数','Condition')} <b>${format(candidate?.condition)}</b></span></div>`);
+        if(candidate) output.push(`<div class="tcp-results"><h4>${tx('候选 TCP 偏移（父 Frame，mm）','Candidate TCP offset (parent Frame, mm)')}</h4><div class="tcp-vector">${['X','Y','Z'].map((axis,i)=>`<span><small>${axis}</small><strong>${format(candidate.tcp_xyz_m?.[i]*1000)}</strong></span>`).join('')}</div><p>${tx('拟合 RMS','Fit RMS')} <b>${format(candidate.training_rms_mm)} mm</b> · ${tx('最大残差','Maximum')} <b>${format(candidate.training_max_mm)} mm</b></p></div>`);
+        output.push(`<div class="actions"><button class="button primary" id="tcp-solve" ${(tcp.train||0)<8?'disabled':''}>${tx(candidate?'重新求解':'求解 TCP 偏移',candidate?'Resolve':'Solve TCP offset')}</button><button class="button" id="tcp-to-validation" ${!candidate?'disabled':''}>${tx('进入独立验证','Start independent validation')} →</button></div>`);
+    }
+    if (step === 3) {
+        output.push(`<div class="tcp-instructions"><b>${tx('独立采样','Independent samples')}</b><p>${tx('使用未参与求解的新工具姿态，仍然触碰同一个固定点，固定治具不可移动','Use new tool orientations not present in the training set and touch the unchanged reference point')}</p></div>`);
+        output.push(`<div class="tcp-count"><strong>${tcp.validation||0} <small>/ 5</small></strong><span>${tx('验证姿态','Validation poses')}</span></div>`);
+        output.push(`<div class="tcp-limit-grid"><label>${tx('RMS 上限（mm）','RMS limit (mm)')}<input id="tcp-rms-limit" type="number" min="0.05" max="100" step="0.1" value="${esc(state.tcpRmsLimit)}"></label><label>${tx('最大偏差上限（mm）','Max error limit (mm)')}<input id="tcp-max-limit" type="number" min="0.05" max="100" step="0.1" value="${esc(state.tcpMaxLimit)}"></label></div>`);
+        output.push(`<div class="actions"><button class="button primary" id="tcp-capture-validation" ${!connected?'disabled':''}>${tx('采集独立验证姿态','Capture validation pose')}</button><button class="button" id="tcp-run-validation" ${(tcp.validation||0)<5?'disabled':''}>${tx('计算验收结果','Evaluate acceptance')}</button></div>`);
+        if(tcp.report) output.push(`<div class="tcp-results"><div class="readiness-chip ${valid?'ready':'warning'}">${valid?tx('验证通过','Passed'):tx('验证未通过','Failed')}</div><div class="tcp-facts"><span>RMS <b>${format(tcp.report.rms_mm)} mm</b></span><span>P95 <b>${format(tcp.report.p95_mm)} mm</b></span><span>Max <b>${format(tcp.report.max_mm)} mm</b></span></div><p>${tx('该结果是基于机器人 FK 的固定点一致性，不是绝对空间定位真值','This measures FK-based fixed-point consistency, not absolute positioning accuracy')}</p></div>`);
+    }
+    if (step === 4) {
+        if(!valid) output.push(`<div class="callout">${tx('候选尚未通过独立验证，请返回验证阶段','The candidate has not passed independent validation; return to validation')}</div>`);
+        else output.push(`<div class="tcp-results"><div class="readiness-chip ready">${tx('通过独立验证','Independently validated')}</div><h4>${tx('候选 TCP（mm）','Candidate TCP (mm)')}</h4><div class="tcp-vector">${['X','Y','Z'].map((axis,i)=>`<span><small>${axis}</small><strong>${format(candidate.tcp_xyz_m[i]*1000)}</strong></span>`).join('')}</div><p>RMS ${format(tcp.report.rms_mm)} mm · Max ${format(tcp.report.max_mm)} mm</p></div>`);
+        output.push(`<div class="tcp-instructions"><b>${tx('结果应用范围','Application scope')}</b><p>${tx('固定点标定只确定 TCP 平移，工具朝向沿用所选父 Frame','Fixed-point calibration only estimates translation; tool orientation is inherited from the selected parent Frame')}</p><p>${tx('可导出完整标定样本与报告，应用前先安全停放并断开控制会话，内置 Profile 不允许直接覆写','Export samples and report; park and disconnect before applying. Built-in Profiles cannot be overwritten')}</p><p>${tx('应用后需重新验收几何状态，并同步检查上层 ROS2/MoveIt、LeRobot 和 Isaac 模型来源','Revalidate geometry after applying, and synchronize ROS2/MoveIt, LeRobot and Isaac model resources')}</p></div>`);
+        output.push(`<div class="actions"><button class="button" id="tcp-export" ${!valid?'disabled':''}>${tx('导出 TCP 候选与报告','Export candidate and report')}</button><button class="button primary" id="tcp-apply" ${!valid||workbenchConnected()?'disabled':''}>${tx('应用到外部 Profile','Apply to external Profile')}</button></div>`);
+        if (workbenchConnected()) output.push(`<p class="hint">${tx('当前仍连接控制工作台，必须停放并断开后才能应用','Disconnect the robot workspace before applying')}</p>`);
+    }
+    output.push(`<div class="tcp-wizard-footer"><button class="button" id="tcp-previous" ${step===0?'disabled':''}>← ${tx('上一步','Previous')}</button><span>${tx('样本与报告目录','Samples and report folder')} · <code>${esc(tcp.directory||'—')}</code></span><button class="button" id="tcp-next" ${step===4||!tcp.active||(step===1&&(tcp.train||0)<8)||(step===2&&!candidate)||(step===3&&!tcp.report)?'disabled':''}>${tx('下一步','Next')} →</button></div></div></section>`);
+    return pageHead('tcpNav','tcpDesc',`<button class="button" id="tcp-back-lifecycle">${tx('返回机械臂准备','Back to readiness')}</button>`) + output.join('');
+}
+
+async function tcpRefresh() {
+    state.tcp = await api.request('tcp_state',{config:state.config});
+    if (!state.tcp.active && !state.tcpFrame) state.tcpFrame = state.tcp.suggested_frame || '';
+    render();
+}
+function tcpAction(method, payload = {}, next = null) {
+    return blockingOperation(busyText('正在处理 TCP 标定...', 'Processing TCP calibration...'),async()=>{
+        const result = await api.request(method,{config:state.config,...payload});
+        if (method === 'tcp_export') {toast((state.language==='en'?'Exported: ':'已导出到：') + result.path);return;}
+        if (method === 'tcp_apply') {
+            toast((state.language==='en'?'Applied to Profile: ':'已应用到 Profile：')+result.tool_frame);
+            state.info=null; state.modelData=null; state.tcpStep=0; await inspect();
+            state.readiness=await api.request('readiness',{config:state.config});
+        }
+        state.tcp = await api.request('tcp_state',{config:state.config});
+        if (next!==null) state.tcpStep=next;
+        render();
+    });
+}
+function bindTcpCalibration() {
+    const by = (name,callback)=>{const n=$(name);if(n)n.onclick=callback;};
+    document.querySelectorAll('[data-tcp-step]').forEach(n=>n.onclick=()=>{const i=Number(n.dataset.tcpStep);if(!state.tcp?.active&&i>0)return;state.tcpStep=i;render();});
+    by('tcp-back-lifecycle',()=>navigate('lifecycle'));
+    by('tcp-open-workbench',()=>navigate('workbench'));
+    if ($('tcp-frame')) $('tcp-frame').onchange = e => {state.tcpFrame=e.target.value};
+    by('tcp-begin',()=>tcpAction('tcp_begin',{frame:$('tcp-frame')?.value},1));
+    by('tcp-discard',()=>{if(confirm(state.language==='en'?'Discard the current calibration session?':'确定放弃本次 TCP 标定会话吗'))tcpAction('tcp_discard',{},0);});
+    by('tcp-capture-train',()=>tcpAction('tcp_capture',{phase:'train'}));
+    by('tcp-capture-validation',()=>tcpAction('tcp_capture',{phase:'validation'}));
+    by('tcp-to-solve',()=>{state.tcpStep=2;render()});
+    by('tcp-solve',()=>tcpAction('tcp_solve',{},2));
+    by('tcp-to-validation',()=>{state.tcpStep=3;render()});
+    by('tcp-run-validation',()=>{
+       const rms=Number($('tcp-rms-limit').value),max=Number($('tcp-max-limit').value);
+       if(!Number.isFinite(rms)||!Number.isFinite(max)||rms<0.05||max<0.05||rms>100||max>100){toast(state.language==='en'?'Invalid tolerance':'验收阈值必须在 0.05～100 mm 之间',true);return;}
+       state.tcpRmsLimit=rms;state.tcpMaxLimit=max;tcpAction('tcp_validate',{rms_limit_mm:rms,max_limit_mm:max});
+    });
+    by('tcp-export',()=>tcpAction('tcp_export'));
+    by('tcp-apply',()=>{if(confirm(state.language==='en'?'Apply to an editable external Profile and invalidate existing readiness evidence?':'将新 TCP 写入外部 Profile 的模型与配置，并使原有几何验收失效，是否继续'))tcpAction('tcp_apply',{},0);});
+    by('tcp-previous',()=>{state.tcpStep=Math.max(0,state.tcpStep-1);render();});
+    by('tcp-next',()=>{state.tcpStep=Math.min(4,state.tcpStep+1);render();});
+}
+
 function showReadinessReview(stage) {
     const review = readinessReviews[stage]; if (!review) return;
     const dialog = $('confirm-dialog');
@@ -1707,8 +1804,9 @@ async function refreshLibrary() {
 async function openLibraryEntry(id) {
     const entry = state.library.find(x => x.id === id); if (!entry) throw new Error('Profile Library entry not found');
     state.activeLibraryId = id; state.createdProfileWizard = false; state.source = entry.source === 'builtin' ? 'builtin' : 'external';
+    state.tcp = null; state.tcpFrame = ''; state.tcpStep = 0;
     state.config = { profile: entry.profile, profile_file: entry.source === 'builtin' ? '' : entry.profile_file, resource_paths: entry.resource_paths || '', serial_port: '', baudrate: '', bus: '' };
-    const listing = await api.request('profiles', state.config); state.profiles = listing.profiles || []; state.info = null; state.modelData = null; state.profileEditor = null; state.capabilityProfile = null; state.capabilityProfileError = ''; state.admittance = null; state.tuneDraft = null;
+    const listing = await api.request('profiles', state.config); state.profiles = listing.profiles || []; state.info = null; state.modelData = null; state.profileEditor = null; state.capabilityProfile = null; state.capabilityProfileError = ''; state.tcp = null; state.tcpFrame = ''; state.tcpStep = 0; state.admittance = null; state.tuneDraft = null;
     await inspect(); state.readiness = await api.request('readiness', { config: state.config });
     state.profileDirty = false; state.profileError = ''; state.profileGroup = 'model';
     state.page = 'lifecycle';
@@ -1860,7 +1958,7 @@ function pageEnter(pageChanged = true) {
 }
 function render() {
     if (modelView) { modelView.dispose(); modelView = null; }
-    const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
+    const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, tcp: tcpCalibrationPage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
     const factory = pages[state.page] || startPage;
     const pageChanged = renderedPage !== state.page;
     $('page').innerHTML = factory();
@@ -1897,8 +1995,11 @@ async function navigate(page) {
     if (state.page === 'profile_setup' && state.profileDirty && !confirm(state.language === 'en' ? 'Discard unsaved parameter changes' : '尚有未保存参数，确认放弃后离开')) return;
     capture(); await operation(save); await pageExit();
     if (state.page === 'profile_setup') state.createdProfileWizard = false;
+    const previousPage = state.page;
     state.page = page;
+    try {
     if (page === 'lifecycle' && state.config.profile) state.readiness = await api.request('readiness', { config: state.config });
+    if (page === 'tcp' && state.config.profile) { state.tcp = await api.request('tcp_state',{config:state.config}); state.tcpFrame=state.tcp.active?state.tcp.parent_frame:(state.tcp.suggested_frame||''); }
     if (page === 'profile_setup' && state.config.profile) {
         state.profileEditor = await api.request('profile_editor_load', {config:state.config});
         state.profileDirty = false; state.profileError = '';
@@ -1912,6 +2013,15 @@ async function navigate(page) {
     }
     if (['model', 'workbench', 'calibration'].includes(page) && !state.modelData && state.info?.available?.model) await operation(() => loadModelData());
     render();
+    } catch (error) {
+        // Restore the previous page even if an IPC request failed during entry.
+        // Otherwise pageExit() leaves the content faded out and navigation appears blank.
+        state.page = previousPage;
+        const node = $('page');
+        if (node) node.classList.remove('page-transition-out', 'page-transition-in');
+        render();
+        toast(t('error') + ': ' + (error?.message || String(error)), true);
+    }
 }
 function bindPage() {
     document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { await pageExit(); state.entryIntent = 'description'; state.descriptionStep = 1; state.createdProfileWizard = false; state.descriptionAnalysis = null; state.descriptionDraft = {source:'',profile:'',destination:'',base_frame:'',tool_frame:'',joint_names:[]}; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); await pageExit(); state.page = 'library'; render(); }));
@@ -1938,6 +2048,7 @@ function bindPage() {
     if ($('draft-create')) $('draft-create').onclick = () => blockingOperation(busyText('正在生成 Profile 包...', 'Creating Profile package...'), createDescriptionProfile);
     document.querySelectorAll('[data-stage-open]').forEach(button => button.onclick = () => { if (button.dataset.stage === 'gravity_verification') state.calibrationEntry = 'gravity_verify'; else if (button.dataset.stage === 'dynamics_calibration') state.calibrationEntry = 'teaching'; navigate(button.dataset.stageOpen); });
     document.querySelectorAll('[data-review-stage]').forEach(button => button.onclick = () => showReadinessReview(button.dataset.reviewStage));
+    if (state.page === 'tcp') bindTcpCalibration();
     if ($('approve-gain-mode')) $('approve-gain-mode').onclick = showGainAdmission;
     if ($('ready-control')) $('ready-control').onclick = () => navigate('workbench');
     document.querySelectorAll('[data-profile-group]').forEach(button => button.onclick = () => {
@@ -2415,6 +2526,7 @@ function onEvent(event) {
             updateWorkbenchLive();
         }
         if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); }
+        if (state.page === 'tcp' && (robotStateChanged || previousValid !== (event.data?.valid === true))) render();
         syncCompletedGainCandidate(calibration);
     }
     if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.admittance = null; state.tuneDraft = null; const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }

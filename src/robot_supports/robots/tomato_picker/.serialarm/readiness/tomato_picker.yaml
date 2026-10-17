@@ -3,14 +3,72 @@ managed_by_launcher: true
 source_urdf_fingerprint: 49c3e74495421f69565ace5d96dc316fd70aa7ae92363991b31c0145b4abef53
 stages:
   model_check:
-    confirmed: true
-    fingerprint: b26eb01a4af135f70c1944ae428f43d664b1435cc3238c0e19bf5d2e627d5ffb
+    result: passed
+    scope: 9bd9c167257f52b6826c28810cf453a87908c1cd0cca7d1d44416197b489b69c
+    kind: operator_model_review
+    note: '12345678901112'
+    observations:
+      chain: true
+      limits: true
+      inertial: true
+    recorded_at: 1792241396.6363018
+    runtime: {}
   bringup:
-    confirmed: true
-    fingerprint: b26eb01a4af135f70c1944ae428f43d664b1435cc3238c0e19bf5d2e627d5ffb
+    result: passed
+    scope: 673a391a98b2958e0913675df88715e1ea39a0fdd33bbc3a3bad587e871e4e34
+    kind: operator_and_live
+    note: '123456789101112'
+    observations:
+      connection: true
+    recorded_at: 1792241645.3335931
+    runtime:
+      robot_state: INACTIVE
+      joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
   mapping_calibration:
-    confirmed: true
-    fingerprint: b26eb01a4af135f70c1944ae428f43d664b1435cc3238c0e19bf5d2e627d5ffb
+    result: passed
+    scope: 2ca5badacc6ab9f2e6e4372d0a2f9b32d7fd7f4122f03e2577817e5da495a750
+    kind: operator_and_live
+    note: '123456789101112'
+    observations:
+      joint_ids: true
+      directions: true
+      offsets: true
+    recorded_at: 1792241911.1115494
+    runtime:
+      robot_state: ACTIVE
+      joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6
   geometry_calibration:
     confirmed: true
     fingerprint: b26eb01a4af135f70c1944ae428f43d664b1435cc3238c0e19bf5d2e627d5ffb
+modes:
+  RIGID_HOLD:
+    result: passed
+    scope: a046f62885b69ed64b9a33959cba5c3fdff091a0e34f06cd098a3d90eb5cf730
+    kind: operator_and_live
+    note: '12345678901112'
+    observations:
+      hold_gains: true
+      supported: true
+      emergency_stop: true
+    recorded_at: 1792241836.6116424
+    runtime:
+      robot_state: INACTIVE
+      joint_names:
+      - joint1
+      - joint2
+      - joint3
+      - joint4
+      - joint5
+      - joint6

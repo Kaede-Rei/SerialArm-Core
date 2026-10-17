@@ -38,5 +38,5 @@ def install_gui(runner):
             runner.run('gui-electron-official', ['node', app / 'node_modules/electron/install.js'], env=env)
     if not os.access(electron, os.X_OK): raise InstallError('Electron 可执行文件不可用')
     runner.run('gui-static-verify', ['node', app / 'scripts/verify.cjs'])
-    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', 'import sys, numpy, scipy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, profiles, runtime, model_runtime', app / 'backend'])
+    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', 'import sys, numpy, scipy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, profiles, runtime, model_runtime, tcp_calibration', app / 'backend'])
     return {'gui': True, 'gui_status': 'ready', 'gui_path': str(app), 'gui_python': str(venv / 'bin/python')}

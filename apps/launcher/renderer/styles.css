@@ -520,3 +520,40 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .model-camera-hint {position:absolute;bottom:12px;left:12px;z-index:3;max-width:calc(100% - 24px);padding:6px 9px;border-radius:7px;background:color-mix(in srgb,var(--card) 84%,transparent);color:var(--muted);font-size:10px;line-height:1.4;pointer-events:none}
 #workbench-viewport .model-camera-hint {bottom:40px}
 @media(max-width:670px){.model-camera-tools{top:8px;right:8px;gap:2px}.model-camera-tools button{min-width:25px;min-height:28px;padding:4px 5px;font-size:9px}.model-camera-hint{font-size:9px}}
+
+/* TCP fixed-point calibration lives in the geometry readiness step */
+.tcp-wizard-card{max-width:970px;margin:0 auto}
+.tcp-wizard-card>.card-body{display:grid;gap:18px;padding:clamp(18px,3vw,30px)}
+.tcp-stepper{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:9px}
+.tcp-step{display:flex;align-items:center;justify-content:center;gap:7px;min-width:0;padding:12px 6px;border:1px solid var(--line);border-radius:10px;background:var(--subtle);color:var(--muted);cursor:pointer;font-size:12px}
+.tcp-step.active{border-color:var(--accent);color:var(--text);background:var(--accent-bg)}
+.tcp-step.done{color:var(--green)}
+.tcp-step b{display:grid;place-items:center;flex:0 0 20px;height:20px;border-radius:999px;background:var(--card);border:1px solid var(--line);font:600 11px ui-monospace,monospace}
+.tcp-step:disabled{opacity:.55;cursor:not-allowed}
+.tcp-stage-intro{padding:8px 0 0}
+.tcp-stage-intro h3{font-size:17px;margin:0 0 6px}
+.tcp-stage-intro p{margin:0;color:var(--muted);font-size:12px;line-height:1.7}
+.tcp-instructions{display:grid;gap:9px;padding:14px 16px;background:var(--subtle);border:1px solid var(--line);border-radius:12px}
+.tcp-instructions b{font-size:12px}
+.tcp-instructions p{margin:0;font-size:12px;line-height:1.7;color:var(--muted)}
+.tcp-count{display:flex;align-items:baseline;gap:12px;padding:14px 16px;border:1px solid var(--line);border-radius:12px}
+.tcp-count strong{font-size:26px;font-variant-numeric:tabular-nums}
+.tcp-count small{font-size:14px;color:var(--muted)}
+.tcp-count span{font-size:12px;color:var(--muted)}
+.tcp-facts{display:flex;flex-wrap:wrap;gap:10px}
+.tcp-facts>span{display:inline-flex;gap:8px;align-items:center;padding:9px 12px;background:var(--subtle);border:1px solid var(--line);border-radius:8px;font-size:11px;color:var(--muted)}
+.tcp-facts b{color:var(--text);font-variant-numeric:tabular-nums}
+.tcp-results{display:grid;gap:14px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--subtle)}
+.tcp-results h4{margin:0;font-size:13px}
+.tcp-results p{margin:0;color:var(--muted);font-size:12px;line-height:1.6}
+.tcp-vector{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.tcp-vector>span{display:grid;gap:6px;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+.tcp-vector small{color:var(--muted);font-size:11px}
+.tcp-vector strong{font-size:18px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.tcp-limit-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.tcp-limit-grid label{display:grid;gap:8px;font-size:12px;color:var(--muted)}
+.tcp-limit-grid input{width:100%}
+.tcp-wizard-footer{display:flex;align-items:center;justify-content:space-between;gap:14px;border-top:1px solid var(--line);padding-top:15px}
+.tcp-wizard-footer span{flex:1;min-width:0;text-align:center;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+.tcp-wizard-footer code{overflow-wrap:anywhere}
+@media(max-width:680px){.tcp-stepper{gap:4px}.tcp-step{flex-direction:column;padding:8px 2px;font-size:10px}.tcp-wizard-footer{flex-wrap:wrap}.tcp-wizard-footer span{order:3;flex-basis:100%}.tcp-vector strong{font-size:14px}}
