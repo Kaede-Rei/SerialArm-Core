@@ -509,3 +509,14 @@ dialog[open]::backdrop{animation:dialog-backdrop-in .24s ease-out both}
 .capability-runtime .workspace-section-head{gap:14px;flex-wrap:wrap}
 .capability-runtime .parameter-guidance{margin-top:8px}
 @media(max-width:760px){.capability-overview .workspace-section-head{flex-wrap:wrap}.capability-overview .kv{grid-template-columns:minmax(100px,.8fr) minmax(0,1fr)}}
+
+/* Keep orbit controls accessible in every robot preview */
+#model-viewport canvas, #description-viewport canvas, #workbench-viewport canvas {touch-action:none;cursor:grab}
+#model-viewport canvas:active, #description-viewport canvas:active, #workbench-viewport canvas:active {cursor:grabbing}
+.model-camera-tools {position:absolute;right:12px;top:12px;z-index:5;display:flex;flex-wrap:wrap;justify-content:flex-end;gap:4px;max-width:min(320px,calc(100% - 24px));padding:5px;border:1px solid var(--line);border-radius:10px;background:color-mix(in srgb,var(--card) 90%,transparent);box-shadow:0 3px 16px #0002;user-select:none}
+.model-camera-tools button {min-width:30px;min-height:29px;padding:5px 7px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--muted);font-size:10px;font-weight:600;white-space:nowrap}
+.model-camera-tools button:first-child {border-color:var(--line);color:var(--text)}
+.model-camera-tools button:hover,.model-camera-tools button:focus-visible {color:var(--accent);background:var(--tint);border-color:var(--line)}
+.model-camera-hint {position:absolute;bottom:12px;left:12px;z-index:3;max-width:calc(100% - 24px);padding:6px 9px;border-radius:7px;background:color-mix(in srgb,var(--card) 84%,transparent);color:var(--muted);font-size:10px;line-height:1.4;pointer-events:none}
+#workbench-viewport .model-camera-hint {bottom:40px}
+@media(max-width:670px){.model-camera-tools{top:8px;right:8px;gap:2px}.model-camera-tools button{min-width:25px;min-height:28px;padding:4px 5px;font-size:9px}.model-camera-hint{font-size:9px}}

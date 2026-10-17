@@ -78,12 +78,15 @@ function material(rgba, collision=false) {
 }
 
 export class SerialArmModelView {
-  constructor(container, resourceReader) {
+  constructor(container, resourceReader, language = 'zh') {
     this.container = container;
     this.resourceReader = resourceReader;
+    this.language = language;
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.002, 100);
-    this.camera.position.set(1.2, 0.9, 0.8);
+    // URDF and the robot workspace use Z-up; OrbitControls defaults to Y-up
+    this.camera.up.set(0, 0, 1);
+    this.camera.position.set(1.2, -0.9, 0.8);
     this.renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, powerPreference:'high-performance'});
     this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -92,9 +95,19 @@ export class SerialArmModelView {
     container.replaceChildren(this.renderer.domElement);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.09;
+    this.controls.enableRotate = true;
+    this.controls.enablePan = true;
+    this.controls.enableZoom = true;
+    this.controls.screenSpacePanning = true;
+    this.controls.zoomToCursor = true;
+    this.controls.minPolarAngle = 0.001;
+    this.controls.maxPolarAngle = Math.PI - 0.001;
+    this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
     this.controls.target.set(0,0,0.2);
+    this.installCameraTools();
     this.root = new THREE.Group();
     this.scene.add(this.root);
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0x29313a, 2.3));
@@ -386,14 +399,82 @@ export class SerialArmModelView {
     this.refreshVisibility();
   }
 
+  installCameraTools() {
+    const en = this.language === 'en';
+    const buttons = [
+      ['fit', en ? 'Fit' : '适应', en ? 'Fit model to view' : '自动适应模型'],
+      ['front', en ? 'Front' : '前', en ? 'View along +Y' : '前视 · 沿 +Y 方向'],
+      ['back', en ? 'Back' : '后', en ? 'View along -Y' : '后视 · 沿 -Y 方向'],
+      ['left', en ? 'Left' : '左', en ? 'View along +X' : '左视 · 沿 +X 方向'],
+      ['right', en ? 'Right' : '右', en ? 'View along -X' : '右视 · 沿 -X 方向'],
+      ['top', en ? 'Top' : '顶', en ? 'View along -Z' : '顶视 · 沿 -Z 方向'],
+      ['bottom', en ? 'Bottom' : '底', en ? 'View along +Z' : '底视 · 沿 +Z 方向'],
+    ];
+    this.cameraTools = document.createElement('div');
+    this.cameraTools.className = 'model-camera-tools';
+    this.cameraTools.setAttribute('role', 'group');
+    this.cameraTools.setAttribute('aria-label', en ? 'Camera views' : '相机视角');
+    for (const [view, label, title] of buttons) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.dataset.cameraView = view;
+      button.textContent = label;
+      button.title = title;
+      button.setAttribute('aria-label', title);
+      button.addEventListener('click', () => {
+        if (view === 'fit') this.resetView();
+        else this.setCameraView(view);
+      });
+      this.cameraTools.appendChild(button);
+    }
+    this.container.appendChild(this.cameraTools);
+    const hint = document.createElement('div');
+    hint.className = 'model-camera-hint';
+    hint.textContent = en ? 'Left: orbit · Right / Shift: pan · Wheel: zoom' : '左键旋转 · 右键 / Shift 平移 · 滚轮缩放';
+    this.cameraHint = hint;
+    this.container.appendChild(hint);
+  }
+
+  setCameraView(view, distance = null) {
+    const directions = {
+      isometric: [1.25, -1.35, 0.95],
+      front: [0, -1, 0], back: [0, 1, 0],
+      left: [-1, 0, 0], right: [1, 0, 0],
+      // A tiny tilt avoids an undefined roll when looking exactly along Z-up
+      top: [0, -0.001, 1], bottom: [0, 0.001, -1],
+    };
+    const direction = directions[view];
+    if (!direction) return;
+    const target = this.controls.target;
+    const current = this.camera.position.distanceTo(target);
+    const length = Number.isFinite(distance) && distance > 0 ? distance : Math.max(current, 0.05);
+    this.camera.position.copy(target).add(new THREE.Vector3(...direction).normalize().multiplyScalar(length));
+    this.controls.update();
+  }
+
   resetView() {
     this.root.updateMatrixWorld(true);
-    const box=new THREE.Box3();
-    this.root.traverse(node=>{if(!node.isMesh||node.userData?.layer!=='visual'||!node.geometry)return;node.geometry.computeBoundingBox?.();if(node.geometry.boundingBox)box.union(node.geometry.boundingBox.clone().applyMatrix4(node.matrixWorld));});
-    if(box.isEmpty())box.setFromObject(this.root);
-    const size=box.getSize(new THREE.Vector3()); const center=box.getCenter(new THREE.Vector3());
-    const radius=Math.max(size.length()*0.62,0.35); this.controls.target.copy(center); this.camera.position.copy(center).add(new THREE.Vector3(radius*1.35,radius*1.05,radius*0.95));
-    this.camera.near=Math.max(radius/1000,0.001); this.camera.far=Math.max(radius*50,20); this.camera.updateProjectionMatrix(); this.controls.update();
+    const box = new THREE.Box3();
+    this.root.traverse(node => {
+      if (!node.isMesh || node.userData?.layer !== 'visual' || !node.geometry) return;
+      node.geometry.computeBoundingBox?.();
+      if (node.geometry.boundingBox) box.union(node.geometry.boundingBox.clone().applyMatrix4(node.matrixWorld));
+    });
+    if (box.isEmpty()) box.setFromObject(this.root);
+    if (box.isEmpty()) box.set(new THREE.Vector3(-0.2, -0.2, 0), new THREE.Vector3(0.2, 0.2, 0.4));
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const radius = Math.max(size.length() * 0.5, 0.12);
+    const vfov = THREE.MathUtils.degToRad(this.camera.fov);
+    const hfov = 2 * Math.atan(Math.tan(vfov / 2) * Math.max(this.camera.aspect, 0.1));
+    const distance = radius / Math.sin(Math.min(vfov, hfov) / 2) * 1.18;
+    this.controls.target.copy(center);
+    this.controls.minDistance = Math.max(radius * 0.04, 0.005);
+    this.controls.maxDistance = Math.max(distance * 35, 15);
+    this.camera.near = Math.max(radius / 2000, 0.0005);
+    this.camera.far = Math.max(this.controls.maxDistance * 1.5, 40);
+    this.camera.updateProjectionMatrix();
+    this.setCameraView('isometric', distance);
   }
 
   resize() {
@@ -407,5 +488,5 @@ export class SerialArmModelView {
     this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
 
-  dispose() { this.running=false; this.resizeObserver.disconnect(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }
+  dispose() { this.running=false; this.resizeObserver.disconnect(); this.cameraTools?.remove(); this.cameraHint?.remove(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }
 }
