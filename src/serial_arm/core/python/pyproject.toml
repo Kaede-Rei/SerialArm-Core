@@ -1,14 +1,14 @@
 [build-system]
 requires = [
   "scikit-build-core>=0.10",
-  "pybind11>=2.11",
+  "pybind11>=2.13.6,<3",
   "numpy>=1.24",
 ]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "serial-arm"
-version = "0.5.4"
+version = "0.6.0"
 description = "Python bindings for the SerialArm C++ control and dynamics core"
 readme = "README.md"
 requires-python = ">=3.10"

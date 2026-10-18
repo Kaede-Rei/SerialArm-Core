@@ -56,10 +56,39 @@ class Plan:
         return list(dict.fromkeys(names))
 
     def package_paths(self):
+        """Validate selected ROS manifests before apt/rosdep changes the machine"""
+        root = Path(self.root) / 'src'
+        if not root.is_dir():
+            raise ValueError(f'缺少 ROS 源码目录：{root}')
         found = {}
-        for path in (Path(self.root) / 'src').rglob('package.xml'):
-            found[ET.parse(path).findtext('name')] = str(path.parent)
-        return [found[name] for name in self.packages]
+        for path in sorted(root.rglob('package.xml')):
+            try:
+                xml = ET.parse(path).getroot()
+            except ET.ParseError as exc:
+                raise ValueError(f'package.xml XML 格式错误：{path}\n{exc}') from exc
+            if xml.tag != 'package':
+                raise ValueError(f'package.xml 根标签必须是 <package>：{path}')
+            name = (xml.findtext('name') or '').strip()
+            if not re.fullmatch(r'[a-z][a-z0-9_]*', name):
+                raise ValueError(f'package.xml 中的 ROS 包名无效：{path}\n当前值：{name!r}')
+            if name in found:
+                raise ValueError(f'发现重复 ROS 包名 {name}：\n{found[name]}\n{path.parent}')
+            found[name] = path.parent
+            if name in self.packages:
+                version = (xml.findtext('version') or '').strip()
+                if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
+                    suggested = version.removeprefix('v')
+                    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', suggested):
+                        suggested = '0.6.0'
+                    raise ValueError(
+                        f'ROS package.xml 版本格式错误：{path}\n'
+                        f'当前值：{version!r}，应为纯数字 X.Y.Z，例如 {suggested}\n'
+                        'Git Tag 可以使用 v0.6.0，但 package.xml 的 <version> 不允许带 v'
+                    )
+        missing = [name for name in self.packages if name not in found]
+        if missing:
+            raise ValueError(f'缺少选中的 ROS 包：{", ".join(missing)}\n请核对 src/ 下的 package.xml 和安装选项')
+        return [str(found[name]) for name in self.packages]
 
     def describe(self):
         data = asdict(self)

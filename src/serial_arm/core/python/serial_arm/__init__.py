@@ -62,6 +62,25 @@ from ._serial_arm import validate_robot_cfg
 from ._serial_arm import validate_robot_core_cfg
 
 
+def _check_numpy_binding_compatibility() -> None:
+    """Reject pybind11/NumPy builds which alias every joint to element zero"""
+    probe = JointState()
+    expected = np.arange(1.0, 7.0, dtype=np.float64)
+    probe.pos = expected
+    actual = probe.pos
+    if (actual.shape != expected.shape or actual.dtype != expected.dtype
+            or actual.strides != (expected.itemsize,)
+            or not np.array_equal(actual, expected)):
+        raise ImportError(
+            "SerialArm Python binding returned invalid joint data or NumPy strides "
+            "Rebuild serial_arm_core with pybind11 >= 2.13.6 and re-source the "
+            "correct install/setup.bash before using robot hardware"
+        )
+
+
+_check_numpy_binding_compatibility()
+
+
 class RobotSession:
     """使用 C++ 工作线程维护控制周期的会话
 

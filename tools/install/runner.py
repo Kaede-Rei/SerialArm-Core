@@ -32,6 +32,31 @@ def atomic_write(path, text):
             os.unlink(name)
 
 
+def rosdep_failure_hint(message):
+    """Return actionable advice without silently bypassing unresolved dependencies"""
+    lower = message.lower()
+    if 'package version' in lower or 'version conventions' in lower:
+        return ('先检查 package.xml 的 <version> 是否为 0.6.0 这样的 X.Y.Z 数字格式，'
+                '不要写 Git Tag 格式 v0.6.0')
+    if ('cannot locate rosdep definition' in lower or 'no rosdep rule' in lower
+            or 'no definition of' in lower or 'no definition for' in lower):
+        return ('存在无法解析的 rosdep 依赖键，检查失败日志中对应的 ROS 包与依赖名称，'
+                '核对 ROS_DISTRO、rosdep 规则和 package.xml；不要盲目 --skip-keys')
+    if ('rosdep database' in lower or 'cache' in lower and 'rosdep' in lower
+            or 'unable to download' in lower or 'timed out' in lower
+            or 'name or service not known' in lower or 'failed to fetch' in lower):
+        return ('检查 ROS 源、网络和 ~/.ros/rosdep/sources.cache；网络恢复后单独运行 '
+                'rosdep update --rosdistro <ROS_DISTRO>，再重试安装')
+    if ('unable to locate package' in lower or 'failed to install' in lower
+            or 'apt-get' in lower and 'failed' in lower):
+        return ('rosdep 解析后系统包安装失败，检查失败日志里的 apt 包名与 Ubuntu/ROS2 软件源，'
+                '可用 apt-cache policy <包名> 检查是否有候选版本')
+    if 'permission denied' in lower or 'sudo:' in lower:
+        return '检查 sudo 权限与终端交互模式，--yes 不等于 sudo 免密'
+    return ('检查上面 rosdep-install.log 的原始错误；先修复 package.xml、依赖键或软件源，'
+            '不要直接忽略失败依赖')
+
+
 def standalone_env(env):
     env = env.copy()
     denied = set((env.get('AMENT_PREFIX_PATH', '') + ':' +
@@ -149,13 +174,18 @@ class Runner:
     def preflight(self):
         if platform.system() != 'Linux':
             raise InstallError('当前安装执行仅支持 Linux')
+        if self.plan.ros2 and not self.ros_setup.is_file():
+            raise InstallError(f'未检测到 {self.ros_setup}；请先安装 ROS2 {self.plan.ros_distro}，或选择 standalone')
+        # Reject invalid package.xml metadata before apt update/install or rosdep update
+        try:
+            paths = self.plan.package_paths()
+        except ValueError as error:
+            raise InstallError(f'安装前 ROS 包检查未通过\n{error}') from error
+        if self.plan.ros2:
+            print(f'[preflight] ROS 包元数据检查通过（{len(paths)} 个），准备安装依赖', flush=True)
         if self.plan.gui:
             from gui import preflight_gui
             preflight_gui()
-        if self.plan.ros2 and not self.ros_setup.is_file():
-            raise InstallError(f'未检测到 {self.ros_setup}；请先安装 ROS2 {self.plan.ros_distro}，或选择 standalone')
-        # Validate package mapping before any package-manager mutation
-        self.plan.package_paths()
 
     def native(self):
         self.apt(['build-essential', 'cmake', 'python3-venv', 'python3-dev',
@@ -202,7 +232,7 @@ class Runner:
             env['CMAKE_ARGS'] = '-DBUILD_TESTING=OFF'
         env['CMAKE_BUILD_PARALLEL_LEVEL'] = str(self.plan.jobs)
         self.run('python-build-deps', [self.python, '-m', 'pip', 'install',
-                                     'scikit-build-core>=0.10', 'pybind11>=2.11', 'numpy>=1.24'], env=env)
+                                     'scikit-build-core>=0.10', 'pybind11>=2.13.6,<3', 'numpy>=1.24'], env=env)
         self.run('python-wheel', [self.python, '-m', 'pip', 'install', '--no-build-isolation',
                                  '--force-reinstall', '--no-deps', self.root / 'src/serial_arm/core/python'],
                  env=env, source=self.setup)
@@ -218,7 +248,13 @@ class Runner:
             update = ['rosdep', 'update', '--rosdistro', self.plan.ros_distro]
             if os.geteuid() == 0:
                 update.append('--include-eol-distros')
-            self.run('rosdep-update', update, source=self.ros_setup)
+            try:
+                self.run('rosdep-update', update, source=self.ros_setup)
+            except InstallError as error:
+                raise InstallError(
+                    f'{error}\n\n[rosdep 更新失败] 检查 ROS 源与网络连接，'
+                    '修复后重新执行 rosdep update，不能在依赖索引不可用时跳过校验'
+                ) from error
             types = [value for kind in ('build', 'buildtool', 'build_export', 'buildtool_export', 'exec')
                      for value in ('--dependency-types', kind)]
             if self.plan.tests and (self.root/'src/serial_arm/core/tests').exists():
@@ -227,7 +263,27 @@ class Runner:
                    '--rosdistro', self.plan.ros_distro, *types]
             if not self.plan.python:
                 cmd += ['--skip-keys', 'ament_cmake_python python3-dev pybind11-dev python3-numpy']
-            self.run('rosdep-install', cmd, source=self.ros_setup, terminal=True)
+            try:
+                self.run('rosdep-install', cmd, source=self.ros_setup, terminal=True)
+            except InstallError as error:
+                raise InstallError(
+                    f'{error}\n\n[rosdep 排查建议] {rosdep_failure_hint(str(error))}\n'
+                    '可以单独用相同参数重试 rosdep，不需要重新执行完整安装器'
+                ) from error
+        # Use a private, compatible pybind11 CMake package rather than Ubuntu's
+        # pybind11-dev, which may produce NumPy 2.x arrays with zero strides
+        pybind11_cmake_dir = None
+        if self.plan.python:
+            binding_env = self.build / 'pybind11-venv'
+            self.run('ros2-binding-venv', [sys.executable, '-m', 'venv', str(binding_env)])
+            pybind11_python = binding_env / 'bin/python'
+            self.run('ros2-binding-deps', [pybind11_python, '-m', 'pip', 'install', 'pybind11>=2.13.6,<3'])
+            pybind11_cmake_dir = subprocess.check_output(
+                [str(pybind11_python), '-m', 'pybind11', '--cmakedir'],
+                text=True, env=self.env
+            ).strip()
+            if not Path(pybind11_cmake_dir, 'pybind11Config.cmake').is_file():
+                raise InstallError('Unable to locate the compatible pybind11 CMake package')
         installed_test_sources = (self.root/'src/serial_arm/core/tests').exists()
         run_tests = bool(self.plan.tests and installed_test_sources)
         if self.plan.tests and not run_tests:
@@ -240,6 +296,10 @@ class Runner:
                  '-DSERIAL_ARM_BUILD_PYTHON=' + ('ON' if self.plan.python else 'OFF'),
                  '-DSERIAL_ARM_BUILD_TERMINAL=' + ('ON' if self.plan.terminal else 'OFF'),
                  '-DBUILD_TESTING=' + ('ON' if run_tests else 'OFF')]
+        if pybind11_cmake_dir:
+            # Clear stale pybind11_DIR cache entries from earlier system builds
+            build.insert(build.index('--cmake-args'), '--cmake-clean-cache')
+            build.append('-Dpybind11_DIR:PATH=' + pybind11_cmake_dir)
         self.run('ros2-build', colcon + build, source=self.ros_setup)
         if run_tests:
             self.run('ros2-test', colcon + ['test', '--base-paths', *paths, '--build-base', str(self.build),
@@ -291,6 +351,9 @@ class Runner:
                 self.run('verify-' + package, ['ros2', 'pkg', 'prefix', package], source=candidate)
         if self.plan.python:
             self.run('verify-python', [self.python, '-c', 'import serial_arm; print(serial_arm.__file__)'], source=candidate)
+            self.run('verify-python-binding',
+                     [self.python, self.root / 'tools/check_python_binding.py'],
+                     source=candidate)
         if self.plan.robot == 'dm_arm':
             for package in ('serial_arm_robot_profiles', 'dm_arm_description'):
                 if not (self.prefix / 'share' / package).is_dir():

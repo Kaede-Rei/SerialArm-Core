@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(serial_arm_core VERSION 0.5.4 LANGUAGES CXX)
+project(serial_arm_core VERSION 0.6.0 LANGUAGES CXX)
 
 # =============================================================================
 # 全局 C++ / CMake 配置
@@ -253,7 +253,7 @@ target_link_libraries(serial_arm_robot PUBLIC serial_arm_interaction)
 
 if(SERIAL_ARM_BUILD_PYTHON)
     find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
-    find_package(pybind11 CONFIG REQUIRED)
+    find_package(pybind11 2.13.6 CONFIG REQUIRED)
     find_package(Threads REQUIRED)
     if(ament_cmake_FOUND)
         find_package(ament_cmake_python REQUIRED)
