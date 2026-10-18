@@ -88,7 +88,7 @@ def preview(path, joints, runtime, gravity_scale):
     return {'path': str(path), 'sha256': sha256_file(path), 'changes': changed, 'changed': before != after}
 
 
-def save(path, expected_sha, joints, runtime, gravity_scale):
+def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
     path = Path(path).resolve()
     current = sha256_file(path)
     if current != expected_sha:
@@ -99,7 +99,9 @@ def save(path, expected_sha, joints, runtime, gravity_scale):
     if before == after:
         return {'path': str(path), 'sha256': current, 'backup': '', 'changed': False}
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    backup = path.with_name(path.name + '.bak-' + stamp)
+    backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else path.parent
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / (path.name + '.bak-' + stamp)
     shutil.copy2(path, backup)
     temp = path.with_name(path.name + '.tmp')
     temp.write_text(after)
@@ -114,7 +116,7 @@ def save(path, expected_sha, joints, runtime, gravity_scale):
 
 
 def export_telemetry(root, events, metadata):
-    base = Path(root) / '.install' / 'exports'
+    base = Path(root) / '.serialarm' / 'exports'
     base.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     path = base / f'session-{stamp}.jsonl'
@@ -358,7 +360,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
     return directory, metadata, result, payload
 
 
-def save_gravity_correction(core_path, expected_sha, task_directory):
+def save_gravity_correction(core_path, expected_sha, task_directory, storage_home=None):
     core_path = Path(core_path).resolve()
     if sha256_file(core_path) != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
@@ -377,7 +379,9 @@ def save_gravity_correction(core_path, expected_sha, task_directory):
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative.as_posix())
     yaml.safe_load(after)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
-    backup = core_path.with_name(core_path.name + '.bak-' + stamp)
+    backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else core_path.parent
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / (core_path.name + '.bak-' + stamp)
     shutil.copy2(core_path, backup)
     temp = core_path.with_name(core_path.name + '.tmp')
     temp.write_text(after)
@@ -526,16 +530,24 @@ def load_model_calibration_summary(directory):
             'files': files, 'trajectory': trajectory, 'note': note, 'task_id': task_id}
 
 
-def list_model_calibration_records(root, limit=30):
+def list_model_calibration_records(root, limit=30, *, legacy_root=None, profile_name=None):
     """Read-only inventory, always derived from disk rather than cached GUI state"""
-    parent = Path(root) / '.install' / 'model-calibration'
-    if not parent.is_dir():
-        return []
+    root = Path(root)
+    parents = [root / '.serialarm' / 'model-calibration']
+    if legacy_root is not None:
+        parents.append(Path(legacy_root) / '.install' / 'model-calibration')
+    else:
+        parents.append(root / '.install' / 'model-calibration')
+    directories = [folder for parent in parents if parent.is_dir() for folder in parent.iterdir()
+                   if folder.is_dir() and folder.name.startswith('model-calibration-')]
     records = []
-    for folder in sorted((x for x in parent.iterdir() if x.is_dir() and x.name.startswith('model-calibration-')),
-                         key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
+    for folder in sorted(directories, key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
         try:
-            records.append(load_model_calibration_summary(folder))
+            record = load_model_calibration_summary(folder)
+            recorded_profile = (record.get('metadata') or {}).get('profile')
+            if profile_name and recorded_profile and recorded_profile != profile_name:
+                continue
+            records.append(record)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             records.append({'directory': str(folder.resolve()), 'task_id': folder.name, 'can_resume': False,
                             'record_kind': 'invalid', 'trajectory': {'valid': False, 'samples': 0},

@@ -99,16 +99,10 @@ class ProfileLibrary:
         _atomic_yaml(self.library_file, {'profiles': data.get('profiles', {}), 'hidden_builtin': sorted(set(data.get('hidden_builtin', [])))})
 
     def _readiness_path(self, profile_file, profile):
-        safe=''.join(c if c.isalnum() or c in '_-' else '_' for c in str(profile)) or 'profile'
-        profile_path = Path(profile_file).expanduser().resolve() if profile_file else None
-        builtin_root = (self.root / 'src/robot_supports/profiles').resolve()
-        if profile_path is None:
-            return self.library_file.parent / 'readiness' / f'{safe}.yaml'
-        try:
-            profile_path.relative_to(builtin_root)
-            return self.library_file.parent / 'readiness' / f'{safe}.yaml'
-        except ValueError:
-            return profile_path.parent / '.serialarm' / 'readiness' / f'{safe}.yaml'
+        # Profile-specific state, including installed built-ins, is never shared
+        # between unrelated robot identities
+        from profile_storage import profile_home
+        return profile_home({'profile': profile, 'profile_file': profile_file}, self.root) / '.serialarm' / 'readiness' / 'checks.yaml'
 
     _STAGES = ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration',
                'gravity_verification', 'dynamics_calibration', 'validation')
@@ -179,8 +173,13 @@ class ProfileLibrary:
 
     def _readiness_meta(self, info):
         path = self._readiness_path(info['profile_file'], info['profile'])
+        # Existing verification notes remain readable after switching to
+        # the Profile-local directory. New writes always use the new location
+        safe = ''.join(c if c.isalnum() or c in '_-' else '_' for c in str(info['profile'])) or 'profile'
+        old_path = (self.library_file.parent / 'readiness' / f'{safe}.yaml') if str(info['profile_file']).startswith(str(self.root / 'src/robot_supports/profiles')) else (Path(info['profile_file']).parent / '.serialarm' / 'readiness' / f'{safe}.yaml')
+        source = path if path.is_file() else old_path
         try:
-            meta = yaml.safe_load(path.read_text()) if path.is_file() else {}
+            meta = yaml.safe_load(source.read_text()) if source.is_file() else {}
         except (OSError, yaml.YAMLError):
             meta = {}
         return path, meta if isinstance(meta, dict) else {}

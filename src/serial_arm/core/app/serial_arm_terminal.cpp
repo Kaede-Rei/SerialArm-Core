@@ -995,6 +995,11 @@ public:
                     if(!request["method"] || !request["method"].IsScalar()) throw std::runtime_error("method is required");
                     const std::string method = request["method"].as<std::string>();
                     const YAML::Node params = request["params"];
+                    if((teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3) &&
+                       method != "status" && method != "teach_replay_status" &&
+                       method != "teach_replay_record_stop" && method != "teach_replay_stop" &&
+                       method != "deactivate" && method != "hold" && method != "shutdown")
+                        throw std::runtime_error("stop the independent teaching or replay task before other commands");
 
                     if(method == "status") {
                         emit_reply(id, machine_snapshot_json());
@@ -1008,6 +1013,7 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "park") {
+                        if(teach_replay_phase_.load()==1||teach_replay_phase_.load()==3)throw std::runtime_error("stop teaching/replay before automatic park");
                         if(gravity_verify_active_) throw std::runtime_error("automatic park uses tracking modes; use supported gravity verification stop");
                         // The demonstration is already stopped in this phase.
                         // Parking is an explicit operator decision to abandon
@@ -1125,6 +1131,13 @@ public:
                         machine_friction_replay_start();
                         emit_reply(id, machine_calibration_status_json());
                     }
+                    else if(method == "teach_replay_status") { emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_record_begin") { machine_teach_record_begin(); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_record_stop") { machine_teach_record_stop(); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_save") { machine_teach_save(params["path"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_load") { machine_teach_load(params["path"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_play") { machine_teach_play(params["direction"].as<std::string>(), params["rate"].as<double>(), params["cycles"].as<int>(), params["confirmed"].as<bool>(), params["mode"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_stop") { machine_teach_replay_stop(); emit_reply(id, machine_teach_replay_json()); }
                     else if(method == "model_calibration_teach_begin") {
                         machine_model_calibration_teach_begin(params);
                         emit_reply(id, machine_model_calibration_status_json());
@@ -1208,6 +1221,8 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "shutdown") {
+                        if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
+                        if(teach_replay_phase_.load()==1){teach_replay_record_stop_.store(true);cycle_cv_.notify_all();if(teach_replay_worker_.joinable())teach_replay_worker_.join();}
                         if(gravity_verify_active_ && machine_robot_state() != RobotState::INACTIVE)
                             throw std::runtime_error("gravity verification must be stopped with physical support before shutdown");
                         if(gravity_verify_active_) machine_gravity_verify_cancel();
@@ -1229,6 +1244,8 @@ public:
             }
         }
         catch(...) {
+            teach_replay_record_stop_.store(true);teach_replay_stop_.store(true);model_calibration_cancel_.store(true);cycle_cv_.notify_all();
+            if(teach_replay_worker_.joinable())teach_replay_worker_.join();
             if(machine_friction_thread_.joinable()) {
                 machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
             }
@@ -1236,6 +1253,8 @@ public:
             throw;
         }
 
+        teach_replay_record_stop_.store(true);teach_replay_stop_.store(true);model_calibration_cancel_.store(true);cycle_cv_.notify_all();
+        if(teach_replay_worker_.joinable())teach_replay_worker_.join();
         if(machine_calibration_kind_ != "none") machine_calibration_cancel();
         if(machine_friction_thread_.joinable()) {
             machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
@@ -1352,6 +1371,8 @@ private:
     }
 
     void machine_require_no_calibration(const char* action) const {
+        if(teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3)
+            throw std::runtime_error(std::string(action) + " is blocked by teaching/replay");
         if(machine_calibration_kind_ != "none" || model_calibration_task_active()) {
             throw std::runtime_error(std::string(action) + " is blocked while a calibration task is active");
         }
@@ -1372,6 +1393,8 @@ private:
     }
 
     void machine_deactivate() {
+        if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
+        if(teach_replay_phase_.load()==1){teach_replay_record_stop_.store(true);cycle_cv_.notify_all();if(teach_replay_worker_.joinable())teach_replay_worker_.join();}
         const auto teaching_phase = model_calibration_phase_.load();
         const bool stopping_teaching = teaching_phase == ModelCalibrationPhase::TEACHING ||
             ((teaching_phase == ModelCalibrationPhase::FAILED || teaching_phase == ModelCalibrationPhase::CANCELLED) &&
@@ -1450,6 +1473,7 @@ private:
     }
 
     void machine_set_impedance_mode(JointImpedanceMode mode) {
+        if(teach_replay_phase_.load()==1||teach_replay_phase_.load()==3)throw std::runtime_error("teaching or replay owns the control mode");
         machine_require_no_calibration("set_impedance_mode");
         if(gravity_verify_active_) throw std::runtime_error("impedance mode is owned by gravity verification");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1680,6 +1704,7 @@ private:
     }
 
     void machine_move_to(const JointVector& values, double speed_scale, bool relative) {
+        if(teach_replay_phase_.load()==1||teach_replay_phase_.load()==3)throw std::runtime_error("teaching or replay owns motion");
         machine_require_no_calibration("motion");
         if(gravity_verify_active_) throw std::runtime_error("tracking commands are blocked during gravity verification");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1696,6 +1721,7 @@ private:
     }
 
     void machine_hold() {
+        if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
         if(model_calibration_task_active()) model_calibration_pause_.store(true);
         else machine_require_no_calibration("hold");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -1896,7 +1922,234 @@ private:
         model_calibration_update_progress(0, 0);
     }
 
+    // General-purpose teaching and replay is independent from the calibration task state
+    std::string machine_teach_replay_json() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        std::ostringstream out;
+        out << "{\"phase\":\"" << (teach_replay_phase_ == 1 ? "recording" : teach_replay_phase_ == 2 ? "ready" : teach_replay_phase_ == 3 ? "playing" : teach_replay_phase_ == 4 ? "failed" : "idle") << '"';
+        out << ",\"error\":\"" << machine_json_escape(teach_replay_error_) << '"';
+        out << ",\"completed\":" << teach_replay_completed_.load();
+        if(teach_replay_trajectory_ && !teach_replay_trajectory_->positions.empty()) {
+            const auto& t = *teach_replay_trajectory_;
+            out << ",\"samples\":" << t.positions.size() << ",\"duration_s\":" << (t.positions.size()-1)*t.sample_dt;
+            out << ",\"start\":";machine_json_joint_vector(out,t.positions.front());
+            out << ",\"end\":";machine_json_joint_vector(out,t.positions.back());
+        }
+        out << '}';return out.str();
+    }
+
+    void machine_teach_record_begin() {
+        machine_require_no_calibration("teach record");
+        if(teach_replay_phase_.load() == 1 || teach_replay_phase_.load() == 3)
+            throw std::runtime_error("a teaching or playback operation is active");
+        if(teach_replay_worker_.joinable()) teach_replay_worker_.join();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state()!=RobotState::ACTIVE || !last_output_ || !dynamics_.is_updated())
+                throw std::runtime_error("recording requires ACTIVE robot and valid dynamics feedback");
+            if(robot_.get_model_feedforward_mode()!=ModelFeedforwardMode::GRAVITY)
+                throw std::runtime_error("drag teaching requires GRAVITY feedforward");
+            const auto now_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+            if(!feedback_time_ns_ || now_ns<feedback_time_ns_ || now_ns-feedback_time_ns_>150000000)
+                throw std::runtime_error("drag teaching requires fresh hardware feedback");
+            if(!std::any_of(cfg_.dynamics.gravity_scale.begin(),cfg_.dynamics.gravity_scale.end(),[](double v){return v>0.0;}))
+                throw std::runtime_error("drag teaching requires nonzero gravity compensation");
+            const auto& gains=cfg_.ctrller.compliant_drag_gains;
+            if(gains.kd.size()!=cfg_.joint_names.size() || std::any_of(gains.kd.begin(),gains.kd.end(),[](double d){return !std::isfinite(d)||d<=0;}))
+                throw std::runtime_error("drag teaching requires positive damping");
+            const auto result=robot_.set_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG);
+            if(!result)throw machine_robot_error("teach drag",result.error());
+            clear_command_sources();
+            teach_replay_trajectory_.reset(); teach_replay_error_.clear();
+            teach_replay_record_stop_.store(false);
+            teach_replay_phase_.store(1);
+            teach_replay_completed_.store(0);
+        }
+        teach_replay_worker_=std::thread([this] {
+            auto recorded=collect_friction_drag_trajectory_until_stop(teach_replay_record_stop_);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(recorded && friction_trajectory_inside_safe_replay_range(*recorded)) {
+                teach_replay_trajectory_=std::move(*recorded);teach_replay_phase_.store(2);
+            } else {
+                teach_replay_error_="trajectory is too short or exceeds URDF joint safety margins";
+                teach_replay_phase_.store(4);
+            }
+        });
+    }
+
+    void machine_teach_record_stop() {
+        if(teach_replay_phase_.load()!=1 && teach_replay_phase_.load()!=4)
+            throw std::runtime_error("not recording a trajectory");
+        teach_replay_record_stop_.store(true);cycle_cv_.notify_all();
+        if(teach_replay_worker_.joinable())teach_replay_worker_.join();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(robot_.get_state()==RobotState::ACTIVE) {
+            const auto hold=robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+            if(!hold)throw machine_robot_error("teach recording hold",hold.error());
+        }
+    }
+
+    void machine_teach_save(const std::string& filename) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(teach_replay_phase_.load()!=2 || !teach_replay_trajectory_)
+            throw std::runtime_error("no completed teaching trajectory to save");
+        const std::filesystem::path path(filename);
+        if(path.extension()!=".csv" || !std::filesystem::is_directory(path.parent_path()))
+            throw std::runtime_error("invalid output path");
+        std::ofstream out(path,std::ios::trunc);
+        if(!out)throw std::runtime_error("unable to write trajectory");
+        out << std::setprecision(17) << "sample_dt," << teach_replay_trajectory_->sample_dt << '\n';
+        for(std::size_t j=0;j<cfg_.joint_names.size();++j){if(j)out << ',';out << cfg_.joint_names[j];}out << '\n';
+        for(const auto& row:teach_replay_trajectory_->positions){
+            for(std::size_t j=0;j<row.size();++j){if(j)out << ',';out << row[j];}out << '\n';
+        }
+        if(!out)throw std::runtime_error("failed to write complete trajectory");
+    }
+
+    void machine_teach_load(const std::string& filename) {
+        if(teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3)
+            throw std::runtime_error("stop active recording or replay before loading");
+        if(teach_replay_worker_.joinable())teach_replay_worker_.join();
+        std::ifstream file(filename);if(!file)throw std::runtime_error("trajectory file unavailable");
+        std::string line;std::getline(file,line);
+        if(line.rfind("sample_dt,",0)!=0)throw std::runtime_error("invalid trajectory sample interval header");
+        FrictionCalibrationTrajectory trajectory;
+        trajectory.sample_dt=std::stod(line.substr(10));
+        if(!std::isfinite(trajectory.sample_dt)||trajectory.sample_dt<0.001||trajectory.sample_dt>1.0)
+            throw std::runtime_error("trajectory sample interval is outside supported limits");
+        std::getline(file,line);std::ostringstream header;
+        for(std::size_t i=0;i<cfg_.joint_names.size();++i){if(i)header << ',';header<<cfg_.joint_names[i];}
+        if(line!=header.str())throw std::runtime_error("trajectory joint names or order differ from the loaded Profile");
+        while(std::getline(file,line)) {
+            if(line.empty())continue;
+            JointVector row;std::istringstream in(line);std::string item;
+            while(std::getline(in,item,',')){
+                std::size_t used=0;double value=std::stod(item,&used);
+                if(used!=item.size()||!std::isfinite(value))throw std::runtime_error("invalid trajectory position");
+                row.push_back(value);
+            }
+            if(row.size()!=cfg_.joint_names.size())throw std::runtime_error("trajectory joint column count mismatch");
+            trajectory.positions.push_back(std::move(row));
+            if(trajectory.positions.size()>300000)throw std::runtime_error("trajectory has too many samples");
+        }
+        if(trajectory.positions.size()<20 || !friction_trajectory_inside_safe_replay_range(trajectory))
+            throw std::runtime_error("trajectory is too short or violates safety limits");
+        std::lock_guard<std::mutex> lock(mutex_);
+        teach_replay_trajectory_=std::move(trajectory);teach_replay_phase_.store(2);teach_replay_error_.clear();
+    }
+
+    void machine_teach_replay_stop() {
+        if(teach_replay_phase_.load()!=3)throw std::runtime_error("no replay task is active");
+        teach_replay_stop_.store(true);model_calibration_cancel_.store(true);
+        cycle_cv_.notify_all();
+        if(teach_replay_worker_.joinable())teach_replay_worker_.join();
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(teach_replay_phase_.load()==3)teach_replay_phase_.store(2);
+        if(robot_.get_state()==RobotState::ACTIVE){
+            clear_command_sources();
+            const auto hold=robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+            if(!hold)throw machine_robot_error("teach replay stop",hold.error());
+        }
+        model_calibration_active_tracking_gains_.reset();model_calibration_cancel_.store(false);
+    }
+
+    void machine_teach_play(const std::string& direction,double rate,int cycles,bool released,const std::string& tracking_mode) {
+        if(tracking_mode!="RIGID_TRACKING" && tracking_mode!="COMPLIANT_TRACKING")
+            throw std::runtime_error("replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING");
+        const auto replay_mode=tracking_mode=="COMPLIANT_TRACKING" ? JointImpedanceMode::COMPLIANT_TRACKING : JointImpedanceMode::RIGID_TRACKING;
+        if(!released)throw std::runtime_error("workspace and released-hand confirmation required");
+        if(direction!="forward"&&direction!="reverse"&&direction!="cycle"&&direction!="return")
+            throw std::runtime_error("unknown replay direction");
+        if(!std::isfinite(rate)||rate<0.05||rate>1.0||cycles<1||cycles>100)
+            throw std::runtime_error("invalid replay speed or repeat count");
+        if(teach_replay_phase_.load()!=2 || !teach_replay_trajectory_)
+            throw std::runtime_error("load or record a trajectory before replay");
+        machine_require_no_calibration("teach replay");
+        if(teach_replay_worker_.joinable())teach_replay_worker_.join();
+        FrictionCalibrationTrajectory planned;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state()!=RobotState::ACTIVE || !last_output_ || !last_output_->joint_state.pos.size())
+                throw std::runtime_error("replay requires valid ACTIVE feedback");
+            if(robot_.get_impedance_mode()==JointImpedanceMode::COMPLIANT_DRAG)
+                throw std::runtime_error("leave compliant drag before replay");
+            const auto now_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+            if(!feedback_time_ns_ || now_ns<feedback_time_ns_ || now_ns-feedback_time_ns_>150000000)
+                throw std::runtime_error("replay requires fresh control feedback");
+            planned=*teach_replay_trajectory_;
+        }
+        // Re-time both directions using the actual URDF/Safety limits
+        auto retimed=serial_arm::calibration_retime::plan(planned.positions,
+            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,cfg_.runtime.ctrl_frequency_hz,0.003,{});
+        planned.positions=std::move(retimed.positions);planned.sample_dt=retimed.sample_dt;
+        if(!friction_trajectory_inside_safe_replay_range(planned))
+            throw std::runtime_error("re-timed trajectory violates joint margins");
+        FrictionCalibrationTrajectory interpolated;
+        interpolated.sample_dt=planned.sample_dt/4.0;
+        for(std::size_t k=0;k+1<planned.positions.size();++k)
+            for(int quarter=0;quarter<4;++quarter)
+                interpolated.positions.push_back(serial_arm::calibration_retime::interpolate(
+                    planned.positions,static_cast<double>(k)+0.25*quarter,planned.sample_dt,1.0).position);
+        interpolated.positions.push_back(planned.positions.back());
+        if(!friction_trajectory_inside_safe_replay_range(interpolated))
+            throw std::runtime_error("interpolated playback would exceed URDF joint safety margins");
+        const bool reverse=(direction=="reverse"||direction=="return");
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            const auto& expected=reverse?planned.positions.back():planned.positions.front();
+            const auto& state=last_output_->joint_state;
+            if(state.pos.size()!=expected.size())throw std::runtime_error("joint feedback size mismatch");
+            double max_error=0,max_speed=0;
+            for(std::size_t i=0;i<expected.size();++i){max_error=std::max(max_error,std::abs(state.pos[i]-expected[i]));max_speed=std::max(max_speed,std::abs(state.vel[i]));}
+            if(max_error>0.08 || max_speed>0.05)
+                throw std::runtime_error("robot is not aligned with selected trajectory endpoint (0.08 rad / 0.05 rad/s), return manually or using the already verified reverse path");
+            const auto mode=robot_.set_impedance_mode(replay_mode);
+            if(!mode)throw machine_robot_error("teach replay tracking",mode.error());
+            clear_command_sources();
+            model_calibration_cancel_.store(false);teach_replay_stop_.store(false);
+            model_calibration_error_.clear();
+            model_calibration_active_tracking_gains_=replay_mode==JointImpedanceMode::COMPLIANT_TRACKING ? cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains;
+            teach_replay_phase_.store(3);teach_replay_error_.clear();teach_replay_completed_.store(0);
+        }
+        teach_replay_worker_=std::thread([this,path=std::move(planned),direction,rate,cycles,tracking_mode]() {
+            bool failed=false;
+            const int passes=direction=="return"?1:direction=="cycle"?2*cycles:direction=="forward"?2*cycles-1:2*cycles-1;
+            const bool first_reverse=direction=="reverse"||direction=="return";
+            for(int pass=0;pass<passes && !teach_replay_stop_.load();++pass){
+                const bool reverse=first_reverse ? pass%2==0 : pass%2!=0;
+                auto ordered=path.positions;
+                if(reverse)std::reverse(ordered.begin(),ordered.end());
+                const auto count=ordered.size();
+                const double step=rate/(cfg_.runtime.ctrl_frequency_hz*path.sample_dt);
+                if(!std::isfinite(step)||step<=0.0){failed=true;break;}
+                double progress=0.0;
+                while(progress<static_cast<double>(count-1) && !teach_replay_stop_.load()){
+                    progress=std::min(progress+step,static_cast<double>(count-1));
+                    const auto sample=serial_arm::calibration_retime::interpolate(ordered,progress,path.sample_dt,rate);
+                    if(!model_calibration_send_reference(sample.position,sample.velocity,
+                            false,nullptr,nullptr,true,tracking_mode=="COMPLIANT_TRACKING")){
+                        failed=!teach_replay_stop_.load();break;
+                    }
+                }
+                if(failed)break;
+                teach_replay_completed_.store(pass+1);
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state()==RobotState::ACTIVE){
+                clear_command_sources();
+                const auto held=robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+                if(!held && !failed){failed=true;teach_replay_error_="unable to enter safe hold after replay";}
+            }
+            if(failed){
+                if(teach_replay_error_.empty())teach_replay_error_="trajectory replay stopped before completion";
+                teach_replay_phase_.store(4);
+            }else teach_replay_phase_.store(2);
+            model_calibration_active_tracking_gains_.reset();
+        });
+    }
+
     void machine_model_calibration_teach_begin(const YAML::Node& params) {
+        if(teach_replay_phase_.load()==1||teach_replay_phase_.load()==3)throw std::runtime_error("finish teaching playback before calibration");
         if(machine_calibration_kind_ != "none" || model_calibration_task_active()) {
             throw std::runtime_error("another calibration task is active");
         }
@@ -1941,7 +2194,8 @@ private:
         model_calibration_task_id_ = machine_model_calibration_task_id();
         model_calibration_core_fingerprint_ = model_calibration_file_fingerprint(config_path_);
         model_calibration_urdf_fingerprint_ = model_calibration_file_fingerprint(cfg_.dynamics.urdf_path);
-        const std::filesystem::path root = std::filesystem::current_path() / ".install" / "model-calibration";
+        const char* storage = std::getenv("SERIAL_ARM_PROFILE_STORAGE");
+        const std::filesystem::path root = storage && *storage ? std::filesystem::path(storage) / "model-calibration" : std::filesystem::current_path() / ".install" / "model-calibration";
         model_calibration_directory_ = (root / model_calibration_task_id_).string();
         const auto recorder = model_calibration_recorder_.start(model_calibration_directory_, model_calibration_metadata());
         if(!recorder) {
@@ -2306,7 +2560,9 @@ private:
         model_calibration_task_id_ = machine_model_calibration_task_id();
         model_calibration_core_fingerprint_ = model_calibration_file_fingerprint(config_path_);
         model_calibration_urdf_fingerprint_ = model_calibration_file_fingerprint(cfg_.dynamics.urdf_path);
-        model_calibration_directory_ = (std::filesystem::current_path() / ".install" / "model-calibration" / model_calibration_task_id_).string();
+        const char* storage = std::getenv("SERIAL_ARM_PROFILE_STORAGE");
+        const std::filesystem::path calibration_root = storage && *storage ? std::filesystem::path(storage) / "model-calibration" : std::filesystem::current_path() / ".install" / "model-calibration";
+        model_calibration_directory_ = (calibration_root / model_calibration_task_id_).string();
         const auto started = model_calibration_recorder_.start(model_calibration_directory_, model_calibration_metadata());
         if(!started) throw std::runtime_error(started.error());
         try {
@@ -2562,7 +2818,9 @@ private:
     bool model_calibration_send_reference(const JointVector& ref_pos, const JointVector& ref_vel,
                                           bool allow_gain_revision=false,
                                           serial_arm::calibration_gain_adaptation::PassMetrics* metrics=nullptr,
-                                          const serial_arm::calibration_replay_supervisor::CompliantBounds* compliant_limits=nullptr) {
+                                          const serial_arm::calibration_replay_supervisor::CompliantBounds* compliant_limits=nullptr,
+                                          bool standalone_replay=false,
+                                          bool compliant_replay=false) {
         // Keep the demonstrated path.  Supervise EACH replay point using live
         // feedback; when catching up, position reference is frozen AND target
         // velocity becomes ZERO.  Holding a nonzero target velocity was able to
@@ -2576,9 +2834,15 @@ private:
         // criterion. Keep the pause threshold consistent with that criterion
         // while the independent hard following guard always remains active.
         const bool frozen_gain_verification=metrics && !allow_gain_revision;
-        const double pause_soft_ratio=frozen_gain_verification ?
+        // Ordinary compliant playback is intentionally softer than frozen-gain
+        // validation, while the independent hard-following limit stays unchanged.
+        // A longer bounded catch-up lets compliant motors settle without
+        // falsely reporting a calibration failure.
+        const double pause_soft_ratio=standalone_replay && compliant_replay ? 1.5 :
+            frozen_gain_verification ?
             (compliant_limits ? serial_arm::calibration_gain_adaptation::compliant_validation_max_error_ratio :
                                 serial_arm::calibration_gain_adaptation::rigid_validation_max_error_ratio) : 1.0;
+        std::string& follow_error=standalone_replay ? teach_replay_error_ : model_calibration_error_;
         std::unique_lock<std::mutex> lock(mutex_);
         if(robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load() ||
            ref_pos.size()!=cfg_.joint_names.size() || ref_vel.size()!=ref_pos.size()) return false;
@@ -2589,7 +2853,7 @@ private:
                 serial_arm::calibration_replay_supervisor::command_velocity(ref_vel,hold)};
             const auto sent=robot_.set_cmd(cmd,Robot::Clock::now());
             if(!sent) {
-                model_calibration_error_="calibration replay reference command rejected";
+                follow_error=(standalone_replay ? "trajectory replay reference command rejected" : "calibration replay reference command rejected");
                 return false;
             }
             heartbeat.command_sent(Robot::Clock::now());
@@ -2602,7 +2866,7 @@ private:
             const auto first=evaluate(ref_pos,last_output_->joint_state.pos,
                 last_output_->joint_state.vel,cfg_.safety.limits.max_vel,pause_soft_ratio);
             if(!first.valid || first.hard_violation) {
-                model_calibration_error_="calibration replay initial reference exceeds hard following limit";
+                follow_error=(standalone_replay ? "trajectory replay initial reference exceeds hard following limit" : "calibration replay initial reference exceeds hard following limit");
                 return false;
             }
             if(first.state==State::PAUSE_FOR_FEEDBACK) {
@@ -2626,7 +2890,7 @@ private:
                 fresh_feedback=true;
             }
             if(heartbeat.feedback_stalled(now)) {
-                model_calibration_error_="calibration replay control feedback stalled";
+                follow_error=(standalone_replay ? "trajectory replay control feedback stalled" : "calibration replay control feedback stalled");
                 return false;
             }
             if(fresh_feedback && last_output_ &&
@@ -2636,7 +2900,7 @@ private:
                 const auto& velocity=last_output_->joint_state.vel;
                 const auto status=evaluate(ref_pos,actual,velocity,cfg_.safety.limits.max_vel,pause_soft_ratio);
                 if(!status.valid) {
-                    model_calibration_error_="calibration replay feedback is invalid";
+                    follow_error=(standalone_replay ? "trajectory replay feedback is invalid" : "calibration replay feedback is invalid");
                     return false;
                 }
                 if(metrics)metrics->observe(status.max_error / status.soft_limit[status.worst_joint]);
@@ -2644,13 +2908,13 @@ private:
                 if(status.hard_violation) {
                     std::ostringstream diagnostic;
                     diagnostic<<std::fixed<<std::setprecision(4)
-                        <<"calibration replay hard following limit reached: joint="
+                        <<(standalone_replay ? "trajectory replay hard following limit reached: joint=" : "calibration replay hard following limit reached: joint=")
                         <<cfg_.joint_names[status.worst_joint]
                         <<" actual="<<actual[status.worst_joint]
                         <<" reference="<<ref_pos[status.worst_joint]
                         <<" error="<<status.max_error
                         <<" hard_limit="<<status.hard_limit[status.worst_joint];
-                    model_calibration_error_=diagnostic.str();
+                    follow_error=diagnostic.str();
                     return false;
                 }
                 // Search revises gains on a measurable rising error BEFORE
@@ -2667,7 +2931,7 @@ private:
                 if(braking && status.state==State::FOLLOWING &&
                    status.peak_velocity<=status.recovery_velocity_limit) return true;
                 if(!model_calibration_active_tracking_gains_) {
-                    model_calibration_error_="automatic calibration replay gains are unavailable";
+                    follow_error=(standalone_replay ? "trajectory replay tracking gains are unavailable" : "automatic calibration replay gains are unavailable");
                     return false;
                 }
                 // Only a real, fresh feedback response can trigger a revision.
@@ -2691,7 +2955,7 @@ private:
                         if(!robot_.set_calibration_tracking_gains(next,
                             model_calibration_workflow_kind_=="gain" && model_calibration_gain_stage_.load()==1 ?
                             JointImpedanceMode::COMPLIANT_TRACKING : JointImpedanceMode::RIGID_TRACKING)) {
-                            model_calibration_error_="calibration replay gain revision rejected by safety limits";
+                            follow_error="calibration replay gain revision rejected by safety limits";
                             return false;
                         }
                         model_calibration_active_tracking_gains_=std::move(next);
@@ -2701,12 +2965,13 @@ private:
                     model_calibration_last_replay_gain_revision_=now;
                 }
                 if(status.state==State::FOLLOWING && !braking)return true;
-                if(heartbeat.catchup_expired(now,allow_gain_revision)) {
+                if(heartbeat.catchup_expired(now,allow_gain_revision || (standalone_replay && compliant_replay))) {
                     std::ostringstream diagnostic;
                     diagnostic<<std::fixed<<std::setprecision(4)
                         <<(frozen_gain_verification ?
                             "calibration frozen gain verification following limit exceeded: joint=" :
-                            "calibration replay soft following recovery timed out: joint=")
+                            (standalone_replay ? "trajectory replay soft following recovery timed out: joint=" :
+                            "calibration replay soft following recovery timed out: joint="))
                         <<cfg_.joint_names[status.worst_joint]
                         <<" actual="<<actual[status.worst_joint]
                         <<" reference="<<ref_pos[status.worst_joint]
@@ -2723,12 +2988,14 @@ private:
                             0.80*status.hard_limit[status.worst_joint])
                         <<" error_ratio="<<error_ratio
                         <<" validation="<<(frozen_gain_verification?"true":"false")
-                        <<" phase="<<(model_calibration_workflow_kind_=="gain"?"gain":"gravity");
-                    model_calibration_error_=diagnostic.str();
+                        <<" phase="<<(standalone_replay ? "teach_replay" :
+                            model_calibration_workflow_kind_=="gain" ? "gain" : "gravity")
+                        <<" tracking_mode="<<(standalone_replay ? (compliant_replay ? "COMPLIANT_TRACKING" : "RIGID_TRACKING") : "calibration");
+                    follow_error=diagnostic.str();
                     return false;
                 }
-            } else if(heartbeat.catchup_expired(now,allow_gain_revision)) {
-                model_calibration_error_="calibration replay did not receive fresh control feedback";
+            } else if(heartbeat.catchup_expired(now,allow_gain_revision || (standalone_replay && compliant_replay))) {
+                follow_error=(standalone_replay ? "trajectory replay did not receive fresh control feedback" : "calibration replay did not receive fresh control feedback");
                 return false;
             }
             // The reference stays live for the native 100 ms CMD_TIMEOUT even
@@ -4037,7 +4304,7 @@ private:
         out << ",\"alignment_active\":" << (model_calibration_alignment_active_.load() ? "true" : "false");
         if(!model_calibration_source_task_id_.empty()) out << ",\"original_start_selected\":" << (model_calibration_source_reversed_.load() ? "true" : "false");
         if(!model_calibration_source_task_id_.empty()) out << ",\"source_task_id\":\"" << machine_json_escape(model_calibration_source_task_id_) << "\"";
-        if(!model_calibration_source_task_id_.empty() && model_calibration_trajectory_ && !model_calibration_trajectory_->positions.empty()) {
+        if(model_calibration_trajectory_ && !model_calibration_trajectory_->positions.empty()) {
             out << ",\"replay_start_joint_positions\":";
             machine_json_joint_vector(out, model_calibration_trajectory_->positions.back());
         }
@@ -4334,6 +4601,15 @@ private:
         out << '}';
         out << ",\"calibration\":" << machine_calibration_status_json();
         out << ",\"model_calibration\":" << machine_model_calibration_status_json();
+        out << ",\"teach_replay\":{\"phase\":\"" << (teach_replay_phase_ == 1 ? "recording" : teach_replay_phase_ == 2 ? "ready" : teach_replay_phase_ == 3 ? "playing" : teach_replay_phase_ == 4 ? "failed" : "idle") << '"';
+        out << ",\"completed\":" << teach_replay_completed_.load();
+        if(teach_replay_trajectory_ && !teach_replay_trajectory_->positions.empty()) {
+            out << ",\"start\":";machine_json_joint_vector(out,teach_replay_trajectory_->positions.front());
+            out << ",\"end\":";machine_json_joint_vector(out,teach_replay_trajectory_->positions.back());
+        }
+        if(!teach_replay_error_.empty())out << ",\"error\":\"" << machine_json_escape(teach_replay_error_) << '"';
+        out << '}';
+
         out << ",\"joint_names\":[";
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
             if(i) out << ',';
@@ -7032,6 +7308,14 @@ private:
     std::optional<FrictionCalibrationTrajectory> machine_friction_trajectory_;
     double machine_friction_replay_rate_{ 0.0 };
     std::string machine_calibration_error_;
+
+    std::atomic<int> teach_replay_phase_{0};
+    std::atomic<bool> teach_replay_record_stop_{false};
+    std::atomic<bool> teach_replay_stop_{false};
+    std::atomic<int> teach_replay_completed_{0};
+    std::thread teach_replay_worker_;
+    std::optional<FrictionCalibrationTrajectory> teach_replay_trajectory_;
+    std::string teach_replay_error_;
 
     mutable std::mutex model_calibration_mutex_;
     std::condition_variable model_calibration_cv_;

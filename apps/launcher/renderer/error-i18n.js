@@ -3,6 +3,23 @@
 // "原始技术诊断" expandable section, and backend protocols remain stable.
 (function (root) {
     const explanations = [
+        [/replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING/i, '轨迹回放只支持刚性跟踪或柔性跟踪'],
+        [/replay requires valid ACTIVE feedback/i, '轨迹回放需要机械臂已使能并且实时反馈有效'],
+        [/replay requires fresh control feedback/i, '轨迹回放的实际反馈已过期，请检查通信与控制周期'],
+        [/robot is not aligned with selected trajectory endpoint/i, '当前关节姿态尚未对齐轨迹端点，请先安全返回对应起点或终点'],
+        [/re-timed trajectory violates joint margins|interpolated playback would exceed URDF joint safety margins/i, '轨迹插值后的路径可能超过 URDF 关节安全范围，请重新示教并保留限位余量'],
+        [/drag teaching requires GRAVITY feedforward/i, '轨迹示教需要先在失能状态启用 GRAVITY 重力前馈，再使能执行柔性拖拽'],
+        [/drag teaching requires positive damping/i, '轨迹示教需要每个关节的柔性拖拽阻尼为正数'],
+        [/drag teaching requires nonzero gravity compensation/i, '轨迹示教需要有效且非零的重力补偿比例'],
+        [/load or record a trajectory before replay/i, '请先录制或从轨迹管理中载入一条轨迹'],
+        [/trajectory file unavailable|trajectory file not found/i, '轨迹数据文件不存在，请检查轨迹文件夹的位置与权限'],
+        [/trajectory joint names or order differ/i, '轨迹的关节名称或顺序与当前机械臂不一致，不能直接回放'],
+        [/trajectory is too short or exceeds URDF joint safety margins/i, '示教轨迹不足或超出 URDF 关节安全范围，请重新录制'],
+        [/finish teaching playback before calibration/i, '请先停止示教回放任务，再启动其他操作'],
+        [/no replay task is active/i, '当前没有正在执行的示教回放任务'],
+        [/stop active recording or replay before loading/i, '请先结束当前录制或回放，再选择其他轨迹'],
+        [/workspace and released-hand confirmation required/i, '回放前请确认人员、负载、线缆与工作空间安全，并完全松开机械臂'],
+
         [/model calibration stopped by safety fault/i, '示教或回放已被机械臂安全故障中断 不会自动重新使能，请先检查故障和机械臂支撑状态'],
         [/MOTOR_BUS_ACTIVATE_FAILED|ENABLE_FAILED|ACTUATOR_OFFLINE/i, '执行器使能失败或电机离线 请检查电机供电、急停、CAN 连接和电机状态；供电恢复后可清除启动故障并重新使能'],
         [/MOTOR_BUS_CONNECT_FAILED|OPEN_FAILED|NOT_CONNECTED/i, '执行器通信连接失败 请检查 USB-CAN 设备、串口权限、线缆和电机供电'],
@@ -25,6 +42,11 @@
         [/\bJOINT_VEL_LIMIT\b/i, '实测关节速度超出安全限制'],
         [/\bCMD_VEL_LIMIT\b/i, '下发的关节速度超过安全限制'],
         [/\bSAFETY_FAILED\b/i, '机器人安全检查未通过，请核对关节状态、反馈和控制限制'],
+        [/trajectory replay soft following recovery timed out/i, '示教回放中关节未能在限定时间内追上参考轨迹，任务已停止 这不是触及硬安全限位 柔性跟踪可尝试降低回放速度或调整对应关节的跟踪增益'],
+        [/trajectory replay hard following limit reached/i, '示教回放已触及硬跟踪误差保护，任务已中止 请检查控制增益、负载、摩擦和实际关节响应'],
+        [/trajectory replay initial reference exceeds hard following limit/i, '当前实际姿态与轨迹起点偏差过大，已拒绝回放'],
+        [/trajectory replay control feedback stalled|trajectory replay feedback is invalid|trajectory replay did not receive fresh control feedback/i, '示教回放期间反馈无效或已超时，任务已停止 请检查通信与控制周期'],
+        [/trajectory replay tracking gains are unavailable/i, '示教回放的跟踪增益缺失或无效'],
         [/calibration replay initial reference exceeds hard following limit/i, '自动回放起始参考位置与实测关节位置相差过大，已拒绝发送运动指令 请检查机械臂当前姿态和示教轨迹起点'],
         [/calibration replay hard following limit reached/i, '自动回放触及硬跟踪误差边界，已停止回放 请检查关节执行器和轨迹是否存在异常'],
         [/calibration frozen gain verification following limit exceeded/i, '冻结增益验收的实际跟踪误差超过允许的验收边界，当前候选未通过全速或指定柔性速度测试 这不是触发电机硬安全上限，需返回增益搜索检查跟踪能力'],
@@ -79,7 +101,7 @@
         const numbers = [...clean.matchAll(/\b(?:value|limit|position error|speed|timeout)\s*=\s*[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?(?:\s*(?:rad(?:\/s)?|ms|s))?/gi)]
             .map(m => m[0].replace(/^value=/i, '实测值=').replace(/^limit=/i, '限制值=').replace(/^position error=/i, '位置误差=').replace(/^speed=/i, '速度=').replace(/^timeout=/i, '超时='));
         const codes = [...new Set((clean.match(codePattern) || []))];
-        const replayFields = [...clean.matchAll(/\b(?:joint|actual|reference|error|soft_limit|hard_limit|kp|kd|adaptive|phase|recovery_elapsed_s|velocity|validation_pause_limit|error_ratio|validation)\s*=\s*(?:[A-Za-z_][\w-]*|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?)/gi)].map(m => m[0]);
+        const replayFields = [...clean.matchAll(/\b(?:joint|actual|reference|error|soft_limit|hard_limit|kp|kd|adaptive|phase|tracking_mode|recovery_elapsed_s|velocity|validation_pause_limit|error_ratio|validation)\s*=\s*(?:[A-Za-z_][\w-]*|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?)/gi)].map(m => m[0]);
         const diagnostic = [...new Set([...codes, ...numbers, ...replayFields])].join('，');
         if (matched) return `${action}${matched[1]}${diagnostic ? `（${diagnostic}）` : ''}`;
         const zhPortion = clean.match(/[\u3400-\u9fff][^\n]*/);

@@ -569,3 +569,19 @@ dialog .safety-acknowledgements .confirmation input{width:16px;height:16px;flex:
 /* Optional informational reminder suppression is scoped to a single Profile */
 dialog .robot-reminder-choice{display:flex;align-items:center;gap:9px;margin:6px 0 16px;font-size:12px;color:var(--muted);line-height:1.6;cursor:pointer}
 dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-color:var(--accent)}
+
+/* Independent teaching workspace */
+.teach-trajectory-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:9px;margin:12px 0}
+.teach-trajectory-item{display:flex;flex-direction:column;gap:6px;text-align:left;border:1px solid var(--border,#ddd);background:var(--surface,#fff);border-radius:11px;padding:12px;color:inherit;min-width:0;cursor:pointer}
+.teach-trajectory-item.selected{border-color:var(--accent,#df7b00);box-shadow:0 0 0 1px var(--accent,#df7b00)}
+.teach-trajectory-item small{opacity:.65;font-size:11px}
+.teach-replay-panel .row{display:flex;flex-wrap:wrap;gap:12px;margin:12px 0}
+.teach-replay-panel .row label{flex:1 1 110px;min-width:0;display:flex;flex-direction:column;gap:6px}
+.teach-replay-panel .row select,.teach-replay-panel .row input{width:100%;min-width:0}
+.teach-ghost-legend{display:inline-flex;align-items:center;gap:6px;margin-left:10px;font-size:11px;opacity:.86}
+.teach-ghost-legend:before{content:'';width:9px;height:9px;border-radius:3px;background:#16b8b0;opacity:.65}
+
+.teach-storage-location{display:flex;flex-direction:column;gap:6px;padding:10px 12px;margin:9px 0;border-radius:9px;background:var(--surface-secondary,#f7f7f8);min-width:0}
+.teach-storage-location>span,.teach-path-label{font-size:11px;opacity:.75}
+.teach-file-path{display:block;overflow-wrap:anywhere;word-break:break-all;white-space:normal;line-height:1.6;font-size:11px;user-select:text}
+.teach-trajectory-item .teach-file-path{color:var(--text-muted,#6b7280)}

@@ -61,10 +61,10 @@ def record_summary(record, kind):
             'available_files':record.get('files'), 'note':record.get('note')}
 
 
-def scan(root, kind, limit=60):
+def scan(root, kind, limit=60, *, legacy_root=None, profile_name=None):
     if kind not in KINDS: raise ValueError('未知的工具类型')
     if not isinstance(limit,int) or not 1 <= limit <= 150:raise ValueError('任务数量超限')
-    sources=list_model_calibration_records(root, max(limit, 60))
+    sources=list_model_calibration_records(root, max(limit, 60), legacy_root=legacy_root, profile_name=profile_name)
     result=[]
     for record in sources:
         if kind in classify(record):
@@ -88,7 +88,7 @@ def export_record(root, directory, kind):
     root=Path(root).resolve()
     # No symbolic links in exported task tree; avoid recursive and remote paths
     if not folder.is_dir():raise ValueError('任务记录不存在')
-    base=root/'.install'/'exports'
+    base=root/'.serialarm'/'exports'
     base.mkdir(parents=True,exist_ok=True)
     out=base/f'{folder.name}-{kind}-{int(time.time())}.zip'
     allowed={

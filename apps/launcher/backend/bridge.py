@@ -16,6 +16,7 @@ from machine import NativeSession
 from model_runtime import ModelRuntime
 from persistence import (export_friction_candidate, export_telemetry, export_candidate_urdf, load_model_calibration_summary, list_model_calibration_records, preview_gravity_correction, restore_gravity_correction, save_gravity_correction, update_candidate_urdf_verification, preview as preview_config, save as save_config)
 from profile_library import ProfileLibrary
+from profile_storage import profile_home, category_directory
 from model_calibration_alignment import compare_calibration_urdfs
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -92,12 +93,13 @@ def restore_temporary_candidates_for_disconnect(native, allow_park=False):
 _READ_ONLY_MACHINE = {
     'status', 'get_admittance', 'candidate_overrides', 'calibration_status',
     'model_calibration_status', 'candidate_gain_status', 'candidate_gravity_status',
-    'candidate_dynamics_status',
+    'candidate_dynamics_status', 'teach_replay_status',
 }
 _SAFE_EXIT_MACHINE = {
     'deactivate', 'gravity_verify_stop', 'gravity_verify_cancel', 'gravity_verify_finish',
     'model_calibration_cancel', 'model_calibration_teach_stop', 'model_calibration_pause',
     'candidate_gain_restore', 'candidate_gravity_restore', 'candidate_dynamics_restore',
+    'teach_replay_record_stop', 'teach_replay_stop',
 }
 _TRACKING_MACHINE = {'move_to', 'move_relative'}
 _GRAVITY_VERIFY_MACHINE = {
@@ -215,6 +217,19 @@ def verify_machine_admission(library, config, method, params, native):
         if status.get('impedance_mode') == 'COMPLIANT_DRAG':
             raise ValueError('柔性拖拽时不允许修改导纳运行参数')
         return
+    if method.startswith('teach_replay_'):
+        if method in ('teach_replay_record_begin', 'teach_replay_play'):
+            require_feedback()
+        if method == 'teach_replay_record_begin':
+            if status.get('model_feedforward_mode') != 'GRAVITY' or not configured('COMPLIANT_DRAG'):
+                raise ValueError('示教记录要求合法柔性拖拽增益及重力前馈')
+        if method == 'teach_replay_play':
+            selected_mode = params.get('mode')
+            if selected_mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
+                raise ValueError('回放阻抗模式只能选择刚性跟踪或柔性跟踪')
+            if not configured(selected_mode):
+                raise ValueError('当前回放阻抗模式的增益尚未正确配置：' + selected_mode)
+        return
     if method.startswith(('model_calibration_', 'candidate_', 'calibration_',
                           'friction_', 'gain_')):
         # Leave native calibration state machine and parameter verification intact
@@ -234,6 +249,8 @@ def main():
     native = NativeSession(emit, lock_dir)
     model_runtime = ModelRuntime()
     profile_library = ProfileLibrary(ROOT, inspector)
+    from trajectory_library import TrajectoryLibrary
+    trajectories = TrajectoryLibrary(ROOT)
     active_workbench_config = None
     active_workbench_fingerprint = None
     emit({'event': 'backend_ready'})
@@ -291,6 +308,24 @@ def main():
                 elif method == 'inspect': result = inspector.inspect(params)
                 elif method == 'model': result = model_runtime.model(inspector, params.get('config', params), params.get('positions'))
                 elif method == 'model_preview': result = model_runtime.preview(inspector, params.get('config', params), params.get('positions'))
+                elif method in ('trajectory_list','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
+                    config = active_workbench_config or config_values(params.get('config', {}))
+                    info = inspector.inspect(config)
+                    scope = trajectories.scope(info, ROOT)
+                    record_id = params.get('id', '')
+                    if method == 'trajectory_list': result = {'items': trajectories.list(scope), 'directory': str(trajectories.folder(scope))}
+                    elif method == 'trajectory_import': result = trajectories.import_file(scope, params.get('source',''))
+                    elif method == 'trajectory_export': result = trajectories.export(scope,record_id,params.get('destination',''))
+                    elif method == 'trajectory_rename': result = trajectories.rename(scope,record_id,params.get('name',''))
+                    elif method == 'trajectory_remove':
+                        if native.status().get('state') == 'running' and (native.request('teach_replay_status',{},timeout=8).get('phase') in ('recording','playing')):
+                            raise ValueError('请先结束示教或回放，再删除轨迹')
+                        result = trajectories.remove(scope,record_id)
+                    else:
+                        if not active_workbench_config or native.status().get('state') != 'running':
+                            raise ValueError('请先连接当前机械臂工作台')
+                        if method == 'trajectory_save': result = trajectories.save(scope,params.get('name',''),native)
+                        else: result = trajectories.load(scope,record_id,native)
                 elif method == 'workbench_start':
                     if manager.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     config = config_values(params.get('config', {}))
@@ -311,6 +346,7 @@ def main():
                     for key, flag in [('serial_port', '--serial-port'), ('baudrate', '--baudrate'), ('bus', '--bus')]:
                         if config[key]: argv += [flag, config[key]]
                     env = dict(os.environ)
+                    env['SERIAL_ARM_PROFILE_STORAGE'] = str(profile_home(info, ROOT) / '.serialarm')
                     if config['resource_paths']:
                         env['SERIAL_ARM_RESOURCE_PATH'] = config['resource_paths'] + (os.pathsep + env['SERIAL_ARM_RESOURCE_PATH'] if env.get('SERIAL_ARM_RESOURCE_PATH') else '')
                     result = native.start(argv, env, info['devices'] if info['write_enabled'] is not False else [])
@@ -338,6 +374,8 @@ def main():
                             all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
                                 for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
                         state_before = native.request('status', {}, timeout=8)
+                        if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
+                            raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
                         if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
                             raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
                         restore_temporary_candidates_for_disconnect(native)
@@ -359,9 +397,9 @@ def main():
                     info = inspector.inspect(config)
                     runtime = native.request('get_admittance', {}, timeout=8)
                     snapshot = native.request('status', {}, timeout=8)
-                    result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'])
+                    result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'], profile_home(info, ROOT))
                 elif method == 'workbench_export':
-                    result = export_telemetry(ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
+                    result = export_telemetry(profile_home(inspector.inspect(active_workbench_config), ROOT) if active_workbench_config else ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
                 elif method == 'calibration_candidate_prepare':
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
@@ -396,18 +434,18 @@ def main():
                     result = native.request('candidate_overrides', {}, timeout=8)
                 elif method == 'calibration_tool_records':
                     from workflow_registry import scan
-                    result = scan(ROOT, params.get('kind', ''), params.get('limit', 60))
+                    result = scan(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('kind', ''), params.get('limit', 60), legacy_root=ROOT, profile_name=(active_workbench_config or config_values(params.get('config', {})))['profile'])
                 elif method == 'calibration_tool_load':
                     from workflow_registry import load
                     result = load(params.get('directory', ''), params.get('kind', ''))
                 elif method == 'calibration_tool_export':
                     from artifact_exports import export_artifact
-                    result = export_artifact(ROOT, params.get('directory', ''), params.get('kind', ''),
+                    result = export_artifact(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('directory', ''), params.get('kind', ''),
                         report=params.get('report'), destination=params.get('destination'),
                         candidate_source=params.get('candidate_source','online'))
                 elif method == 'calibration_tool_export_record':
                     from workflow_registry import export_record
-                    result = export_record(ROOT, params.get('directory', ''), params.get('kind', ''))
+                    result = export_record(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('directory', ''), params.get('kind', ''))
                 elif method == 'model_calibration_load':
                     result = load_model_calibration_summary(params.get('directory', ''))
                 elif method == 'model_calibration_model_alignment':
@@ -416,7 +454,7 @@ def main():
                     current_model = model_runtime.model(inspector, params.get('config', {}))
                     result = compare_calibration_urdfs(summary['directory'], summary['metadata'], current_model['urdf'])
                 elif method == 'model_calibration_records':
-                    result = list_model_calibration_records(ROOT)
+                    result = list_model_calibration_records(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), legacy_root=ROOT, profile_name=(active_workbench_config or config_values(params.get('config', {})))['profile'])
                 elif method == 'model_calibration_preview_save':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
@@ -430,7 +468,7 @@ def main():
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = save_gravity_correction(info['resources']['core'], params.get('expected_sha', ''), directory)
+                    result = save_gravity_correction(info['resources']['core'], params.get('expected_sha', ''), directory, profile_home(info, ROOT))
                 elif method == 'model_calibration_restore_config':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)

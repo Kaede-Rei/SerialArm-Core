@@ -308,7 +308,7 @@ def export_artifact(root,directory,kind,*,report=None,destination=None,candidate
         base=Path(destination).expanduser().resolve()
         if not base.is_dir():raise ValueError('导出目录不存在')
     else:
-        base=Path(root).resolve()/'.install'/'exports'
+        base=Path(root).resolve()/'.serialarm'/'exports'
         base.mkdir(parents=True,exist_ok=True)
     folder=Path(record['directory']).resolve()
     if base==folder or base.is_relative_to(folder):

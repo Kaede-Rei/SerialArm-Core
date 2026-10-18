@@ -272,6 +272,41 @@ export class SerialArmModelView {
     this.refreshVisibility();
   }
 
+  // Independent reference pose overlay; never changes the measured robot pose
+  clearGhostPose() {
+    if(!this.ghostRoot)return;
+    this.scene.remove(this.ghostRoot);
+    this.ghostRoot.traverse(node=>{if(node.isMesh){
+      const mats=Array.isArray(node.material)?node.material:[node.material];
+      for(const material of mats)material?.dispose?.();
+    }});
+    this.ghostRoot=null;
+  }
+
+  setGhostPose(native) {
+    this.clearGhostPose();
+    const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
+    if(!frames.size)return;
+    const ghosts=new THREE.Group();ghosts.name='reference-start-ghost';
+    let count=0;
+    for(const [name,original] of this.linkGroups){
+      const frame=frames.get(name);if(!frame)continue;
+      const group=new THREE.Group();group.matrix.copy(frameMatrix(frame));group.matrixAutoUpdate=false;
+      for(const holder of original.children){
+        if(holder.userData?.layer!=='visual')continue;
+        const copy=holder.clone(true);
+        copy.traverse(child=>{if(!child.isMesh)return;
+          const originalMaterials=Array.isArray(child.material)?child.material:[child.material];
+          const tinted=originalMaterials.map(material=>{const cloned=material.clone();cloned.color?.set?.(0x16b8b0);cloned.transparent=true;cloned.opacity=0.26;cloned.depthWrite=false;return cloned;});
+          child.material=Array.isArray(child.material)?tinted:tinted[0];
+        });
+        group.add(copy);count++;
+      }
+      ghosts.add(group);
+    }
+    if(count){this.ghostRoot=ghosts;this.scene.add(ghosts);}
+  }
+
   updatePose(native) {
     const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
     for(const [name,group] of this.linkGroups){const frame=frames.get(name);if(frame)group.matrix.copy(frameMatrix(frame));}
@@ -484,6 +519,7 @@ export class SerialArmModelView {
   animate() { if (!this.running) return; requestAnimationFrame(()=>this.animate()); this.controls.update(); this.renderer.render(this.scene,this.camera); }
 
   disposeRoot() {
+    this.clearGhostPose();
     this.root.traverse(node=>{if(node.geometry)node.geometry.dispose?.();if(node.material){const list=Array.isArray(node.material)?node.material:[node.material];for(const m of list)m.dispose?.();}node.userData?.texture?.dispose?.();});
     this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
