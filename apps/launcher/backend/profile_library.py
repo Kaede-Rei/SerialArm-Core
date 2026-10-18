@@ -238,8 +238,23 @@ class ProfileLibrary:
         stages = meta.get('stages') or {}
         modes = meta.get('modes') or {}
         def status(item, scope):
-            if not isinstance(item, dict) or item.get('result') != 'passed': return 'pending'
-            if item.get('scope') != scope: return 'stale'
+            if not isinstance(item, dict) or item.get('result') not in ('passed', 'recorded'):
+                return 'pending'
+            if item.get('scope') != scope:
+                return 'stale'
+            # Existing historical checklist entries are still user reports,
+            # even if they were recorded while a real robot was connected.
+            # Older native gravity samples include a true Machine proof; do
+            # not demote them to self-check notes when upgrading the UI.
+            if (item.get('kind') == 'operator_and_live' and
+                    (item.get('runtime') or {}).get('sample_count', 0) >= 3):
+                return 'verified'
+            if item.get('result') == 'recorded' or str(item.get('kind', '')).startswith('operator_'):
+                observations = item.get('observations') or {}
+                if observations and all(v is True for v in observations.values()):
+                    return 'recorded'
+                # Saving an empty checklist must not look like an inspection
+                return 'partial' if any(v is True for v in observations.values()) or str(item.get('note') or '').strip() else 'pending'
             candidate_path = item.get('candidate_path')
             if candidate_path:
                 path = Path(candidate_path)
@@ -272,7 +287,7 @@ class ProfileLibrary:
                 valid = all(gains['kd'][j] > 0 for j in joints)
             scope = scopes.get('startup_hold') if name == 'RIGID_HOLD' else (scopes.get('modes') or {}).get(name)
             own = status(modes.get(name), scope)
-            mode_states[name] = own if valid and own != 'pending' else 'configured' if valid else 'unconfigured'
+            mode_states[name] = (own if own in ('verified', 'stale') else 'configured') if valid else 'unconfigured'
         required = ('description', 'profile_setup', *self._STAGES)
         missing = [k for k in required if values[k] != 'verified']
         stale = any(v == 'stale' for v in list(values.values()) + list(mode_states.values()))
@@ -322,7 +337,8 @@ class ProfileLibrary:
                 'control_available': profile_setup, 'safety_summary': safety_summary,
                 'setup_issues': setup_issues,
                 'source_trusted': self._is_official_profile(info),
-                'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', '')}
+                'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', ''),
+                                 'observations': v.get('observations') or {}}
                              for k, v in stages.items() if isinstance(v, dict)}}
 
     def _builtin_readiness(self, config):
@@ -330,11 +346,12 @@ class ProfileLibrary:
         return self._readiness(config)
 
     def record_stage(self, config, stage, answers, native=None):
-        if stage not in ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration', 'gravity_verification', 'validation', 'startup_hold'):
-            raise ValueError('当前阶段尚无可记录的验收流程')
-        if not isinstance(answers, dict): raise ValueError('验收数据必须是对象')
-        info = self.inspector.inspect(config)
-        current = self._readiness(config)
+        """Store optional operator notes without turning them into runtime admission.
+
+        A checklist is not a native robot measurement. Opening or recording a
+        checklist must not require ACTIVE, a workbench, or prior stage results.
+        Native measurement/verification tasks keep their independent safeguards.
+        """
         requirements = {
             'model_check': ('chain', 'limits', 'inertial'),
             'bringup': ('connection',),
@@ -344,69 +361,81 @@ class ProfileLibrary:
             'gravity_verification': ('distinct_poses', 'support', 'restored'),
             'validation': ('tracking', 'stopping', 'faults'),
         }
-        if any(answers.get(k) is not True for k in requirements[stage]):
-            raise ValueError('验收检查项尚未全部确认')
+        if stage not in requirements:
+            raise ValueError('当前项目不支持人工自查记录')
+        if not isinstance(answers, dict):
+            raise ValueError('检查内容必须是对象')
         note = str(answers.get('note') or '').strip()
         if len(note) > 600:
-            raise ValueError('检查记录不能超过 600 字')
-        # Checklists can be recorded in any order, without synthetic stage gates
-        sample = None
-        if stage != 'model_check':
-            if not native or native.status().get('state') != 'running':
-                raise ValueError('当前验收必须连接真实工作台并获得实时硬件反馈')
-            if info['write_enabled'] is False:
-                raise ValueError('当前 Profile 的执行器写入未启用，无法形成真机证据')
-            sample = native.request('status', {}, timeout=8)
-            if (sample.get('robot_state') not in ('ACTIVE', 'INACTIVE') or
-                (sample.get('fault') or {}).get('code') not in (None, '', 'NONE', 'OK') or
-                sample.get('joint_names') != (read_yaml(info['resources']['core']).get('model') or {}).get('joint_names')):
-                raise ValueError('运行状态、故障或关节反馈不满足验收条件')
-            if stage in ('mapping_calibration', 'geometry_calibration', 'validation'):
-                if sample['robot_state'] != 'ACTIVE':
-                    raise ValueError('需要在受控 ACTIVE 状态下完成对应实际操作并检查反馈')
-                age = sample.get('feedback_age_ms')
-                if not isinstance(age, (int, float)) or not math.isfinite(age) or age < 0 or age > 250 or sample.get('sequence', 0) < 1:
-                    raise ValueError('实时反馈已过期或没有有效控制周期，不能记录验收')
-            if stage == 'gravity_verification':
-                proof = sample.get('gravity_verification') or {}
-                if (sample['robot_state'] != 'INACTIVE' or proof.get('active') is not False or
-                    proof.get('phase') != 'completed' or proof.get('sample_count', 0) < 3):
-                    raise ValueError('先在真机完成三个不同姿态的重力验证，并在机械支撑下失能及恢复临时参数')
-                if sample.get('model_feedforward_mode') != (read_yaml(info['resources']['core']).get('control') or {}).get('runtime', {}).get('model_feedforward_mode'):
-                    raise ValueError('原有模型前馈模式尚未恢复')
-                stored_scale = (read_yaml(info['resources']['core']).get('model') or {}).get('gravity_scale')
-                if not isinstance(stored_scale, dict): raise ValueError('重力比例配置缺失')
-                ordered = [stored_scale.get(j) for j in sample.get('joint_names', [])]
-                if len(ordered) != len(sample.get('gravity_scale') or []) or any(
-                    not isinstance(a,(int,float)) or abs(a-b)>1.0e-6 for a,b in zip(ordered,sample['gravity_scale'])):
-                    raise ValueError('临时重力比例尚未恢复到 Profile 原值')
-                if not isinstance(sample.get('actuator_info'),list) or len(sample['actuator_info']) != len(ordered):
-                    raise ValueError('无法验证所有关节的硬件反馈')
-            if stage in ('bringup', 'startup_hold'):
-                if sample['robot_state'] != 'INACTIVE':
-                    raise ValueError('请先进入 INACTIVE 状态完成连接与启动保持检查')
-                if len(sample.get('actuator_info') or []) != len((read_yaml(info['resources']['core']).get('model') or {}).get('joint_names') or []):
-                    raise ValueError('未能核对所有执行器的硬件能力信息')
+            raise ValueError('检查备注不能超过 600 字')
+        checked = {}
+        for key in requirements[stage]:
+            value = answers.get(key, False)
+            if not isinstance(value, bool):
+                raise ValueError(f'检查项 {key} 必须为布尔值')
+            checked[key] = value
+
+        # Only the Profile and its configuration dependencies are required to
+        # associate a note with the right robot; no hardware session is needed.
+        info = self.inspector.inspect(config)
         core = read_yaml(info['resources']['core'])
-        hw = read_yaml(info['resources']['hardware'])
-        scopes = self._dependencies(info, core, hw)
+        hardware = read_yaml(info['resources']['hardware'])
+        scopes = self._dependencies(info, core, hardware)
         path, data = self._readiness_meta(info)
         field = 'modes' if stage == 'startup_hold' else 'stages'
         key = 'RIGID_HOLD' if stage == 'startup_hold' else stage
-        data.setdefault(field, {})[key] = {
-            'result': 'passed', 'scope': scopes[stage], 'kind': 'operator_and_live' if sample else 'operator_model_review',
-            'note': note, 'observations': {k: True for k in requirements[stage]},
-            'recorded_at': time.time(),
-            'runtime': {'robot_state': sample.get('robot_state'), 'joint_names': sample.get('joint_names')}
-                       if sample else {},
+        previous = (data.get(field) or {}).get(key)
+        # Updating optional notes must not erase independent native proof
+        # that still matches the current configuration
+        keep_native = (stage == 'gravity_verification' and isinstance(previous, dict)
+            and previous.get('result') == 'passed'
+            and previous.get('scope') == scopes[stage]
+            and previous.get('kind') in ('native_gravity_completed', 'operator_and_live')
+            and (previous.get('runtime') or {}).get('sample_count', 0) >= 3)
+        entry = dict(previous) if keep_native else {
+            'result': 'recorded', 'scope': scopes[stage], 'kind': 'operator_note',
         }
-        if stage == 'gravity_verification':
-            data['stages'][stage]['runtime']['sample_count'] = sample['gravity_verification']['sample_count']
-            data.setdefault('modes', {})['COMPLIANT_DRAG'] = {
-                'result': 'passed', 'scope': scopes['modes']['COMPLIANT_DRAG'],
-                'kind': 'operator_and_live', 'note': note, 'recorded_at': time.time(),
-                'sample_count': sample['gravity_verification']['sample_count'],
-            }
+        entry.update({'note': note, 'observations': checked, 'recorded_at': time.time()})
+        data.setdefault(field, {})[key] = entry
+        # A real completed native gravity task may provide stronger evidence.
+        # Missing, stale or unrelated sessions never block saving a note and
+        # must never transform self-reported checkboxes into a native proof.
+        if stage == 'gravity_verification' and native is not None:
+            try:
+                sample = native.request('status', {}, timeout=8)
+                proof = sample.get('gravity_verification') or {}
+                core_runtime = (core.get('control') or {}).get('runtime') or {}
+                stored = (core.get('model') or {}).get('gravity_scale') or {}
+                names = (core.get('model') or {}).get('joint_names') or []
+                actual = sample.get('gravity_scale') or []
+                scales_restored = (len(names) == len(actual) and bool(names) and
+                    all(isinstance(stored.get(j), (int, float)) and
+                        isinstance(v, (int, float)) and math.isfinite(v) and
+                        abs(stored[j] - v) <= 1e-6 for j, v in zip(names, actual)))
+                native_completed = (
+                    sample.get('robot_state') == 'INACTIVE' and
+                    proof.get('active') is False and
+                    proof.get('phase') == 'completed' and
+                    isinstance(proof.get('sample_count'), int) and
+                    proof['sample_count'] >= 3 and
+                    sample.get('joint_names') == names and
+                    sample.get('model_feedforward_mode') == core_runtime.get('model_feedforward_mode') and
+                    scales_restored and (sample.get('fault') or {}).get('code') in (None, '', 'NONE', 'OK'))
+                if native_completed:
+                    data['stages'][stage].update({
+                        'result': 'passed', 'kind': 'native_gravity_completed',
+                        'runtime': {'sample_count': proof['sample_count'],
+                                    'robot_state': 'INACTIVE', 'joint_names': names},
+                    })
+                    data.setdefault('modes', {})['COMPLIANT_DRAG'] = {
+                        'result': 'passed', 'scope': scopes['modes']['COMPLIANT_DRAG'],
+                        'kind': 'native_gravity_completed',
+                        'sample_count': proof['sample_count'],
+                        'recorded_at': time.time(),
+                    }
+            except Exception:
+                # There is no usable live native proof; keep only the note.
+                pass
         _atomic_yaml(path, data)
         return self._readiness(config)
 

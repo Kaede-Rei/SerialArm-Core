@@ -110,17 +110,29 @@ class TcpCalibration:
         urdf = (core_path.parent / core['model']['urdf_path']).resolve()
         return info, core, core_path, urdf
 
+    @staticmethod
+    def _kinematics_scope(core):
+        # TCP FK depends on the selected chain and joint mapping, not on
+        # unrelated runtime gains, gravity compensation or Safety settings
+        model = core.get('model') or {}
+        return {key: model.get(key) for key in ('joint_names', 'base_frame', 'tool_frame')}
+
     def _ensure(self, config):
         info, core, core_path, urdf = self._profile(config)
         session = self.session
         if not session or session['profile'] != info['profile'] or session['profile_file'] != info['profile_file']:
             raise ValueError('请先为当前机器人开始 TCP 标定')
-        if session['core_hash'] != _digest(core_path) or session['urdf_hash'] != _digest(urdf):
+        scope = session.get('kinematics_hash')
+        # Earlier saved sessions did not have a scoped hash, so retain their
+        # original full-file check instead of silently trusting old samples
+        model_changed = (scope != self.library._digest(self._kinematics_scope(core))
+                         if scope is not None else session['core_hash'] != _digest(core_path))
+        if model_changed or session['urdf_hash'] != _digest(urdf):
             self.session = None
-            raise ValueError('Core 配置或 URDF 已变化，旧采样作废，请重新开始标定')
+            raise ValueError('控制链或 URDF 已变化，旧 TCP 采样不再适用，请重新开始标定')
         if session['calibration_hash'] != self.library._digest(core.get('calibration')):
             self.session = None
-            raise ValueError('关节映射或零位已变化，旧采样作废')
+            raise ValueError('关节映射或零位已变化，旧 TCP 采样不再适用')
         return session, info, core, core_path, urdf
 
     def _directory(self, info):
@@ -131,9 +143,9 @@ class TcpCalibration:
 
     def begin(self, config, frame):
         info, core, core_path, urdf = self._profile(config)
-        checks = self.library._readiness(config)
-        if checks['checks'].get('mapping_calibration') != 'verified' or checks['modes'].get('RIGID_HOLD') != 'verified':
-            raise ValueError('请先完成真机映射校准与刚性保持验收')
+        # Preparing a TCP session is a read-only geometry operation
+        # Optional readiness notes and gain-approval records do not gate it
+        # Live feedback is checked separately when capture() is called
         model = core['model']
         if not isinstance(frame, str) or not frame or len(frame) > 128:
             raise ValueError('请选择末端法兰或工具安装 Frame')
@@ -146,6 +158,7 @@ class TcpCalibration:
         # Native runtime must know the frame; native feedback determines its pose
         self.session = {'profile': info['profile'], 'profile_file': info['profile_file'],
                         'core_hash': _digest(core_path), 'urdf_hash': _digest(urdf),
+                        'kinematics_hash': self.library._digest(self._kinematics_scope(core)),
                         'calibration_hash': self.library._digest(core.get('calibration')),
                         'parent_frame': frame, 'base_frame': model['base_frame'],
                         'tool_frame': model['tool_frame'], 'train': [], 'validation': [],

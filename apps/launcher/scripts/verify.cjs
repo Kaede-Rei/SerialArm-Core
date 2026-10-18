@@ -11,13 +11,9 @@ const renderer = fs.readFileSync(path.join(root, 'renderer/app.js'), 'utf8');
 const section = main.match(/const methods = new Set\(\[([\s\S]*?)\]\);/);
 if (!section) throw new Error('Cannot inspect Electron IPC method whitelist');
 const allowed = new Set([...section[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]));
-const literalMethods = new Set([...renderer.matchAll(/\b(?:api\.request|tcpAction)\(\s*'([a-z_]+)'/g)].map(m => m[1]));
+const literalMethods = new Set([...renderer.matchAll(/\bapi\.request\(\s*'([a-z_]+)'/g)].map(m => m[1]));
 for (const method of literalMethods) {
   if (method === 'logs' || method === 'calibration_candidate_') continue;
   if (!allowed.has(method)) throw new Error('Renderer request not allowed by Electron: ' + method);
-}
-for (const method of ['tcp_state', 'tcp_begin', 'tcp_capture', 'tcp_solve', 'tcp_validate', 'tcp_export', 'tcp_apply', 'tcp_discard']) {
-  if (!allowed.has(method)) throw new Error('Missing TCP IPC route: ' + method);
-  if (!renderer.includes("'" + method + "'")) throw new Error('Missing TCP renderer call: ' + method);
 }
 console.log('LAUNCHER_STATIC_PASS');
