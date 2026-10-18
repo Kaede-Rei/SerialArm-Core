@@ -601,11 +601,11 @@ function profileGet(draft, path) { return path.reduce((item, key) => item?.[key]
 function profileField(path, value) {
     const id = path.join('.');
     const label = paramLabel(path.at(-1));
-    const readonly = id === 'core.model.joint_names' || id === 'core.safety_policy.fault_recovery.gravity_model_validated';
+    const readonly = id === 'core.model.joint_names';
     const opts = profileEnums[id] ? [...new Set([...profileEnums[id], String(value)])] : null;
     const hardwareChoice = typeof value === 'string' ? hardwareChoiceField(path, value, readonly) : null;
     const data = `data-profile-field="${esc(JSON.stringify(path))}"`;
-    const units = id.includes('gravity_model_validated') ? (state.language === 'en' ? 'Only validated by the later hardware workflow' : '须经后续真机验证后再确认') :
+    const units = id.includes('gravity_model_validated') ? (state.language === 'en' ? 'Only enable after real gravity compensation testing on this exact robot and payload; takes effect after reconnect' : '仅在当前机械臂与负载已完成真机重力补偿验证后开启 · 重新连接工作台后生效') :
         id.includes('joint_names') ? (state.language === 'en' ? 'Determined when creating the control chain' : '关节顺序由新建时选择的控制链决定') :
         id === 'core.capability.admittance.enabled' ? (state.language === 'en' ? 'Configuration only, runtime safety checks remain active' : '仅配置能力开关，在线启用仍受实际运行安全检查') : '';
     let input;
@@ -616,8 +616,11 @@ function profileField(path, value) {
     else if (typeof value === 'string') input = `<input type="text" ${data} value="${esc(value)}" ${readonly ? 'disabled' : ''}>`;
     else if (Array.isArray(value)) input = `<input type="text" ${data} value="${esc(value.join(', '))}" ${readonly ? 'disabled' : ''} title="${state.language === 'en' ? 'Comma-separated values' : '用英文逗号分隔多个值'}">`;
     else return '';
+    const required = id === 'profile_entry.hardware.plugin' || /^hardware\.damiao\.actuators\.[^.]+\.motor_type$/.test(id) || /^hardware\.buses\.[^.]+\.(type|backend|device)$/.test(id);
+    const missingValue = required && typeof value === 'string' && !value.trim();
+    const fieldHint = missingValue ? (state.language === 'en' ? 'Required before connecting the workspace' : '连接工作台前必须填写') : '';
     const err = state.profileError?.startsWith(id) ? state.profileError : '';
-    return `<label class="parameter-field ${err ? 'invalid' : ''}"><span>${esc(label)}</span>${input}<small>${esc(id)}${units ? ' · ' + esc(units) : ''}</small>${err ? `<em>${esc(err)}</em>` : ''}</label>`;
+    return `<label class="parameter-field ${err || missingValue ? 'invalid' : ''}"><span>${esc(label)}${required ? `<strong class="parameter-required">${state.language === 'en' ? 'Required' : '必填'}</strong>` : ''}</span>${input}<small>${esc(id)}${units ? ' · ' + esc(units) : ''}</small>${fieldHint ? `<em>${fieldHint}</em>` : ''}${err ? `<em>${esc(err)}</em>` : ''}</label>`;
 }
 function profileTree(value, path, depth = 0) {
     if (value && !Array.isArray(value) && typeof value === 'object') {
@@ -627,7 +630,7 @@ function profileTree(value, path, depth = 0) {
         const isHardware = path[0] === 'hardware';
         if (!isHardware && depth > 1 && leaves <= 12 && Object.values(value).every(item => item === null || typeof item !== 'object' || Array.isArray(item)))
             return `<fieldset class="parameter-subgroup"><legend>${esc(paramLabel(path.at(-1)))}</legend><div class="parameter-fields">${children}</div></fieldset>`;
-        const expanded = isHardware ? depth <= 1 : true;
+        const expanded = isHardware ? (depth <= 1 || !!state.profileError?.includes(path.join('.'))) : true;
         return `<details class="parameter-subgroup ${isHardware ? 'hardware-subgroup' : ''}" ${expanded ? 'open' : ''}><summary>${esc(paramLabel(path.at(-1)))}${isHardware ? `<small>${leaves} ${state.language === 'en' ? 'items' : '项'}</small>` : ''}</summary><div class="parameter-fields">${children}</div></details>`;
     }
     return profileField(path, value);
@@ -635,6 +638,87 @@ function profileTree(value, path, depth = 0) {
 function profileHardwareDefaults(names) {
     const a = Object.fromEntries(names.map((j,i) => [j,{name:`actuator${i+1}`,motor_id:i+1,master_id:0,motor_type:''}]));
     return {buses:{main_can:{type:'can',backend:'damiao_usb2can',device:'/dev/ttyACM0',baudrate:921600}},damiao:{bus:'main_can',refresh_state_in_read:false,feedback_timeout_s:0.05,activation_retries:3,startup_read_cycles:5,stop_kp:10,stop_kd:0.15,stop_cycles:5,actuators:a}};
+}
+// Configuration requirements are separate from operator verification records
+function profileGuidanceData(editor) {
+    const en = state.language === 'en';
+    const core = editor?.core || {}, hardware = editor?.hardware || {};
+    const names = editor?.joint_names || core.model?.joint_names || [];
+    const plugin = String(editor?.profile_entry?.hardware?.plugin || '').trim();
+    const missing = [];
+    const add = (path, message) => missing.push({path, message});
+    if (!plugin) add('profile_entry.hardware.plugin', en ? 'Select a hardware driver' : '请选择硬件驱动');
+    if (plugin === 'serial_arm_hardware_damiao') {
+        const buses = hardware.buses || {}, damiao = hardware.damiao || {};
+        const bus = damiao.bus;
+        if (!bus || !buses[bus]) add('hardware.damiao.bus', en ? 'Select a configured bus' : '请配置达妙使用的总线');
+        else {
+            for (const key of ['type', 'backend', 'device']) if (!String(buses[bus]?.[key] || '').trim())
+                add(`hardware.buses.${bus}.${key}`, (en ? 'Missing bus ' : '总线缺少 ') + paramLabel(key));
+            const baud = Number(buses[bus]?.baudrate);
+            if (!Number.isInteger(baud) || baud <= 0) add(`hardware.buses.${bus}.baudrate`, en ? 'Set a positive baudrate' : '波特率必须是正整数');
+        }
+        const actuators = damiao.actuators || {};
+        const ids = new Set();
+        for (const joint of names) {
+            const item = actuators[joint];
+            if (!item) { add(`hardware.damiao.actuators.${joint}`, `${joint} ${en ? 'actuator mapping is missing' : '缺少执行器映射'}`); continue; }
+            const motor = String(item.motor_type || '').trim();
+            if (!motor) add(`hardware.damiao.actuators.${joint}.motor_type`, `${joint} ${en ? 'motor type not selected' : '未选择电机型号'}`);
+            else if (!knownMotorTypes.includes(motor)) add(`hardware.damiao.actuators.${joint}.motor_type`, `${joint} ${en ? 'unsupported motor type: ' : '驱动不支持该型号 '}${motor}`);
+            const id = item.motor_id;
+            if (!Number.isInteger(id) || id <= 0) add(`hardware.damiao.actuators.${joint}.motor_id`, `${joint} ${en ? 'motor ID must be positive' : '电机 ID 必须是正整数'}`);
+            else if (ids.has(id)) add(`hardware.damiao.actuators.${joint}.motor_id`, `${joint} ${en ? 'motor ID duplicated' : '电机 ID 重复'}`);
+            else ids.add(id);
+        }
+    }
+    const safety = core.safety_policy || {}, accel = safety.max_acc || {};
+    const safetyMissing = names.filter(j => !(typeof accel[j] === 'number' && Number.isFinite(accel[j]) && accel[j] > 0));
+    const urdf = editor?.urdf_joint_limits || {};
+    const urdfWarnings = [];
+    for (const joint of names) {
+        const limit = urdf[joint];
+        if (!limit) { urdfWarnings.push(`${joint} ${en ? 'limit data unavailable' : '没有可读取的限位数据'}`); continue; }
+        if (['revolute', 'prismatic'].includes(limit.type) &&
+            (!Number.isFinite(limit.lower) || !Number.isFinite(limit.upper) || limit.lower >= limit.upper))
+            urdfWarnings.push(`${joint} ${en ? 'position limits missing or invalid' : '位置上下限缺失或无效'}`);
+        if (!Number.isFinite(limit.velocity) || limit.velocity <= 0)
+            urdfWarnings.push(`${joint} ${en ? 'velocity limit missing or invalid' : '速度上限缺失或无效'}`);
+    }
+    return {missing, safetyMissing, urdfWarnings, plugin, names};
+}
+function profileGuidanceHtml(editor) {
+    const en = state.language === 'en', data = profileGuidanceData(editor);
+    const hardwareComplete = data.missing.length === 0;
+    const safetyComplete = data.safetyMissing.length === 0;
+    const task = (number, title, group, status, kind, details, button) =>
+        `<section class="profile-guide-step ${kind}"><div class="profile-guide-step-heading"><span class="profile-guide-number">${number}</span><b>${title}</b><span class="profile-guide-status">${status}</span></div><p>${details}</p><button type="button" class="profile-guide-link" data-profile-jump="${group}">${button} →</button></section>`;
+    const hardwareText = hardwareComplete ?
+        (en ? 'Required driver, bus and motor assignments have values; check their physical correspondence before enabling' : '驱动、总线与电机型号已填写，真机使能前还需核对设备连接及关节与电机的实际对应') :
+        data.missing.slice(0,4).map(x => `<span>${esc(x.message)}</span>`).join('') + (data.missing.length > 4 ? `<span>${en ? 'and' : '另有'} ${data.missing.length-4} ${en ? 'more items' : '项待配置'}</span>` : '');
+    const safetyText = !safetyComplete ? `${en ? 'Missing valid max_acc for: ' : '缺少合法的关节最大加速度 max_acc：'}${esc(data.safetyMissing.join('、'))}` :
+        (en ? 'Safety values are prefilled defaults, not physical verification; check acceleration, effort, gains, timeouts and fault recovery for this robot' : 'Safety 已有默认初值，但不等于经过真机验证，需要检查加速度、力矩、增益上限、通信超时及故障恢复参数');
+    const urdfText = data.urdfWarnings.length ?
+        `${en ? 'Model limit warnings: ' : 'URDF 限位需注意：'}${esc(data.urdfWarnings.slice(0,3).join('；'))}` :
+        (en ? 'URDF has readable position and velocity limits, but only a real mechanical check can confirm their direction, zero and numeric correctness' : 'URDF 已提供可读取的位置和速度限位，仍须人工核对物理零位、旋转方向及限位数值是否符合真实机械结构');
+    return `<section class="profile-setup-guide" aria-label="${en ? 'Profile configuration guide' : 'Profile 配置指引'}"><div class="profile-guide-head"><div><div class="eyebrow">PROFILE SETUP</div><h3>${en ? 'Configuration guide' : '配置指引与建议'}</h3><p>${en ? 'Complete required hardware fields before connecting a real robot; defaults and URDF bounds require review, not additional approval' : '先补齐真实硬件必填项，再核对 Safety 默认参数与 URDF 限位，历史验收记录不是进入配置的前置条件'}</p></div><span class="profile-guide-count">${hardwareComplete && safetyComplete ? (en ? 'Fields present' : '必填项已填写') : (en ? `${data.missing.length+data.safetyMissing.length} items to complete` : `${data.missing.length+data.safetyMissing.length} 项待配置`)}</span></div><div class="profile-guide-grid">${task('1',en?'Hardware and buses · required':'硬件与总线 · 必填','hardware',hardwareComplete?(en?'Filled':'已填写'):(en?'Incomplete':'待填写'),hardwareComplete?'ok':'missing',hardwareText,en?'Open hardware':'配置硬件')}${task('2',en?'Safety policy · review required':'Safety 安全策略 · 必须核对','safety',safetyComplete?(en?'Review defaults':'默认值待核对'):(en?'Missing acceleration':'加速度缺失'),safetyComplete?'review':'missing',safetyText,en?'Review Safety':'检查 Safety')}${task('3',en?'URDF limits · review required':'URDF 位置与速度限位 · 必须核对','model',data.urdfWarnings.length?(en?'Needs inspection':'需检查'):(en?'Check physically':'待实机核对'),data.urdfWarnings.length?'missing':'review',urdfText,en?'Inspect model':'查看模型')}</div><p class="profile-guide-footer">${en ? 'Other settings such as control gains, mapping, shutdown and optional capabilities may start with template values but still need confirmation on actual hardware' : '控制增益、映射、停放和可选能力也可能使用模板初值，配置文件能够保存不代表电机映射正确或已通过真机安全验证'}</p></section>`;
+}
+function refreshProfileGuidance() {
+    const container = document.getElementById('profile-guide-container');
+    if (container && state.profileEditor) container.innerHTML = profileGuidanceHtml(state.profileEditor);
+}
+function profileUrdfLimitsHtml(editor) {
+    const en = state.language === 'en';
+    const limits = editor?.urdf_joint_limits || {};
+    const joints = editor?.joint_names || [];
+    const fmt = value => Number.isFinite(value) ? Number(value).toFixed(4) : '—';
+    const rows = joints.map(joint => {
+        const item = limits[joint] || {};
+        const hasPosition = !['revolute', 'prismatic'].includes(item.type) || (Number.isFinite(item.lower) && Number.isFinite(item.upper) && item.lower < item.upper);
+        const hasSpeed = Number.isFinite(item.velocity) && item.velocity > 0;
+        return `<tr class="${hasPosition && hasSpeed ? '' : 'profile-limit-warning'}"><td><b>${esc(joint)}</b></td><td>${esc(item.type || '—')}</td><td>${item.type === 'continuous' ? (en ? 'Unbounded' : '连续旋转') : fmt(item.lower)}</td><td>${item.type === 'continuous' ? (en ? 'Unbounded' : '连续旋转') : fmt(item.upper)}</td><td>${fmt(item.velocity)}</td></tr>`;
+    }).join('');
+    return `<details class="profile-limit-review" ${state.profileGroup === 'safety' ? 'open' : ''}><summary>${en ? 'Review original URDF limits' : '查看 URDF 原始关节限位'}</summary><p>${en ? 'Read-only values from the current URDF file. Check physical zero, direction, position and speed limits. Edit the source URDF to correct incorrect values' : '以下为当前 URDF 中的只读限位值，必须结合实机核对零位、方向、位置上下限和最大速度，发现错误时应修改原始 URDF 文件'}</p><div class="table-scroll"><table class="profile-limit-table"><thead><tr><th>Joint</th><th>Type</th><th>Lower rad</th><th>Upper rad</th><th>Velocity rad/s</th></tr></thead><tbody>${rows || `<tr><td colspan="5">${en ? 'No controlled joint limit data' : '未读取到受控关节限位'}</td></tr>`}</tbody></table></div></details>`;
 }
 function profileSetupPage() {
     const e = state.profileEditor;
@@ -656,10 +740,10 @@ function profileSetupPage() {
     ].join('');
     const noHardware = key === 'hardware' && !Object.keys(e.hardware || {}).length;
     const hardwarePanel = noHardware ? `<div class="parameter-empty">${state.language === 'en' ? 'Hardware parameters are not configured yet' : '还未配置硬件参数'}<button id="profile-init-damiao" class="button">${state.language === 'en' ? 'Initialize supported Damiao fields' : '初始化达妙硬件字段'}</button></div>` : profileTree(value, ['hardware']);
-    const body = key === 'hardware' ? `${profilePlugin}${hardwarePanel}` : profileTree(value, ['core', ...current[2].split('.')]);
+    const body = (key === 'hardware' ? `${profilePlugin}${hardwarePanel}` : profileTree(value, ['core', ...current[2].split('.')])) + (key === 'safety' || key === 'model' ? profileUrdfLimitsHtml(e) : '');
     const changed = state.profileDirty;
     const err = state.profileError ? `<div class="parameter-error" role="alert">${esc(state.profileError)}</div>` : '';
-    return `<div class="workspace-provenance"><b>${state.language === 'en' ? 'Saved configuration' : '持久化配置'}</b><span>${state.language === 'en' ? 'Edits here save to Core and Hardware YAML only after validation and confirmation' : '这里修改的是 Profile 对应的 Core 和 Hardware 配置，只有通过验证并点击保存后才写入磁盘'}</span></div>` + (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + pageHead('profileSetup', 'profileManagedHint', `<div class="parameter-top-actions"><span id="profile-dirty-state" class="hint">${changed ? (state.language === 'en' ? 'Unsaved changes' : '存在未保存修改') : (state.language === 'en' ? 'Saved on disk' : '当前内容已从磁盘加载')}</span><button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div>`) + `<section class="parameter-layout"><nav class="parameter-groups">${profileGroups.map(([id,title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}">${esc(title)}${id==='gains'?'<small>6 Modes · Kp / Kd</small>':''}</button>`).join('')}</nav><section class="card parameter-card"><div class="card-head"><div><h3>${esc(current[1])}</h3><p>${esc(key === 'hardware' ? e.hardware_path : e.core_path)}</p></div></div><div class="card-body">${info ? `<p class="parameter-guidance">${info}</p>` : ''}${err}${body}${optional}</div></section></section>`;
+    return `<div id="profile-guide-container">${profileGuidanceHtml(e)}</div><div class="workspace-provenance"><b>${state.language === 'en' ? 'Saved configuration' : '持久化配置'}</b><span>${state.language === 'en' ? 'Edits here save to Core and Hardware YAML only after validation and confirmation' : '这里修改的是 Profile 对应的 Core 和 Hardware 配置，只有通过验证并点击保存后才写入磁盘'}</span></div>` + (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + pageHead('profileSetup', 'profileManagedHint', `<div class="parameter-top-actions"><span id="profile-dirty-state" class="hint">${changed ? (state.language === 'en' ? 'Unsaved changes' : '存在未保存修改') : (state.language === 'en' ? 'Saved on disk' : '当前内容已从磁盘加载')}</span><button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div>`) + `<section class="parameter-layout"><nav class="parameter-groups">${profileGroups.map(([id,title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}">${esc(title)}${id==='gains'?'<small>6 Modes · Kp / Kd</small>':''}</button>`).join('')}</nav><section class="card parameter-card"><div class="card-head"><div><h3>${esc(current[1])}</h3><p>${esc(key === 'hardware' ? e.hardware_path : e.core_path)}</p></div></div><div class="card-body">${info ? `<p class="parameter-guidance">${info}</p>` : ''}${err}${body}${optional}</div></section></section>`;
 }
 function connectionSettingsHtml() {
     const info = state.info;
@@ -724,7 +808,7 @@ function workbenchConnected() { return state.session?.state === 'running' && sta
 function workbenchTabs() { return `<div class="workspace-tabs">${[['control', 'controlTab'], ['tuning', 'tuningTab'], ['monitor', 'monitorTab']].map(([key, label]) => `<button data-workbench-tab="${key}" class="${state.workbenchTab === key ? 'active' : ''}">${t(label)}</button>`).join('')}</div>`; }
 function workbenchStatusBar() { const x = state.telemetry || {}; const fault = x.fault?.code || ''; const age = Number.isFinite(x.feedback_age_ms) ? `${x.feedback_age_ms.toFixed(0)} ms` : '—'; const device = (state.session?.devices || []).join(', ') || t('sourceWaiting'); return `<div class="workspace-status"><span><b>${esc(state.config.profile || '—')}</b></span><span>${esc(device)}</span><span>${esc(x.robot_state || '—')}</span><span>${esc(x.impedance_mode || '—')}</span><span>${t('feedbackAge')} ${age}</span><span class="${fault ? 'workspace-error' : ''}">${fault ? esc(fault) : 'OK'}</span></div>`; }
 function workbenchJointRows() { const x = state.telemetry || {}; const names = x.joint_names || state.modelData?.native?.config?.joint_names || []; const actual = x.joint?.pos || names.map(() => 0); if (state.workbenchTargets.length !== names.length) state.workbenchTargets = actual.slice(); if (state.workbenchDelta.length !== names.length) state.workbenchDelta = names.map(() => 0); return names.map((name, i) => `<tr><td>${esc(name)}</td><td>${Number(actual[i] ?? 0).toFixed(4)}</td><td><input class="workspace-number" data-target-joint="${i}" type="number" step="0.001" value="${Number(state.workbenchTargets[i] ?? 0).toFixed(4)}"></td><td><input class="workspace-number" data-delta-joint="${i}" type="number" step="0.001" value="${Number(state.workbenchDelta[i] ?? 0).toFixed(4)}"></td><td>${Number(x.joint?.vel?.[i] ?? 0).toFixed(4)}</td><td>${Number(x.joint?.tor?.[i] ?? 0).toFixed(4)}</td></tr>`).join(''); }
-function controlPanelHtml() { const x = state.telemetry || {}; const modes = ['RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_DRAG', 'COMPLIANT_TRACKING']; const feeds = ['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS']; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; const activeHint = state.language === 'en' ? 'The robot must be ACTIVE before changing impedance mode' : '机器人需要处于 ACTIVE 才能切换阻抗模式'; const inactiveHint = state.language === 'en' ? 'Model feedforward can only be changed while the robot is INACTIVE' : '模型前馈只能在机器人处于 INACTIVE 时修改'; return `<div class="workspace-panel"><div class="workspace-actions"><button data-workbench-action="activate" class="button primary">${t('activateRobot')}</button><button data-workbench-action="park" class="button">${t('parkRobot')}</button><button data-workbench-action="deactivate" class="button danger">${t('deactivateRobot')}</button><button data-workbench-action="hold" class="button">${t('holdRobot')}</button><button data-workbench-action="clear_fault" class="button">${t('clearFault')}</button><button data-workbench-action="fault_compliant" class="button">${t('compliantRecovery')}</button><button data-workbench-action="fault_rigid" class="button">${t('rigidRecovery')}</button></div><section class="workspace-section"><h3>${t('impedanceMode')}</h3><div class="mode-buttons">${modes.map(mode => `<button data-impedance-mode="${mode}" class="button ${x.impedance_mode === mode ? 'active' : ''}" ${active && ['configured','verified','stale'].includes(state.readiness?.modes?.[mode]) ? '' : 'disabled'} title="${['configured','verified','stale'].includes(state.readiness?.modes?.[mode]) ? (active ? '' : activeHint) : readinessResultLabel(state.readiness?.modes?.[mode])}">${mode}</button>`).join('')}</div></section><section class="workspace-section"><h3>${t('modelFeedforward')}</h3><div class="mode-buttons">${feeds.map(mode => `<button data-feedforward-mode="${mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" ${inactive ? '' : 'disabled'} title="${inactive ? '' : inactiveHint}">${mode}</button>`).join('')}</div></section><section class="workspace-section"><div class="workspace-section-head"><h3>${t('jointCommand')}</h3><label>${t('speedScale')} <input id="workbench-speed" type="number" min="0.01" max="1" step="0.01" value="${state.speedScale}"></label></div><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actual')}</th><th>${t('target')}</th><th>${t('delta')}</th><th>dq</th><th>τ</th></tr></thead><tbody>${workbenchJointRows()}</tbody></table></div><div class="workspace-actions"><button id="execute-absolute" class="button primary">${t('executeAbsolute')}</button><button id="execute-relative" class="button">${t('executeRelative')}</button><button id="hold-motion" class="button">${t('holdRobot')}</button><span class="command-state">${t('commandState')} ${esc(commandStateText(state.commandState))}</span><p class="hint">${state.language === 'en' ? 'Motion commands are checked against URDF limits, Safety policy and live feedback by Core. Confirm real joint mapping before large motions' : '运动命令由 Core 按 URDF 限位、Safety 参数与实时反馈检查，执行较大运动前请核对真实关节映射'}</p></div></section></div>`; }
+function controlPanelHtml() { const x = state.telemetry || {}; const modes = ['RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_DRAG', 'COMPLIANT_TRACKING']; const feeds = ['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS']; const active = x.robot_state === 'ACTIVE'; const inactive = x.robot_state === 'INACTIVE'; const activeHint = state.language === 'en' ? 'The robot must be ACTIVE before changing impedance mode' : '机器人需要处于 ACTIVE 才能切换阻抗模式'; const inactiveHint = state.language === 'en' ? 'Model feedforward can only be changed while the robot is INACTIVE' : '模型前馈只能在机器人处于 INACTIVE 时修改'; return `<div class="workspace-panel"><div class="workspace-actions"><button data-workbench-action="activate" class="button primary">${t('activateRobot')}</button><button data-workbench-action="park" class="button">${t('parkRobot')}</button><button data-workbench-action="deactivate" class="button danger">${t('deactivateRobot')}</button><button data-workbench-action="hold" class="button">${t('holdRobot')}</button><button data-workbench-action="clear_fault" class="button">${t('clearFault')}</button><button data-workbench-action="fault_compliant" class="button">${t('compliantRecovery')}</button><button data-workbench-action="fault_rigid" class="button">${t('rigidRecovery')}</button></div>${x.robot_state === 'FAULT' ? `<div class="callout">${state.readiness?.safety_summary?.fault_recovery?.gravity_model_validated === false ? (state.language === 'en' ? 'Low-gain fault recovery is disabled because gravity_model_validated is OFF in the loaded Profile, verify gravity compensation, confirm under Profile Safety, then reconnect, do not clear the fault before the position is back within the URDF limits' : '当前 Profile 的重力模型未标记为已验证，Core 会拒绝低增益柔性故障恢复 · 在真机确认重力补偿后到 Profile 配置 → 安全策略确认并保存，重新连接后才生效 · 关节仍越限时不能直接清除故障') : (state.language === 'en' ? 'Fault recovery requires an eligible safety fault, active fault holding, valid actuator feedback and the configured recovery policy' : '柔性故障恢复还需故障类型允许、故障保持有效、反馈可靠及恢复策略合法')}</div>` : ''}<section class="workspace-section"><h3>${t('impedanceMode')}</h3><div class="mode-buttons">${modes.map(mode => `<button data-impedance-mode="${mode}" class="button ${x.impedance_mode === mode ? 'active' : ''}" ${active && ['configured','verified','stale'].includes(state.readiness?.modes?.[mode]) ? '' : 'disabled'} title="${['configured','verified','stale'].includes(state.readiness?.modes?.[mode]) ? (active ? '' : activeHint) : readinessResultLabel(state.readiness?.modes?.[mode])}">${mode}</button>`).join('')}</div></section><section class="workspace-section"><h3>${t('modelFeedforward')}</h3><div class="mode-buttons">${feeds.map(mode => `<button data-feedforward-mode="${mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" ${inactive ? '' : 'disabled'} title="${inactive ? '' : inactiveHint}">${mode}</button>`).join('')}</div></section><section class="workspace-section"><div class="workspace-section-head"><h3>${t('jointCommand')}</h3><label>${t('speedScale')} <input id="workbench-speed" type="number" min="0.01" max="1" step="0.01" value="${state.speedScale}"></label></div><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actual')}</th><th>${t('target')}</th><th>${t('delta')}</th><th>dq</th><th>τ</th></tr></thead><tbody>${workbenchJointRows()}</tbody></table></div><div class="workspace-actions"><button id="execute-absolute" class="button primary">${t('executeAbsolute')}</button><button id="execute-relative" class="button">${t('executeRelative')}</button><button id="hold-motion" class="button">${t('holdRobot')}</button><span class="command-state">${t('commandState')} ${esc(commandStateText(state.commandState))}</span><p class="hint">${state.language === 'en' ? 'Motion commands are checked against URDF limits, Safety policy and live feedback by Core. Confirm real joint mapping before large motions' : '运动命令由 Core 按 URDF 限位、Safety 参数与实时反馈检查，执行较大运动前请核对真实关节映射'}</p></div></section></div>`; }
 // Offline capability configuration is read from the selected Profile
 // Runtime values are taken only from the active Machine session
 function currentAdmittanceProfile() { return state.capabilityProfile?.core?.capability?.admittance || null; }
@@ -2049,6 +2133,13 @@ function bindPage() {
     if (state.page === 'tcp') bindTcpCalibration();
     if ($('approve-gain-mode')) $('approve-gain-mode').onclick = showGainAdmission;
     if ($('ready-control')) $('ready-control').onclick = () => navigate('workbench');
+    document.querySelector('#profile-guide-container')?.addEventListener('click', event => {
+        const button = event.target.closest('[data-profile-jump]');
+        if (!button) return;
+        state.profileGroup = button.dataset.profileJump;
+        state.profileError = '';
+        render();
+    });
     document.querySelectorAll('[data-profile-group]').forEach(button => button.onclick = () => {
         state.profileGroup = button.dataset.profileGroup;
         state.profileError = ''; render();
@@ -2063,17 +2154,17 @@ function bindPage() {
         if (hint) hint.hidden = !custom;
         if (custom) { input.focus(); return; }
         input.value = select.value;
-        try { readProfileInput(input); }
+        try { readProfileInput(input); refreshProfileGuidance(); }
         catch(error) { state.profileError = error.message; toast(error.message,true); }
     }));
     document.querySelectorAll('[data-profile-field]').forEach(field => {
         field.addEventListener('change', () => {
-            try { readProfileInput(field); updateProfileSwitch(field); }
+            try { readProfileInput(field); updateProfileSwitch(field); refreshProfileGuidance(); }
             catch(error) { state.profileError = error.message; field.closest('.parameter-field')?.classList.add('invalid'); toast(error.message,true); }
         });
         field.addEventListener('input', () => {
             if (field.type === 'number' && !field.value.trim()) return;
-            try { readProfileInput(field); updateProfileSwitch(field); }
+            try { readProfileInput(field); updateProfileSwitch(field); refreshProfileGuidance(); }
             catch { /* Validate incomplete fields on change */ }
         });
     });
@@ -2098,9 +2189,23 @@ function bindPage() {
         state.profileEditor = await api.request('profile_editor_load',{config:state.config});
         state.profileDirty = false; state.profileError = ''; render();
     });
-    if ($('profile-save')) $('profile-save').onclick = () => blockingOperation(busyText('正在验证并保存参数...', 'Validating and saving configuration...'), async () => {
+    if ($('profile-save')) $('profile-save').onclick = async () => {
+        const editor = state.profileEditor;
+        const newTrust = editor?.core?.safety_policy?.fault_recovery?.gravity_model_validated === true;
+        const oldTrust = editor?.original_gravity_model_validated === true;
+        let gravityRecoveryConfirmed = false;
+        if (newTrust && !oldTrust) {
+            gravityRecoveryConfirmed = await safetyConfirmation(
+                state.language === 'en' ? 'Confirm verified gravity model' : '确认重力模型真实有效',
+                state.language === 'en' ? 'This enables lower-gain fault recovery, including supported position-limit faults. An inaccurate gravity model can cause the arm to drop. A checkbox does not validate the model' : '开启后将允许符合条件的低增益故障柔性恢复，包括位置越限故障，错误的重力模型可能造成机械臂下坠，勾选确认不代表系统已自动验证',
+                '',
+                state.language === 'en' ? ['I verified the gravity direction and compensation with this robot and its current payload', 'Reliable physical support and emergency stop are available'] : ['已针对这台机械臂和当前末端负载真机确认重力补偿方向与效果', '已准备可靠机械支撑并确认急停与失能途径']);
+            if (!gravityRecoveryConfirmed) return;
+        }
+        return blockingOperation(busyText('正在验证并保存参数...', 'Validating and saving configuration...'), async () => {
         try {
             const payload = collectProfileEditor();
+            payload.gravity_recovery_confirmed = gravityRecoveryConfirmed;
             state.profileEditor = await api.request('profile_editor_save',{config:state.config,payload});
             state.profileDirty=false; state.profileError='';
             state.info=null; await inspect();
@@ -2113,7 +2218,8 @@ function bindPage() {
             else if (state.profileError.startsWith('hardware.') || state.profileError.startsWith('profile.')) state.profileGroup='hardware';
             render(); throw error;
         }
-    });
+        });
+    };
     if ($('open-persistent-config')) $('open-persistent-config').onclick = () => { state.profileGroup = 'admittance'; navigate('profile_setup'); };
     if ($('open-capability-calibration')) $('open-capability-calibration').onclick = () => navigate('calibration');
     if ($('settings-back')) $('settings-back').onclick = async () => { await pageExit(); state.page = state.previousPage || 'start'; renderedPage = ''; shell(); };
@@ -2472,18 +2578,61 @@ function confirmWorkbenchDisconnect() {
         toast(en ? 'Temporary candidates removed before disconnect' : '临时应用已在断连前撤销');
     }); };
 }
-function workbenchConfirm() { const info = state.info, dialog = $('confirm-dialog'); dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3>${t('workbenchTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd>${t(info.write_enabled === true ? 'enabled' : 'unknown')}</dd></dl><p class="hint">${state.language === 'en' ? 'Connecting does not activate motors, and manual checks are optional. Before enabling, review Safety acceleration and URDF limits, confirm joint mapping and power, and secure the workspace' : '连接不会使能电机，人工验收记录不限制控制，使能前请核对 Safety 加速度、URDF 位置及速度限制、电机映射和机械支撑'}</p><label class="confirmation"><input id="workspace-confirmed" type="checkbox"><span>${t('confirm')}</span></label><div class="actions"><button id="workspace-cancel" class="button">${t('cancel')}</button><button id="workspace-connect" class="button primary" disabled>${t('startWorkbench')}</button></div>`; dialog.showModal(); $('workspace-confirmed').onchange = () => $('workspace-connect').disabled = !$('workspace-confirmed').checked; $('workspace-cancel').onclick = () => dialog.close(); $('workspace-connect').onclick = () => { dialog.close(); blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), () => connectWorkbench(true)); }; }
-function safetyConfirmation(title, message, details = '', acknowledgements = [], category = 'safety') {
+// Reminder choices are private to a single configured Profile
+// A new Profile, a different Profile path, or changed configuration must prompt again
+function robotReminderStorageKey(kind) {
+    const profile = String(state.config?.profile || '').trim();
+    const path = String(state.info?.profile_file || state.config?.profile_file || '').trim();
+    const fingerprint = String(state.info?.fingerprint || '').trim();
+    if (!kind || !profile || !path || !fingerprint) return '';
+    return 'serialarm.robot.reminder:' + JSON.stringify([kind, profile, path, fingerprint]);
+}
+function robotReminderDismissed(kind) {
+    const key = robotReminderStorageKey(kind);
+    if (!key) return false;
+    try { return window.localStorage.getItem(key) === 'true'; } catch { return false; }
+}
+function rememberRobotReminder(kind) {
+    const key = robotReminderStorageKey(kind);
+    if (!key) return;
+    try { window.localStorage.setItem(key, 'true'); } catch { /* Storage unavailable: show again next time */ }
+}
+function robotReminderCheckbox() {
+    return `<label class="robot-reminder-choice"><input type="checkbox" id="robot-never-remind"><span>${state.language === 'en' ? 'Do not show this reminder again for this robot and configuration' : '永不提醒（仅限此机械臂的当前配置）'}</span></label>`;
+}
+function workbenchConfirm() {
+    const kind = 'connect_workspace';
+    // Explicitly clicking Connect remains necessary; only its repeated informational popup is optional
+    if (robotReminderDismissed(kind)) {
+        return blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), () => connectWorkbench(true));
+    }
+    const info = state.info, dialog = $('confirm-dialog');
+    if (!info || !dialog || dialog.open) return;
+    dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3>${t('workbenchTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd>${t(info.write_enabled === true ? 'enabled' : 'unknown')}</dd></dl><p class="hint">${state.language === 'en' ? 'Connecting does not activate motors. Before enabling, check Safety acceleration, URDF position and velocity limits, joint mapping and mechanical support' : '连接不会使能电机，使能前请核对 Safety 加速度、URDF 位置及速度限制、电机映射和机械支撑'}</p><label class="confirmation"><input id="workspace-confirmed" type="checkbox"><span>${t('confirm')}</span></label>${robotReminderCheckbox()}<div class="actions"><button id="workspace-cancel" class="button">${t('cancel')}</button><button id="workspace-connect" class="button primary" disabled>${t('startWorkbench')}</button></div>`;
+    dialog.showModal();
+    $('workspace-confirmed').onchange = () => $('workspace-connect').disabled = !$('workspace-confirmed').checked;
+    $('workspace-cancel').onclick = () => dialog.close();
+    $('workspace-connect').onclick = () => {
+        const remember = $('robot-never-remind')?.checked === true;
+        dialog.close();
+        blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), async () => {
+            await connectWorkbench(true);
+            if (remember) rememberRobotReminder(kind);
+        });
+    };
+}
+function safetyConfirmation(title, message, details = '', acknowledgements = [], category = 'safety', reminderKind = '') {
     const dialog = $('confirm-dialog');
-    if (!dialog || dialog.open) return Promise.resolve(false);
+    if (reminderKind && robotReminderDismissed(reminderKind)) return Promise.resolve({accepted:true, remember:false});
+    if (!dialog || dialog.open) return Promise.resolve(reminderKind ? {accepted:false, remember:false} : false);
     const checks = acknowledgements.map((label,index) => `<label class="confirmation"><input type="checkbox" data-safety-ack="${index}"><span>${esc(label)}</span></label>`).join('');
-    dialog.innerHTML = `<div class="eyebrow">${category === 'general' ? 'SERIALARM · WORKSPACE' : 'SERIALARM · SAFETY'}</div><h3>${esc(title)}</h3><p>${esc(message)}</p>${details}<div class="safety-acknowledgements">${checks}</div><div class="actions"><button type="button" class="button" id="safety-dismiss">${t('cancel')}</button><button type="button" class="button primary" id="safety-accept" ${acknowledgements.length?'disabled':''}>${state.language==='en'?'Confirm and continue':'确认继续'}</button></div>`;
+    dialog.innerHTML = `<div class="eyebrow">${category === 'general' ? 'SERIALARM · WORKSPACE' : 'SERIALARM · SAFETY'}</div><h3>${esc(title)}</h3><p>${esc(message)}</p>${details}<div class="safety-acknowledgements">${checks}</div>${reminderKind ? robotReminderCheckbox() : ''}<div class="actions"><button type="button" class="button" id="safety-dismiss">${t('cancel')}</button><button type="button" class="button primary" id="safety-accept" ${acknowledgements.length?'disabled':''}>${state.language==='en'?'Confirm and continue':'确认继续'}</button></div>`;
     return new Promise(resolve => {
         let settled = false;
-        const finish = ok => { if (settled) return; settled = true; dialog.close(); resolve(ok); };
+        const finish = ok => { if (settled) return; settled = true; const remember = ok && dialog.querySelector('#robot-never-remind')?.checked === true; dialog.close(); resolve(reminderKind ? {accepted:ok, remember} : ok); };
         $('safety-dismiss').onclick = () => finish(false);
         $('safety-accept').onclick = () => finish(true);
-        dialog.addEventListener('close', () => { if (!settled) { settled = true; resolve(false); } }, {once:true});
+        dialog.addEventListener('close', () => { if (!settled) { settled = true; resolve(reminderKind ? {accepted:false, remember:false} : false); } }, {once:true});
         dialog.querySelectorAll('[data-safety-ack]').forEach(box => box.onchange = () => {
             $('safety-accept').disabled = ![...dialog.querySelectorAll('[data-safety-ack]')].every(item => item.checked);
         });
@@ -2507,14 +2656,16 @@ function safetySettingsDetails() {
 }
 async function workbenchCommand(action) {
     const needsConfirmation = action === 'activate' && state.confirmedActivationPid !== state.session?.pid;
+    let rememberActivation = false;
     if (needsConfirmation) {
         const en = state.language === 'en';
-        const accepted = await safetyConfirmation(en?'Confirm first activation':'首次使能安全确认',
+        const choice = await safetyConfirmation(en?'Confirm first activation':'首次使能安全确认',
             en?'The robot can move immediately after enabling. Review the loaded limits and confirm the physical setup':'使能后机械臂可能立即产生力矩，请先核对下列配置及真实硬件状态',
             safetySettingsDetails(),
             en?['Acceleration limits and URDF position/velocity limits have been checked','Joint mapping, support, emergency stop and free workspace have been confirmed']:
-               ['已核对 Safety 加速度及 URDF 位置和速度限制','已核对电机映射、机械支撑、急停及运动空间']);
-        if (!accepted) return null;
+               ['已核对 Safety 加速度及 URDF 位置和速度限制','已核对电机映射、机械支撑、急停及运动空间'], 'safety', 'first_activation');
+        if (!choice.accepted) return null;
+        rememberActivation = choice.remember;
     }
     const methods = {activate:'activate',park:'park',deactivate:'deactivate',hold:'hold',clear_fault:'clear_fault',fault_compliant:'fault_compliant',fault_rigid:'fault_rigid'};
     const method = methods[action];
@@ -2522,7 +2673,10 @@ async function workbenchCommand(action) {
     state.commandState = 'submitting';
     try {
         const result = await workbenchRequest(method);
-        if (needsConfirmation) state.confirmedActivationPid = state.session?.pid;
+        if (needsConfirmation) {
+            state.confirmedActivationPid = state.session?.pid;
+            if (rememberActivation) rememberRobotReminder('first_activation');
+        }
         state.commandState = 'accepted';
         return result;
     } catch (error) { state.commandState = 'failed'; throw error; }

@@ -1420,7 +1420,23 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
         const auto result = robot_.enter_fault_compliant_recovery();
-        if(!result) throw machine_robot_error("fault_compliant", result.error());
+        if(!result) {
+            if(result.error().code == RobotErr::FAULT_RECOVERY_NOT_ALLOWED) {
+                const auto& recovery = cfg_.safety.fault_recovery;
+                if(!recovery.allow_compliant_recovery)
+                    throw std::runtime_error("fault_compliant: fault_recovery.allow_compliant_recovery is false");
+                if(!recovery.gravity_model_validated)
+                    throw std::runtime_error("fault_compliant: fault_recovery.gravity_model_validated is false; verify the current robot gravity model and confirm it in Profile Safety before reconnecting");
+                if(recovery.default_mode != FaultHoldMode::RIGID_HOLD || !recovery.require_operator_request)
+                    throw std::runtime_error("fault_compliant: fault recovery policy does not permit operator compliant recovery");
+                if(const auto& fault = robot_.get_last_fault()) {
+                    if(fault->code == RobotErr::SAFETY_FAILED)
+                        throw std::runtime_error("fault_compliant: fault type is not eligible for compliant recovery: " + to_string(fault->safety_fault.code));
+                    throw std::runtime_error("fault_compliant: fault type is not eligible for compliant recovery: " + to_string(fault->code));
+                }
+            }
+            throw machine_robot_error("fault_compliant", result.error());
+        }
         background_fault_reported_ = false;
     }
 

@@ -322,7 +322,10 @@ def main():
                     info = inspector.inspect(config)
                     if not info['available'].get('workbench'): raise ValueError('structured workspace is unavailable; install Standalone terminal components')
                     admission = profile_library._readiness(config)
-                    if admission['checks'].get('profile_setup') != 'verified': raise ValueError('请先完成硬件与 Profile 配置')
+                    if admission['checks'].get('profile_setup') != 'verified':
+                        issues = admission.get('setup_issues') or []
+                        detail = '；'.join(item['message'] for item in issues[:4]) if issues else (admission.get('reason') or 'Core 或硬件配置尚不完整')
+                        raise ValueError('无法连接工作台，请先在 Profile 配置中完成必需项：' + detail)
                     if params.get('fingerprint') != info['fingerprint']: raise ValueError('configuration changed; inspect and confirm again')
                     if info['write_enabled'] is not False:
                         if params.get('confirmed') is not True: raise ValueError('real hardware confirmation is required')

@@ -208,6 +208,13 @@ class ProfileLibrary:
         joints = model.get('joint_names') or []
         profile_setup = all(checks.get(k, False) for k in ('core', 'description', 'hardware'))
         profile_setup &= bool(info.get('hardware_plugin') and joints and model.get('base_frame') and model.get('tool_frame'))
+        setup_issues = []
+        if checks.get('core'):
+            try:
+                entry = (read_yaml(info['profile_file']).get('profiles') or {})[info['profile']]
+                setup_issues = self._setup_issues(core, hardware, entry)
+            except (OSError, ValueError, KeyError, TypeError, yaml.YAMLError):
+                pass
         if profile_setup and info['hardware_plugin'] == 'serial_arm_hardware_damiao':
             damiao = hardware.get('damiao') or {}
             acts = damiao.get('actuators') or {}
@@ -217,7 +224,8 @@ class ProfileLibrary:
                 and all(isinstance(a, dict) and a.get('motor_type') and
                     isinstance(a.get('motor_id'), int) and not isinstance(a.get('motor_id'), bool)
                     and a['motor_id'] > 0 for a in acts.values()) and len(set(ids)) == len(joints))
-        reason = ''
+        if setup_issues: profile_setup = False
+        reason = setup_issues[0]['message'] if setup_issues else ''
         if profile_setup:
             try:
                 entry = (read_yaml(info['profile_file']).get('profiles') or {})[info['profile']]
@@ -305,12 +313,14 @@ class ProfileLibrary:
             'state_timeout_s': safety.get('state_timeout_s'),
             'cmd_timeout_s': safety.get('cmd_timeout_s'),
             'require_continuous_cmd': safety.get('require_continuous_cmd'),
+            'fault_recovery': dict(safety.get('fault_recovery') or {}),
             'urdf_limits': urdf_limits,
         }
         return {'state': state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'reason': reason,
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
+                'setup_issues': setup_issues,
                 'source_trusted': self._is_official_profile(info),
                 'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', '')}
                              for k, v in stages.items() if isinstance(v, dict)}}
@@ -630,6 +640,72 @@ class ProfileLibrary:
         info = self.inspector.inspect(config)
         return info, Path(info['resources']['core']), Path(info['resources']['hardware']), Path(info['profile_file'])
 
+    _DAMIAO_MOTOR_TYPES = frozenset((
+        'DM4310', 'DM4310_48V', 'DM4340', 'DM4340_48V', 'DM6006',
+        'DM6248P', 'DM8006', 'DM8009', 'DM10010L', 'DM10010',
+        'DMH3510', 'DMH6215', 'DMG6220', 'DMJH11',
+    ))
+
+    def _setup_issues(self, core, hardware, entry):
+        # Report concrete missing/invalid fields before invoking the native driver
+        issues = []
+        def issue(group, path, message):
+            issues.append({'group': group, 'path': path, 'message': message})
+        names = ((core.get('model') or {}).get('joint_names') or [])
+        plugin = ((entry.get('hardware') or {}).get('plugin') or '').strip()
+        if not plugin:
+            issue('hardware', 'profile_entry.hardware.plugin', '请选择硬件驱动，达妙电机请选择 serial_arm_hardware_damiao')
+        if plugin == 'serial_arm_hardware_damiao':
+            buses = hardware.get('buses') or {}
+            damiao = hardware.get('damiao') or {}
+            bus_name = damiao.get('bus')
+            if not bus_name or not isinstance(buses, dict) or bus_name not in buses:
+                issue('hardware', 'hardware.damiao.bus', '请选择已配置的总线，或先初始化达妙硬件字段')
+            else:
+                selected = buses[bus_name]
+                if not isinstance(selected, dict):
+                    issue('hardware', f'hardware.buses.{bus_name}', '总线配置必须是对象')
+                else:
+                    for key, desc in (('type','总线类型'),('backend','通信后端'),('device','设备路径')):
+                        if not isinstance(selected.get(key), str) or not selected.get(key).strip():
+                            issue('hardware', f'hardware.buses.{bus_name}.{key}', f'请填写总线 {bus_name} 的{desc}')
+                    baud = selected.get('baudrate')
+                    if isinstance(baud, bool) or not isinstance(baud,(int,float)) or not math.isfinite(baud) or baud <= 0 or int(baud) != baud:
+                        issue('hardware', f'hardware.buses.{bus_name}.baudrate', f'总线 {bus_name} 的波特率必须是正整数')
+            actuators = damiao.get('actuators') or {}
+            if not isinstance(actuators, dict):
+                issue('hardware', 'hardware.damiao.actuators', '执行器映射必须是关节名称到电机配置的对象')
+                actuators = {}
+            for joint in names:
+                actuator = actuators.get(joint)
+                base = f'hardware.damiao.actuators.{joint}'
+                if not isinstance(actuator, dict):
+                    issue('hardware', base, f'{joint} 缺少执行器映射')
+                    continue
+                motor_type = actuator.get('motor_type')
+                if not isinstance(motor_type, str) or not motor_type.strip():
+                    issue('hardware', base+'.motor_type', f'{joint} 未选择电机型号，请在硬件与总线中选择')
+                elif motor_type not in self._DAMIAO_MOTOR_TYPES:
+                    issue('hardware', base+'.motor_type', f'{joint} 电机型号 {motor_type} 不受当前达妙驱动支持，请选择列表中的型号')
+                for field, minval in (('motor_id',1),('master_id',0)):
+                    value = actuator.get(field)
+                    if isinstance(value, bool) or not isinstance(value, int) or value < minval:
+                        issue('hardware', base+'.'+field, f'{joint} 的 {field} 必须是大于等于 {minval} 的整数')
+            extra = set(actuators)-set(names)
+            if extra: issue('hardware', 'hardware.damiao.actuators', f'执行器列表含未受控的关节 {", ".join(sorted(extra))}')
+            ids = [a.get('motor_id') for j,a in actuators.items() if j in names and isinstance(a,dict) and isinstance(a.get('motor_id'),int)]
+            if len(set(ids)) < len(ids): issue('hardware','hardware.damiao.actuators','同一总线上的电机 ID 不能重复')
+        safety = core.get('safety_policy') or {}
+        acceleration = safety.get('max_acc') or {}
+        if not isinstance(acceleration, dict) or set(acceleration) != set(names):
+            issue('safety','core.safety_policy.max_acc','Safety 必须为全部受控关节提供最大加速度 max_acc')
+        else:
+            for joint in names:
+                value = acceleration[joint]
+                if isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<=0:
+                    issue('safety',f'core.safety_policy.max_acc.{joint}',f'{joint} 的 Safety 最大加速度必须大于零')
+        return issues
+
     def profile_editor_load(self, config):
         info, core_path, hardware_path, profile_path = self._profile_config_paths(config)
         core = read_yaml(core_path)
@@ -641,17 +717,31 @@ class ProfileLibrary:
             nodes = ET.parse(urdf).getroot().findall('joint')
             urdf_effort_limits = {node.get('name'): float(node.find('limit').get('effort'))
                 for node in nodes if node.find('limit') is not None and node.find('limit').get('effort')}
+            urdf_joint_limits = {}
+            for node in nodes:
+                if node.get('name') not in joints: continue
+                limit = node.find('limit')
+                values = {'type': node.get('type') or ''}
+                for field in ('lower', 'upper', 'velocity', 'effort'):
+                    raw = limit.get(field) if limit is not None else None
+                    try: values[field] = float(raw) if raw is not None else None
+                    except (TypeError, ValueError): values[field] = None
+                urdf_joint_limits[node.get('name')] = values
         except (OSError, ET.ParseError, KeyError, ValueError):
             urdf_effort_limits = {}
+            urdf_joint_limits = {}
         return {
             'profile': info['profile'], 'core_path': str(core_path),
             'hardware_path': str(hardware_path), 'profile_path': str(profile_path),
             'core_sha': _sha(core_path),
             'hardware_sha': _sha(hardware_path) if hardware_path.is_file() else '',
             'profile_sha': _sha(profile_path),
-            'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits, 'core': core, 'hardware': hardware,
+            'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits,
+            'urdf_joint_limits': urdf_joint_limits, 'core': core, 'hardware': hardware,
             'profile_entry': profile,
+            'original_gravity_model_validated': bool(((core.get('safety_policy') or {}).get('fault_recovery') or {}).get('gravity_model_validated')),
             'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
+            'setup_issues': self._setup_issues(core, hardware, profile),
             'managed_by_launcher': self._readiness_path(info['profile_file'], info['profile']).is_file(),
         }
 
@@ -688,7 +778,7 @@ class ProfileLibrary:
         elif candidate != original:
             raise ValueError(f'{path} 不支持此参数类型')
 
-    def _validate_core_profile(self, core, hardware, entry, core_path, old_core):
+    def _validate_core_profile(self, core, hardware, entry, core_path, old_core, allow_hardware_draft=False):
         names = core['model']['joint_names']
         original_names = old_core['model']['joint_names']
         if names != original_names or not isinstance(names, list) or not names or len(set(names)) != len(names):
@@ -823,7 +913,10 @@ class ProfileLibrary:
             damiao = hardware.get('damiao') or {}
             buses = hardware.get('buses') or {}
             bus = damiao.get('bus')
-            if not bus or bus not in buses: raise ValueError('hardware.damiao.bus 必须对应 hardware.buses 中的总线')
+            if not bus or bus not in buses:
+                if allow_hardware_draft:
+                    return
+                raise ValueError('hardware.damiao.bus 必须对应 hardware.buses 中的总线')
             for key in ('feedback_timeout_s',):
                 self._finite(damiao.get(key), 'hardware.damiao.'+key,1e-7)
             for key in ('activation_retries','startup_read_cycles','stop_cycles'):
@@ -833,11 +926,18 @@ class ProfileLibrary:
             self._finite(buses[bus].get('baudrate'), f'hardware.buses.{bus}.baudrate',1,integer=True)
             if not buses[bus].get('device'): raise ValueError(f'hardware.buses.{bus}.device 不能为空')
             acts = damiao.get('actuators') or {}
-            if set(acts)!=set(names): raise ValueError('hardware.damiao.actuators 与受控关节不一致')
+            if set(acts)!=set(names) and not allow_hardware_draft:
+                raise ValueError('hardware.damiao.actuators 与受控关节不一致')
             ids = set()
             for name in names:
+                if name not in acts:
+                    if allow_hardware_draft: continue
+                    raise ValueError(f'hardware.damiao.actuators.{name} 尚未配置')
                 item = acts[name]
-                if not item.get('motor_type'): raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 不能为空')
+                if not item.get('motor_type') and not allow_hardware_draft:
+                    raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 未选择电机型号')
+                if item.get('motor_type') and item['motor_type'] not in self._DAMIAO_MOTOR_TYPES:
+                    raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 不支持型号 {item["motor_type"]}，请从列表选择')
                 self._finite(item.get('motor_id'),f'hardware.damiao.actuators.{name}.motor_id',1,integer=True)
                 self._finite(item.get('master_id'),f'hardware.damiao.actuators.{name}.master_id',0,integer=True)
                 bus_key = (bus,item['motor_id'])
@@ -877,14 +977,17 @@ class ProfileLibrary:
         if (core['capability']['admittance']['enabled'] and
             not before_core['capability']['admittance']['enabled']):
             raise ValueError('capability.admittance.enabled 需要后续标定和验证后才能启用')
-        if (core['safety_policy']['fault_recovery']['gravity_model_validated'] !=
-            before_core['safety_policy']['fault_recovery']['gravity_model_validated']):
-            raise ValueError('safety_policy.fault_recovery.gravity_model_validated 必须由后续真机验证流程更新')
+        original_gravity_trusted = before_core['safety_policy']['fault_recovery']['gravity_model_validated']
+        requested_gravity_trusted = core['safety_policy']['fault_recovery']['gravity_model_validated']
+        # Explicit operator acknowledgment is required for a false -> true trust transition
+        # Disabling recovery trust must always remain possible
+        if requested_gravity_trusted and not original_gravity_trusted and payload.get('gravity_recovery_confirmed') is not True:
+            raise ValueError('启用柔性故障恢复前必须确认重力补偿已在当前机械臂和负载上完成真机验证')
         self._same_structure(before_hw,hardware,'hardware')
         self._same_structure(original_entry,entry,'profile')
         if entry.get('core') != original_entry.get('core') or entry.get('description') != original_entry.get('description'):
             raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')
-        self._validate_core_profile(core,hardware,entry,core_path,before_core)
+        self._validate_core_profile(core,hardware,entry,core_path,before_core,allow_hardware_draft=True)
         # A user-owned Profile is a single authoritative configuration; preserve
         # exact existing bytes on no-op saves so comments and verified values stay intact
         desired = {}

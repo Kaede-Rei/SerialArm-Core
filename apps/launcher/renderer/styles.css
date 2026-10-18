@@ -571,3 +571,37 @@ dialog .safety-acknowledgements .confirmation input{width:16px;height:16px;flex:
 .safety-parameter-review .safety-limit-title{margin-top:14px;padding-top:10px;border-top:1px solid var(--line)}
 
 .safety-parameter-review .safety-step-warning{padding:8px 10px;border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));border-radius:8px;color:var(--text)}
+
+/* Inline guidance belongs to Profile configuration, not an extra wizard gate */
+.profile-setup-guide{border:1px solid var(--line);border-radius:14px;background:var(--card);padding:18px 20px;margin:12px 0 16px;min-width:0}
+.profile-guide-head{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:14px}
+.profile-guide-head h3{font-size:17px;margin:4px 0 7px;color:var(--text)}
+.profile-guide-head p,.profile-guide-footer{font-size:12px;line-height:1.7;color:var(--muted);margin:0}
+.profile-guide-count{flex-shrink:0;font-size:11px;padding:6px 10px;border:1px solid var(--line);border-radius:99px;color:var(--muted);background:var(--subtle)}
+.profile-guide-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
+.profile-guide-step{border:1px solid var(--line);border-radius:10px;padding:13px 14px;min-width:0;display:flex;flex-direction:column;gap:9px}
+.profile-guide-step.missing{border-color:color-mix(in srgb,var(--accent) 36%,var(--line))}
+.profile-guide-step-heading{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.profile-guide-step-heading>b{font-size:12px;color:var(--text)}
+.profile-guide-number{display:inline-grid;place-items:center;width:21px;height:21px;border:1px solid var(--line);background:var(--subtle);color:var(--text);border-radius:7px;font-size:11px}
+.profile-guide-status{font-size:10px;color:var(--muted);margin-left:auto}
+.profile-guide-step.missing .profile-guide-status{color:var(--accent)}
+.profile-guide-step p{display:flex;flex-direction:column;gap:4px;line-height:1.65;font-size:11px;color:var(--muted);overflow-wrap:anywhere;margin:0;flex:1}
+.profile-guide-link{align-self:flex-start;padding:0;border:0;background:transparent;color:var(--accent);font-size:11px;font-weight:600;cursor:pointer}
+.profile-guide-link:hover{text-decoration:underline}
+.profile-guide-footer{margin-top:12px}
+.parameter-required{display:inline-block;font-size:9px;font-weight:600;color:var(--accent);margin-left:6px}
+@media(max-width:950px){.profile-guide-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:540px){.profile-guide-head{flex-wrap:wrap}.profile-setup-guide{padding:14px}}
+
+.profile-limit-review{border:1px solid var(--line);border-radius:10px;padding:12px 14px;min-width:0;background:var(--subtle)}
+.profile-limit-review summary{font-size:12px;font-weight:600;color:var(--text);cursor:pointer}
+.profile-limit-review p{font-size:11px;line-height:1.7;color:var(--muted);margin:9px 0}
+.profile-limit-table{width:100%;border-collapse:collapse;font-size:11px;text-align:left;min-width:520px}
+.profile-limit-table th,.profile-limit-table td{padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap;color:var(--text)}
+.profile-limit-table th{color:var(--muted);font-weight:600}
+.profile-limit-warning td{color:var(--accent)}
+
+/* Optional informational reminder suppression is scoped to a single Profile */
+dialog .robot-reminder-choice{display:flex;align-items:center;gap:9px;margin:6px 0 16px;font-size:12px;color:var(--muted);line-height:1.6;cursor:pointer}
+dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-color:var(--accent)}
