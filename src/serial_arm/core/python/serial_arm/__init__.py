@@ -73,7 +73,7 @@ def _check_numpy_binding_compatibility() -> None:
             or not np.array_equal(actual, expected)):
         raise ImportError(
             "SerialArm Python binding returned invalid joint data or NumPy strides "
-            "Rebuild serial_arm_core with pybind11 >= 2.13.6 and re-source the "
+            "Rebuild serial_arm_core using its required pybind11 source and re-source the "
             "correct install/setup.bash before using robot hardware"
         )
 

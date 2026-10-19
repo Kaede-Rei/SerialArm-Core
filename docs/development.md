@@ -19,6 +19,12 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
+在下游 ROS2 工作区中也可以直接运行 `colcon build`，Python Binding 默认参与构建
+
+CMake 始终使用源码仓库内置的 pybind11 构建依赖，不会在构建过程中联网获取，也不会回退到系统中不兼容的旧版本
+
+Python Binding 默认启用，普通 `colcon build` 可直接使用仓库内置依赖，仍需预先满足 ROS2、Pinocchio、Eigen 和 Python 开发环境等系统依赖
+
 源码位于 `src/`，GUI 位于 `apps/launcher/`，安装逻辑位于 `tools/install/`
 
 ## 验证与部署

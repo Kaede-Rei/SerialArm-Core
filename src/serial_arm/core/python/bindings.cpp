@@ -16,6 +16,10 @@
 
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+
+#if PYBIND11_VERSION_HEX != 0x020D0600
+#error "SerialArm Python binding requires the audited pybind11 headers"
+#endif
 #include <pybind11/stl.h>
 
 namespace py = pybind11;

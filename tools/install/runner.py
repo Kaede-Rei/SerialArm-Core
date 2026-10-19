@@ -232,14 +232,14 @@ class Runner:
             env['CMAKE_ARGS'] = '-DBUILD_TESTING=OFF'
         env['CMAKE_BUILD_PARALLEL_LEVEL'] = str(self.plan.jobs)
         self.run('python-build-deps', [self.python, '-m', 'pip', 'install',
-                                     'scikit-build-core>=0.10', 'pybind11>=2.13.6,<3', 'numpy>=1.24'], env=env)
+                                     'scikit-build-core>=0.10', 'numpy>=1.24'], env=env)
         self.run('python-wheel', [self.python, '-m', 'pip', 'install', '--no-build-isolation',
                                  '--force-reinstall', '--no-deps', self.root / 'src/serial_arm/core/python'],
                  env=env, source=self.setup)
 
     def ros(self):
         self.apt(['build-essential', 'cmake', 'python3-colcon-common-extensions',
-                  'python3-rosdep'] + (['python3-dev', 'pybind11-dev', 'python3-numpy'] if self.plan.python else []))
+                  'python3-rosdep'] + (['python3-dev', 'python3-numpy'] if self.plan.python else []))
         paths = self.plan.package_paths()
         if not self.plan.skip_system_deps:
             if not Path('/etc/ros/rosdep/sources.list.d/20-default.list').is_file():
@@ -262,7 +262,7 @@ class Runner:
             cmd = ['rosdep', 'install', '--from-paths', *paths, '--ignore-src', '-y',
                    '--rosdistro', self.plan.ros_distro, *types]
             if not self.plan.python:
-                cmd += ['--skip-keys', 'ament_cmake_python python3-dev pybind11-dev python3-numpy']
+                cmd += ['--skip-keys', 'ament_cmake_python python3-dev python3-numpy']
             try:
                 self.run('rosdep-install', cmd, source=self.ros_setup, terminal=True)
             except InstallError as error:
@@ -270,20 +270,6 @@ class Runner:
                     f'{error}\n\n[rosdep 排查建议] {rosdep_failure_hint(str(error))}\n'
                     '可以单独用相同参数重试 rosdep，不需要重新执行完整安装器'
                 ) from error
-        # Use a private, compatible pybind11 CMake package rather than Ubuntu's
-        # pybind11-dev, which may produce NumPy 2.x arrays with zero strides
-        pybind11_cmake_dir = None
-        if self.plan.python:
-            binding_env = self.build / 'pybind11-venv'
-            self.run('ros2-binding-venv', [sys.executable, '-m', 'venv', str(binding_env)])
-            pybind11_python = binding_env / 'bin/python'
-            self.run('ros2-binding-deps', [pybind11_python, '-m', 'pip', 'install', 'pybind11>=2.13.6,<3'])
-            pybind11_cmake_dir = subprocess.check_output(
-                [str(pybind11_python), '-m', 'pybind11', '--cmakedir'],
-                text=True, env=self.env
-            ).strip()
-            if not Path(pybind11_cmake_dir, 'pybind11Config.cmake').is_file():
-                raise InstallError('Unable to locate the compatible pybind11 CMake package')
         installed_test_sources = (self.root/'src/serial_arm/core/tests').exists()
         run_tests = bool(self.plan.tests and installed_test_sources)
         if self.plan.tests and not run_tests:
@@ -296,10 +282,6 @@ class Runner:
                  '-DSERIAL_ARM_BUILD_PYTHON=' + ('ON' if self.plan.python else 'OFF'),
                  '-DSERIAL_ARM_BUILD_TERMINAL=' + ('ON' if self.plan.terminal else 'OFF'),
                  '-DBUILD_TESTING=' + ('ON' if run_tests else 'OFF')]
-        if pybind11_cmake_dir:
-            # Clear stale pybind11_DIR cache entries from earlier system builds
-            build.insert(build.index('--cmake-args'), '--cmake-clean-cache')
-            build.append('-Dpybind11_DIR:PATH=' + pybind11_cmake_dir)
         self.run('ros2-build', colcon + build, source=self.ros_setup)
         if run_tests:
             self.run('ros2-test', colcon + ['test', '--base-paths', *paths, '--build-base', str(self.build),

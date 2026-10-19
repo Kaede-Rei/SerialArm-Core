@@ -11,7 +11,7 @@ SerialArm pybind11 Python 交互终端
     python3 -m venv .venv
     source .venv/bin/activate
     python -m pip install --upgrade pip
-    python -m pip install numpy pybind11 scikit-build-core build
+    python -m pip install numpy scikit-build-core build
 
 2 Pinocchio 位于 /opt/openrobots 时加载环境
 
@@ -57,7 +57,7 @@ SerialArm pybind11 Python 交互终端
 ----
 Python >= 3.10
 NumPy >= 1.24
-pybind11 >= 2.11
+pybind11 由 SerialArm-Core 源码仓库内置，无需额外安装
 scikit-build-core >= 0.10
 build
 python3-dev

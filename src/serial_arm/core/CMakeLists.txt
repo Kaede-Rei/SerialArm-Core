@@ -253,7 +253,25 @@ target_link_libraries(serial_arm_robot PUBLIC serial_arm_interaction)
 
 if(SERIAL_ARM_BUILD_PYTHON)
     find_package(Python COMPONENTS Interpreter Development.Module REQUIRED)
-    find_package(pybind11 2.13.6 CONFIG REQUIRED)
+
+    # Always resolve the pinned, bundled pybind11 config offline
+    # Do not silently fall back to an incompatible system package or a download
+    set(SERIAL_ARM_PYBIND11_VENDOR
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_lib/pybind11")
+    set(SERIAL_ARM_PYBIND11_CONFIG_DIR
+        "${SERIAL_ARM_PYBIND11_VENDOR}/share/cmake/pybind11")
+    if(NOT EXISTS "${SERIAL_ARM_PYBIND11_VENDOR}/include/pybind11/detail/common.h"
+       OR NOT EXISTS "${SERIAL_ARM_PYBIND11_CONFIG_DIR}/pybind11Config.cmake")
+        message(FATAL_ERROR
+            "Bundled pybind11 build dependency is missing or incomplete. "
+            "Use a complete SerialArm-Core source distribution")
+    endif()
+
+    set(PYBIND11_FINDPYTHON ON)
+    # Normal variable takes precedence over stale pybind11_DIR cache entries
+    set(pybind11_DIR "${SERIAL_ARM_PYBIND11_CONFIG_DIR}")
+    find_package(pybind11 2.13.6 EXACT CONFIG REQUIRED NO_DEFAULT_PATH)
+
     find_package(Threads REQUIRED)
     if(ament_cmake_FOUND)
         find_package(ament_cmake_python REQUIRED)
