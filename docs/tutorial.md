@@ -1,5 +1,12 @@
 # 配置与机器人接入
 
+通过 Description 建立模型事实，再由 Profile 维护硬件、控制与标定配置，外部机器人可以使用自己的资源包
+
+<p align="center"><img src="images/launcher-new-arm.png" alt="从 URDF 导入新机械臂" width="92%" /></p>
+<p align="center"><sub>模型导入 · 控制链识别 · 初始化 Profile</sub></p>
+
+![机器人接入工作流程](images/workflow.svg)
+
 ## Profile
 
 Profile 组合 Core、Hardware、模型、Controllers 与 MoveIt 资源
@@ -26,6 +33,9 @@ export SERIAL_ARM_RESOURCE_PATH=/absolute/path/downstream/workspace
 以上安装只提供通用组件，下游 Hardware Backend 和资源包仍需自行构建并加载
 
 ## 配置位置
+
+![Profile 参数配置](images/launcher-profile.png)
+
 
 | 内容 | 字段或文件 | 需要核对 |
 | --- | --- | --- |

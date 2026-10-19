@@ -1,4 +1,8 @@
-# GUI
+# GUI 工作台
+
+桌面工作台把新机械臂接入、Profile 配置、模型检查、真机控制与动力学标定放在连续的操作流程中
+
+<p align="center"><img src="images/launcher-start.png" alt="SerialArm 工作区入口" width="92%" /></p>
 
 ## 打开
 
@@ -13,6 +17,9 @@ GUI 需要 Node.js 20+、npm 和 Linux 桌面环境，启动脚本自动加载�
 
 ## 选择机器人
 
+![机器人 Profile 配置页面](images/launcher-profile.png)
+
+
 1. 选择内置 Profile 或外部 `robot_profiles.yaml`
 2. 选择机器人名称
 3. 检查串口、波特率、Bus 与资源搜索路径
@@ -25,6 +32,9 @@ GUI 需要 Node.js 20+、npm 和 Linux 桌面环境，启动脚本自动加载�
 GUI 不修改 YAML，外部模型、硬件后端、Controllers 与 MoveIt 资源仍由下游项目提供
 
 ## 模型工作台
+
+![浅色主题下的机械臂模型与关节参数预览](images/launcher-light.png)
+
 
 Model 是独立工作台入口，用于查看机器人结构、坐标系、关节运动与动力学参数
 
@@ -74,6 +84,9 @@ Diagnostics 显示 Joint、Actuator、动力学向量、质量矩阵、Frame 位
 增益候选会记录每个目标的冻结验收速度及保持模式结果，历史柔性候选若缺少这些证据，需要重新标定才能作为可部署结果使用
 
 ### 重力模型校正
+
+![动力学标定与重力模型校正工作台](images/launcher-dynamics.png)
+
 
 Calibration 页的重力模型校正使用一次拖动示教生成唯一回放路径
 

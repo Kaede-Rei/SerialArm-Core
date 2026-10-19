@@ -1,6 +1,30 @@
 # 安装
 
+SerialArm-Core 支持交互式安装和直接作为 ROS2 工作区中的 CMake 包构建，两种方式使用同一套核心库
+
+![工作区启动界面](images/launcher-start.png)
+
+## 构建方式一览
+
+| 场景 | 推荐方式 |
+| :--- | :--- |
+| 首次使用桌面工作台 | `./install.sh` 后执行 `./launch.sh` |
+| 已有 ROS2 工作区 | 在工作区根目录直接运行 `colcon build` |
+| 独立 C++ 项目 | 按需安装 Core 后使用导出的 CMake Target |
+| 调整安装组件 | 使用交互向导或安装脚本选项 |
+
+### 直接在 ROS2 工作区构建
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build
+source install/setup.bash
+```
+
+Python Binding 默认启用，使用仓库内置的 pybind11 构建依赖，不会在配置期间联网获取该依赖
+
 ## 交互安装
+
 
 在仓库根目录运行
 

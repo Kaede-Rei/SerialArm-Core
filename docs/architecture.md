@@ -1,4 +1,8 @@
-# SerialArm-Core 架构蓝图
+# 系统架构
+
+![Core 与上层适配、机器人配置及硬件驱动的关系](images/architecture.svg)
+
+## 设计原则
 
 SerialArm-Core 将机械臂从 Description 接入到正常控制视为一条连续生命周期，而不是一组互相独立的工具页面
 

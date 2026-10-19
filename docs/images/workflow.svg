@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="495" viewBox="0 0 1540 495" role="img" aria-labelledby="wt wd"><title id="wt">新机械臂接入流程</title><desc id="wd">导入机器人模型，建立 Profile，检查与连接硬件，执行动力学标定，独立验证并进入控制工作台</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L0 6 L8 3 z" fill="#9AAABF"/></marker><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#F8FAFD"/><stop offset="1" stop-color="#EFF3F8"/></linearGradient><linearGradient id="dark" x1="0" x2="1"><stop stop-color="#182A43"/><stop offset="1" stop-color="#293C55"/></linearGradient></defs>
+<rect x="0" y="0" width="1540" height="495" rx="26" fill="url(#bg)" stroke="none"/>
+<rect x="0" y="0" width="1540" height="88" rx="26" fill="url(#dark)" stroke="none"/>
+<rect x="0" y="55" width="1540" height="33" rx="0" fill="url(#dark)" stroke="none"/>
+<text x="48" y="50" text-anchor="start" font-size="24" font-weight="700" letter-spacing="2" fill="#E6EDF5" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">ROBOT ONBOARDING</text>
+<text x="49" y="122" text-anchor="start" font-size="28" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">从模型到真机控制</text>
+<text x="49" y="161" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#718097" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">每个阶段均有清晰的配置与验证边界</text>
+<rect x="47" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="63" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="84" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">01</text>
+<text x="65" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">模型导入</text>
+<text x="65" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">URDF / Description</text>
+<path d="M270 300 L288 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="295" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="311" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="332" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">02</text>
+<text x="313" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Profile 配置</text>
+<text x="313" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Frame / Hardware</text>
+<path d="M518 300 L536 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="543" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="559" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="580" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">03</text>
+<text x="561" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">硬件检查</text>
+<text x="561" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">连接 / 安全约束</text>
+<path d="M766 300 L784 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="791" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="807" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="828" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">04</text>
+<text x="809" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">动力学校正</text>
+<text x="809" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">示教 / 数据采集</text>
+<path d="M1014 300 L1032 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1039" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="1055" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="1076" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">05</text>
+<text x="1057" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">独立验证</text>
+<text x="1057" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">候选结果审核</text>
+<path d="M1262 300 L1280 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1287" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
+<rect x="1303" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
+<text x="1324" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">06</text>
+<text x="1305" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">控制就绪</text>
+<text x="1305" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Core / ROS2</text>
+<rect x="47" y="423" width="1446" height="44" rx="11" fill="#EAF0F7" stroke="none"/>
+<text x="70" y="451" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#435872" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">配置与验证结论随 Profile 保存，不因切换 GUI、Terminal 或 ROS2 而丢失</text>
+</svg>

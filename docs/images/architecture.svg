@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="815" viewBox="0 0 1540 815" role="img" aria-labelledby="at ad"><title id="at">SerialArm-Core 系统架构</title><desc id="ad">上层桌面工作台和 ROS2 等适配器统一连接 C++ Robot Runtime，Profile 管理机器人资源，硬件 Backend 和 Transport 负责电机通信</desc>
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L0 6 L8 3 z" fill="#9AAABF"/></marker><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#F8FAFD"/><stop offset="1" stop-color="#EFF3F8"/></linearGradient><linearGradient id="dark" x1="0" x2="1"><stop stop-color="#182A43"/><stop offset="1" stop-color="#293C55"/></linearGradient></defs>
+<rect x="0" y="0" width="1540" height="815" rx="25" fill="url(#bg)" stroke="none"/>
+<rect x="0" y="0" width="1540" height="88" rx="25" fill="url(#dark)" stroke="none"/>
+<rect x="0" y="55" width="1540" height="33" rx="0" fill="url(#dark)" stroke="none"/>
+<text x="48" y="52" text-anchor="start" font-size="24" font-weight="700" letter-spacing="2" fill="#EAF1FB" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">SYSTEM ARCHITECTURE</text>
+<text x="48" y="138" text-anchor="start" font-size="20" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">应用与工具层</text>
+<text x="49" y="166" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#728399" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">独立入口，共享控制与配置契约</text>
+<rect x="48" y="189" width="352" height="88" rx="14" fill="white" stroke="#D9E3EE"/>
+<rect x="64" y="206" width="5" height="54" rx="2" fill="#E9932E" stroke="none"/>
+<text x="83" y="227" text-anchor="start" font-size="22" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Desktop Launcher</text>
+<text x="83" y="254" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#768699" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">配置 · 标定 · 诊断</text>
+<path d="M224 281 L224 328" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="425" y="189" width="352" height="88" rx="14" fill="white" stroke="#D9E3EE"/>
+<rect x="441" y="206" width="5" height="54" rx="2" fill="#E9932E" stroke="none"/>
+<text x="460" y="227" text-anchor="start" font-size="22" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">C++ Terminal</text>
+<text x="460" y="254" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#768699" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">原生真机控制</text>
+<path d="M601 281 L601 328" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="802" y="189" width="352" height="88" rx="14" fill="white" stroke="#D9E3EE"/>
+<rect x="818" y="206" width="5" height="54" rx="2" fill="#E9932E" stroke="none"/>
+<text x="837" y="227" text-anchor="start" font-size="22" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Python Binding</text>
+<text x="837" y="254" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#768699" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">应用与任务脚本</text>
+<path d="M978 281 L978 328" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1179" y="189" width="352" height="88" rx="14" fill="white" stroke="#D9E3EE"/>
+<rect x="1195" y="206" width="5" height="54" rx="2" fill="#E9932E" stroke="none"/>
+<text x="1214" y="227" text-anchor="start" font-size="22" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">ROS2 / MoveIt</text>
+<text x="1214" y="254" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#768699" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">ros2_control Adapter</text>
+<path d="M1355 281 L1355 328" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="48" y="349" width="1444" height="198" rx="22" fill="white" stroke="#D7E1EC"/>
+<rect x="48" y="349" width="1444" height="51" rx="22" fill="#EDF3FA" stroke="none"/>
+<rect x="48" y="385" width="1444" height="15" rx="0" fill="#EDF3FA" stroke="none"/>
+<text x="77" y="383" text-anchor="start" font-size="22" font-weight="800" letter-spacing="0" fill="#172B43" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">SERIALARM C++ CORE</text>
+<text x="1454" y="383" text-anchor="end" font-size="17" font-weight="500" letter-spacing="0" fill="#5C728D" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">统一的机器人运行时</text>
+<rect x="75" y="420" width="333" height="99" rx="13" fill="#F8FAFD" stroke="#E3EAF2"/>
+<text x="94" y="459" text-anchor="start" font-size="21" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Robot Runtime</text>
+<text x="94" y="492" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#77879B" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">生命周期 · 控制周期</text>
+<rect x="434" y="420" width="333" height="99" rx="13" fill="#F8FAFD" stroke="#E3EAF2"/>
+<text x="453" y="459" text-anchor="start" font-size="21" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Dynamics</text>
+<text x="453" y="492" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#77879B" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">FK · Jacobian · 力矩模型</text>
+<rect x="793" y="420" width="333" height="99" rx="13" fill="#F8FAFD" stroke="#E3EAF2"/>
+<text x="812" y="459" text-anchor="start" font-size="21" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Control &amp; Interaction</text>
+<text x="812" y="492" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#77879B" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">阻抗 · 导纳 · 前馈</text>
+<rect x="1152" y="420" width="333" height="99" rx="13" fill="#F8FAFD" stroke="#E3EAF2"/>
+<text x="1171" y="459" text-anchor="start" font-size="21" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Safety</text>
+<text x="1171" y="492" text-anchor="start" font-size="15" font-weight="400" letter-spacing="0" fill="#77879B" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">限位 · 故障 · 恢复</text>
+<path d="M375 589 L375 557" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/><path d="M1125 555 L1125 586" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="48" y="597" width="685" height="155" rx="19" fill="white" stroke="#D6E1EC"/>
+<rect x="757" y="597" width="735" height="155" rx="19" fill="white" stroke="#D6E1EC"/>
+<text x="75" y="639" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Robot Profile</text>
+<text x="75" y="671" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#596E86" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Description / URDF · Joint / Frame</text>
+<text x="75" y="700" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#596E86" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">安全限制 · 标定候选 · 硬件映射</text>
+<rect x="75" y="717" width="165" height="22" rx="7" fill="#E9F2FF" stroke="none"/>
+<text x="158" y="733" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#245184" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">独立机器人资源</text>
+<text x="786" y="639" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Hardware Backend &amp; Transport</text>
+<text x="786" y="671" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#596E86" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">关节指令 → 执行器协议 → CAN / Serial</text>
+<text x="786" y="700" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#596E86" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">连接与反馈 · 设备故障 · 总线仲裁</text>
+<rect x="786" y="717" width="175" height="22" rx="7" fill="#FFF1E3" stroke="none"/>
+<text x="873" y="733" text-anchor="middle" font-size="13" font-weight="500" letter-spacing="0" fill="#AC651B" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">下层硬件适配</text>
+<text x="770" y="789" text-anchor="middle" font-size="17" font-weight="500" letter-spacing="0" fill="#536883" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Profile 组合模型与硬件 · Runtime 执行控制与安全 · Adapter 只转换接口</text>
+</svg>
