@@ -62,6 +62,17 @@ class Inspector:
         self.root = Path(root).resolve()
 
     def manifest(self):
+        # Release packages ship a relocatable ROS2 overlay rather than the
+        # absolute install paths recorded by the source-tree installer
+        bundled = os.environ.get('SERIAL_ARM_BUNDLE_PREFIX')
+        if bundled:
+            prefix = Path(bundled).resolve()
+            editable = Path(os.environ.get('SERIAL_ARM_BUNDLE_PROFILE_PREFIX', bundled)).resolve()
+            return {'status': 'verified', 'gui': True, 'ros2': True, 'moveit': True,
+                    'ros_distro': os.environ.get('SERIAL_ARM_BUNDLE_ROS_DISTRO', 'humble'),
+                    'installed_components': ['core', 'terminal', 'python', 'ros2', 'moveit'],
+                    'install_prefix': str(editable),
+                    'backend_setup': str(prefix / 'local_setup.bash')}
         path = self.root / '.install/manifest.json'
         if not path.exists(): return {}
         value = json.loads(path.read_text())

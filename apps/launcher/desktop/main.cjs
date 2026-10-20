@@ -2,8 +2,9 @@ const {app, BrowserWindow, dialog, ipcMain, clipboard, Menu} = require('electron
 const path = require('node:path');
 const fs = require('node:fs');
 const {pathToFileURL} = require('node:url');
+const {spawnSync} = require('node:child_process');
 const {Bridge} = require('./bridge.cjs');
-const root = path.resolve(__dirname, '../../..');
+const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : path.resolve(__dirname, '../../..');
 const entry = path.resolve(__dirname, '../renderer/index.html');
 let win, bridge, closing = false;
 let allowedModelResources = new Set();
@@ -60,9 +61,72 @@ async function closeWindow() {
     await bridge.close(); win.destroy(); app.quit();
   } finally { closing = false; }
 }
+function packagedBackend() {
+  const native = path.join(root, 'native');
+  const distro = '/opt/ros/humble/setup.bash';
+  const overlay = path.join(native, 'local_setup.bash');
+  if (!fs.existsSync(distro)) throw new Error('ROS2 Humble 未安装，请先在 Ubuntu 22.04 安装 ROS2 Humble 与 MoveIt 2');
+  if (!fs.existsSync(overlay)) throw new Error('发行包不包含完整 ROS2 工作区，请重新安装发行包');
+
+  // The ROS2 installer places Profile configuration below share/ in a read-only
+  // installation; use a user-owned resource overlay so Profile editing and
+  // calibration work in both a mounted AppImage and a system-wide deb install
+  const writable = path.join(app.getPath('userData'), 'profile-resources');
+  const writableShare = path.join(writable, 'share');
+  fs.mkdirSync(writableShare, {recursive: true});
+  fs.cpSync(path.join(native, 'share'), writableShare,
+    {recursive: true, force: false, errorOnExist: false});
+  for (const folder of ['lib', 'lib64']) {
+    const from = path.join(native, folder);
+    const to = path.join(writable, folder);
+    if (fs.existsSync(from)) {
+      try {
+        if (fs.lstatSync(to).isSymbolicLink() && fs.readlinkSync(to) !== from) fs.unlinkSync(to);
+      } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      if (!fs.existsSync(to)) fs.symlinkSync(from, to, 'dir');
+    }
+  }
+
+  // Source the host ROS2 environment and the bundled workspace's local setup;
+  // native colcon entrypoints and Python bindings are then resolved at their
+  // installed location, never at the build machine's checkout path
+  const sourced = spawnSync('/bin/bash',
+    ['-c', 'set -e; source "$1"; source "$2"; env -0', 'serial-arm', distro, overlay],
+    {env: process.env, encoding: 'buffer', timeout: 20000, maxBuffer: 12 * 1024 * 1024});
+  if (sourced.error || sourced.status !== 0) {
+    throw new Error('ROS2 运行环境初始化失败: ' +
+      ((sourced.stderr || '').toString('utf8').slice(-1200) || sourced.error?.message || sourced.status));
+  }
+  const env = {};
+  for (const record of sourced.stdout.toString('utf8').split('\0')) {
+    const idx = record.indexOf('=');
+    if (idx > 0) env[record.slice(0, idx)] = record.slice(idx + 1);
+  }
+  const prepend = (key, value) => { env[key] = [value, env[key]].filter(Boolean).join(path.delimiter); };
+  prepend('AMENT_PREFIX_PATH', writable);
+  prepend('CMAKE_PREFIX_PATH', writable);
+  prepend('SERIAL_ARM_RESOURCE_PATH', writable);
+  prepend('SERIAL_ARM_RESOURCE_PATH', native);
+  prepend('PYTHONPATH', path.join(root, 'python'));
+  for (const folder of ['lib', 'lib64']) {
+    if (fs.existsSync(path.join(native, folder))) prepend('LD_LIBRARY_PATH', path.join(native, folder));
+  }
+  prepend('PATH', path.join(native, 'bin'));
+  env.SERIAL_ARM_BUNDLE_ROOT = root;
+  env.SERIAL_ARM_BUNDLE_PREFIX = native;
+  env.SERIAL_ARM_BUNDLE_PROFILE_PREFIX = writable;
+  env.SERIAL_ARM_BUNDLE_ROS_DISTRO = 'humble';
+  env.PYTHONNOUSERSITE = '1';
+  return {python: '/usr/bin/python3', script: path.join(root, 'apps/launcher/backend/bridge.py'), env};
+}
+
 async function start() {
   const prefs = readPrefs();
-  bridge = new Bridge(process.env.SERIAL_ARM_LAUNCHER_PYTHON || '/usr/bin/python3', path.resolve(__dirname, '../backend/bridge.py'), {cwd: root});
+  const backend = app.isPackaged ? packagedBackend() : {
+    python: process.env.SERIAL_ARM_LAUNCHER_PYTHON || '/usr/bin/python3',
+    script: path.resolve(__dirname, '../backend/bridge.py'), env: process.env,
+  };
+  bridge = new Bridge(backend.python, backend.script, {cwd: root, env: backend.env});
   await bridge.ready;
   win = new BrowserWindow({width: prefs.bounds?.width || 1300, height: prefs.bounds?.height || 900, minWidth: 1000, minHeight: 720,
     frame: false, backgroundColor: '#0a0a10', show: false,

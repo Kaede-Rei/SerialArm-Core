@@ -51,6 +51,63 @@ ROS2 必须包含 Python Binding，内置 MoveIt 必须包含 ROS2 与 DM-Arm �
 
 选项 2、4、5 默认启用 DM-Arm，选项 2 可以在向导中取消
 
+## Linux AppImage 与 deb 发行包
+
+从源码构建完整 Linux 发行包使用第 4 项对应的 `ros2` 安装预设，而非 `standalone`
+
+```bash
+./build_linux.sh
+```
+
+脚本优先复用已经通过验证的完整 ROS2 安装，未安装时自动执行完整 ROS2 / DM-Arm / MoveIt / GUI 安装，再将编译后的 ROS2 工作区、Python Binding、机器人资源和 Electron 工作台打包
+
+Electron 构建时直接复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时，不重复从网络下载 Electron
+
+已通过完整安装验证时，可以明确要求复用现有安装，如果没有有效安装状态则直接报错
+
+```bash
+./build_linux.sh --reuse-install
+```
+
+如需强制重新编译完整组件，可以执行 `./build_linux.sh --rebuild`
+
+构建前需要 Ubuntu 22.04 x86_64、ROS2 Humble、Node.js 20+、npm 和系统 Python，打包使用 electron-builder
+
+两个产物及校验文件均输出到 `dist/`
+
+```text
+SerialArm-Core-linux-x86_64.AppImage
+SerialArm-Core-linux-amd64.deb
+SHA256SUMS
+```
+
+### 安装发行包
+
+发行包包含 SerialArm-Core 自己编译的 C++ Core、Python Binding、DM-Arm 驱动、ROS2 Adapter、MoveIt 配置与 GUI，但不重复封装整个 ROS2 Humble 系统发行版
+
+目标机器需要 Ubuntu 22.04 x86_64，并先配置 ROS2 Humble apt 软件源及 MoveIt 2、ros2_control 等系统依赖
+
+安装 deb
+
+```bash
+sudo apt install ./dist/SerialArm-Core-linux-amd64.deb
+```
+
+运行 AppImage
+
+```bash
+chmod +x dist/SerialArm-Core-linux-x86_64.AppImage
+./dist/SerialArm-Core-linux-x86_64.AppImage
+```
+
+AppImage 依赖目标机器的 ROS2 Humble 环境和 AppImage 所需的 libfuse2 等系统运行库
+
+首次启动时，内置机器人 Profile 资源复制到当前用户的配置目录，用于保存参数变更和标定数据，不会写回发行包只读资源
+
+目标机无需执行源码仓库的 `install.sh` 或重新编译 C++ 与 ROS2 Adapter
+
+建议在干净 Ubuntu 22.04 系统上分别检查 GUI、模型显示、Profile 保存、Terminal、ROS2 控制链及 MoveIt 规划，再发布 GitHub Release
+
 ## sudo 与日志
 
 apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令输出

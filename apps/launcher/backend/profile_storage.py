@@ -1,6 +1,7 @@
 """Persistent data directories for each robot Profile."""
 from __future__ import annotations
 from pathlib import Path
+import os
 import re
 
 
@@ -10,6 +11,10 @@ def profile_home(info, repository_root):
     if not name or name in ('.', '..') or any(c in name for c in '/\\\0\r\n'):
         raise ValueError('Profile 名称不适合作为存储目录')
     profile_file = Path(info['profile_file']).expanduser().resolve()
+    # Bundled installed resources cannot be modified in place
+    writable = os.environ.get('SERIAL_ARM_BUNDLE_PROFILE_PREFIX')
+    if writable and profile_file.is_relative_to(Path(writable).resolve() / 'share'):
+        return Path(writable).resolve() / 'profiles' / name
     shared = root / 'src/robot_supports/profiles'
     if profile_file.is_relative_to(shared) or ('serial_arm_robot_profiles' in profile_file.parts and profile_file.parent.name == 'config'):
         robot = root / 'src/robot_supports/robots' / name

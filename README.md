@@ -110,6 +110,30 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 安装向导可选择 C++ Core、Standalone、Python Binding、ROS2、MoveIt 或桌面 GUI 等组件，安装过程会明确显示所需系统依赖
 
+### Linux 发行包构建
+
+`build_linux.sh` 生成包含 Core、Terminal、Python Binding、DM-Arm、ROS2 Adapter、MoveIt 配置及 GUI 的完整发行包
+
+构建目标对应安装向导中的 `ROS2 控制与规划 / ROS2 + MoveIt` 用途
+
+打包优先使用已安装的 Electron 运行时，避免重复下载 Electron 发行文件
+
+```bash
+./build_linux.sh
+```
+
+已执行过完整 ROS2 预设且安装状态已验证时，可以直接复用已有构建产物
+
+```bash
+./build_linux.sh --reuse-install
+```
+
+生成的 `dist/SerialArm-Core-linux-x86_64.AppImage` 和 `dist/SerialArm-Core-linux-amd64.deb` 可用于 GitHub Releases
+
+构建机需使用 Ubuntu 22.04 x86_64、ROS2 Humble、Node.js 20+，目标机需配置兼容的 ROS2 Humble、MoveIt 2 及 ros2_control 系统环境，发行包无需在目标机重新编译 SerialArm-Core
+
+详细要求见 [安装说明](docs/install.md)
+
 ### 在已有 ROS2 工作区构建
 
 ```bash
