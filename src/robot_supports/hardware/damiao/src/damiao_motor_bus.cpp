@@ -292,11 +292,6 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
     if(!connected_ || !motor_ctrl_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
 
     try {
-        ActuatorState state = last_state_;
-        std::vector<std::uint64_t> previous_seq;
-        previous_seq.reserve(motors_.size());
-        for(const auto& motor : motors_) previous_seq.push_back(motor->get_state_seq());
-
         if(refresh) {
             for(std::size_t i = 0; i < motors_.size(); ++i) motor_ctrl_->refresh_motor_status(*motors_[i]);
         }
@@ -304,34 +299,46 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
             for(std::size_t i = 0; i < motors_.size(); ++i) motor_ctrl_->receive();
         }
 
-        const TimePoint now = Clock::now();
-        for(std::size_t i = 0; i < motors_.size(); ++i) {
-            if(motors_[i]->get_state_seq() != previous_seq[i]) {
-                has_feedback_[i] = 1;
-                last_feedback_time_[i] = now;
-            }
-
-            double feedback_age_s = std::numeric_limits<double>::infinity();
-            if(has_feedback_[i]) feedback_age_s = std::chrono::duration<double>(now - last_feedback_time_[i]).count();
-            online_[i] = feedback_age_s <= cfg_.feedback_timeout_s ? 1 : 0;
-            state.pos[i] = motors_[i]->get_position();
-            state.vel[i] = motors_[i]->get_velocity();
-            state.tor[i] = motors_[i]->get_tau();
-            state.online[i] = online_[i];
-            state.enabled[i] = enabled_[i];
-            state.err_code[i] = online_[i] ? 0 : -1;
-        }
-
-        if(!finite_vector(state.pos) || !finite_vector(state.vel) || !finite_vector(state.tor)) {
+        update_feedback_state();
+        if(!finite_vector(last_state_.pos) || !finite_vector(last_state_.vel) || !finite_vector(last_state_.tor)) {
             return tl::make_unexpected(MotorBusErr::INVALID_STATE);
         }
-
-        last_state_ = state;
-        return state;
+        return last_state_;
     }
     catch(...) {
         return tl::make_unexpected(MotorBusErr::READ_FAILED);
     }
+}
+
+void DamiaoMotorBus::update_feedback_state() {
+    const TimePoint now = Clock::now();
+    for(std::size_t i = 0; i < motors_.size(); ++i) {
+        const auto& motor = *motors_[i];
+        has_feedback_[i] = motor.get_state_seq() != 0;
+        last_feedback_time_[i] = motor.get_state_received_at();
+        const double age = has_feedback_[i] ?
+            std::chrono::duration<double>(now - last_feedback_time_[i]).count() :
+            std::numeric_limits<double>::infinity();
+        online_[i] = age <= cfg_.feedback_timeout_s;
+        const auto status = motor.get_status();
+        enabled_[i] = online_[i] && status == 1;
+        last_state_.pos[i] = motor.get_position();
+        last_state_.vel[i] = motor.get_velocity();
+        last_state_.tor[i] = motor.get_tau();
+        last_state_.online[i] = online_[i];
+        last_state_.enabled[i] = enabled_[i];
+        last_state_.err_code[i] = online_[i] ? (status <= 1 ? 0 : status) : -1;
+    }
+}
+
+bool DamiaoMotorBus::confirm_motor_status(std::size_t index, std::uint8_t status, std::uint64_t previous_seq) {
+    const auto& motor = *motors_[index];
+    if(motor.get_state_seq() == previous_seq || motor.get_status() != status) {
+        // A successfully sent command is not an acknowledgement from the motor
+        (void)motor_ctrl_->refresh_motor_status(motor);
+    }
+    update_feedback_state();
+    return motor.get_state_seq() != previous_seq && online_[index] && motor.get_status() == status;
 }
 
 /**
@@ -377,6 +384,14 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate() {
                 [](std::uint8_t value) { return value == 0; })) {
                 disable_enabled_noexcept();
                 return tl::make_unexpected(MotorBusErr::ACTUATOR_OFFLINE);
+            }
+            if(std::any_of(sample->err_code.begin(), sample->err_code.end(), [](int value) { return value != 0; })) {
+                disable_enabled_noexcept();
+                return tl::make_unexpected(MotorBusErr::ACTUATOR_FAULT);
+            }
+            if(std::any_of(sample->enabled.begin(), sample->enabled.end(), [](std::uint8_t value) { return value == 0; })) {
+                disable_enabled_noexcept();
+                return tl::make_unexpected(MotorBusErr::ENABLE_FAILED);
             }
             for(std::size_t i = 0; i < motors_.size(); ++i) {
                 average.pos[i] += sample->pos[i];
@@ -478,21 +493,21 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::deactivate() {
     }
 
     bool disable_failed = false;
-    try {
-        for(std::size_t i = 0; i < motors_.size(); ++i) {
-            if(!motor_ctrl_->disable(*motors_[i])) {
+    for(std::size_t i = 0; i < motors_.size(); ++i) {
+        try {
+            const auto previous_seq = motors_[i]->get_state_seq();
+            if(!motor_ctrl_->disable(*motors_[i]) || !confirm_motor_status(i, 0, previous_seq)) {
                 disable_failed = true;
             }
-            if(i < enabled_.size()) enabled_[i] = 0;
         }
-        if(can_channel_) can_channel_->flush();
+        catch(...) {
+            disable_failed = true;
+        }
     }
-    catch(...) {
-        disable_failed = true;
-    }
+    if(can_channel_) can_channel_->flush();
 
     active_ = false;
-    last_state_.enabled = enabled_;
+    update_feedback_state();
 
     if(disable_failed) {
         return tl::make_unexpected(MotorBusErr::DISABLE_FAILED);
@@ -521,11 +536,11 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::recover() {
 
     try {
         for(std::size_t i = 0; i < motors_.size(); ++i) {
-            if(!motor_ctrl_->disable(*motors_[i])) {
+            const auto previous_seq = motors_[i]->get_state_seq();
+            if(!motor_ctrl_->disable(*motors_[i]) || !confirm_motor_status(i, 0, previous_seq)) {
                 release_connection_noexcept(true);
                 return tl::make_unexpected(MotorBusErr::DISABLE_FAILED);
             }
-            enabled_[i] = 0;
         }
         if(can_channel_) can_channel_->flush();
         active_ = false;
@@ -587,34 +602,34 @@ const HardwareCapabilities& DamiaoMotorBus::capabilities() const noexcept {
 tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index) {
     if(index >= motors_.size() || !motor_ctrl_ || !can_channel_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
 
-    bool disable_sent = false;
-    bool enable_sent = false;
+    MotorBusErr last_error = MotorBusErr::ENABLE_FAILED;
     for(std::size_t attempt = 0; attempt < cfg_.activation_retries; ++attempt) {
         if(can_channel_) can_channel_->flush();
-        disable_sent = motor_ctrl_->disable(*motors_[index]);
-        enabled_[index] = 0;
-        if(!disable_sent) {
+        auto previous_seq = motors_[index]->get_state_seq();
+        if(!motor_ctrl_->disable(*motors_[index]) || !confirm_motor_status(index, 0, previous_seq)) {
+            last_error = MotorBusErr::DISABLE_FAILED;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
 
-        enable_sent = motor_ctrl_->enable(*motors_[index]);
-        if(!enable_sent) {
+        previous_seq = motors_[index]->get_state_seq();
+        if(!motor_ctrl_->enable(*motors_[index]) || !confirm_motor_status(index, 1, previous_seq)) {
+            last_error = motors_[index]->get_status() > 1 && motors_[index]->get_status() != 0xFF ?
+                MotorBusErr::ACTUATOR_FAULT : MotorBusErr::ENABLE_FAILED;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        enabled_[index] = 1;
 
         if(motor_ctrl_->switch_control_mode(*motors_[index], damiao::MIT_MODE)) return {};
 
+        last_error = MotorBusErr::MODE_SWITCH_FAILED;
+        previous_seq = motors_[index]->get_state_seq();
         (void)motor_ctrl_->disable(*motors_[index]);
-        enabled_[index] = 0;
+        (void)confirm_motor_status(index, 0, previous_seq);
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
-    if(!disable_sent) return tl::make_unexpected(MotorBusErr::DISABLE_FAILED);
-    if(!enable_sent) return tl::make_unexpected(MotorBusErr::ENABLE_FAILED);
-    return tl::make_unexpected(MotorBusErr::MODE_SWITCH_FAILED);
+    return tl::make_unexpected(last_error);
 }
 
 /**
@@ -724,8 +739,8 @@ void DamiaoMotorBus::disable_enabled_noexcept() noexcept {
     }
     try {
         for(std::size_t i = 0; i < motors_.size(); ++i) {
-            (void)motor_ctrl_->disable(*motors_[i]);
-            if(i < enabled_.size()) enabled_[i] = 0;
+            const auto previous_seq = motors_[i]->get_state_seq();
+            if(motor_ctrl_->disable(*motors_[i])) (void)confirm_motor_status(i, 0, previous_seq);
         }
         if(can_channel_) can_channel_->flush();
     }

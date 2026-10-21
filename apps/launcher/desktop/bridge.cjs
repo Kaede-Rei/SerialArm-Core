@@ -66,7 +66,7 @@ class Bridge extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const id = ++this.seq;
-      const timeout = (method === 'model_calibration_export_full_inertial' || method === 'model_calibration_advanced') ? 150000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' || method === 'calibration_tool_export' ? 90000 : method === 'stop' || method === 'workbench_stop' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 35000 : 15000);
+      const timeout = (method === 'model_calibration_export_full_inertial' || method === 'model_calibration_advanced') ? 150000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' || method === 'calibration_tool_export' ? 90000 : method === 'stop' || method === 'workbench_stop' || method === 'close' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 35000 : 15000);
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Backend request timed out')); }, timeout);
       this.pending.set(id, {resolve, reject, timer});
       this.child.stdin.write(JSON.stringify({id, method, params}) + '\n');
@@ -74,15 +74,21 @@ class Bridge extends EventEmitter {
   }
   async close() {
     if (this.dead) return;
+    if (['running', 'stopping'].includes(this.session.state)) throw new Error('Stop the active session before closing the backend');
     this.closing = true;
-    this.child.stdin.end();
-    await new Promise(resolve => {
-      let timer;
-      const finish = () => { clearTimeout(timer); resolve(); };
-      this.child.once('exit', finish);
-      timer = setTimeout(() => { this.child.kill('SIGTERM'); resolve(); }, 7000);
-    });
-    this.dead = true;
+    try {
+      await this.request('close');
+      await new Promise((resolve, reject) => {
+        if (this.child.exitCode !== null || this.child.signalCode !== null) return resolve();
+        const finish = () => { clearTimeout(timer); resolve(); };
+        const timer = setTimeout(() => { this.child.off('exit', finish); reject(new Error('Backend has not exited; close was not forced')); }, 7000);
+        this.child.once('exit', finish);
+      });
+      this.dead = true;
+    } catch (error) {
+      this.closing = false;
+      throw error;
+    }
   }
 }
 module.exports = {Bridge};

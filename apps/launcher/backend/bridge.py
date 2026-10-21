@@ -588,6 +588,8 @@ def main():
                     from workflow_registry import load
                     result = load(params.get('directory', ''), params.get('kind', ''))
                 elif method == 'calibration_tool_export':
+                    if any(session.status().get('state') in ('running', 'stopping') for session in (native, manager)):
+                        raise ValueError('请先安全断开当前运行会话，再导出标定成果')
                     from artifact_exports import export_artifact
                     # Export uses the immutable task snapshot and the user-selected output directory
                     # It must not consult the connected hardware or the current GUI Profile
@@ -732,6 +734,16 @@ def main():
                 elif method == 'resize': result = manager.resize(params.get('cols'), params.get('rows'))
                 elif method == 'stop':
                     result = native.stop(params.get('force') is True) if native.status().get('state') in ('running', 'stopping') else manager.stop(params.get('force') is True)
+                elif method == 'close':
+                    if any(session.status().get('state') in ('running', 'stopping') for session in (native, manager)):
+                        raise ValueError('请先安全停止当前运行会话，再关闭后台')
+                    # Reply before leaving the loop so a rejected shutdown keeps
+                    # the IPC connection available for recovery
+                    native.close()
+                    manager.close()
+                    model_runtime.close()
+                    emit({'id': request.get('id'), 'result': True})
+                    return
                 else: raise ValueError('unknown IPC method')
                 emit({'id': request.get('id'), 'result': result})
             except Exception as error:

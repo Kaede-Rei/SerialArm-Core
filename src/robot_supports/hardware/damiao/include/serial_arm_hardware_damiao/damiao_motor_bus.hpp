@@ -161,6 +161,8 @@ private:
      * @return 如果读取成功，则返回 ActuatorState，否则返回 MotorBusErr
      */
     tl::expected<ActuatorState, MotorBusErr> read_impl(bool refresh);
+    void update_feedback_state();
+    bool confirm_motor_status(std::size_t index, std::uint8_t status, std::uint64_t previous_seq);
     /**
      * @brief 以可重试流程准备并使能单个电机
      * @param index 电机索引

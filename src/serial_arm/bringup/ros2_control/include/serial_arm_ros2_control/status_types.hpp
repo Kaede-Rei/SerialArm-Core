@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <chrono>
 
 namespace serial_arm_ros2_control {
 
@@ -14,6 +15,7 @@ struct CommandFrame {
     std::vector<double> pos;        ///< 位置命令
     std::vector<double> vel;        ///< 速度命令
     std::uint64_t sequence{ 0 };    ///< 序列号
+    std::chrono::steady_clock::time_point received_at{};
 };
 
 /**

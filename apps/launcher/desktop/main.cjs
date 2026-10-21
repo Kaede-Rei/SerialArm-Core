@@ -35,6 +35,14 @@ function savePrefs(values) {
 function trusted(event) {
   if (!win || event.sender !== win.webContents || event.senderFrame.url !== pathToFileURL(entry).href) throw new Error('Untrusted IPC origin');
 }
+function waitForSessionExit() {
+  return new Promise(resolve => {
+    if (bridge.session.state === 'exited') return resolve();
+    const done = message => { if (message.event === 'session' && message.state === 'exited') { clearTimeout(timer); bridge.off('event', done); resolve(); } };
+    const timer = setTimeout(() => { bridge.off('event', done); resolve(); }, 8000);
+    bridge.on('event', done);
+  });
+}
 async function closeWindow() {
   if (closing) return;
   closing = true;
@@ -43,18 +51,15 @@ async function closeWindow() {
       const choice = await dialog.showMessageBox(win, {type: 'question', buttons: ['停止并退出 / Stop and exit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
         message: '运行会话仍在执行 / A session is still running', detail: '关闭窗口前先停止运行进程 / Stop the session before closing'});
       if (choice.response !== 0) return;
-      await bridge.request('stop');
-      await new Promise(resolve => {
-        if (bridge.session.state === 'exited') return resolve();
-        const done = message => { if (message.event === 'session' && message.state === 'exited') { clearTimeout(timer); bridge.off('event', done); resolve(); } };
-        const timer = setTimeout(() => { bridge.off('event', done); resolve(); }, 8000);
-        bridge.on('event', done);
-      });
+      await bridge.request(bridge.session.mode === 'workbench' ? 'workbench_stop' : 'stop');
+      await waitForSessionExit();
       if (bridge.session.state !== 'exited') {
         const force = await dialog.showMessageBox(win, {type: 'warning', buttons: ['强制结束并退出 / Force quit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
           message: '进程尚未退出 / The session has not exited', detail: '强制结束会中断进程清理；请确认机器人状态 / Force quit interrupts process cleanup; check the robot state'});
         if (force.response !== 0) return;
         await bridge.request('stop', {force: true});
+        await waitForSessionExit();
+        if (bridge.session.state !== 'exited') throw new Error('控制进程尚未退出，请检查机器人状态后重试 / Control process has not exited, check the robot before retrying');
       }
     }
     savePrefs({bounds: win.getBounds()});
@@ -105,8 +110,8 @@ function packagedBackend() {
   const prepend = (key, value) => { env[key] = [value, env[key]].filter(Boolean).join(path.delimiter); };
   prepend('AMENT_PREFIX_PATH', writable);
   prepend('CMAKE_PREFIX_PATH', writable);
-  prepend('SERIAL_ARM_RESOURCE_PATH', writable);
   prepend('SERIAL_ARM_RESOURCE_PATH', native);
+  prepend('SERIAL_ARM_RESOURCE_PATH', writable);
   prepend('PYTHONPATH', path.join(root, 'python'));
   for (const folder of ['lib', 'lib64']) {
     if (fs.existsSync(path.join(native, folder))) prepend('LD_LIBRARY_PATH', path.join(native, folder));

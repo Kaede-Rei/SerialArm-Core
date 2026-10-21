@@ -112,6 +112,7 @@ private:
      * @brief 固定频率执行 Robot::set_cmd()、Robot::cycle() 和状态缓存更新
      */
     void worker_loop() noexcept;
+    void publish_robot_state(double dt);
     /**
      * @brief 请求后台控制线程退出并等待结束
      */
@@ -158,8 +159,11 @@ private:
     std::vector<double> cmd_velocity_;     ///< ros2_control 速度命令接口缓存
 
     CommandFrame command_frame_;           ///< 后台线程消费的最新命令帧
+    std::uint64_t consumed_command_sequence_{ 0 };
+    bool internal_commands_{ false };      ///< 停放期间由生命周期线程提供命令
     StateFrame state_frame_;               ///< read() 消费的最近合法状态帧
 
+    mutable std::mutex robot_mutex_;       ///< 生命周期操作与控制周期互斥
     mutable std::mutex command_mutex_;     ///< 命令帧互斥锁
     mutable std::mutex state_mutex_;       ///< 状态帧互斥锁
     std::thread worker_;                   ///< 真机控制后台线程

@@ -161,6 +161,8 @@ private:
     float state_dq = 0;
     float state_tau = 0;
     uint64_t state_seq = 0;
+    uint8_t state_status = 0xFF;
+    std::chrono::steady_clock::time_point state_received_at{};
     LimitParam limit_param{};
     DmMotorType motor_type;
 
@@ -194,10 +196,12 @@ public:
         this->limit_param = damiao::limit_param[DM4310];
     }
 
-    void receive_data(float q, float dq, float tau) {
+    void receive_data(float q, float dq, float tau, uint8_t status = 0xFF) {
         this->state_q = q;
         this->state_dq = dq;
         this->state_tau = tau;
+        this->state_status = status;
+        this->state_received_at = std::chrono::steady_clock::now();
         ++this->state_seq;
     }
 
@@ -234,6 +238,8 @@ public:
     float get_tau() const { return this->state_tau; }
 
     uint64_t get_state_seq() const { return this->state_seq; }
+    uint8_t get_status() const { return this->state_status; }
+    std::chrono::steady_clock::time_point get_state_received_at() const { return this->state_received_at; }
 
     /**
      * @brief get limit param 获取电机限制参数
@@ -845,7 +851,7 @@ private:
         const float q = uint_to_float(q_uint, -limit.q_max, limit.q_max, 16);
         const float dq = uint_to_float(dq_uint, -limit.dq_max, limit.dq_max, 12);
         const float tau = uint_to_float(tau_uint, -limit.tau_max, limit.tau_max, 12);
-        decoded_motor->receive_data(q, dq, tau);
+        decoded_motor->receive_data(q, dq, tau, data[0] >> 4);
         return true;
     }
 

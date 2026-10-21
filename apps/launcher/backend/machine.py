@@ -58,6 +58,7 @@ class NativeSession:
             except BaseException:
                 self._release()
                 raise
+            self.telemetry_history.clear()
             self.state = {'state': 'running', 'mode': 'workbench', 'recovery_required': False, 'pid': self.proc.pid,
                           'started_at': time.time(), 'devices': list(devices), 'command': list(argv)}
             self.emit({'event': 'session', **self.state})
@@ -145,21 +146,27 @@ class NativeSession:
         with self.mutex:
             if not self.proc or self.state.get('state') not in ('running', 'stopping'): return self.status()
             proc = self.proc
-        graceful = False
-        if not force and self.state.get('state') == 'running':
-            try:
+        if not force:
+            if self.state.get('state') == 'running':
+                # A native rejection must preserve the connection and its leases
+                # Only an explicit force request may terminate the process
                 self.request('shutdown', timeout=120)
+            try:
                 proc.wait(timeout=2)
-                graceful = True
-            except (Exception, subprocess.TimeoutExpired):
-                pass
+            except subprocess.TimeoutExpired as error:
+                with self.mutex:
+                    self.state['recovery_required'] = True
+                    self.state['recovery_reason'] = 'shutdown'
+                    self.emit({'event': 'session', **self.state})
+                raise TimeoutError('native shutdown did not exit; connection preserved, check hardware before forcing disconnect') from error
+            return self.status()
         with self.mutex:
             if self.state.get('state') != 'exited':
                 self.state['state'] = 'stopping'
-                self.state['force_stop_unverified'] = bool(force)
+                self.state['force_stop_unverified'] = True
                 self.emit({'event': 'session', **self.state})
-        if not graceful and proc.poll() is None:
-            try: os.killpg(proc.pid, 9 if force else 15)
+        if proc.poll() is None:
+            try: os.killpg(proc.pid, 9)
             except ProcessLookupError: pass
         return self.status()
 
@@ -168,9 +175,7 @@ class NativeSession:
         if self.reader: self.reader.join(timeout=6)
         if self.stderr_reader: self.stderr_reader.join(timeout=2)
         if self.proc and self.proc.poll() is None:
-            self.stop(force=True)
-            if self.reader: self.reader.join(timeout=2)
-            if self.stderr_reader: self.stderr_reader.join(timeout=2)
+            raise TimeoutError('native session is still running; connection preserved')
         if self.proc:
             for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
                 try: stream.close()

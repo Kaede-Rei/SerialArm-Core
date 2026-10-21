@@ -1163,13 +1163,14 @@ function calibrationToolHistoryHtml(kind) {
     const selected = state.calibrationToolSelected[kind];
     const records = state.calibrationToolRecords[kind] || [];
     const recent = state.telemetry?.model_calibration || {};
-    const canExport = !!selected || (kind === 'dynamics' && !!state.advancedReport?.candidate_urdf) ||
+    const canExport = !active() && (!!selected || (kind === 'dynamics' && !!state.advancedReport?.candidate_urdf) ||
         (kind === 'gravity' && !!state.modelCalibrationOffline?.result?.gravity_result) ||
-        ((kind === 'teaching' || kind === 'gain' || kind === 'gravity') && recent.workflow_kind === kind && !!recent.directory);
+        ((kind === 'teaching' || kind === 'gain' || kind === 'gravity') && recent.workflow_kind === kind && !!recent.directory));
     const en = state.language === 'en';
     return `<section class="workspace-section calibration-tool-history">
       <div class="workspace-section-head"><div><h3>${en ? 'Task records' : '任务记录'}</h3><p class="hint">${en ? 'Select a Profile to scan; loading a task folder and exporting results work offline without robot hardware' : '四个工具共享历史任务 · 扫描需选择 Profile，加载指定任务及导出成果无需连接工作台，也不会使机械臂运动'}</p></div></div>
       <div class="workspace-actions"><button class="button" data-tool-scan="${kind}">${en ? 'Scan saved tasks' : '扫描已有任务'}</button><button class="button" data-tool-load="${kind}">${en ? 'Load task folder' : '加载任务记录'}</button><button class="button primary" data-tool-export="${kind}" ${canExport ? '' : 'disabled'}>${calibrationToolExportLabels[kind][en ? 1 : 0]}</button></div>
+      ${active() ? `<p class="hint">${en ? 'Safely disconnect the active session before exporting calibration results' : '请先安全断开当前运行会话，再导出标定成果'}</p>` : ''}
       ${selected ? `<div class="callout"><b>${esc(selected.task_id || '')}</b><div>${esc(selected.directory)}</div><div>${esc(selected.note || '')}</div></div>` : ''}
       ${records.length ? `<div class="calibration-tool-list">${records.map((r, i) => `<button class="button calibration-tool-record" data-tool-select="${kind}" data-tool-index="${i}"><b>${esc(r.task_id || '')}</b><small>${esc(r.record_kind || '')} · ${esc(r.trajectory?.samples ?? 0)} ${en ? 'frames' : '帧'}</small></button>`).join('')}</div>` : `<p class="hint">${en ? 'Scan to view saved data for this tool' : '点击“扫描已有任务”显示本工具可用的记录'}</p>`}
     </section>`;
@@ -2669,6 +2670,7 @@ function bindPage() {
             await selectCalibrationToolRecord(kind, state.calibrationToolRecords[kind][Number(button.dataset.toolIndex)]);
         }));
         document.querySelectorAll('[data-tool-export]').forEach(button => button.onclick = () => blockingOperation(busyText('正在生成标定成果...', 'Exporting calibration result...'), async () => {
+            if (active()) throw new Error(state.language === 'en' ? 'Safely disconnect the active session before exporting calibration results' : '请先安全断开当前运行会话，再导出标定成果');
             const kind = button.dataset.toolExport;
             const directory = (kind === 'gravity' ? gravityCandidatePreviewState().directory : null)
                 || state.calibrationToolSelected[kind]?.directory || state.modelCalibrationDirectory
@@ -3068,7 +3070,7 @@ function onEvent(event) {
         if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); }
         syncCompletedGainCandidate(calibration);
     }
-    if (event.event === 'session') { state.session = event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.tuneDraft = null; const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
+    if (event.event === 'session') { if (event.mode === 'workbench' && event.state === 'running' && (event.pid !== state.session?.pid || !['running', 'stopping'].includes(state.session?.state))) { state.telemetry = null; state.telemetryHistory = []; state.telemetryReceivedAt = 0; } state.session = event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.tuneDraft = null; const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
     if (event.event === 'error') { state.backendError = event.error; toast(event.error, true); statusUI(); }
 }
 async function boot() {
