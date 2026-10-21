@@ -326,8 +326,11 @@ class Inspector:
     def inspect(self, config):
         c = config_values(config)
         listing = self.profiles(c)
+        if not c['profile']:
+            raise ValueError('尚未选择机器人 Profile，请先在机器人配置中选择 Profile，历史任务文件夹可直接离线加载和导出，无需连接真机')
         profile = next((p['data'] for p in listing['profiles'] if p['name'] == c['profile']), None)
-        if profile is None: raise ValueError('robot profile not found: ' + c['profile'])
+        if profile is None:
+            raise ValueError(f'未找到机器人 Profile {c["profile"]!r}，请检查 Profile 清单 {listing["profile_file"]} 及外部 Profile 路径，无需连接真机即可加载历史任务')
         roots = self.roots(c, listing['profile_file'])
         resources, checks = {}, []
         specs = [('core', 'core', 'package', 'config'), ('hardware', 'hardware', 'config_package', 'config'),

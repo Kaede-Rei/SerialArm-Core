@@ -81,7 +81,15 @@ def describe(error, method='', params=None):
         details['cause_type'] = type(error.__cause__).__name__
     if operation.startswith('calibration_tool_') and operation not in OPERATIONS:
         label = '标定成果操作'
-    if isinstance(error, yaml.YAMLError):
+    if isinstance(error, ValueError) and ('尚未选择机器人 Profile' in original_message or 'robot profile not found:' in original_message):
+        code, category = 'PROFILE_NOT_SELECTED', 'configuration'
+        reason = '尚未选择机器人 Profile，无法扫描对应机器人的历史任务'
+        advice = '先选择机器人 Profile 再扫描，或点击加载任务记录直接选择历史任务目录；离线导出不需要连接机械臂'
+    elif isinstance(error, ValueError) and '未找到机器人 Profile' in original_message:
+        code, category = 'PROFILE_NOT_FOUND', 'configuration'
+        reason = original_message
+        advice = '检查当前加载的机器人 Profile 清单和路径；已经保存的历史任务可以直接加载并离线导出'
+    elif isinstance(error, yaml.YAMLError):
         code, category = ('PROFILE_EXPORT_YAML_INVALID' if 'export' in operation else 'PROFILE_YAML_INVALID'), 'configuration'
         reason = '生成的 Core YAML 格式不正确，未能完成导出' if 'export' in operation else 'YAML 配置格式错误，无法读取相关参数'
         advice = '无需重新采集标定数据 请检查 Core 配置及导出程序后重试 原始任务数据不会因本次解析失败而自动修改'

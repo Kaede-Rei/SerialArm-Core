@@ -27,6 +27,26 @@ ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
 
 
+def offline_profile_home(inspector, config):
+    # Historical task inventory must not require hardware files, Core readiness or a live session
+    selected = config_values(config)
+    if not selected['profile']:
+        raise ValueError('尚未选择机器人 Profile，扫描历史任务前请选择机器人，或直接加载任务目录，无需连接机械臂')
+    listing = inspector.profiles(selected)
+    if selected['profile'] not in {item['name'] for item in listing['profiles']}:
+        raise ValueError(f'未找到机器人 Profile {selected["profile"]!r}，请检查 Profile 文件 {listing["profile_file"]}，或直接加载历史任务目录')
+    return profile_home({'profile': selected['profile'], 'profile_file': listing['profile_file']}, ROOT)
+
+
+def offline_task_home(directory, fallback_root):
+    # Task exports are derived from immutable on-disk records, not an active Profile
+    # Standard layout: <robot>/.serialarm/model-calibration/<task>
+    folder = Path(directory).expanduser().resolve() if directory else None
+    if folder and folder.parent.name == 'model-calibration' and folder.parent.parent.name == '.serialarm':
+        return folder.parent.parent.parent
+    return Path(fallback_root).resolve()
+
+
 def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode=None, locked_links=None):
     """Never load optional native Pinocchio extensions in the live IPC process"""
     argv = [sys.executable, str(Path(__file__).with_name('full_inertial_worker.py')),
@@ -560,18 +580,25 @@ def main():
                     result = native.request('candidate_overrides', {}, timeout=8)
                 elif method == 'calibration_tool_records':
                     from workflow_registry import scan
-                    result = scan(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('kind', ''), params.get('limit', 60), legacy_root=ROOT, profile_name=(active_workbench_config or config_values(params.get('config', {})))['profile'])
+                    offline_config = params.get('config') or active_workbench_config or {}
+                    selected = config_values(offline_config)
+                    result = scan(offline_profile_home(inspector, selected), params.get('kind', ''), params.get('limit', 60),
+                                  legacy_root=ROOT, profile_name=selected['profile'])
                 elif method == 'calibration_tool_load':
                     from workflow_registry import load
                     result = load(params.get('directory', ''), params.get('kind', ''))
                 elif method == 'calibration_tool_export':
                     from artifact_exports import export_artifact
-                    result = export_artifact(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('directory', ''), params.get('kind', ''),
+                    # Export uses the immutable task snapshot and the user-selected output directory
+                    # It must not consult the connected hardware or the current GUI Profile
+                    record_dir = params.get('directory', '')
+                    result = export_artifact(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''),
                         report=params.get('report'), destination=params.get('destination'),
                         candidate_source=params.get('candidate_source','online'))
                 elif method == 'calibration_tool_export_record':
                     from workflow_registry import export_record
-                    result = export_record(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), params.get('directory', ''), params.get('kind', ''))
+                    record_dir = params.get('directory', '')
+                    result = export_record(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''))
                 elif method == 'model_calibration_load':
                     result = load_model_calibration_summary(params.get('directory', ''))
                 elif method == 'model_calibration_model_alignment':
@@ -580,7 +607,10 @@ def main():
                     current_model = model_runtime.model(inspector, params.get('config', {}))
                     result = compare_calibration_urdfs(summary['directory'], summary['metadata'], current_model['urdf'])
                 elif method == 'model_calibration_records':
-                    result = list_model_calibration_records(profile_home(inspector.inspect(active_workbench_config or config_values(params.get('config', {}))), ROOT), legacy_root=ROOT, profile_name=(active_workbench_config or config_values(params.get('config', {})))['profile'])
+                    offline_config = params.get('config') or active_workbench_config or {}
+                    selected = config_values(offline_config)
+                    result = list_model_calibration_records(offline_profile_home(inspector, selected),
+                                                           legacy_root=ROOT, profile_name=selected['profile'])
                 elif method == 'model_calibration_preview_save':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
