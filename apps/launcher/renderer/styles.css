@@ -585,3 +585,31 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .teach-storage-location>span,.teach-path-label{font-size:11px;opacity:.75}
 .teach-file-path{display:block;overflow-wrap:anywhere;word-break:break-all;white-space:normal;line-height:1.6;font-size:11px;user-select:text}
 .teach-trajectory-item .teach-file-path{color:var(--text-muted,#6b7280)}
+
+/* Geometry calibration uses the same card language as the control workspace */
+.geometry-tabs{display:flex;flex-wrap:wrap;gap:9px;margin:14px 0 16px}
+.geometry-two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;align-items:start}
+.geometry-card{min-width:0;display:flex;flex-direction:column;gap:13px}
+.geometry-card h3{font-size:15px;margin:0}
+.geometry-card h4{font-size:12px;margin:9px 0 0}
+.geometry-card>.hint{margin:0;line-height:1.65}
+.geometry-card>label,.geometry-step>label,.geometry-fields>label{display:flex;flex-direction:column;gap:6px;min-width:0;color:var(--muted);font-size:11px}
+.geometry-card select,.geometry-card input{width:100%;min-width:0;color:var(--text);border:1px solid var(--line);border-radius:8px;background:var(--subtle);padding:9px 11px;font-size:12px}
+.geometry-card .workspace-actions{display:flex;flex-wrap:wrap;gap:8px}
+.geometry-card button{max-width:100%}
+.geometry-step{padding:13px;border:1px solid var(--line);border-radius:11px;background:var(--subtle);display:flex;flex-direction:column;align-items:flex-start;gap:9px}
+.geometry-step>b{font-size:12px;color:var(--text)}
+.geometry-step>.hint{margin:0;line-height:1.65}
+.geometry-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;width:100%}
+.geometry-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.geometry-stats>div{border:1px solid var(--line);background:var(--subtle);border-radius:11px;padding:13px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.geometry-stats small{font-size:11px;color:var(--muted)}
+.geometry-stats strong{font-size:19px;color:var(--text);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.geometry-vector,.geometry-error-list{display:flex;flex-wrap:wrap;gap:8px}
+.geometry-vector span,.geometry-error-list span{background:var(--subtle);border:1px solid var(--line);border-radius:8px;padding:7px 9px;font-size:11px;font-variant-numeric:tabular-nums}
+.geometry-result{padding:11px 13px;border:1px solid var(--line);border-radius:10px;background:var(--subtle);color:var(--text);font-size:12px}
+.geometry-result.is-pass{border-color:color-mix(in srgb,#16a34a 43%,var(--line))}
+.geometry-result.is-warning{border-color:color-mix(in srgb,var(--accent) 48%,var(--line))}
+.geometry-note{padding:11px 12px;border-left:3px solid var(--accent);background:var(--subtle);border-radius:5px;font-size:11px;line-height:1.65;color:var(--muted)}
+@media(max-width:1100px){.geometry-two-col{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:620px){.geometry-fields,.geometry-stats{grid-template-columns:minmax(0,1fr)}.geometry-tabs>.button{flex:1}}

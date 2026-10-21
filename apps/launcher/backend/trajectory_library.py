@@ -139,15 +139,17 @@ class TrajectoryLibrary:
                     continue
         raise ValueError('轨迹不存在，或来源与当前机械臂不匹配')
 
-    def save(self, scope, name, native):
+    def save(self, scope, name, native, kind='general'):
         name = self.validate_name(name)
+        if kind not in ('general', 'contact_first'):
+            raise ValueError('未知轨迹用途')
         base = self.folder(scope);base.mkdir(parents=True,exist_ok=True)
         key = uuid.uuid4().hex
         target = self._new_folder(base,name)
         try:
             native.request('teach_replay_save',{'path':str(target/'trajectory.csv')},timeout=15)
             summary = self.validate_csv(target/'trajectory.csv',scope['joints'])
-            meta = {'id':key,'name':name,'scope':self._identity(scope),
+            meta = {'id':key,'name':name,'scope':self._identity(scope), 'kind':kind,
                     'created_at':datetime.now().isoformat(timespec='seconds'),**summary}
             (target/'metadata.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2),encoding='utf-8')
             return {**meta,'directory':str(target)}
@@ -210,7 +212,10 @@ class TrajectoryLibrary:
             try:
                 (target/'trajectory.csv').write_bytes(archive.read('trajectory.csv'))
                 checked=self.validate_csv(target/'trajectory.csv',scope['joints'])
-                record={'id':key,'name':name,'scope':self._identity(scope),
+                kind = meta.get('kind', 'general')
+                if kind not in ('general', 'contact_first'):
+                    raise ValueError('未知轨迹用途')
+                record={'id':key,'name':name,'scope':self._identity(scope), 'kind':kind,
                         'created_at':datetime.now().isoformat(timespec='seconds'),**checked}
                 (target/'metadata.json').write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8')
                 return {**record,'directory':str(target)}

@@ -1136,7 +1136,7 @@ public:
                     else if(method == "teach_replay_record_stop") { machine_teach_record_stop(); emit_reply(id, machine_teach_replay_json()); }
                     else if(method == "teach_replay_save") { machine_teach_save(params["path"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
                     else if(method == "teach_replay_load") { machine_teach_load(params["path"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
-                    else if(method == "teach_replay_play") { machine_teach_play(params["direction"].as<std::string>(), params["rate"].as<double>(), params["cycles"].as<int>(), params["confirmed"].as<bool>(), params["mode"].as<std::string>()); emit_reply(id, machine_teach_replay_json()); }
+                    else if(method == "teach_replay_play") { machine_teach_play(params["direction"].as<std::string>(), params["rate"].as<double>(), params["cycles"].as<int>(), params["confirmed"].as<bool>(), params["mode"].as<std::string>(), params["endpoint_dwell_s"] ? params["endpoint_dwell_s"].as<double>() : 0.0); emit_reply(id, machine_teach_replay_json()); }
                     else if(method == "teach_replay_stop") { machine_teach_replay_stop(); emit_reply(id, machine_teach_replay_json()); }
                     else if(method == "model_calibration_teach_begin") {
                         machine_model_calibration_teach_begin(params);
@@ -1929,6 +1929,7 @@ private:
         out << "{\"phase\":\"" << (teach_replay_phase_ == 1 ? "recording" : teach_replay_phase_ == 2 ? "ready" : teach_replay_phase_ == 3 ? "playing" : teach_replay_phase_ == 4 ? "failed" : "idle") << '"';
         out << ",\"error\":\"" << machine_json_escape(teach_replay_error_) << '"';
         out << ",\"completed\":" << teach_replay_completed_.load();
+        out << ",\"capabilities\":{\"contact_first_capture\":true,\"contact_cycle\":true,\"endpoint_dwell\":true}";
         if(teach_replay_trajectory_ && !teach_replay_trajectory_->positions.empty()) {
             const auto& t = *teach_replay_trajectory_;
             out << ",\"samples\":" << t.positions.size() << ",\"duration_s\":" << (t.positions.size()-1)*t.sample_dt;
@@ -1960,7 +1961,7 @@ private:
             const auto result=robot_.set_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG);
             if(!result)throw machine_robot_error("teach drag",result.error());
             clear_command_sources();
-            teach_replay_trajectory_.reset(); teach_replay_error_.clear();
+            teach_replay_trajectory_.reset(); teach_replay_record_start_=last_output_->joint_state.pos; teach_replay_error_.clear();
             teach_replay_record_stop_.store(false);
             teach_replay_phase_.store(1);
             teach_replay_completed_.store(0);
@@ -1968,6 +1969,12 @@ private:
         teach_replay_worker_=std::thread([this] {
             auto recorded=collect_friction_drag_trajectory_until_stop(teach_replay_record_stop_);
             std::lock_guard<std::mutex> lock(mutex_);
+            if(recorded && !teach_replay_record_start_.empty()) {
+                // Preserve the physical pose at record_begin as the contact endpoint
+                // The first scheduled recorder sample may arrive after dragging starts
+                recorded->positions.insert(recorded->positions.begin(),teach_replay_record_start_);
+            }
+            teach_replay_record_start_.clear();
             if(recorded && friction_trajectory_inside_safe_replay_range(*recorded)) {
                 teach_replay_trajectory_=std::move(*recorded);teach_replay_phase_.store(2);
             } else {
@@ -1980,9 +1987,27 @@ private:
     void machine_teach_record_stop() {
         if(teach_replay_phase_.load()!=1 && teach_replay_phase_.load()!=4)
             throw std::runtime_error("not recording a trajectory");
+        // Capture the latest physical joint position at the marked recording endpoint
+        // before waiting for the recording worker to finish
+        JointVector marked_endpoint;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(last_output_ && robot_.get_state()==RobotState::ACTIVE)
+                marked_endpoint=last_output_->joint_state.pos;
+        }
         teach_replay_record_stop_.store(true);cycle_cv_.notify_all();
         if(teach_replay_worker_.joinable())teach_replay_worker_.join();
         std::lock_guard<std::mutex> lock(mutex_);
+        if(teach_replay_phase_.load()==2 && teach_replay_trajectory_ &&
+                !marked_endpoint.empty() &&
+                marked_endpoint.size()==teach_replay_trajectory_->positions.back().size()) {
+            teach_replay_trajectory_->positions.push_back(std::move(marked_endpoint));
+            if(!friction_trajectory_inside_safe_replay_range(*teach_replay_trajectory_)) {
+                teach_replay_trajectory_.reset();
+                teach_replay_error_="recorded endpoint violates joint safety margins";
+                teach_replay_phase_.store(4);
+            }
+        }
         if(robot_.get_state()==RobotState::ACTIVE) {
             const auto hold=robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD);
             if(!hold)throw machine_robot_error("teach recording hold",hold.error());
@@ -2053,14 +2078,15 @@ private:
         model_calibration_active_tracking_gains_.reset();model_calibration_cancel_.store(false);
     }
 
-    void machine_teach_play(const std::string& direction,double rate,int cycles,bool released,const std::string& tracking_mode) {
+    void machine_teach_play(const std::string& direction,double rate,int cycles,bool released,const std::string& tracking_mode,double endpoint_dwell_s=0.0) {
         if(tracking_mode!="RIGID_TRACKING" && tracking_mode!="COMPLIANT_TRACKING")
             throw std::runtime_error("replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING");
         const auto replay_mode=tracking_mode=="COMPLIANT_TRACKING" ? JointImpedanceMode::COMPLIANT_TRACKING : JointImpedanceMode::RIGID_TRACKING;
         if(!released)throw std::runtime_error("workspace and released-hand confirmation required");
-        if(direction!="forward"&&direction!="reverse"&&direction!="cycle"&&direction!="return")
+        if(direction!="forward"&&direction!="reverse"&&direction!="cycle"&&direction!="return"&&direction!="contact_cycle")
             throw std::runtime_error("unknown replay direction");
-        if(!std::isfinite(rate)||rate<0.05||rate>1.0||cycles<1||cycles>100)
+        if(!std::isfinite(rate)||rate<0.05||rate>1.0||cycles<1||cycles>100||
+           !std::isfinite(endpoint_dwell_s)||endpoint_dwell_s<0.0||endpoint_dwell_s>30.0)
             throw std::runtime_error("invalid replay speed or repeat count");
         if(teach_replay_phase_.load()!=2 || !teach_replay_trajectory_)
             throw std::runtime_error("load or record a trajectory before replay");
@@ -2096,13 +2122,15 @@ private:
         const bool reverse=(direction=="reverse"||direction=="return");
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            const auto& expected=reverse?planned.positions.back():planned.positions.front();
+            const auto& expected=(reverse || direction=="contact_cycle")?planned.positions.back():planned.positions.front();
             const auto& state=last_output_->joint_state;
             if(state.pos.size()!=expected.size())throw std::runtime_error("joint feedback size mismatch");
             double max_error=0,max_speed=0;
             for(std::size_t i=0;i<expected.size();++i){max_error=std::max(max_error,std::abs(state.pos[i]-expected[i]));max_speed=std::max(max_speed,std::abs(state.vel[i]));}
-            if(max_error>0.08 || max_speed>0.05)
-                throw std::runtime_error("robot is not aligned with selected trajectory endpoint (0.08 rad / 0.05 rad/s), return manually or using the already verified reverse path");
+            const double position_limit=direction=="contact_cycle" ? 0.03 : 0.08;
+            const double speed_limit=direction=="contact_cycle" ? 0.03 : 0.05;
+            if(max_error>position_limit || max_speed>speed_limit)
+                throw std::runtime_error("robot is not aligned with the selected trajectory endpoint; return to the corresponding safe start pose before playback");
             const auto mode=robot_.set_impedance_mode(replay_mode);
             if(!mode)throw machine_robot_error("teach replay tracking",mode.error());
             clear_command_sources();
@@ -2111,10 +2139,10 @@ private:
             model_calibration_active_tracking_gains_=replay_mode==JointImpedanceMode::COMPLIANT_TRACKING ? cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains;
             teach_replay_phase_.store(3);teach_replay_error_.clear();teach_replay_completed_.store(0);
         }
-        teach_replay_worker_=std::thread([this,path=std::move(planned),direction,rate,cycles,tracking_mode]() {
+        teach_replay_worker_=std::thread([this,path=std::move(planned),direction,rate,cycles,tracking_mode,endpoint_dwell_s]() {
             bool failed=false;
-            const int passes=direction=="return"?1:direction=="cycle"?2*cycles:direction=="forward"?2*cycles-1:2*cycles-1;
-            const bool first_reverse=direction=="reverse"||direction=="return";
+            const int passes=direction=="return"?1:(direction=="cycle"||direction=="contact_cycle")?2*cycles:2*cycles-1;
+            const bool first_reverse=direction=="reverse"||direction=="return"||direction=="contact_cycle";
             for(int pass=0;pass<passes && !teach_replay_stop_.load();++pass){
                 const bool reverse=first_reverse ? pass%2==0 : pass%2!=0;
                 auto ordered=path.positions;
@@ -2129,6 +2157,22 @@ private:
                     if(!model_calibration_send_reference(sample.position,sample.velocity,
                             false,nullptr,nullptr,true,tracking_mode=="COMPLIANT_TRACKING")){
                         failed=!teach_replay_stop_.load();break;
+                    }
+                }
+                if(failed)break;
+                // The dedicated contact-cycle starts at the safe recorded endpoint, plays
+                // backward to the recorded contact start, dwells, then withdraws forward
+                // Legacy forward-first playback keeps its original endpoint dwell behavior
+                const bool at_contact=(direction=="contact_cycle") ? reverse : !reverse;
+                if(at_contact && endpoint_dwell_s>0.0 && !teach_replay_stop_.load()) {
+                    const auto hold_end=std::chrono::steady_clock::now()+std::chrono::duration<double>(endpoint_dwell_s);
+                    const JointVector target=ordered.back();
+                    const JointVector zero_velocity(target.size(),0.0);
+                    while(std::chrono::steady_clock::now()<hold_end && !teach_replay_stop_.load()) {
+                        if(!model_calibration_send_reference(target,zero_velocity,
+                                false,nullptr,nullptr,true,tracking_mode=="COMPLIANT_TRACKING")) {
+                            failed=!teach_replay_stop_.load();break;
+                        }
                     }
                 }
                 if(failed)break;
@@ -7315,6 +7359,7 @@ private:
     std::atomic<int> teach_replay_completed_{0};
     std::thread teach_replay_worker_;
     std::optional<FrictionCalibrationTrajectory> teach_replay_trajectory_;
+    JointVector teach_replay_record_start_;
     std::string teach_replay_error_;
 
     mutable std::mutex model_calibration_mutex_;

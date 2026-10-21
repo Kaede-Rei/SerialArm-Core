@@ -18,6 +18,7 @@ from persistence import (export_friction_candidate, export_telemetry, export_can
 from profile_library import ProfileLibrary
 from profile_storage import profile_home, category_directory
 from model_calibration_alignment import compare_calibration_urdfs
+from tcp_calibration import TcpCalibration
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
@@ -251,8 +252,10 @@ def main():
     profile_library = ProfileLibrary(ROOT, inspector)
     from trajectory_library import TrajectoryLibrary
     trajectories = TrajectoryLibrary(ROOT)
+    geometry = TcpCalibration(profile_library)
     active_workbench_config = None
     active_workbench_fingerprint = None
+    repeat_source = None
     emit({'event': 'backend_ready'})
     if '--check' in sys.argv[1:]:
         model_runtime.close()
@@ -308,6 +311,113 @@ def main():
                 elif method == 'inspect': result = inspector.inspect(params)
                 elif method == 'model': result = model_runtime.model(inspector, params.get('config', params), params.get('positions'))
                 elif method == 'model_preview': result = model_runtime.preview(inspector, params.get('config', params), params.get('positions'))
+                elif method.startswith('geometry_repeat_'):
+                    # Dedicated GUI -> Electron IPC -> Python Bridge -> native terminal route
+                    # Do not trust a saved metadata label as proof of how a live trajectory was recorded
+                    op = method.removeprefix('geometry_repeat_')
+                    if op == 'status' and (not active_workbench_config or native.status().get('state') != 'running'):
+                        result = {'phase':'idle', 'connected':False, 'supported':False, 'contact_ready':False}
+                    else:
+                        if not active_workbench_config or native.status().get('state') != 'running':
+                            raise ValueError('定点重复测试需要先连接当前机械臂工作台')
+                        requested = inspector.inspect(config_values(params.get('config', {})))
+                        connected = inspector.inspect(active_workbench_config)
+                        if (requested['profile'] != connected['profile'] or
+                                requested['profile_file'] != connected['profile_file'] or
+                                requested['resources'] != connected['resources'] or
+                                connected['fingerprint'] != active_workbench_fingerprint):
+                            repeat_source = None
+                            raise ValueError('当前几何实验与正在运行的机械臂 Profile 不一致，请重新连接')
+                        scope = trajectories.scope(connected, ROOT)
+                        identity = (connected['profile'], connected['profile_file'], connected['fingerprint'])
+                        status = native.request('teach_replay_status', {}, timeout=8)
+                        capabilities = status.get('capabilities') or {}
+                        supported = all(capabilities.get(k) is True for k in
+                                        ('contact_first_capture', 'contact_cycle', 'endpoint_dwell'))
+                        if not supported and op != 'status':
+                            raise ValueError('当前运行的 C++ Terminal 尚不支持反向定点循环和终点停留，请重新运行 ./install.sh 重新编译 Terminal 后再连接工作台')
+                        if op == 'status':
+                            result = {**status, 'connected': True, 'supported': supported,
+                                      'contact_ready': supported and repeat_source == ('ready', identity) and status.get('phase') == 'ready',
+                                      'reason': '' if supported else '已连接的是旧版 C++ Terminal，请重新编译安装后重新连接'}
+                        elif op == 'record_begin':
+                            verify_machine_admission(profile_library, active_workbench_config, 'teach_replay_record_begin', {}, native)
+                            repeat_source = None
+                            result = native.request('teach_replay_record_begin', {}, timeout=8)
+                            if result.get('phase') == 'recording':
+                                repeat_source = ('recording', identity)
+                        elif op == 'record_stop':
+                            if repeat_source != ('recording', identity):
+                                raise ValueError('当前没有从触点 B 开始的有效示教录制')
+                            result = native.request('teach_replay_record_stop', {}, timeout=12)
+                            repeat_source = ('ready', identity) if result.get('phase') == 'ready' else None
+                        elif op == 'load':
+                            folder, metadata = trajectories.ensure(scope, params.get('id', ''))
+                            if metadata.get('kind') != 'contact_first':
+                                raise ValueError('该轨迹未标记为触点 B 到安全点 A 的轨迹')
+                            repeat_source = None
+                            trajectories.load(scope, params.get('id', ''), native)
+                            result = native.request('teach_replay_status', {}, timeout=8)
+                            if result.get('phase') != 'ready':
+                                raise ValueError('轨迹载入后原生回放状态不正确')
+                            repeat_source = ('ready', identity)
+                        elif op == 'save':
+                            if repeat_source != ('ready', identity) or status.get('phase') != 'ready':
+                                raise ValueError('请先完成从触点 B 到安全点 A 的示教或载入专用轨迹')
+                            result = trajectories.save(scope, params.get('name', ''), native, kind='contact_first')
+                        elif op == 'play':
+                            if repeat_source != ('ready', identity) or status.get('phase') != 'ready':
+                                raise ValueError('当前没有可执行的定点重复测试轨迹')
+                            kind = params.get('kind')
+                            if kind not in ('cycle', 'withdraw'):
+                                raise ValueError('无效的几何回放类型')
+                            machine_params = {
+                                'direction': 'contact_cycle' if kind == 'cycle' else 'forward',
+                                'cycles': params.get('cycles', 1) if kind == 'cycle' else 1,
+                                'rate': params.get('rate', 0.2),
+                                'mode': params.get('mode', 'RIGID_TRACKING'),
+                                'endpoint_dwell_s': params.get('endpoint_dwell_s', 0) if kind == 'cycle' else 0,
+                                'confirmed': params.get('confirmed') is True,
+                            }
+                            verify_machine_admission(profile_library, active_workbench_config, 'teach_replay_play', machine_params, native)
+                            result = native.request('teach_replay_play', machine_params, timeout=8)
+                        elif op == 'stop':
+                            result = native.request('teach_replay_stop', {}, timeout=12)
+                        else:
+                            raise ValueError('未知的定点重复测试操作')
+                elif method.startswith('geometry_fixed_'):
+                    config = config_values(params.get('config', {}))
+                    operation = method.removeprefix('geometry_fixed_')
+                    if operation == 'state':
+                        result = geometry.state(config)
+                    elif operation == 'begin':
+                        result = geometry.begin(config, params.get('frame', ''), params.get('purpose', 'diagnostic'))
+                    elif operation == 'discard':
+                        result = geometry.discard(config)
+                    elif operation in ('capture', 'solve', 'validate'):
+                        if operation == 'capture':
+                            if not active_workbench_config or native.status().get('state') != 'running':
+                                raise ValueError('采集前请连接当前机械臂工作台')
+                            active_info = inspector.inspect(active_workbench_config)
+                            requested_info = inspector.inspect(config)
+                            if (active_info['profile_file'] != requested_info['profile_file'] or
+                                    active_info['profile'] != requested_info['profile'] or
+                                    active_info['resources'] != requested_info['resources']):
+                                raise ValueError('几何采样会话与当前真机连接不匹配')
+                            previous = native.request('status', {}, timeout=8)
+                            time.sleep(0.12)
+                            current = native.request('status', {}, timeout=8)
+                            result = geometry.capture(config, params.get('phase'), current, previous)
+                        elif operation == 'solve':
+                            result = geometry.solve(config)
+                        else:
+                            result = geometry.validate(config, params.get('rms_mm', 2.0), params.get('max_mm', 4.0))
+                    elif operation == 'report':
+                        result = geometry.export_diagnostic(config)
+                    elif operation == 'export_tcp':
+                        result = geometry.export(config)
+                    else:
+                        raise ValueError('未知几何标定操作')
                 elif method in ('trajectory_list','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
                     config = active_workbench_config or config_values(params.get('config', {}))
                     info = inspector.inspect(config)
@@ -324,8 +434,17 @@ def main():
                     else:
                         if not active_workbench_config or native.status().get('state') != 'running':
                             raise ValueError('请先连接当前机械臂工作台')
-                        if method == 'trajectory_save': result = trajectories.save(scope,params.get('name',''),native)
-                        else: result = trajectories.load(scope,record_id,native)
+                        if method == 'trajectory_save':
+                            if params.get('kind', 'general') != 'general':
+                                raise ValueError('触点起点专用轨迹必须通过几何标定的示教工作流保存')
+                            result = trajectories.save(scope, params.get('name', ''), native, kind='general')
+                        else:
+                            repeat_source = None  # General trajectory loading is independent of the geometry workflow
+                            if params.get('required_kind'):
+                                _, metadata = trajectories.ensure(scope,record_id)
+                                if metadata.get('kind','general') != params['required_kind']:
+                                    raise ValueError('该轨迹不是从触点向安全位置示教的轨迹，请重新示教')
+                            result = trajectories.load(scope,record_id,native)
                 elif method == 'workbench_start':
                     if manager.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     config = config_values(params.get('config', {}))
@@ -352,6 +471,7 @@ def main():
                     result = native.start(argv, env, info['devices'] if info['write_enabled'] is not False else [])
                     active_workbench_config = config
                     active_workbench_fingerprint = info['fingerprint']
+                    repeat_source = None
                 elif method == 'workbench_request':
                     native_method = params.get('method')
                     machine_params = params.get('params', {})
@@ -363,6 +483,8 @@ def main():
                             raise ValueError('连接期间配置发生变化，请先安全断连并重新检查')
                         verify_machine_admission(profile_library, active_workbench_config, native_method, machine_params, native)
                     result = native.request(native_method, machine_params, timeout=120 if native_method == 'park' else (45 if native_method in ('model_calibration_teach_stop','model_calibration_import_trajectory') else 8))
+                    if native_method in ('teach_replay_record_begin', 'teach_replay_record_stop'):
+                        repeat_source = None  # Normal teaching cannot be mistaken for a contact-first recording
                 elif method == 'workbench_stop':
                     # Temporary overrides are process-local, but restore explicitly
                     # before disconnect so the outcome is observable and auditable
@@ -382,6 +504,7 @@ def main():
                     result = native.stop(force)
                     active_workbench_config = None
                     active_workbench_fingerprint = None
+                    repeat_source = None
                 elif method == 'workbench_config_preview':
                     if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
                         raise ValueError('重力验证进行中不得保存临时参数')

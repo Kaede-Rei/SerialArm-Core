@@ -121,7 +121,7 @@ class TcpCalibration:
         info, core, core_path, urdf = self._profile(config)
         session = self.session
         if not session or session['profile'] != info['profile'] or session['profile_file'] != info['profile_file']:
-            raise ValueError('请先为当前机器人开始 TCP 标定')
+            raise ValueError('请先开始当前机械臂的固定点几何实验')
         scope = session.get('kinematics_hash')
         # Earlier saved sessions did not have a scoped hash, so retain their
         # original full-file check instead of silently trusting old samples
@@ -135,13 +135,15 @@ class TcpCalibration:
             raise ValueError('关节映射或零位已变化，旧 TCP 采样不再适用')
         return session, info, core, core_path, urdf
 
-    def _directory(self, info):
+    def _directory(self, info, purpose='tcp'):
         readiness = self.library._readiness_path(info['profile_file'], info['profile'])
-        directory = readiness.parent.parent / 'tcp-calibration' / info['profile']
+        directory = readiness.parent.parent / ('geometry-calibration' if purpose == 'diagnostic' else 'tcp-calibration') / info['profile']
         directory.mkdir(parents=True, exist_ok=True)
         return directory
 
-    def begin(self, config, frame):
+    def begin(self, config, frame, purpose='diagnostic'):
+        if purpose not in ('diagnostic', 'tcp'):
+            raise ValueError('未知固定点实验用途')
         info, core, core_path, urdf = self._profile(config)
         # Preparing a TCP session is a read-only geometry operation
         # Optional readiness notes and gain-approval records do not gate it
@@ -156,14 +158,14 @@ class TcpCalibration:
         if frame == model['base_frame']:
             raise ValueError('TCP 标定 Frame 不能为机器人基座')
         # Native runtime must know the frame; native feedback determines its pose
-        self.session = {'profile': info['profile'], 'profile_file': info['profile_file'],
+        self.session = {'purpose': purpose, 'profile': info['profile'], 'profile_file': info['profile_file'],
                         'core_hash': _digest(core_path), 'urdf_hash': _digest(urdf),
                         'kinematics_hash': self.library._digest(self._kinematics_scope(core)),
                         'calibration_hash': self.library._digest(core.get('calibration')),
                         'parent_frame': frame, 'base_frame': model['base_frame'],
                         'tool_frame': model['tool_frame'], 'train': [], 'validation': [],
                         'candidate': None, 'report': None, 'last_sequence': -1,
-                        'created_at': time.time(), 'directory': str(self._directory(info))}
+                        'created_at': time.time(), 'directory': str(self._directory(info, purpose))}
         self._save()
         return self.state(config)
 
@@ -172,7 +174,7 @@ class TcpCalibration:
         session = {k: copy.deepcopy(v) for k, v in self.session.items() if k != 'last_sequence'}
         directory = Path(self.session['directory'])
         directory.mkdir(parents=True, exist_ok=True)
-        path = directory / 'tcp-session.yaml'
+        path = directory / 'fixed-point-session.yaml'
         temp = path.with_suffix('.yaml.tmp')
         temp.write_text(yaml.safe_dump(session, allow_unicode=True, sort_keys=False), encoding='utf-8')
         temp.replace(path)
@@ -280,19 +282,23 @@ class TcpCalibration:
         if self.session is not None and (self.session.get('profile') != info['profile'] or self.session.get('profile_file') != info['profile_file']):
             self.session = None
         if self.session is None:
-            path = self._directory(info) / 'tcp-session.yaml'
-            if path.is_file():
+            paths = [self._directory(info, mode) / 'fixed-point-session.yaml' for mode in ('diagnostic', 'tcp')]
+            # Read previously saved legacy TCP sessions without changing their application rights
+            paths.append(self._directory(info, 'tcp') / 'tcp-session.yaml')
+            for path in sorted((path for path in paths if path.is_file()), key=lambda x: x.stat().st_mtime, reverse=True):
                 try:
                     doc = yaml.safe_load(path.read_text(encoding='utf-8'))
                     if isinstance(doc, dict) and doc.get('profile') == info['profile'] and doc.get('profile_file') == info['profile_file']:
+                        doc.setdefault('purpose', 'tcp')
                         self.session = doc
                         self.session['last_sequence'] = -1
+                        break
                 except (OSError, yaml.YAMLError):
-                    pass
+                    continue
         try: session, info, core, core_path, urdf = self._ensure(config)
         except ValueError: return default
         return {**default, 'active':True, 'parent_frame':session['parent_frame'],
-                'train':len(session['train']), 'validation':len(session['validation']),
+                'purpose':session.get('purpose', 'tcp'), 'train':len(session['train']), 'validation':len(session['validation']),
                 'candidate':session['candidate'], 'report':session['report'],
                 'directory':session['directory'],
                 'samples': {'train':session['train'], 'validation':session['validation']}}
@@ -307,10 +313,11 @@ class TcpCalibration:
         if cal_phase in ('recording','replaying','fitting','collecting','validating'):
             raise ValueError('其他动力学标定任务正在运行，不允许同时采集 TCP')
         if (status.get('robot_state') != 'ACTIVE' or status.get('valid') is not True or
-                status.get('write_enabled') is not True or status.get('fault')):
+                status.get('write_enabled') is not True or
+                (status.get('fault') or {}).get('code') not in (None, '', 'NONE', 'OK')):
             raise ValueError('TCP 采集需要有效的真机 ACTIVE 状态和可用硬件反馈')
         age = status.get('feedback_age_ms')
-        if not isinstance(age, (float, int)) or not 0 <= age <= MAX_AGE_MS:
+        if not isinstance(age, (float, int)) or isinstance(age, bool) or not math.isfinite(age) or not 0 <= age <= MAX_AGE_MS:
             raise ValueError('反馈过期，拒绝采样')
         seq = status.get('sequence')
         if not isinstance(seq, int) or seq < 1 or seq == session['last_sequence']:
@@ -323,7 +330,8 @@ class TcpCalibration:
             prior_pos = _finite_vector((previous.get('joint') or {}).get('pos'), len(joints), '稳定性检查关节位置')
             prior_vel = _finite_vector((previous.get('joint') or {}).get('vel'), len(joints), '稳定性检查关节速度')
             if (previous.get('robot_state') != 'ACTIVE' or previous.get('valid') is not True or
-                    previous.get('fault') or previous.get('sequence') == seq or
+                    (previous.get('fault') or {}).get('code') not in (None, '', 'NONE', 'OK') or
+                    previous.get('sequence') == seq or
                     max(abs(prior_vel)) > MAX_JOINT_SPEED or max(abs(joints - prior_pos)) > .0015):
                 raise ValueError('机器人在采样窗口内未持续停稳，请保持接触姿态后重试')
         _, core, _, urdf = self._profile(config)
@@ -371,12 +379,34 @@ class TcpCalibration:
 
     def discard(self, config):
         session, *_ = self._ensure(config)
+        (Path(session['directory']) / 'fixed-point-session.yaml').unlink(missing_ok=True)
         (Path(session['directory']) / 'tcp-session.yaml').unlink(missing_ok=True)
         self.session = None
         return {'active': False}
 
+    def export_diagnostic(self, config):
+        session, *_ = self._ensure(config)
+        if session.get('purpose') != 'diagnostic' or not session.get('report'):
+            raise ValueError('请先完成临时针尖的独立 FK 一致性验证')
+        output = Path(session['directory']) / 'fk-consistency-report.yaml'
+        data = {
+            'experiment': 'fk_consistency', 'meaning': '不同姿态下固定点一致性，不是绝对定位精度',
+            'profile': session['profile'], 'parent_frame': session['parent_frame'],
+            'temporary_tip_xyz_m': session['candidate']['tcp_xyz_m'],
+            'fit': session['candidate'], 'validation': session['report'],
+            'source_hashes': {'core': session['core_hash'], 'urdf': session['urdf_hash'],
+                              'calibration': session['calibration_hash']},
+            'training_samples': session['train'], 'validation_samples': session['validation'],
+        }
+        temporary = output.with_suffix('.yaml.tmp')
+        temporary.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding='utf-8')
+        temporary.replace(output)
+        return {'path': str(output), 'directory': str(output.parent)}
+
     def export(self, config):
         session, *_ = self._ensure(config)
+        if session.get('purpose', 'tcp') != 'tcp':
+            raise ValueError('诊断针尖属于临时工具，不能导出正式 TCP 候选')
         if not session['report'] or not session['report']['passed']:
             raise ValueError('必须通过独立针尖验证后才能导出正式 TCP 候选')
         directory = Path(session['directory'])
@@ -394,6 +424,8 @@ class TcpCalibration:
 
     def apply(self, config, *, native_running):
         session, info, core, core_path, urdf = self._ensure(config)
+        if session.get('purpose', 'tcp') != 'tcp':
+            raise ValueError('诊断会话不能修改 URDF 或 Profile')
         if native_running:
             raise ValueError('保存 TCP 模型前必须停放并断开真机会话')
         if not session['report'] or session['report']['passed'] is not True:
@@ -457,6 +489,7 @@ class TcpCalibration:
             profile.write_bytes(profile_backup)
             generated.unlink(missing_ok=True)
             raise
+        (Path(session['directory']) / 'fixed-point-session.yaml').unlink(missing_ok=True)
         (Path(session['directory']) / 'tcp-session.yaml').unlink(missing_ok=True)
         self.session = None
         return {'applied': True, 'tool_frame': link_name, 'urdf': str(generated),
