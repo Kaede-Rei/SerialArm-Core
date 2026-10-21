@@ -613,3 +613,13 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .geometry-note{padding:11px 12px;border-left:3px solid var(--accent);background:var(--subtle);border-radius:5px;font-size:11px;line-height:1.65;color:var(--muted)}
 @media(max-width:1100px){.geometry-two-col{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:620px){.geometry-fields,.geometry-stats{grid-template-columns:minmax(0,1fr)}.geometry-tabs>.button{flex:1}}
+
+/* Non-safety failures: contextual, dismissible, and not a motor-fault dialog */
+
+/* One consistent centred alert for operation errors and robot faults. */
+.priority-error-card .error-technical{margin-top:14px}
+.priority-error-card .error-technical pre{max-height:42vh;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
+.priority-error-card #priority-error-detail{white-space:pre-wrap;font:inherit;background:transparent;border:0;padding:0;margin:0 0 12px;line-height:1.75;color:var(--text)}
+.priority-error-card #priority-error-guidance{white-space:pre-wrap}
+.priority-error-card #priority-error-copy{flex-shrink:0}
+@media(max-width:520px){.priority-error-card{padding:18px}.priority-error-card .actions{flex-wrap:wrap}}

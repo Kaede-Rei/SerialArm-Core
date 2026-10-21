@@ -140,8 +140,24 @@ async function start() {
   ipcMain.handle('launcher:request', async (event, method, params = {}) => {
     trusted(event);
     if (method === 'logs') return bridge.output;
-    if (typeof method !== 'string' || !methods.has(method)) throw new Error(`Unknown launcher request: ${String(method).slice(0, 80)}`);
-    const result = await bridge.request(method, params);
+    if (typeof method !== 'string' || !methods.has(method)) return {__serialarm_error: {
+      code: 'IPC_METHOD_NOT_ALLOWED', category: 'integration', severity: 'error',
+      title: '前后端接口不匹配', message: '当前界面请求的功能没有在 Electron 中注册',
+      advice: '请重新安装同一份完整工程，并检查 GUI 与后端是否来自同一份源码',
+      technical: `Unknown launcher request: ${String(method).slice(0, 80)}`
+    }};
+    let result;
+    try { result = await bridge.request(method, params); }
+    catch (error) {
+      // Electron invoke serializes thrown Error objects down to message-only
+      // text. Return an explicit error envelope so the preload can restore
+      // the typed operator diagnostics without losing code or context.
+      return {__serialarm_error: error.serialarm || {
+        code: 'BACKEND_UNAVAILABLE', category: 'communication', severity: 'error',
+        title: '后台请求失败', message: error.message,
+        advice: '请检查后台连接及运行日志', technical: error.stack || error.message
+      }};
+    }
     if (method === 'model' || method === 'description_inspect') {
       const meshFiles = method === 'description_inspect' ? (result?.preview?.mesh_files || []) : (result?.mesh_files || []);
       allowedModelResources = new Set(meshFiles.map(file => path.resolve(file)));

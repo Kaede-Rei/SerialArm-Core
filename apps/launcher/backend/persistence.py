@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import difflib
+import tempfile
 
 import yaml
 
@@ -50,31 +52,78 @@ def _targets(joints, runtime, gravity_scale):
 
 
 def patch_text(text, targets):
-    lines = text.splitlines(keepends=True)
-    stack = []
-    found = set()
-    pattern = re.compile(r'^(\s*)([A-Za-z0-9_]+):(\s*)([^#\n]*?)(\s+#.*)?(\r?\n)?$')
-    for index, line in enumerate(lines):
-        match = pattern.match(line)
-        if not match:
-            continue
-        indent = len(match.group(1).replace('\t', '    '))
-        key = match.group(2)
-        value = match.group(4).strip()
-        while stack and stack[-1][0] >= indent:
-            stack.pop()
-        path = tuple(item[1] for item in stack) + (key,)
-        if path in targets:
-            comment = match.group(5) or ''
-            newline = match.group(6) or ''
-            lines[index] = f"{match.group(1)}{key}:{match.group(3)}{targets[path]}{comment}{newline}"
-            found.add(path)
-        if not value:
-            stack.append((indent, key))
-    missing = set(targets) - found
-    if missing:
-        raise ValueError('configuration is missing writable fields: ' + ', '.join('.'.join(x) for x in sorted(missing)))
-    return ''.join(lines)
+    """Patch existing YAML scalar leaves via parser source marks, preserving layout.
+
+    Updates flow or block-style joint dictionaries without overwriting child
+    lines, comments, anchors or unrelated settings. The complete parsed YAML
+    must differ *only* at explicitly requested paths.
+    """
+    import copy
+    from yaml.nodes import MappingNode, ScalarNode
+
+    original = yaml.safe_load(text)
+    root = yaml.compose(text)
+    if not isinstance(original, dict) or not isinstance(root, MappingNode):
+        raise ValueError('Core YAML 根节点必须是映射')
+    expected = copy.deepcopy(original)
+    edits = []
+    for path, value in targets.items():
+        if not isinstance(path, tuple) or not path:
+            raise ValueError('无效的 Core 参数路径')
+        node = root
+        data = expected
+        for key in path:
+            if not isinstance(node, MappingNode) or not isinstance(data, dict):
+                raise ValueError('Core 参数不是预期的映射: ' + '.'.join(path))
+            matched = [(k, v) for k, v in node.value if isinstance(k, ScalarNode) and k.value == key]
+            if len(matched) != 1 or key not in data:
+                raise ValueError('Core 缺少或重复定义参数: ' + '.'.join(path))
+            node = matched[0][1]
+            data = data[key]
+        replacement = yaml.safe_load(value) if isinstance(value, str) else value
+        if isinstance(node, MappingNode):
+            if not isinstance(replacement, dict) or not isinstance(data, dict):
+                raise ValueError('Core 参数映射类型不匹配: ' + '.'.join(path))
+            if set(data) != set(replacement):
+                raise ValueError('Core 关节映射与候选不一致: ' + '.'.join(path))
+            for name, new_value in replacement.items():
+                children = [v for k, v in node.value if isinstance(k, ScalarNode) and k.value == name]
+                if len(children) != 1 or not isinstance(children[0], ScalarNode):
+                    raise ValueError('Core 关节字段无效: ' + '.'.join(path + (str(name),)))
+                if not isinstance(new_value, (int, float)) or isinstance(new_value, bool) or not math.isfinite(float(new_value)):
+                    raise ValueError('Core 关节候选参数非有限数值: ' + '.'.join(path + (str(name),)))
+                leaf = children[0]
+                # Replace the numeric token, never the preceding indentation,
+                # newline, trailing comment, or following mapping entry
+                raw = repr(float(new_value))
+                edits.append((leaf.start_mark.index, leaf.end_mark.index, raw))
+            parent = expected
+            for key in path[:-1]:
+                parent = parent[key]
+            parent[path[-1]] = replacement
+        elif isinstance(node, ScalarNode) and not isinstance(replacement, (dict, list)):
+            if isinstance(replacement, float) and not math.isfinite(replacement):
+                raise ValueError('Core 候选参数非有限数值: ' + '.'.join(path))
+            edits.append((node.start_mark.index, node.end_mark.index, str(value)))
+            parent = expected
+            for key in path[:-1]:
+                parent = parent[key]
+            parent[path[-1]] = replacement
+        else:
+            raise ValueError('Core 参数类型不匹配: ' + '.'.join(path))
+    edits.sort()
+    for (start, end, _), (next_start, _, _) in zip(edits, edits[1:]):
+        if end > next_start:
+            raise ValueError('Core 参数修改区间重叠，拒绝导出')
+    updated = text
+    for start, end, replacement in reversed(edits):
+        updated = updated[:start] + replacement + updated[end:]
+    # Structural verification also catches accidental alias updates or sibling
+    # changes that would still produce syntactically valid YAML
+    actual = yaml.safe_load(updated)
+    if actual != expected:
+        raise ValueError('Core 更新后的参数超出指定范围，已拒绝写入')
+    return updated
 
 
 def preview(path, joints, runtime, gravity_scale):
@@ -82,9 +131,10 @@ def preview(path, joints, runtime, gravity_scale):
     before = path.read_text()
     after = patch_text(before, _targets(joints, runtime, gravity_scale))
     changed = []
-    for left, right in zip(before.splitlines(), after.splitlines()):
-        if left != right:
-            changed.append({'before': left.strip(), 'after': right.strip()})
+    for line in difflib.ndiff(before.splitlines(), after.splitlines()):
+        if line.startswith(('- ', '+ ')):
+            changed.append({'before': line[2:].strip() if line[0] == '-' else '',
+                            'after': line[2:].strip() if line[0] == '+' else ''})
     return {'path': str(path), 'sha256': sha256_file(path), 'changes': changed, 'changed': before != after}
 
 
@@ -98,20 +148,36 @@ def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
     yaml.safe_load(after)
     if before == after:
         return {'path': str(path), 'sha256': current, 'backup': '', 'changed': False}
-    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else path.parent
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / (path.name + '.bak-' + stamp)
     shutil.copy2(path, backup)
-    temp = path.with_name(path.name + '.tmp')
-    temp.write_text(after)
+    temp = None
+    replaced = False
     try:
-        yaml.safe_load(temp.read_text())
-        temp.replace(path)
-        yaml.safe_load(path.read_text())
+        # Keep temp in the same filesystem and never overwrite a concurrent .tmp
+        with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix=path.name + '.',
+                                         suffix='.tmp', encoding='utf-8', delete=False) as stream:
+            temp = Path(stream.name)
+            stream.write(after)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if sha256_file(path) != expected_sha:
+            raise ValueError('保存期间配置已被其他进程修改，请重新加载后再保存')
+        if yaml.safe_load(temp.read_text(encoding='utf-8')) != yaml.safe_load(after):
+            raise ValueError('临时配置内容校验失败，原配置未修改')
+        os.replace(temp, path)
+        replaced = True
+        if yaml.safe_load(path.read_text(encoding='utf-8')) != yaml.safe_load(after):
+            raise ValueError('新配置落盘校验失败')
     except Exception:
-        temp.unlink(missing_ok=True)
+        if replaced:
+            shutil.copy2(backup, path)
         raise
+    finally:
+        if temp is not None:
+            temp.unlink(missing_ok=True)
     return {'path': str(path), 'sha256': sha256_file(path), 'backup': str(backup), 'changed': True}
 
 

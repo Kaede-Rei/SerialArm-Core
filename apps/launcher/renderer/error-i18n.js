@@ -106,7 +106,7 @@
         if (matched) return `${action}${matched[1]}${diagnostic ? `（${diagnostic}）` : ''}`;
         const zhPortion = clean.match(/[\u3400-\u9fff][^\n]*/);
         if (zhPortion) return `${action}${zhPortion[0]}${diagnostic ? `（${diagnostic}）` : ''}`;
-        return `${action || '操作未完成 '}后端返回了尚未分类的诊断信息，请展开原始技术诊断核对具体原因${diagnostic ? `（${diagnostic}）` : ''}`;
+        return `${action || '操作未完成 '}具体原因：${clean.slice(0, 260)}${clean.length > 260 ? '…' : ''}${diagnostic ? `（${diagnostic}）` : ''}`;
     }
     root.serialArmErrorI18n = {translate};
 })(typeof window !== 'undefined' ? window : globalThis);

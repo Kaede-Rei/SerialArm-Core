@@ -1,6 +1,15 @@
 const {contextBridge, ipcRenderer} = require('electron');
 contextBridge.exposeInMainWorld('serialArm', {
-  request: (method, params) => ipcRenderer.invoke('launcher:request', method, params),
+  request: async (method, params) => {
+    const result = await ipcRenderer.invoke('launcher:request', method, params);
+    if (result && typeof result === 'object' && result.__serialarm_error) {
+      const detail = result.__serialarm_error;
+      const error = new Error(detail.message || '后台请求失败');
+      error.serialarm = detail;
+      throw error;
+    }
+    return result;
+  },
   prefs: () => ipcRenderer.invoke('launcher:prefs'),
   savePrefs: values => ipcRenderer.invoke('launcher:save-prefs', values),
   selectProfile: () => ipcRenderer.invoke('launcher:select-profile'),

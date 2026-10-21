@@ -9,6 +9,9 @@ import sys
 import subprocess
 import threading
 import time
+import traceback
+
+from user_errors import describe
 
 from profiles import Inspector, command_for, config_values
 from runtime import Supervisor
@@ -702,7 +705,10 @@ def main():
                 else: raise ValueError('unknown IPC method')
                 emit({'id': request.get('id'), 'result': result})
             except Exception as error:
-                emit({'id': request.get('id') if isinstance(request, dict) else None, 'error': str(error)})
+                report = describe(error, request.get('method', '') if isinstance(request, dict) else '',
+                                  request.get('params') if isinstance(request, dict) else None)
+                print(f'[SerialArm diagnostic {report["diagnostic_id"]}]\n{traceback.format_exc()}', file=sys.stderr, flush=True)
+                emit({'id': request.get('id') if isinstance(request, dict) else None, 'error': report})
     except KeyboardInterrupt: pass
     finally:
         model_runtime.close()

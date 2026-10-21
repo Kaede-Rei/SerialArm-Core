@@ -82,6 +82,32 @@ let activePriorityError = null;
 let lastRuntimeFaultKey = '';
 let lastTeachReplayErrorKey = '';
 const reportedCalibrationErrors = new Set();
+// All user-facing failures use the existing centred native modal; the
+// priority queue prevents a telemetry fault from being hidden by an operation.
+function normalizeDialogError(source, kind = 'operation') {
+    const detail = source?.serialarm || (source && typeof source === 'object' && source.code ? source : null);
+    if (detail?.category === 'safety' || detail?.severity === 'critical') kind = 'fault';
+    const sourceText = typeof source === 'string' ? source : (source?.message || String(source ?? ''));
+    const technical = detail?.technical || (typeof source?.stack === 'string' ? source.stack : sourceText);
+    const rawSummary = detail?.message || sourceText || technical || 'Unknown error';
+    const defaultTitle = kind === 'fault' ? busyText('机械臂安全故障', 'Robot safety fault')
+        : kind === 'replay' ? busyText('示教回放失败', 'Trajectory playback failed') : t('error');
+    const title = kind === 'fault' ? defaultTitle : (detail?.title || defaultTitle);
+    const summary = detail?.message ? localizedError(detail.message) : localizedError(rawSummary);
+    const advice = detail?.advice || (kind === 'fault'
+        ? busyText('请先确认机械臂、供电与执行器状态，关闭弹窗不会恢复运动或自动清除故障', 'Inspect the robot and hardware. Dismissing does not recover motion or clear faults')
+        : busyText('当前操作未成功完成，不会自动重试，请查看下方技术详情以确定原因', 'The operation did not finish. It will not retry automatically; inspect technical details below'));
+    const metadata = detail ? [
+        detail.code && `code: ${detail.code}`,
+        detail.operation && `operation: ${detail.operation}`,
+        detail.diagnostic_id && `diagnostic_id: ${detail.diagnostic_id}`,
+        ...Object.entries(detail.details || {}).map(([name, value]) => `${name}: ${typeof value === 'object' ? JSON.stringify(value) : String(value)}`)
+    ].filter(Boolean).join('\n') : '';
+    const raw = [metadata, technical, (!technical && sourceText) ? sourceText : ''].filter(Boolean).join('\n\n') || '未收到后端技术诊断，请检查运行日志';
+    return {kind, title, summary, advice, raw,
+        id: detail?.diagnostic_id || '',
+        key: detail?.diagnostic_id || `${kind}:${rawSummary}:${technical}`};
+}
 function showNextPriorityError() {
     const layer = $('priority-error-overlay');
     if (!layer || priorityErrorOpen || !priorityErrorQueue.length) return;
@@ -91,44 +117,44 @@ function showNextPriorityError() {
 }
 function paintPriorityError() {
     const entry = activePriorityError;
-    if (!entry || !$('priority-error-overlay')) return;
     const layer = $('priority-error-overlay');
+    if (!entry || !layer) return;
     const confirm = $('confirm-dialog');
-    if (confirm?.open) confirm.close(); // A safety error outranks any confirmation dialog.
-    setOperationOverlay(''); // A critical alert preempts every visual busy layer.
-    const calibrationOverlay = $('model-calibration-overlay');
-    if (calibrationOverlay) { calibrationOverlay.hidden = true; calibrationOverlay.setAttribute('aria-hidden', 'true'); }
-    $('priority-error-title').textContent = entry.kind === 'fault' ? busyText('机械臂安全故障', 'Robot safety fault') : entry.kind === 'replay' ? busyText('示教回放失败', 'Trajectory playback failed') : t('error');
-    $('priority-error-detail').textContent = typeof localizedError === 'function' ? localizedError(entry.message) : entry.message;
-    const raw = $('priority-error-raw'); if (raw) raw.textContent = entry.message;
-    $('priority-error-guidance').textContent = entry.kind === 'fault'
-        ? busyText('机器人进入故障状态 请先确认供电及机械臂安全，再使用“清除故障”或重新使能 关闭提示不会自动恢复运动 ',
-            'The robot is in FAULT. Inspect its state and cause before manually clearing the fault. Dismissing does not recover motion.')
-        : busyText('该任务可能未成功完成关闭提示仅确认已阅读，不会自动重试或恢复机械臂',
-            'This operation may have failed. Dismissing does not retry or recover the robot.');
-    // CSS z-index cannot outrank another native showModal() dialog.
-    // A modal <dialog> enters Chromium's top layer and traps focus correctly.
+    if (confirm?.open) confirm.close();
+    setOperationOverlay('');
+    const cal = $('model-calibration-overlay');
+    if (cal) { cal.hidden = true; cal.setAttribute('aria-hidden', 'true'); }
+    $('priority-error-title').textContent = entry.title;
+    $('priority-error-detail').textContent = entry.summary;
+    $('priority-error-guidance').textContent = entry.advice;
+    const kicker = $('priority-error-kicker');
+    if (kicker) kicker.textContent = entry.kind === 'fault' ? 'SERIALARM · SAFETY FAULT' : 'SERIALARM · ERROR';
+    const technical = $('priority-error-raw');
+    if (technical) technical.textContent = entry.raw;
+    const expansion = $('priority-error-technical');
+    if (expansion) expansion.open = false;
+    const copy = $('priority-error-copy');
+    if (copy) copy.onclick = () => api.clipboard.write([entry.title, entry.summary, entry.advice, entry.raw].join('\n\n'));
+    const ack = $('priority-error-ack');
+    if (ack) ack.textContent = entry.kind === 'fault' ? busyText('我已知晓（不恢复运行）', 'Acknowledge (no recovery)') : busyText('关闭', 'Close');
     if (!layer.open) layer.showModal();
     layer.setAttribute('aria-hidden', 'false');
-    $('priority-error-ack').focus();
+    if (ack) ack.focus();
 }
 function showPriorityError(message, kind = 'operation') {
-    const text = String(message || 'Unknown error').trim();
-    if (!text) return;
-    // Hardware FAULT must interrupt even an already-visible noncritical alert.
-    if (kind === 'fault' && activePriorityError?.kind !== 'fault') {
+    const entry = normalizeDialogError(message, kind);
+    if (activePriorityError?.key === entry.key || priorityErrorQueue.some(item => item.key === entry.key)) return;
+    // A real machine fault preempts an ordinary error. It never silently
+    // clears the latched fault or retries a control command.
+    if (entry.kind === 'fault' && activePriorityError?.kind !== 'fault') {
         if (activePriorityError) priorityErrorQueue.unshift(activePriorityError);
-        activePriorityError = { message: text, kind };
+        activePriorityError = entry;
         priorityErrorOpen = true;
         paintPriorityError();
         return;
     }
-    if (activePriorityError?.message === text) return;
-    const top = priorityErrorQueue[priorityErrorQueue.length - 1];
-    if (top?.message !== text) {
-        if (kind === 'fault') priorityErrorQueue.unshift({ message: text, kind });
-        else priorityErrorQueue.push({ message: text, kind });
-    }
+    if (entry.kind === 'fault') priorityErrorQueue.unshift(entry);
+    else priorityErrorQueue.push(entry);
     showNextPriorityError();
 }
 function acknowledgePriorityError() {
@@ -222,7 +248,7 @@ function shell() {
     const quickTheme = onboarding ? '' : `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${icon('robot')}SerialArm Launcher</div><div class="title-center">${onboarding ? 'SerialArm' : esc(state.config.profile || t('workspace'))}</div><div class="title-actions"><button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button>${quickTheme}<button id="win-min" class="title-button" aria-label="Minimize">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="Maximize">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="Close">${icon('close')}</button></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div class="priority-error-kicker">SAFETY / ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
     if (onboarding) {
         $('app').innerHTML = `<div class="shell onboarding-shell">${titlebar}<div class="onboarding-body"><main class="onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div></div>${overlays}`;
     } else {
@@ -1479,30 +1505,30 @@ function teachReplayPanelHtml() {
     const active = online && robotState === 'ACTIVE', inactive = online && robotState === 'INACTIVE';
     const recording = status.phase === 'recording', playing = status.phase === 'playing', busy = recording || playing;
     const ready = status.phase === 'ready';
-    const phases = { idle: tx('未开始', 'Idle'), recording: tx('正在记录', 'Recording'), ready: tx('轨迹已就绪', 'Ready'), playing: tx('正在回放', 'Playing'), failed: tx('任务失败', 'Failed') };
-    const actions = items => items.map(([id, label, disabled, variant]) => `<button type="button" class="button ${variant || ''}" id="${id}" ${disabled ? 'disabled' : ''}>${label}</button>`).join('');
-    const itemRows = state.teachTrajectories.map(x => `<button type="button" class="teach-trajectory-item ${state.teachSelectedId === x.id ? 'selected' : ''}" data-teach-select="${esc(x.id)}"><b>${esc(x.name)}</b><small>${x.samples} ${tx('点', 'samples')} · ${Number(x.duration_s).toFixed(1)} s</small><span class="teach-path-label">${tx('文件夹位置', 'Folder')}</span><code class="teach-file-path">${esc(x.directory || '')}</code></button>`).join('') || `<p class="hint">${tx('当前机械臂尚无已保存的示教轨迹', 'No saved trajectories for this robot')}</p>`;
+    const phases = {idle:tx('未开始','Idle'),recording:tx('正在记录','Recording'),ready:tx('轨迹已就绪','Ready'),playing:tx('正在回放','Playing'),failed:tx('任务失败','Failed')};
+    const actions = items => items.map(([id,label,disabled,variant]) => `<button type="button" class="button ${variant || ''}" id="${id}" ${disabled ? 'disabled' : ''}>${label}</button>`).join('');
+    const itemRows = state.teachTrajectories.map(x => `<button type="button" class="teach-trajectory-item ${state.teachSelectedId === x.id ? 'selected' : ''}" data-teach-select="${esc(x.id)}"><b>${esc(x.name)}</b><small>${x.samples} ${tx('点','samples')} · ${Number(x.duration_s).toFixed(1)} s</small><span class="teach-path-label">${tx('文件夹位置','Folder')}</span><code class="teach-file-path">${esc(x.directory || '')}</code></button>`).join('') || `<p class="hint">${tx('当前机械臂尚无已保存的示教轨迹','No saved trajectories for this robot')}</p>`;
     return `<div class="workspace-panel teach-replay-panel">
-      <section class="workspace-section"><div class="workspace-section-head"><div><h3>${tx('轨迹示教', 'Trajectory teaching')}</h3><p class="hint">${tx('连接工作台并使能后，可使用柔性拖拽记录独立关节轨迹', 'Connect and activate the robot to record an independent joint trajectory in compliant drag')}</p></div><span class="result-badge neutral" id="teach-replay-phase">${esc(phases[status.phase] || phases.idle)}</span></div>
-        <div class="workspace-actions">${actions([['teach-enable', tx('使能', 'Activate'), !inactive || busy, 'primary'], ['teach-park', tx('停放并失能', 'Park and disable'), !active || busy, ''], ['teach-record', tx('开始示教', 'Start teaching'), !active || busy, ''], ['teach-record-stop', tx('结束记录', 'Stop recording'), !recording, ''], ['teach-save', tx('命名并保存', 'Name and save'), !online || busy || !ready, '']])}</div>
-        <p class="hint" id="teach-replay-error">${esc(status.error ? teachReplayShortError(status.error) : status.samples ? status.samples + ' ' + tx('点', 'samples') : '')}</p>
+      <section class="workspace-section"><div class="workspace-section-head"><div><h3>${tx('轨迹示教','Trajectory teaching')}</h3><p class="hint">${tx('连接工作台并使能后，可使用柔性拖拽记录独立关节轨迹','Connect and activate the robot to record an independent joint trajectory in compliant drag')}</p></div><span class="result-badge neutral" id="teach-replay-phase">${esc(phases[status.phase] || phases.idle)}</span></div>
+        <div class="workspace-actions">${actions([['teach-enable',tx('使能','Activate'),!inactive || busy,'primary'],['teach-park',tx('停放并失能','Park and disable'),!active || busy,''],['teach-record',tx('开始示教','Start teaching'),!active || busy,''],['teach-record-stop',tx('结束记录','Stop recording'),!recording,''],['teach-save',tx('命名并保存','Name and save'),!online || busy || !ready,'']])}</div>
+        <p class="hint" id="teach-replay-error">${esc(status.error ? teachReplayShortError(status.error) : status.samples ? status.samples+' '+tx('点','samples') : '')}</p>
       </section>
-      <section class="workspace-section"><div class="workspace-section-head"><div><h3>${tx('轨迹管理', 'Trajectory library')}</h3><p class="hint">${tx('示教数据按机械臂独立保存在 .serialarm/teach-replay 下', 'Trajectories are saved per robot under .serialarm/teach-replay')}</p></div></div>
-        <div class="teach-storage-location"><span>${tx('轨迹存储目录', 'Storage directory')}</span><code class="teach-file-path">${esc(state.teachStorageDirectory || '—')}</code></div>
+      <section class="workspace-section"><div class="workspace-section-head"><div><h3>${tx('轨迹管理','Trajectory library')}</h3><p class="hint">${tx('示教数据按机械臂独立保存在 .serialarm/teach-replay 下','Trajectories are saved per robot under .serialarm/teach-replay')}</p></div></div>
+        <div class="teach-storage-location"><span>${tx('轨迹存储目录','Storage directory')}</span><code class="teach-file-path">${esc(state.teachStorageDirectory || '—')}</code></div>
         <div class="teach-trajectory-list">${itemRows}</div>
-        <div class="workspace-actions">${actions([['teach-refresh', tx('刷新', 'Refresh'), false, ''], ['teach-import', tx('导入 ZIP', 'Import ZIP'), busy, ''], ['teach-export', tx('导出 ZIP', 'Export ZIP'), !selected || busy, ''], ['teach-rename', tx('重命名', 'Rename'), !selected || busy, ''], ['teach-delete', tx('删除', 'Delete'), !selected || busy, '']])}</div>
-        ${selected ? `<div class="teach-storage-location"><span>${tx('选中轨迹位置', 'Selected trajectory folder')}</span><code class="teach-file-path">${esc(selected.directory || '')}</code></div>` : `<p class="hint">${tx('选择一条轨迹以载入并显示起点虚影', 'Select a trajectory to load and preview its starting pose')}</p>`}
-        ${state.teachLastFilePath ? `<div class="teach-storage-location"><span>${tx('最近导入或导出的文件位置', 'Last imported or exported file')}</span><code class="teach-file-path">${esc(state.teachLastFilePath)}</code></div>` : ''}
+        <div class="workspace-actions">${actions([['teach-refresh',tx('刷新','Refresh'),false,''],['teach-import',tx('导入 ZIP','Import ZIP'),busy,''],['teach-export',tx('导出 ZIP','Export ZIP'),!selected || busy,''],['teach-rename',tx('重命名','Rename'),!selected || busy,''],['teach-delete',tx('删除','Delete'),!selected || busy,'']])}</div>
+        ${selected ? `<div class="teach-storage-location"><span>${tx('选中轨迹位置','Selected trajectory folder')}</span><code class="teach-file-path">${esc(selected.directory || '')}</code></div>` : `<p class="hint">${tx('选择一条轨迹以载入并显示起点虚影','Select a trajectory to load and preview its starting pose')}</p>`}
+        ${state.teachLastFilePath ? `<div class="teach-storage-location"><span>${tx('最近导入或导出的文件位置','Last imported or exported file')}</span><code class="teach-file-path">${esc(state.teachLastFilePath)}</code></div>` : ''}
       </section>
-      <section class="workspace-section"><h3>${tx('轨迹回放', 'Trajectory playback')}</h3>
-        <div class="row"><label>${tx('回放阻抗模式', 'Playback impedance mode')}<select id="teach-mode"><option value="RIGID_TRACKING" ${state.teachReplayMode === 'RIGID_TRACKING' ? 'selected' : ''}>${tx('刚性跟踪', 'Rigid tracking')} · RIGID_TRACKING</option><option value="COMPLIANT_TRACKING" ${state.teachReplayMode === 'COMPLIANT_TRACKING' ? 'selected' : ''}>${tx('柔性跟踪', 'Compliant tracking')} · COMPLIANT_TRACKING</option></select></label>
-        <label>${tx('方向', 'Direction')}<select id="teach-direction"><option value="forward" ${state.teachDirection === 'forward' ? 'selected' : ''}>${tx('正放', 'Forward')}</option><option value="reverse" ${state.teachDirection === 'reverse' ? 'selected' : ''}>${tx('倒放', 'Reverse')}</option><option value="cycle" ${state.teachDirection === 'cycle' ? 'selected' : ''}>${tx('往返循环', 'Round trip')}</option></select></label>
-        <label>${tx('速度比例', 'Speed fraction')}<input type="number" id="teach-rate" min="0.05" max="1" step="0.05" value="${state.teachRate}"></label>
-        <label>${tx('循环次数', 'Cycles')}<input type="number" id="teach-repeats" min="1" max="100" step="1" value="${state.teachRepeats}"></label></div>
-        <div class="workspace-actions">${actions([['teach-play', tx('按方向执行', 'Play trajectory'), !active || !ready || busy || !selected || state.teachLoadedId !== selected.id, 'primary'], ['teach-return', tx('沿记录轨迹回到起点', 'Return along recorded path'), !active || !ready || busy || !selected || state.teachLoadedId !== selected.id, ''], ['teach-stop', tx('停止并保持', 'Stop and hold'), !playing, 'danger']])}</div>
-        <p class="hint">${tx('回放使用上面单独选定的跟踪模式，不继承控制标签中的模式 · 结束后切回刚性保持', 'Playback uses the mode selected above, independent of the Control tab · Rigid hold is restored afterwards')}</p>
-        <p class="hint">${tx('执行前需对齐轨迹对应端点，关节偏差不超过 0.08 rad 且速度低于 0.05 rad/s · 返回起点仅沿已记录的反向路径进行', 'Before playback, align with the selected endpoint within 0.08 rad per joint and below 0.05 rad/s · Return only follows the recorded reverse path')}</p>
-        <p class="hint" id="teach-completed">${tx('已完成单程', 'Completed passes')} ${Number(status.completed || 0)}</p>
+      <section class="workspace-section"><h3>${tx('轨迹回放','Trajectory playback')}</h3>
+        <div class="row"><label>${tx('回放阻抗模式','Playback impedance mode')}<select id="teach-mode"><option value="RIGID_TRACKING" ${state.teachReplayMode === 'RIGID_TRACKING' ? 'selected' : ''}>${tx('刚性跟踪','Rigid tracking')} · RIGID_TRACKING</option><option value="COMPLIANT_TRACKING" ${state.teachReplayMode === 'COMPLIANT_TRACKING' ? 'selected' : ''}>${tx('柔性跟踪','Compliant tracking')} · COMPLIANT_TRACKING</option></select></label>
+        <label>${tx('方向','Direction')}<select id="teach-direction"><option value="forward" ${state.teachDirection === 'forward' ? 'selected' : ''}>${tx('正放','Forward')}</option><option value="reverse" ${state.teachDirection === 'reverse' ? 'selected' : ''}>${tx('倒放','Reverse')}</option><option value="cycle" ${state.teachDirection === 'cycle' ? 'selected' : ''}>${tx('往返循环','Round trip')}</option></select></label>
+        <label>${tx('速度比例','Speed fraction')}<input type="number" id="teach-rate" min="0.05" max="1" step="0.05" value="${state.teachRate}"></label>
+        <label>${tx('循环次数','Cycles')}<input type="number" id="teach-repeats" min="1" max="100" step="1" value="${state.teachRepeats}"></label></div>
+        <div class="workspace-actions">${actions([['teach-play',tx('按方向执行','Play trajectory'),!active || !ready || busy || !selected || state.teachLoadedId !== selected.id,'primary'],['teach-return',tx('沿记录轨迹回到起点','Return along recorded path'),!active || !ready || busy || !selected || state.teachLoadedId !== selected.id,''],['teach-stop',tx('停止并保持','Stop and hold'),!playing,'danger']])}</div>
+        <p class="hint">${tx('回放使用上面单独选定的跟踪模式，不继承控制标签中的模式 · 结束后切回刚性保持','Playback uses the mode selected above, independent of the Control tab · Rigid hold is restored afterwards')}</p>
+        <p class="hint">${tx('执行前需对齐轨迹对应端点，关节偏差不超过 0.08 rad 且速度低于 0.05 rad/s · 返回起点仅沿已记录的反向路径进行','Before playback, align with the selected endpoint within 0.08 rad per joint and below 0.05 rad/s · Return only follows the recorded reverse path')}</p>
+        <p class="hint" id="teach-completed">${tx('已完成单程','Completed passes')} ${Number(status.completed || 0)}</p>
       </section></div>`;
 }
 
@@ -1521,22 +1547,20 @@ async function teachNative(method, params = {}) {
 function teachNameDialog(title, initial, handler) {
     const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return;
     const tx = (zh, en) => busyText(zh, en);
-    dialog.innerHTML = `<h3>${esc(title)}</h3><label>${tx('轨迹名称', 'Trajectory name')}<input id="teach-name-input" maxlength="80" value="${esc(initial || '')}"></label><p class="hint">${tx('轨迹保存在当前 Profile 的 .serialarm/teach-replay/轨迹名-时间戳 目录', 'Saved under this Profile: .serialarm/teach-replay/name-timestamp')}</p><div class="actions"><button id="teach-name-cancel" class="button">${tx('取消', 'Cancel')}</button><button id="teach-name-okay" class="button primary">${tx('确认', 'Confirm')}</button></div>`;
+    dialog.innerHTML = `<h3>${esc(title)}</h3><label>${tx('轨迹名称','Trajectory name')}<input id="teach-name-input" maxlength="80" value="${esc(initial || '')}"></label><p class="hint">${tx('轨迹保存在当前 Profile 的 .serialarm/teach-replay/轨迹名-时间戳 目录','Saved under this Profile: .serialarm/teach-replay/name-timestamp')}</p><div class="actions"><button id="teach-name-cancel" class="button">${tx('取消','Cancel')}</button><button id="teach-name-okay" class="button primary">${tx('确认','Confirm')}</button></div>`;
     dialog.showModal(); $('teach-name-cancel').onclick = () => dialog.close();
     $('teach-name-okay').onclick = () => { const name = $('teach-name-input').value.trim(); if (!name) return; dialog.close(); blockingOperation(busyText('正在保存轨迹...', 'Saving trajectory...'), () => handler(name)); };
 }
 function teachSafetyConfirm(direction) {
     const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return;
     const tx = (zh, en) => busyText(zh, en);
-    const labels = { return: tx('沿已记录路径返回起点', 'return along the recorded path'), reverse: tx('反向执行轨迹', 'reverse playback'), cycle: tx('往返循环轨迹', 'round-trip playback'), forward: tx('正向执行轨迹', 'forward playback') };
-    dialog.innerHTML = `<h3>${tx('确认', 'Confirm')} ${labels[direction] || labels.forward}</h3><p>${tx('请确认机械臂与对应轨迹端点对齐，运动区域、负载与线缆安全，人员已远离机械臂', 'Confirm alignment with the corresponding trajectory endpoint, a clear workspace, safe payload and cables, and no personnel near the robot')}</p><p>${tx('系统无法自动识别环境碰撞，Core 会检查关节限位、速度、加速度、反馈与跟踪误差', 'The system cannot detect environmental collisions automatically. Core checks joint limits, velocity, acceleration, feedback and tracking error')}</p><p>${tx('回放阻抗模式', 'Playback impedance mode')} · <strong>${esc(state.teachReplayMode)}</strong></p><label class="confirmation"><input type="checkbox" id="teach-released"> ${tx('已确认空间安全，人员离开运动范围且手已松开', 'The workspace is clear, people are outside the motion area and the robot is released')}</label><div class="actions"><button class="button" id="teach-confirm-cancel">${tx('取消', 'Cancel')}</button><button class="button danger" id="teach-confirm-start" disabled>${tx('开始执行', 'Start playback')}</button></div>`;
+    const labels = {return:tx('沿已记录路径返回起点','return along the recorded path'),reverse:tx('反向执行轨迹','reverse playback'),cycle:tx('往返循环轨迹','round-trip playback'),forward:tx('正向执行轨迹','forward playback')};
+    dialog.innerHTML = `<h3>${tx('确认','Confirm')} ${labels[direction] || labels.forward}</h3><p>${tx('请确认机械臂与对应轨迹端点对齐，运动区域、负载与线缆安全，人员已远离机械臂','Confirm alignment with the corresponding trajectory endpoint, a clear workspace, safe payload and cables, and no personnel near the robot')}</p><p>${tx('系统无法自动识别环境碰撞，Core 会检查关节限位、速度、加速度、反馈与跟踪误差','The system cannot detect environmental collisions automatically. Core checks joint limits, velocity, acceleration, feedback and tracking error')}</p><p>${tx('回放阻抗模式','Playback impedance mode')} · <strong>${esc(state.teachReplayMode)}</strong></p><label class="confirmation"><input type="checkbox" id="teach-released"> ${tx('已确认空间安全，人员离开运动范围且手已松开','The workspace is clear, people are outside the motion area and the robot is released')}</label><div class="actions"><button class="button" id="teach-confirm-cancel">${tx('取消','Cancel')}</button><button class="button danger" id="teach-confirm-start" disabled>${tx('开始执行','Start playback')}</button></div>`;
     dialog.showModal(); $('teach-confirm-cancel').onclick = () => dialog.close();
     $('teach-released').onchange = e => $('teach-confirm-start').disabled = !e.target.checked;
-    $('teach-confirm-start').onclick = () => {
-        dialog.close(); blockingOperation(busyText('正在启动示教轨迹...', 'Starting trajectory...'), async () => {
-            await teachNative('play', { direction, rate: state.teachRate, cycles: direction === 'return' ? 1 : state.teachRepeats, mode: state.teachReplayMode, confirmed: true }); render();
-        });
-    };
+    $('teach-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动示教轨迹...', 'Starting trajectory...'), async () => {
+        await teachNative('play', { direction, rate:state.teachRate, cycles:direction==='return'?1:state.teachRepeats, mode:state.teachReplayMode, confirmed:true }); render();
+    }); };
 }
 
 function wireTeachReplay() {
@@ -1548,11 +1572,11 @@ function wireTeachReplay() {
     call('teach-record', () => blockingOperation(busyText('正在开始示教记录...', 'Starting trajectory recording...'), async () => { state.teachSelectedId = ''; state.teachLoadedId = ''; await teachNative('record_begin'); render(); }));
     call('teach-record-stop', () => blockingOperation(busyText('正在结束记录...', 'Stopping trajectory recording...'), async () => { await teachNative('record_stop'); render(); }));
     call('teach-stop', () => blockingOperation(busyText('正在停止回放...', 'Stopping trajectory playback...'), async () => { await teachNative('stop'); render(); }));
-    call('teach-save', () => teachNameDialog(busyText('保存示教轨迹', 'Save trajectory'), '', async name => { const r = await api.request('trajectory_save', { config: state.config, name }); await refreshTeachTrajectories(); state.teachSelectedId = r.id; state.teachLoadedId = r.id; state.teachLastFilePath = r.directory || ''; render(); await updateStartGhost(true); }));
-    call('teach-rename', () => { const x = state.teachTrajectories.find(x => x.id === state.teachSelectedId); if (x) teachNameDialog(busyText('重命名轨迹', 'Rename trajectory'), x.name, async name => { await api.request('trajectory_rename', { config: state.config, id: x.id, name }); await refreshTeachTrajectories(); render(); }); });
+    call('teach-save', () => teachNameDialog(busyText('保存示教轨迹','Save trajectory'), '', async name => { const r = await api.request('trajectory_save', { config: state.config, name }); await refreshTeachTrajectories(); state.teachSelectedId = r.id; state.teachLoadedId = r.id; state.teachLastFilePath = r.directory || ''; render(); await updateStartGhost(true); }));
+    call('teach-rename', () => { const x = state.teachTrajectories.find(x => x.id === state.teachSelectedId); if (x) teachNameDialog(busyText('重命名轨迹','Rename trajectory'), x.name, async name => { await api.request('trajectory_rename', { config: state.config, id: x.id, name }); await refreshTeachTrajectories(); render(); }); });
     call('teach-import', () => operation(async () => { const source = await api.selectTrajectory(); if (!source) return; await blockingOperation(busyText('正在导入示教轨迹...', 'Importing trajectory...'), async () => { const r = await api.request('trajectory_import', { config: state.config, source }); await refreshTeachTrajectories(); state.teachSelectedId = r.id; if (workbenchConnected()) { await api.request('trajectory_load', { config: state.config, id: r.id }); state.teachLoadedId = r.id; } state.teachLastFilePath = r.directory || ''; render(); }); }));
     call('teach-export', () => blockingOperation(busyText('正在导出轨迹...', 'Exporting trajectory...'), async () => { const r = await api.request('trajectory_export', { config: state.config, id: state.teachSelectedId }); state.teachLastFilePath = r.path || ''; toast(busyText('轨迹已导出至 ', 'Trajectory exported to ') + r.path); render(); }));
-    call('teach-delete', () => { const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return; dialog.innerHTML = `<h3>${busyText('删除已保存的轨迹', 'Delete saved trajectory')}</h3><p>${busyText('将删除以下目录内的轨迹数据，该操作无法撤销', 'The trajectory data in this folder will be removed permanently')}</p><code class="teach-file-path">${esc(state.teachTrajectories.find(x => x.id === state.teachSelectedId)?.directory || '')}</code><div class="actions"><button class="button" id="teach-del-cancel">${busyText('取消', 'Cancel')}</button><button class="button danger" id="teach-del-ok">${busyText('确认删除', 'Delete')}</button></div>`; dialog.showModal(); $('teach-del-cancel').onclick = () => dialog.close(); $('teach-del-ok').onclick = () => { dialog.close(); blockingOperation(busyText('正在删除轨迹...', 'Removing trajectory...'), async () => { await api.request('trajectory_remove', { config: state.config, id: state.teachSelectedId }); await refreshTeachTrajectories(); state.teachLoadedId = ''; render(); }); }; });
+    call('teach-delete', () => { const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return; dialog.innerHTML = `<h3>${busyText('删除已保存的轨迹','Delete saved trajectory')}</h3><p>${busyText('将删除以下目录内的轨迹数据，该操作无法撤销','The trajectory data in this folder will be removed permanently')}</p><code class="teach-file-path">${esc(state.teachTrajectories.find(x => x.id === state.teachSelectedId)?.directory || '')}</code><div class="actions"><button class="button" id="teach-del-cancel">${busyText('取消','Cancel')}</button><button class="button danger" id="teach-del-ok">${busyText('确认删除','Delete')}</button></div>`; dialog.showModal(); $('teach-del-cancel').onclick = () => dialog.close(); $('teach-del-ok').onclick = () => { dialog.close(); blockingOperation(busyText('正在删除轨迹...', 'Removing trajectory...'), async () => { await api.request('trajectory_remove', { config: state.config, id: state.teachSelectedId }); await refreshTeachTrajectories(); state.teachLoadedId = ''; render(); }); }; });
     document.querySelectorAll('[data-teach-select]').forEach(button => button.onclick = () => blockingOperation(busyText('正在加载示教轨迹...', 'Loading trajectory...'), async () => { const x = state.teachTrajectories.find(t => t.id === button.dataset.teachSelect); if (!x) return; await api.request('trajectory_load', { config: state.config, id: x.id }); state.teachSelectedId = x.id; state.teachLoadedId = x.id; state.teachRuntime = await teachNative('status'); render(); await updateStartGhost(true); }));
     const direction = $('teach-direction'), rate = $('teach-rate'), repeats = $('teach-repeats'), mode = $('teach-mode');
     if (mode) mode.onchange = () => state.teachReplayMode = mode.value;
@@ -1637,7 +1661,7 @@ async function geometryCommand(method, params = {}) {
     return response;
 }
 async function geometryRepeatRequest(op, params = {}) {
-    const response = await api.request('geometry_repeat_' + op, { config: state.config, ...params });
+    const response = await api.request('geometry_repeat_' + op, {config:state.config, ...params});
     if (response && typeof response === 'object' && typeof response.phase === 'string') {
         state.teachRuntime = response;
         if (state.telemetry) state.telemetry.teach_replay = response;
@@ -1660,7 +1684,7 @@ async function refreshGeometryRepeatStatus() {
 function wireGeometry() {
     const tr = (zh, en) => busyText(zh, en);
     const btn = (id, fn) => { if ($(id)) $(id).onclick = () => blockingOperation(tr('正在处理几何实验...', 'Processing geometry experiment...'), fn); };
-    document.querySelectorAll('[data-geometry-tab]').forEach(b => b.onclick = () => { if (['recording', 'playing'].includes(state.telemetry?.teach_replay?.phase)) return toast(tr('先停止示教或回放', 'Stop recording or playback first'), true); state.geometryTab = b.dataset.geometryTab; render(); if (state.geometryTab === 'repeat') operation(async () => { await refreshGeometryRepeatStatus(); render(); }); });
+    document.querySelectorAll('[data-geometry-tab]').forEach(b => b.onclick = () => { if (['recording', 'playing'].includes(state.telemetry?.teach_replay?.phase)) return toast(tr('先停止示教或回放','Stop recording or playback first'), true); state.geometryTab = b.dataset.geometryTab; render(); if (state.geometryTab === 'repeat') operation(async () => { await refreshGeometryRepeatStatus(); render(); }); });
     if ($('geometry-purpose')) $('geometry-purpose').onchange = () => { state.geometryPurpose = $('geometry-purpose').value; };
     if ($('geometry-frame')) $('geometry-frame').onchange = () => { state.geometryFrame = $('geometry-frame').value; };
     btn('geometry-begin', async () => {
@@ -1668,31 +1692,31 @@ function wireGeometry() {
         render();
     });
     if ($('geometry-discard')) $('geometry-discard').onclick = async () => {
-        if (!await safetyConfirmation(tr('清除当前实验', 'Discard experiment'), tr('当前实验的采样、候选及验证结果将清除，正式机器人配置不会变化', 'Collected poses, fit and validation will be discarded without modifying robot configuration'))) return;
-        await blockingOperation(tr('正在清除实验', 'Discarding experiment'), async () => { await geometryCommand('discard'); state.geometryState = await geometryCommand('state'); render(); });
+        if (!await safetyConfirmation(tr('清除当前实验','Discard experiment'), tr('当前实验的采样、候选及验证结果将清除，正式机器人配置不会变化','Collected poses, fit and validation will be discarded without modifying robot configuration'))) return;
+        await blockingOperation(tr('正在清除实验','Discarding experiment'), async () => { await geometryCommand('discard'); state.geometryState = await geometryCommand('state'); render(); });
     };
-    for (const [id, phase] of [['geometry-capture-train', 'train'], ['geometry-capture-validation', 'validation']]) btn(id, async () => {
+    for (const [id, phase] of [['geometry-capture-train','train'],['geometry-capture-validation','validation']]) btn(id, async () => {
         await geometryCommand('capture', { phase });
         render();
     });
     btn('geometry-solve', async () => { await geometryCommand('solve'); render(); });
-    for (const [id, key, initial] of [['geometry-rms', 'geometryRms', 2], ['geometry-max', 'geometryMax', 4]]) if ($(id)) $(id).onchange = () => { const value = Number($(id).value); state[key] = Number.isFinite(value) && value >= 0.05 && value <= 100 ? value : initial; $(id).value = String(state[key]); };
+    for (const [id, key, initial] of [['geometry-rms','geometryRms',2],['geometry-max','geometryMax',4]]) if ($(id)) $(id).onchange = () => { const value = Number($(id).value); state[key] = Number.isFinite(value) && value >= 0.05 && value <= 100 ? value : initial; $(id).value = String(state[key]); };
     btn('geometry-validate', async () => { await geometryCommand('validate', { rms_mm: state.geometryRms, max_mm: state.geometryMax }); render(); });
-    for (const [id, task] of [['geometry-report', 'report'], ['geometry-export-tcp', 'export_tcp']]) btn(id, async () => {
+    for (const [id, task] of [['geometry-report','report'],['geometry-export-tcp','export_tcp']]) btn(id, async () => {
         const output = await geometryCommand(task);
         if ($('geometry-output-path')) $('geometry-output-path').textContent = output.path || '';
-        toast(tr('已导出到 ', 'Exported to ') + (output.path || ''));
+        toast(tr('已导出到 ','Exported to ') + (output.path || ''));
     });
     btn('geometry-fixed-activate', async () => { await workbenchCommand('activate'); render(); });
-    btn('geometry-fixed-drag', async () => { await workbenchRequest('set_impedance_mode', { mode: 'COMPLIANT_DRAG' }); render(); });
+    btn('geometry-fixed-drag', async () => { await workbenchRequest('set_impedance_mode', { mode:'COMPLIANT_DRAG' }); render(); });
     btn('geometry-fixed-hold', async () => { await workbenchCommand('hold'); render(); });
-    for (const id of ['geometry-fixed-clear-fault', 'geometry-repeat-clear-fault']) btn(id, async () => {
+    for (const id of ['geometry-fixed-clear-fault','geometry-repeat-clear-fault']) btn(id, async () => {
         const snapshot = await workbenchCommand('clear_fault');
         if (snapshot && typeof snapshot === 'object' && snapshot.robot_state) applyWorkbenchSnapshot(snapshot);
         render();
     });
     btn('geometry-repeat-activate', async () => { await workbenchCommand('activate'); render(); });
-    btn('geometry-repeat-drag', async () => { await workbenchRequest('set_impedance_mode', { mode: 'COMPLIANT_DRAG' }); render(); });
+    btn('geometry-repeat-drag', async () => { await workbenchRequest('set_impedance_mode', { mode:'COMPLIANT_DRAG' }); render(); });
     btn('geometry-repeat-record', async () => {
         const response = await geometryRepeatRequest('record_begin');
         state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; state.geometryLoadedId = ''; state.geometrySelectedId = ''; state.geometryContactReady = false; render();
@@ -1703,19 +1727,19 @@ function wireGeometry() {
     });
     if ($('geometry-traj')) $('geometry-traj').onchange = () => { state.geometrySelectedId = $('geometry-traj').value; };
     btn('geometry-load-traj', async () => {
-        if (!state.geometrySelectedId) throw new Error(tr('请选择已保存轨迹', 'Select a saved trajectory'));
+        if (!state.geometrySelectedId) throw new Error(tr('请选择已保存轨迹','Select a saved trajectory'));
         await geometryRepeatRequest('load', { id: state.geometrySelectedId });
         state.geometryLoadedId = state.geometrySelectedId; state.geometryContactReady = true; state.teachRuntime = await geometryRepeatRequest('status'); if (state.telemetry) state.telemetry.teach_replay = state.teachRuntime; render();
     });
     btn('geometry-save-traj', async () => {
-        teachNameDialog(tr('保存重复到位轨迹', 'Save repeatability trajectory'), tr('定点重复到位轨迹', 'Point repeatability path'), async name => {
-            if (!state.geometryContactReady) throw new Error(tr('请先完成触点到安全点的示教', 'Record a contact-to-safe trajectory first'));
+        teachNameDialog(tr('保存重复到位轨迹','Save repeatability trajectory'), tr('定点重复到位轨迹','Point repeatability path'), async name => {
+            if (!state.geometryContactReady) throw new Error(tr('请先完成触点到安全点的示教','Record a contact-to-safe trajectory first'));
             const saved = await geometryRepeatRequest('save', { name });
             const listing = await api.request('trajectory_list', { config: state.config });
             state.geometryTrajectories = listing.items || []; state.geometrySelectedId = saved.id; state.geometryLoadedId = saved.id; render();
         });
     });
-    const limits = [['geometry-cycles', 'geometryCycles', 1, 100], ['geometry-dwell', 'geometryDwell', 0, 30], ['geometry-rate', 'geometryRate', 0.05, 1]];
+    const limits = [['geometry-cycles','geometryCycles',1,100],['geometry-dwell','geometryDwell',0,30],['geometry-rate','geometryRate',0.05,1]];
     for (const [id, key, min, max] of limits) if ($(id)) $(id).onchange = () => {
         const v = Number($(id).value); if (!Number.isFinite(v) || v < min || v > max || (key === 'geometryCycles' && !Number.isInteger(v))) { $(id).value = String(state[key]); return; }
         state[key] = v;
@@ -1723,22 +1747,22 @@ function wireGeometry() {
     if ($('geometry-mode')) $('geometry-mode').onchange = () => { state.geometryMode = $('geometry-mode').value; };
     if ($('geometry-repeat-return')) $('geometry-repeat-return').onclick = async () => {
         const status = state.telemetry?.teach_replay || state.teachRuntime || {};
-        if (status.phase !== 'ready') return toast(tr('请先完成或加载轨迹', 'Record or load a trajectory first'), true);
-        if (!state.geometryContactReady) return toast(tr('请先完成触点到安全点的示教', 'Record a contact-to-safe trajectory first'), true);
-        if (!await safetyConfirmation(tr('沿示教轨迹撤离到安全点 A', 'Withdraw to safe point A'),
-            tr('此操作仅用于机械臂当前停在触点 B 时，将从 B 正放到安全点 A，请确认当前位置在 B 附近、路径无碰撞且人员远离', 'Use only if the arm is currently at contact B: the taught path will play forward to safe point A. Confirm clear motion and an empty workspace'))) return;
-        await blockingOperation(tr('正在撤离到安全点', 'Withdrawing to safe point'), async () => {
-            const response = await geometryRepeatRequest('play', { kind: 'withdraw', rate: state.geometryRate, mode: state.geometryMode, confirmed: true });
+        if (status.phase !== 'ready') return toast(tr('请先完成或加载轨迹','Record or load a trajectory first'), true);
+        if (!state.geometryContactReady) return toast(tr('请先完成触点到安全点的示教','Record a contact-to-safe trajectory first'), true);
+        if (!await safetyConfirmation(tr('沿示教轨迹撤离到安全点 A','Withdraw to safe point A'),
+            tr('此操作仅用于机械臂当前停在触点 B 时，将从 B 正放到安全点 A，请确认当前位置在 B 附近、路径无碰撞且人员远离','Use only if the arm is currently at contact B: the taught path will play forward to safe point A. Confirm clear motion and an empty workspace'))) return;
+        await blockingOperation(tr('正在撤离到安全点','Withdrawing to safe point'), async () => {
+            const response = await geometryRepeatRequest('play', {kind:'withdraw', rate:state.geometryRate, mode:state.geometryMode, confirmed:true });
             state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; render();
         });
     };
     if ($('geometry-repeat-play')) $('geometry-repeat-play').onclick = async () => {
-        for (const [id, key, min, max] of limits) { const el = $(id); const value = Number(el.value); if (!Number.isFinite(value) || value < min || value > max || (key === 'geometryCycles' && !Number.isInteger(value))) { toast(tr('测试参数无效', 'Invalid test parameter'), true); el.focus(); return; } state[key] = value; }
+        for (const [id,key,min,max] of limits) { const el = $(id); const value = Number(el.value); if (!Number.isFinite(value) || value<min || value>max || (key==='geometryCycles' && !Number.isInteger(value))) { toast(tr('测试参数无效','Invalid test parameter'), true); el.focus(); return; } state[key] = value; }
         const status = state.telemetry?.teach_replay || state.teachRuntime || {};
-        if (status.phase !== 'ready' || !state.geometryContactReady) return toast(tr('请先录制或加载触点到安全点的轨迹', 'Record or load a contact-to-safe trajectory first'), true);
-        if (!await safetyConfirmation(tr('确认自动重复到位测试', 'Confirm automatic repeatability test'),
-            tr('机械臂将自动往返运动，请确保整条轨迹已在低速下验证，并确认 B 点不会对刚性针尖产生危险压力，周围没有人员，系统不会自动识别碰撞', 'The robot will travel forward and back automatically; verify the full path and safe clearance at B, keep all people outside the workspace, and note that collision detection is unavailable'))) return;
-        await blockingOperation(tr('正在开始重复测试', 'Starting repeatability test'), async () => { const response = await geometryRepeatRequest('play', { kind: 'cycle', cycles: state.geometryCycles, rate: state.geometryRate, mode: state.geometryMode, endpoint_dwell_s: state.geometryDwell, confirmed: true }); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; render(); });
+        if (status.phase !== 'ready' || !state.geometryContactReady) return toast(tr('请先录制或加载触点到安全点的轨迹','Record or load a contact-to-safe trajectory first'), true);
+        if (!await safetyConfirmation(tr('确认自动重复到位测试','Confirm automatic repeatability test'),
+            tr('机械臂将自动往返运动，请确保整条轨迹已在低速下验证，并确认 B 点不会对刚性针尖产生危险压力，周围没有人员，系统不会自动识别碰撞','The robot will travel forward and back automatically; verify the full path and safe clearance at B, keep all people outside the workspace, and note that collision detection is unavailable'))) return;
+        await blockingOperation(tr('正在开始重复测试','Starting repeatability test'), async () => { const response = await geometryRepeatRequest('play', {kind:'cycle', cycles:state.geometryCycles, rate:state.geometryRate, mode:state.geometryMode, endpoint_dwell_s:state.geometryDwell, confirmed:true }); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; render(); });
     };
     btn('geometry-repeat-stop', async () => {
         const response = await geometryRepeatRequest('stop'); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; render();
@@ -1748,7 +1772,7 @@ function geometryPage() {
     const en = state.language === 'en';
     const active = workbenchConnected() && state.telemetry?.robot_state === 'ACTIVE';
     const replay = state.telemetry?.teach_replay || state.teachRuntime || {};
-    const running = ['playing', 'recording'].includes(replay.phase);
+    const running = ['playing','recording'].includes(replay.phase);
     const fixed = state.geometryState || {};
     const fixedActive = fixed.active;
     const training = fixed.train || 0, validation = fixed.validation || 0;
@@ -1757,39 +1781,39 @@ function geometryPage() {
     const options = (fixed.frame_options || []).map(frame => `<option value="${esc(frame)}" ${frame === (state.geometryFrame || fixed.suggested_frame) ? 'selected' : ''}>${esc(frame)}</option>`).join('');
     const tr = (zh, english) => en ? english : zh;
     const fmt = x => Number.isFinite(Number(x)) ? Number(x).toFixed(3) : '—';
-    const tab = `<div class="geometry-tabs"><button class="button ${state.geometryTab === 'fixed' ? 'primary' : ''}" data-geometry-tab="fixed">${tr('固定点几何标定', 'Fixed-point geometry')}</button><button class="button ${state.geometryTab === 'repeat' ? 'primary' : ''}" data-geometry-tab="repeat">${tr('定点重复到位测试', 'Point repeatability test')}</button></div>`;
-    const fixedContent = `<div class="geometry-two-col"><section class="workspace-section geometry-card"><h3>${tr('固定点实验', 'Fixed-point experiment')}</h3><p class="hint">${tr('使用同一组多姿态接触数据，求解针尖相对于末端 Frame 的临时偏移，并验证 FK 跨姿态一致性', 'Fit the temporary tip offset and verify FK consistency from one multi-pose fixed-point experiment')}</p>
-      <label>${tr('实验用途', 'Purpose')}<select id="geometry-purpose" ${fixedActive ? 'disabled' : ''}><option value="diagnostic" ${selectedPurpose === 'diagnostic' ? 'selected' : ''}>${tr('临时针尖 · FK 诊断', 'Temporary tip · FK diagnosis')}</option><option value="tcp" ${selectedPurpose === 'tcp' ? 'selected' : ''}>${tr('真实工具尖端 · TCP 位置标定', 'Actual tool tip · TCP position calibration')}</option></select></label>
-      <label>${tr('末端参考 Frame', 'Tip parent frame')}<select id="geometry-frame" ${fixedActive ? 'disabled' : ''}>${options}</select></label>
-      <div class="workspace-actions"><button id="geometry-fixed-activate" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'INACTIVE' || running ? 'disabled' : ''}>${tr('使能机械臂', 'Activate robot')}</button><button id="geometry-fixed-drag" class="button" ${!active || running ? 'disabled' : ''}>${tr('进入柔性拖拽', 'Enter compliant drag')}</button><button id="geometry-fixed-hold" class="button" ${!active || running ? 'disabled' : ''}>${tr('当前位置保持', 'Hold position')}</button><button id="geometry-fixed-clear-fault" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'FAULT' || workbenchRecoveryRequired() ? 'disabled' : ''}>${tr('清除故障', 'Clear fault')}</button></div>
-      <div class="workspace-actions"><button id="geometry-begin" class="button primary" ${!state.config.profile || fixedActive || running ? 'disabled' : ''}>${tr('开始实验', 'Start experiment')}</button><button id="geometry-discard" class="button danger" ${!fixedActive || running ? 'disabled' : ''}>${tr('清除当前实验', 'Discard experiment')}</button></div>
-      <div class="geometry-step"><b>01 · ${tr('训练姿态', 'Training poses')}　${training} / 10</b><p class="hint">${tr('柔性拖拽使针尖从不同末端朝向接触同一个固定点，保持静止后手动采样', 'Touch the same fixed point from diverse wrist orientations, hold still and capture')}</p><button id="geometry-capture-train" class="button" ${!fixedActive || !active || !!candidate || running ? 'disabled' : ''}>${tr('记录训练姿态', 'Capture training pose')}</button></div>
-      <div class="geometry-step"><b>02 · ${tr('求解临时针尖位置', 'Solve tip position')}</b><p class="hint">${tr('最少 8 组，推荐 10 组，求解后冻结候选以供独立验证', 'Minimum 8, recommended 10 poses, candidate frozen for validation')}</p><button id="geometry-solve" class="button" ${!fixedActive || training < 8 || !!candidate || running ? 'disabled' : ''}>${tr('求解固定点模型', 'Solve fixed-point model')}</button></div>
-      <div class="geometry-step"><b>03 · ${tr('独立验证', 'Independent validation')}　${validation} / 5</b><p class="hint">${tr('另外使用至少 5 个新的末端姿态，不参与求解', 'Capture at least 5 new wrist orientations excluded from the fit')}</p><button id="geometry-capture-validation" class="button" ${!active || !candidate || running ? 'disabled' : ''}>${tr('记录验证姿态', 'Capture validation pose')}</button></div>
-      <div class="geometry-step"><b>04 · ${tr('验收阈值', 'Acceptance limits')}</b><div class="geometry-fields"><label>RMS (mm)<input id="geometry-rms" type="number" min="0.05" max="100" step="0.1" value="${esc(state.geometryRms)}"></label><label>${tr('最大误差', 'Max error')} (mm)<input id="geometry-max" type="number" min="0.05" max="100" step="0.1" value="${esc(state.geometryMax)}"></label></div><button id="geometry-validate" class="button primary" ${validation < 5 || !candidate || running ? 'disabled' : ''}>${tr('计算独立验证结果', 'Validate held-out poses')}</button></div>
-    </section><section class="workspace-section geometry-card"><h3>${tr('几何实验结果', 'Geometry experiment results')}</h3>
-      <div class="geometry-stats"><div><small>${tr('训练 RMS', 'Training RMS')}</small><strong>${candidate ? fmt(candidate.training_rms_mm) + ' mm' : '—'}</strong></div><div><small>${tr('独立 RMS', 'Validation RMS')}</small><strong>${report ? fmt(report.rms_mm) + ' mm' : '—'}</strong></div><div><small>${tr('最大偏差', 'Maximum error')}</small><strong>${report ? fmt(report.max_mm) + ' mm' : '—'}</strong></div><div><small>${tr('条件数', 'Condition number')}</small><strong>${candidate ? fmt(candidate.condition) : '—'}</strong></div></div>
-      ${candidate ? `<h4>${tr('针尖偏移（相对于末端 Frame）', 'Tip offset (in parent frame)')}</h4><div class="geometry-vector">${candidate.tcp_xyz_m.map((v, i) => `<span>${'XYZ'[i]} ${fmt(v * 1000)} mm</span>`).join('')}</div>` : `<p class="hint">${tr('完成训练采样并求解后，在此查看数值结果', 'Capture and fit training poses to view results')}</p>`}
-      ${report ? `<div class="geometry-result ${report.passed ? 'is-pass' : 'is-warning'}">${report.passed ? tr('独立一致性验证通过', 'Independent consistency passed') : tr('独立一致性验证未通过', 'Independent consistency failed')} · ${validation} ${tr('组验证姿态', 'validation poses')}</div><h4>${tr('每组验证的三维残差范数', 'Per-pose residual norms')}</h4><div class="geometry-error-list">${report.errors_mm.map((v, i) => `<span>#${i + 1}　${fmt(v)} mm</span>`).join('')}</div>` : ''}
-      <p class="hint">${tr('该固定点残差仅评价跨姿态一致性，不代表机器人绝对定位精度；固定点方法只能标定 TCP 平移，不能标定朝向', 'Fixed-point residuals show cross-pose consistency, not absolute accuracy; the method identifies TCP translation only')}</p>
-      ${selectedPurpose === 'diagnostic' ? `<p class="geometry-note">${tr('诊断模式只导出临时实验报告，禁止写入 URDF 与 Profile', 'Diagnostic mode exports only a report and never alters the URDF or Profile')}</p><button id="geometry-report" class="button" ${!report ? 'disabled' : ''}>${tr('导出 FK 验证报告', 'Export FK report')}</button>` : `<p class="geometry-note">${tr('正式 TCP 模式只能导出候选，仍需独立审查与手动应用；临时诊断针尖请不要选择此模式', 'TCP mode exports a reviewed candidate only; do not use this mode for a temporary diagnostic tip')}</p><button id="geometry-export-tcp" class="button" ${!report?.passed ? 'disabled' : ''}>${tr('导出 TCP 位置候选', 'Export TCP candidate')}</button>`}
+    const tab = `<div class="geometry-tabs"><button class="button ${state.geometryTab === 'fixed' ? 'primary' : ''}" data-geometry-tab="fixed">${tr('固定点几何标定','Fixed-point geometry')}</button><button class="button ${state.geometryTab === 'repeat' ? 'primary' : ''}" data-geometry-tab="repeat">${tr('定点重复到位测试','Point repeatability test')}</button></div>`;
+    const fixedContent = `<div class="geometry-two-col"><section class="workspace-section geometry-card"><h3>${tr('固定点实验','Fixed-point experiment')}</h3><p class="hint">${tr('使用同一组多姿态接触数据，求解针尖相对于末端 Frame 的临时偏移，并验证 FK 跨姿态一致性','Fit the temporary tip offset and verify FK consistency from one multi-pose fixed-point experiment')}</p>
+      <label>${tr('实验用途','Purpose')}<select id="geometry-purpose" ${fixedActive ? 'disabled' : ''}><option value="diagnostic" ${selectedPurpose === 'diagnostic' ? 'selected' : ''}>${tr('临时针尖 · FK 诊断','Temporary tip · FK diagnosis')}</option><option value="tcp" ${selectedPurpose === 'tcp' ? 'selected' : ''}>${tr('真实工具尖端 · TCP 位置标定','Actual tool tip · TCP position calibration')}</option></select></label>
+      <label>${tr('末端参考 Frame','Tip parent frame')}<select id="geometry-frame" ${fixedActive ? 'disabled' : ''}>${options}</select></label>
+      <div class="workspace-actions"><button id="geometry-fixed-activate" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'INACTIVE' || running ? 'disabled' : ''}>${tr('使能机械臂','Activate robot')}</button><button id="geometry-fixed-drag" class="button" ${!active || running ? 'disabled' : ''}>${tr('进入柔性拖拽','Enter compliant drag')}</button><button id="geometry-fixed-hold" class="button" ${!active || running ? 'disabled' : ''}>${tr('当前位置保持','Hold position')}</button><button id="geometry-fixed-clear-fault" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'FAULT' || workbenchRecoveryRequired() ? 'disabled' : ''}>${tr('清除故障','Clear fault')}</button></div>
+      <div class="workspace-actions"><button id="geometry-begin" class="button primary" ${!state.config.profile || fixedActive || running ? 'disabled' : ''}>${tr('开始实验','Start experiment')}</button><button id="geometry-discard" class="button danger" ${!fixedActive || running ? 'disabled' : ''}>${tr('清除当前实验','Discard experiment')}</button></div>
+      <div class="geometry-step"><b>01 · ${tr('训练姿态','Training poses')}　${training} / 10</b><p class="hint">${tr('柔性拖拽使针尖从不同末端朝向接触同一个固定点，保持静止后手动采样','Touch the same fixed point from diverse wrist orientations, hold still and capture')}</p><button id="geometry-capture-train" class="button" ${!fixedActive || !active || !!candidate || running ? 'disabled' : ''}>${tr('记录训练姿态','Capture training pose')}</button></div>
+      <div class="geometry-step"><b>02 · ${tr('求解临时针尖位置','Solve tip position')}</b><p class="hint">${tr('最少 8 组，推荐 10 组，求解后冻结候选以供独立验证','Minimum 8, recommended 10 poses, candidate frozen for validation')}</p><button id="geometry-solve" class="button" ${!fixedActive || training < 8 || !!candidate || running ? 'disabled' : ''}>${tr('求解固定点模型','Solve fixed-point model')}</button></div>
+      <div class="geometry-step"><b>03 · ${tr('独立验证','Independent validation')}　${validation} / 5</b><p class="hint">${tr('另外使用至少 5 个新的末端姿态，不参与求解','Capture at least 5 new wrist orientations excluded from the fit')}</p><button id="geometry-capture-validation" class="button" ${!active || !candidate || running ? 'disabled' : ''}>${tr('记录验证姿态','Capture validation pose')}</button></div>
+      <div class="geometry-step"><b>04 · ${tr('验收阈值','Acceptance limits')}</b><div class="geometry-fields"><label>RMS (mm)<input id="geometry-rms" type="number" min="0.05" max="100" step="0.1" value="${esc(state.geometryRms)}"></label><label>${tr('最大误差','Max error')} (mm)<input id="geometry-max" type="number" min="0.05" max="100" step="0.1" value="${esc(state.geometryMax)}"></label></div><button id="geometry-validate" class="button primary" ${validation < 5 || !candidate || running ? 'disabled' : ''}>${tr('计算独立验证结果','Validate held-out poses')}</button></div>
+    </section><section class="workspace-section geometry-card"><h3>${tr('几何实验结果','Geometry experiment results')}</h3>
+      <div class="geometry-stats"><div><small>${tr('训练 RMS','Training RMS')}</small><strong>${candidate ? fmt(candidate.training_rms_mm) + ' mm' : '—'}</strong></div><div><small>${tr('独立 RMS','Validation RMS')}</small><strong>${report ? fmt(report.rms_mm) + ' mm' : '—'}</strong></div><div><small>${tr('最大偏差','Maximum error')}</small><strong>${report ? fmt(report.max_mm) + ' mm' : '—'}</strong></div><div><small>${tr('条件数','Condition number')}</small><strong>${candidate ? fmt(candidate.condition) : '—'}</strong></div></div>
+      ${candidate ? `<h4>${tr('针尖偏移（相对于末端 Frame）','Tip offset (in parent frame)')}</h4><div class="geometry-vector">${candidate.tcp_xyz_m.map((v, i) => `<span>${'XYZ'[i]} ${fmt(v*1000)} mm</span>`).join('')}</div>` : `<p class="hint">${tr('完成训练采样并求解后，在此查看数值结果','Capture and fit training poses to view results')}</p>`}
+      ${report ? `<div class="geometry-result ${report.passed ? 'is-pass' : 'is-warning'}">${report.passed ? tr('独立一致性验证通过','Independent consistency passed') : tr('独立一致性验证未通过','Independent consistency failed')} · ${validation} ${tr('组验证姿态','validation poses')}</div><h4>${tr('每组验证的三维残差范数','Per-pose residual norms')}</h4><div class="geometry-error-list">${report.errors_mm.map((v,i)=>`<span>#${i+1}　${fmt(v)} mm</span>`).join('')}</div>` : ''}
+      <p class="hint">${tr('该固定点残差仅评价跨姿态一致性，不代表机器人绝对定位精度；固定点方法只能标定 TCP 平移，不能标定朝向','Fixed-point residuals show cross-pose consistency, not absolute accuracy; the method identifies TCP translation only')}</p>
+      ${selectedPurpose === 'diagnostic' ? `<p class="geometry-note">${tr('诊断模式只导出临时实验报告，禁止写入 URDF 与 Profile','Diagnostic mode exports only a report and never alters the URDF or Profile')}</p><button id="geometry-report" class="button" ${!report ? 'disabled' : ''}>${tr('导出 FK 验证报告','Export FK report')}</button>` : `<p class="geometry-note">${tr('正式 TCP 模式只能导出候选，仍需独立审查与手动应用；临时诊断针尖请不要选择此模式','TCP mode exports a reviewed candidate only; do not use this mode for a temporary diagnostic tip')}</p><button id="geometry-export-tcp" class="button" ${!report?.passed ? 'disabled' : ''}>${tr('导出 TCP 位置候选','Export TCP candidate')}</button>`}
       <p id="geometry-output-path" class="hint"></p>
     </section></div>`;
     const optionsTraj = state.geometryTrajectories.filter(item => item.kind === 'contact_first').map(item => `<option value="${esc(item.id)}" ${item.id === state.geometrySelectedId ? 'selected' : ''}>${esc(item.name)}</option>`).join('');
-    const replayStatus = { idle: tr('尚无轨迹', 'No trajectory'), recording: tr('正在示教', 'Recording'), ready: tr('轨迹已就绪', 'Trajectory ready'), playing: tr('正在循环', 'Playing'), failed: tr('任务失败', 'Failed') }[replay.phase] || tr('等待连接', 'Waiting for connection');
-    const repeatContent = `${workbenchConnected() && state.geometryRepeatSupported === false ? `<div class="geometry-note" role="alert">${esc(state.geometryRepeatError || tr('当前 C++ Terminal 不支持本实验，请重新编译安装后重新连接', 'Running C++ terminal does not support this experiment; rebuild and reconnect'))}</div>` : ''}<div class="geometry-two-col"><section class="workspace-section geometry-card"><h3>${tr('从触点示教撤离轨迹', 'Teach withdrawal from contact')}</h3><p class="hint">${tr('先用柔性拖拽精确对准触点 B，稳定后点击「确认触点并开始示教」，然后拖动机械臂撤离到安全点 A，点击「到达安全点并结束」', 'First align and stabilize at contact B, then start recording and drag away to safe point A before finishing')}</p>
+    const replayStatus = {idle:tr('尚无轨迹','No trajectory'),recording:tr('正在示教','Recording'),ready:tr('轨迹已就绪','Trajectory ready'),playing:tr('正在循环','Playing'),failed:tr('任务失败','Failed')}[replay.phase] || tr('等待连接','Waiting for connection');
+    const repeatContent = `${workbenchConnected() && state.geometryRepeatSupported === false ? `<div class="geometry-note" role="alert">${esc(state.geometryRepeatError || tr('当前 C++ Terminal 不支持本实验，请重新编译安装后重新连接', 'Running C++ terminal does not support this experiment; rebuild and reconnect'))}</div>` : ''}<div class="geometry-two-col"><section class="workspace-section geometry-card"><h3>${tr('从触点示教撤离轨迹','Teach withdrawal from contact')}</h3><p class="hint">${tr('先用柔性拖拽精确对准触点 B，稳定后点击「确认触点并开始示教」，然后拖动机械臂撤离到安全点 A，点击「到达安全点并结束」','First align and stabilize at contact B, then start recording and drag away to safe point A before finishing')}</p>
       <div class="geometry-result" id="geometry-repeat-status">${replayStatus}</div>
-      <div class="workspace-actions"><button id="geometry-repeat-activate" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'INACTIVE' || running ? 'disabled' : ''}>${tr('使能', 'Activate')}</button><button id="geometry-repeat-clear-fault" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'FAULT' || workbenchRecoveryRequired() ? 'disabled' : ''}>${tr('清除故障', 'Clear fault')}</button><button id="geometry-repeat-drag" class="button" ${!active || running ? 'disabled' : ''}>${tr('进入柔性拖拽', 'Enter compliant drag')}</button><button id="geometry-repeat-record" class="button primary" ${!active || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('确认触点并开始示教', 'Confirm contact and record')}</button><button id="geometry-repeat-mark" class="button" ${replay.phase !== 'recording' || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('到达安全点并结束', 'Finish at safe point')}</button></div>
-      <p class="hint">${tr('触点 B 是记录起点，安全点 A 是记录终点，录制前需有效重力前馈与柔性拖拽增益，结束后自动保持', 'Contact B is the recorded start; safe A is the end. Gravity feedforward and drag gains are required, then the arm holds')}</p>
-      <div class="geometry-step"><b>${tr('轨迹管理（可选）', 'Saved trajectory (optional)')}</b><label>${tr('载入现有轨迹', 'Load saved trajectory')}<select id="geometry-traj"><option value="">${tr('本次新录制轨迹', 'Current unsaved trajectory')}</option>${optionsTraj}</select></label><div class="workspace-actions"><button id="geometry-load-traj" class="button" ${!workbenchConnected() || running || !state.geometrySelectedId || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('载入所选轨迹', 'Load selected')}</button><button id="geometry-save-traj" class="button" ${!workbenchConnected() || replay.phase !== 'ready' || !state.geometryContactReady || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('保存轨迹', 'Save trajectory')}</button></div></div>
-    </section><section class="workspace-section geometry-card"><h3>${tr('自动往返测试', 'Automatic round-trip test')}</h3><p class="hint">${tr('轨迹录制方向为 B → A，自动测试从安全点 A 倒放至触点 B，停留 M 秒后正放撤离到 A，重复 N 次', 'Recorded path: B → A. Each test cycle reverses A → B, holds M seconds, then withdraws forward B → A, repeated N times')}</p>
-      <div class="geometry-fields"><label>${tr('循环次数 N', 'Cycles N')}<input id="geometry-cycles" type="number" min="1" max="100" step="1" value="${esc(state.geometryCycles)}"></label><label>${tr('触点停留 M / 秒', 'Dwell M / s')}<input id="geometry-dwell" type="number" min="0" max="30" step="0.5" value="${esc(state.geometryDwell)}"></label><label>${tr('回放速度比例', 'Playback speed')}<input id="geometry-rate" type="number" min="0.05" max="1" step="0.05" value="${esc(state.geometryRate)}"></label><label>${tr('跟踪模式', 'Tracking mode')}<select id="geometry-mode"><option value="RIGID_TRACKING" ${state.geometryMode === 'RIGID_TRACKING' ? 'selected' : ''}>${tr('刚性跟踪', 'Rigid tracking')}</option><option value="COMPLIANT_TRACKING" ${state.geometryMode === 'COMPLIANT_TRACKING' ? 'selected' : ''}>${tr('柔性跟踪', 'Compliant tracking')}</option></select></label></div>
-      <p class="hint">${tr('结束示教后机械臂处于安全点 A，可直接开始循环；系统在原生控制层校验当前关节位置与轨迹终点 A 的一致性；原先从 A 到 B 录制的轨迹不可直接在此模式使用', 'Teaching ends at safe point A, ready for cycling. Native control checks alignment to recorded end A. Old A-to-B paths cannot be used in this mode')}</p>
-      <div class="workspace-actions"><button id="geometry-repeat-play" class="button primary" ${!active || replay.phase !== 'ready' || !state.geometryContactReady || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('确认安全并开始循环', 'Confirm safety and run')}</button><button id="geometry-repeat-stop" class="button danger" ${replay.phase !== 'playing' ? 'disabled' : ''}>${tr('停止并保持', 'Stop and hold')}</button></div>
-      <details class="geometry-step"><summary>${tr('可选：中途停在触点 B 时撤离', 'Optional: withdraw if stopped at contact B')}</summary><p class="hint">${tr('只在机械臂停在 B 点附近时使用，从 B 沿示教方向撤离到 A，若已在 A 点则无需点击', 'Use only when stopped near B to withdraw along the taught path to A; unnecessary if already at A')}</p><button id="geometry-repeat-return" class="button" ${!active || replay.phase !== 'ready' || !state.geometryContactReady || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('沿轨迹撤离到安全点 A', 'Withdraw to safe A')}</button></details>
-      <div class="geometry-result"><span id="geometry-repeat-progress">${tr('已完成循环', 'Completed cycles')} ${Math.floor(Number(replay.completed || 0) / 2)} / ${state.geometryCycles}</span></div>
-      <p class="geometry-note">${tr('本测试不自动测量接触误差，触点是否对准及目标直径由用户自行目视判断，不可直接将针尖直径当作重复定位精度', 'No automatic contact-error measurement is made; assess alignment visually, and do not equate tip diameter with calibrated repeatability')}</p>
-      <p class="hint">${tr('自动运行前务必确保回放终点不会向刚性针尖施加危险碰撞力，建议先在不接触针尖的位置以低速检查整条轨迹', 'Verify the complete trajectory at low speed with safe clearance before replay; no automatic collision detection is provided')}</p>
+      <div class="workspace-actions"><button id="geometry-repeat-activate" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'INACTIVE' || running ? 'disabled' : ''}>${tr('使能','Activate')}</button><button id="geometry-repeat-clear-fault" class="button" ${!workbenchConnected() || state.telemetry?.robot_state !== 'FAULT' || workbenchRecoveryRequired() ? 'disabled' : ''}>${tr('清除故障','Clear fault')}</button><button id="geometry-repeat-drag" class="button" ${!active || running ? 'disabled' : ''}>${tr('进入柔性拖拽','Enter compliant drag')}</button><button id="geometry-repeat-record" class="button primary" ${!active || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('确认触点并开始示教','Confirm contact and record')}</button><button id="geometry-repeat-mark" class="button" ${replay.phase !== 'recording' || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('到达安全点并结束','Finish at safe point')}</button></div>
+      <p class="hint">${tr('触点 B 是记录起点，安全点 A 是记录终点，录制前需有效重力前馈与柔性拖拽增益，结束后自动保持','Contact B is the recorded start; safe A is the end. Gravity feedforward and drag gains are required, then the arm holds')}</p>
+      <div class="geometry-step"><b>${tr('轨迹管理（可选）','Saved trajectory (optional)')}</b><label>${tr('载入现有轨迹','Load saved trajectory')}<select id="geometry-traj"><option value="">${tr('本次新录制轨迹','Current unsaved trajectory')}</option>${optionsTraj}</select></label><div class="workspace-actions"><button id="geometry-load-traj" class="button" ${!workbenchConnected() || running || !state.geometrySelectedId || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('载入所选轨迹','Load selected')}</button><button id="geometry-save-traj" class="button" ${!workbenchConnected() || replay.phase !== 'ready' || !state.geometryContactReady || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('保存轨迹','Save trajectory')}</button></div></div>
+    </section><section class="workspace-section geometry-card"><h3>${tr('自动往返测试','Automatic round-trip test')}</h3><p class="hint">${tr('轨迹录制方向为 B → A，自动测试从安全点 A 倒放至触点 B，停留 M 秒后正放撤离到 A，重复 N 次','Recorded path: B → A. Each test cycle reverses A → B, holds M seconds, then withdraws forward B → A, repeated N times')}</p>
+      <div class="geometry-fields"><label>${tr('循环次数 N','Cycles N')}<input id="geometry-cycles" type="number" min="1" max="100" step="1" value="${esc(state.geometryCycles)}"></label><label>${tr('触点停留 M / 秒','Dwell M / s')}<input id="geometry-dwell" type="number" min="0" max="30" step="0.5" value="${esc(state.geometryDwell)}"></label><label>${tr('回放速度比例','Playback speed')}<input id="geometry-rate" type="number" min="0.05" max="1" step="0.05" value="${esc(state.geometryRate)}"></label><label>${tr('跟踪模式','Tracking mode')}<select id="geometry-mode"><option value="RIGID_TRACKING" ${state.geometryMode === 'RIGID_TRACKING' ? 'selected' : ''}>${tr('刚性跟踪','Rigid tracking')}</option><option value="COMPLIANT_TRACKING" ${state.geometryMode === 'COMPLIANT_TRACKING' ? 'selected' : ''}>${tr('柔性跟踪','Compliant tracking')}</option></select></label></div>
+      <p class="hint">${tr('结束示教后机械臂处于安全点 A，可直接开始循环。系统在原生控制层校验当前关节位置与轨迹终点 A 的一致性。原先从 A 到 B 录制的轨迹不可直接在此模式使用','Teaching ends at safe point A, ready for cycling. Native control checks alignment to recorded end A. Old A-to-B paths cannot be used in this mode')}</p>
+      <div class="workspace-actions"><button id="geometry-repeat-play" class="button primary" ${!active || replay.phase !== 'ready' || !state.geometryContactReady || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('确认安全并开始循环','Confirm safety and run')}</button><button id="geometry-repeat-stop" class="button danger" ${replay.phase !== 'playing' ? 'disabled' : ''}>${tr('停止并保持','Stop and hold')}</button></div>
+      <details class="geometry-step"><summary>${tr('可选：中途停在触点 B 时撤离','Optional: withdraw if stopped at contact B')}</summary><p class="hint">${tr('只在机械臂停在 B 点附近时使用，从 B 沿示教方向撤离到 A，若已在 A 点则无需点击','Use only when stopped near B to withdraw along the taught path to A; unnecessary if already at A')}</p><button id="geometry-repeat-return" class="button" ${!active || replay.phase !== 'ready' || !state.geometryContactReady || running || state.geometryRepeatSupported !== true ? 'disabled' : ''}>${tr('沿轨迹撤离到安全点 A','Withdraw to safe A')}</button></details>
+      <div class="geometry-result"><span id="geometry-repeat-progress">${tr('已完成循环','Completed cycles')} ${Math.floor(Number(replay.completed || 0) / 2)} / ${state.geometryCycles}</span></div>
+      <p class="geometry-note">${tr('本测试不自动测量接触误差，触点是否对准及目标直径由用户自行目视判断，不可直接将针尖直径当作重复定位精度','No automatic contact-error measurement is made; assess alignment visually, and do not equate tip diameter with calibrated repeatability')}</p>
+      <p class="hint">${tr('自动运行前务必确保回放终点不会向刚性针尖施加危险碰撞力，建议先在不接触针尖的位置以低速检查整条轨迹','Verify the complete trajectory at low speed with safe clearance before replay; no automatic collision detection is provided')}</p>
     </section></div>`;
     return pageHead('geometryTitle', 'geometryDesc', workspaceSessionActionHtml()) + workbenchStatusBar() + workbenchRecoveryNotice() + tab + (state.geometryTab === 'fixed' ? fixedContent : repeatContent);
 }
@@ -1830,9 +1854,9 @@ function updateWorkbenchLive() {
         update('geometry-repeat-stop', phase === 'playing' && state.geometryRepeatSupported === true);
         if (state.geometryTab === 'repeat') {
             const progress = $('geometry-repeat-progress');
-            if (progress) progress.textContent = busyText('已完成循环 ', 'Completed cycles ') + Math.floor(Number(x.teach_replay?.completed || 0) / 2) + ' / ' + state.geometryCycles;
+            if (progress) progress.textContent = busyText('已完成循环 ','Completed cycles ') + Math.floor(Number(x.teach_replay?.completed || 0) / 2) + ' / ' + state.geometryCycles;
             const status = $('geometry-repeat-status');
-            if (status) status.textContent = ({ recording: busyText('正在示教撤离', 'Recording withdrawal'), ready: busyText('轨迹已就绪', 'Ready'), playing: busyText('正在循环', 'Playing'), failed: busyText('任务失败', 'Failed') })[phase] || busyText('尚无轨迹', 'No trajectory');
+            if (status) status.textContent = ({recording:busyText('正在示教撤离','Recording withdrawal'),ready:busyText('轨迹已就绪','Ready'),playing:busyText('正在循环','Playing'),failed:busyText('任务失败','Failed')})[phase] || busyText('尚无轨迹','No trajectory');
         }
     }
     if (state.page === 'workbench' && state.workbenchTab === 'replay') {
@@ -1980,7 +2004,7 @@ async function modelCalibrationQuick(method, params = {}) {
             const latest = await workbenchRequest('model_calibration_status', {});
             if (latest && state.telemetry) state.telemetry.model_calibration = latest;
         } catch { /* preserve the original request error */ }
-        showPriorityError(t('error') + ': ' + error.message);
+        showPriorityError(error);
         if (state.telemetry?.model_calibration?.phase !== before) render();
         else { updateModelCalibrationTaskOverlay(); updateModelCalibrationLive(); }
         return null;
@@ -2112,7 +2136,7 @@ async function resumeModelCalibrationWithConfirmation() {
     try {
         const result = await workbenchRequest('model_calibration_resume', modelCalibrationTaskParams({ confirmed: false })); if (state.telemetry) state.telemetry.model_calibration = result; updateModelCalibrationTaskOverlay(); return result;
     } catch (error) {
-        if (!String(error.message).includes('explicit resume confirmation')) { toast(t('error') + ': ' + error.message, true); return null; }
+        if (!String(error.message).includes('explicit resume confirmation')) { toast(error, true); return null; }
         const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('resumeTask')}</h3><p>${state.language === 'en' ? 'The robot moved while paused; confirm the current position is safely consistent with the paused path before continuing' : '暂停期间机械臂位置发生变化，请确认当前位置与暂停路径安全一致后继续'}</p><div class="actions"><button id="model-cal-resume-cancel" class="button">${t('cancel')}</button><button id="model-cal-resume-confirm" class="button danger">${state.language === 'en' ? 'Confirm and continue' : '确认继续'}</button></div>`; dialog.showModal(); $('model-cal-resume-cancel').onclick = () => dialog.close(); $('model-cal-resume-confirm').onclick = () => { dialog.close(); modelCalibrationQuick('model_calibration_resume', { confirmed: true }); };
         return null;
     }
@@ -2289,7 +2313,7 @@ function refreshCalibrationOrDefer() {
     }
     render();
 }
-function queuePreview() { previewDirty = true; if (previewFrame || previewInFlight) return; previewFrame = requestAnimationFrame(async () => { previewFrame = 0; if (previewInFlight) return; previewInFlight = true; previewDirty = false; try { await previewModel(); } catch (error) { toast(t('error') + ': ' + error.message, true); } finally { previewInFlight = false; if (previewDirty) queuePreview(); } }); }
+function queuePreview() { previewDirty = true; if (previewFrame || previewInFlight) return; previewFrame = requestAnimationFrame(async () => { previewFrame = 0; if (previewInFlight) return; previewInFlight = true; previewDirty = false; try { await previewModel(); } catch (error) { toast(error, true); } finally { previewInFlight = false; if (previewDirty) queuePreview(); } }); }
 function reducedMotion() { return matchMedia('(prefers-reduced-motion: reduce)').matches; }
 async function pageExit() {
     const page = $('page');
@@ -2324,10 +2348,10 @@ function render() {
     if (state.page === 'description' && state.descriptionAnalysis) setTimeout(() => operation(mountDescriptionView), 0);
 }
 function capture() { for (const key of Object.keys(state.config)) { const element = $(key); if (element) state.config[key] = element.value; } if ($('profile-select')) state.config.profile = $('profile-select').value; }
-async function operation(fn) { try { return await fn(); } catch (error) { toast(t('error') + ': ' + error.message, true); return null; } }
+async function operation(fn) { try { return await fn(); } catch (error) { toast(error, true); return null; } }
 function busyText(zh, en) { return state.language === 'en' ? en : zh; }
 function setOperationOverlay(message = '') { const overlay = $('operation-overlay'); if (!overlay) return; const show = !!message && !priorityErrorOpen; overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true'); const text = $('operation-message'); if (text && show) text.textContent = message; }
-async function blockingOperation(message, fn, minimumMs = 320) { if (state.blockingBusy) return null; state.blockingBusy = true; setOperationOverlay(message || busyText('正在处理...', 'Working...')); const started = performance.now(); try { return await fn(); } catch (error) { toast(t('error') + ': ' + error.message, true); return null; } finally { const remaining = minimumMs - (performance.now() - started); if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining)); state.blockingBusy = false; setOperationOverlay(''); } }
+async function blockingOperation(message, fn, minimumMs = 320) { if (state.blockingBusy) return null; state.blockingBusy = true; setOperationOverlay(message || busyText('正在处理...', 'Working...')); const started = performance.now(); try { return await fn(); } catch (error) { toast(error, true); return null; } finally { const remaining = minimumMs - (performance.now() - started); if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining)); state.blockingBusy = false; setOperationOverlay(''); } }
 function actionBusyMessage(action) { const labels = { activate: ['正在使能...', 'Activating...'], park: ['正在停放并失能...', 'Parking and disabling...'], deactivate: ['正在立即失能...', 'Disabling...'], hold: ['正在保持当前位置...', 'Holding current position...'], clear_fault: ['正在清除故障...', 'Clearing fault...'], fault_compliant: ['正在进入柔性恢复...', 'Entering compliant recovery...'], fault_rigid: ['正在返回刚性保持...', 'Returning to rigid hold...'] }; const value = labels[action] || ['正在处理...', 'Working...']; return busyText(value[0], value[1]); }
 async function refreshProfiles() {
     capture(); if (state.source === 'external' && !state.config.profile_file) throw new Error(t('fileHint')); const data = await api.request('profiles', state.config); state.profiles = data.profiles;
@@ -3053,7 +3077,7 @@ async function boot() {
         api.onEvent(onEvent);
         state.status = await api.request('status'); state.session = state.status.session || { state: 'idle' }; outputBuffer = await api.request('logs'); if (outputBuffer) term?.write(outputBuffer);
         await refreshLibrary(); render();
-    } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(t('error') + ': ' + error.message, true); } }
+    } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(error, true); } }
 }
 window.addEventListener('resize', () => { if (state.page === 'run') { try { fit?.fit(); } catch { } } if (['model', 'workbench', 'calibration'].includes(state.page)) modelView?.resize(); });
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);

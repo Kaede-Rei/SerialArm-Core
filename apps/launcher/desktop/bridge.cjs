@@ -27,14 +27,20 @@ class Bridge extends EventEmitter {
         const request = this.pending.get(message.id);
         if (!request) return;
         clearTimeout(request.timer); this.pending.delete(message.id);
-        message.error ? request.reject(new Error(message.error)) : request.resolve(message.result);
+        if (message.error) {
+          const details = typeof message.error === 'object' && message.error !== null
+            ? message.error : {code: 'LEGACY_BACKEND_ERROR', message: String(message.error)};
+          const failure = new Error(details.message || details.technical || '后台请求未完成');
+          failure.serialarm = details;
+          request.reject(failure);
+        } else request.resolve(message.result);
       } catch (error) { this.emit('event', {event: 'error', error: 'Invalid backend message: ' + error.message}); }
     });
     this.child.stderr.on('data', data => {
       const detail = data.toString();
       this.stderr = (this.stderr + detail).slice(-64 * 1024);
       process.stderr.write(`[SerialArm backend] ${detail}`);
-      this.emit('event', {event: 'error', error: detail});
+      // stderr is a diagnostic log channel, not an operator failure event
     });
     this.child.on('error', error => this._fail(error));
     this.child.on('exit', (code, signal) => {
