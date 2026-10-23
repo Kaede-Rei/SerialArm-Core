@@ -4,7 +4,7 @@
     <version>0.6.0</version>
     <description>Standalone SerialArm core with configuration, dynamics, safety, and hardware backend interfaces.</description>
     <maintainer email="kaerei@foxmail.com">SerialArm Maintainer</maintainer>
-    <license>MIT</license>
+    <license>GPL-3.0-only</license>
     <buildtool_depend>ament_cmake</buildtool_depend>
     <buildtool_depend>ament_cmake_python</buildtool_depend>
     <depend>yaml-cpp</depend>

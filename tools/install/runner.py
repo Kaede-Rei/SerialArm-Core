@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+from provenance import installed_content, native_inputs
+
 
 class InstallError(RuntimeError):
     pass
@@ -343,6 +345,8 @@ class Runner:
         return candidate.read_text()
 
     def commit(self, setup_text):
+        if native_inputs(self.root, self.plan.describe()) != self.native_inputs:
+            raise InstallError('构建期间源码发生变化，请重新执行安装')
         # Generation-specific setup first, manifest last. A failed manifest write
         # never switches the stable environment entry to an uncommitted generation
         generation = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -360,6 +364,11 @@ class Runner:
                         install_prefix=str(self.prefix), build_dir=str(self.build), log_dir=str(self.logs),
                         python_executable=str(self.python) if self.python else None)
         manifest.update(getattr(self, 'gui_state', {}))
+        if self.plan.ros2:
+            manifest['native_receipt'] = {
+                **self.native_inputs,
+                'installed_sha256': installed_content(self.prefix),
+            }
         # Stable entry loads the setup selected by the committed manifest
         entry = self.state / 'setup.bash'
         atomic_write(entry, self.entry_text())
@@ -412,6 +421,7 @@ def install(plan):
                 manifest.update(runner.gui_state)
                 atomic_write(manifest_file, json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
             else:
+                runner.native_inputs = native_inputs(runner.root, plan.describe())
                 if plan.ros2:
                     runner.ros()
                 else:

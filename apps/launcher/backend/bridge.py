@@ -25,6 +25,11 @@ from tcp_calibration import TcpCalibration
 
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
+OFFLINE_CALIBRATION_METHODS = frozenset((
+    'calibration_tool_export', 'calibration_tool_export_record',
+    'model_calibration_export_friction', 'model_calibration_export_urdf',
+    'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute',
+))
 
 
 def offline_profile_home(inspector, config):
@@ -296,6 +301,12 @@ def main():
                 request = json.loads(line)
                 method, params = request['method'], request.get('params', {})
                 if not isinstance(params, dict): raise ValueError('params must be an object')
+                # All potentially lengthy export and analysis routes share the
+                # same admission rule, including retained IPC entrypoints
+                if method in OFFLINE_CALIBRATION_METHODS and any(
+                        session.status().get('state') in ('running', 'stopping')
+                        for session in (native, manager)):
+                    raise ValueError('请先安全断开当前运行会话，再处理离线标定成果')
                 if method == 'status':
                     native_status = native.status()
                     session = native_status if native_status.get('state') in ('running', 'stopping') else manager.status()
@@ -588,8 +599,6 @@ def main():
                     from workflow_registry import load
                     result = load(params.get('directory', ''), params.get('kind', ''))
                 elif method == 'calibration_tool_export':
-                    if any(session.status().get('state') in ('running', 'stopping') for session in (native, manager)):
-                        raise ValueError('请先安全断开当前运行会话，再导出标定成果')
                     from artifact_exports import export_artifact
                     # Export uses the immutable task snapshot and the user-selected output directory
                     # It must not consult the connected hardware or the current GUI Profile
@@ -633,17 +642,11 @@ def main():
                     result = restore_gravity_correction(info['resources']['core'], params.get('directory', ''))
                 elif method == 'model_calibration_export_friction':
                     directory = params.get('directory', '')
-                    if not directory and native.status().get('state') == 'running':
-                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
                     result = export_friction_candidate(directory, params.get('destination') or None)
                 elif method == 'model_calibration_export_urdf':
                     directory = params.get('directory', '')
-                    if not directory and native.status().get('state') == 'running':
-                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
                     source = params.get('candidate_source', 'online')
                     if source == 'offline':
-                        if native.status().get('state') in ('running', 'stopping'):
-                            raise ValueError('离线候选导出前请先断开工作台')
                         result = run_full_inertial_isolated(directory, params.get('destination') or None,
                             mode='legacy_gravity_export')
                     elif source == 'online':
@@ -673,17 +676,11 @@ def main():
                     except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError, KeyError) as error:
                         result['verification_warning'] = str(error)
                 elif method == 'model_calibration_assess':
-                    if native.status().get('state') in ('running', 'stopping'):
-                        raise ValueError('请先安全停放并断开机器人工作台，再对历史标定执行离线数据分析')
                     from advanced_identification import assess_record
                     directory = params.get('directory', '')
-                    if not directory and native.status().get('state') == 'running':
-                        directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
                     result = assess_record(directory)
                 elif method == 'model_calibration_advanced':
                     from advanced_identification import MODES
-                    if native.status().get('state') in ('running', 'stopping'):
-                        raise ValueError('高级离线辨识需要先安全停放并断开机器人工作台，避免长时间计算阻塞控制请求')
                     directory = params.get('directory', '')
                     mode = params.get('mode', '')
                     if mode not in MODES:
@@ -698,8 +695,6 @@ def main():
                 elif method == 'model_calibration_export_full_inertial':
                     raise ValueError('完整惯量候选已归入高级动力学辨识，请选择目标参数与可信 Link 后再执行离线辨识')
                 elif method == 'model_calibration_recompute':
-                    if native.status().get('state') in ('running', 'stopping'):
-                        raise ValueError('离线重算前请先安全断开机器人工作台')
                     directory = params.get('directory', '')
                     if not directory or not Path(directory).expanduser().is_dir():
                         raise ValueError('请选择完整的标定任务目录')

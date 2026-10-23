@@ -17,8 +17,8 @@ Usage: ./build_linux.sh [--reuse-install | --rebuild]
 Build the complete ROS2 / MoveIt / DM-Arm / GUI Linux release
 This is the same component set as install.sh preset ros2 (interactive choice 4)
 
-  Default            Reuse a verified full ROS2 installation, or install it if missing
-  --reuse-install    Require an existing, verified full ROS2 installation
+  Default            Reuse a matching full ROS2 installation, or rebuild it
+  --reuse-install    Require an installation matching the current sources
   --rebuild          Reinstall the full ROS2 preset before packaging
 
 Build host: Ubuntu 22.04 x86_64, ROS2 Humble, Node.js 20+
@@ -43,7 +43,7 @@ source /etc/os-release
 [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 22.04 ]] || fail 'Build on Ubuntu 22.04 with ROS2 Humble'
 [[ "$ROS_DISTRO" == humble ]] || fail 'This Linux release targets ROS2 Humble'
 [[ -f /opt/ros/humble/setup.bash ]] || fail 'ROS2 Humble not found in /opt/ros/humble'
-for c in node npm python3; do command -v "$c" >/dev/null 2>&1 || fail "Missing command: $c"; done
+for c in node npm python3 flock; do command -v "$c" >/dev/null 2>&1 || fail "Missing command: $c"; done
 [[ "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 20 ]] || fail 'Node.js 20+ is required'
 [[ -x /usr/bin/python3 ]] || fail 'System Python /usr/bin/python3 is required'
 
@@ -60,6 +60,10 @@ if (( FORCE_REBUILD )) || ! /usr/bin/python3 "$PKG/stage.py" --root "$ROOT" --ch
 else
     echo '[SerialArm] Reusing verified ROS2 + MoveIt installation'
 fi
+
+# Keep the installer and another packager from replacing files during staging
+exec {INSTALL_LOCK}>"$ROOT/.install/install.lock"
+flock -n "$INSTALL_LOCK" || fail 'Another installation or packaging operation is running'
 
 # Check a verified full-preset installation before creating or replacing any release assets
 PREFIX="$(/usr/bin/python3 "$PKG/stage.py" --root "$ROOT" --check-only)" || fail 'The complete ROS2 installation did not pass packaging checks'
@@ -114,5 +118,5 @@ mv -f -- "$STAGING/output/$APPIMAGE" "$OUTPUT/$APPIMAGE"
 mv -f -- "$STAGING/output/$DEB" "$OUTPUT/$DEB"
 echo '[SerialArm] Linux release packages ready'
 ls -lh -- "$OUTPUT/$APPIMAGE" "$OUTPUT/$DEB"
-sha256sum -- "$OUTPUT/$APPIMAGE" "$OUTPUT/$DEB" | tee "$OUTPUT/SHA256SUMS"
+(cd "$OUTPUT" && sha256sum -- "$APPIMAGE" "$DEB") | tee "$OUTPUT/SHA256SUMS"
 echo '[SerialArm] Verify on a separate Ubuntu 22.04 + ROS2 Humble system before publishing'

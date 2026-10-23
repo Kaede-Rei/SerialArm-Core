@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 from runner import InstallError, atomic_write
+from provenance import gui_assets, gui_inputs
 
 
 def preflight_gui():
@@ -16,6 +17,7 @@ def preflight_gui():
 
 
 def install_gui(runner):
+    source_digest = gui_inputs(runner.root)
     app = runner.root / 'apps/launcher'
     release = Path('/etc/os-release').read_text() if Path('/etc/os-release').exists() else ''
     t64 = 'ID=ubuntu' in release and any(f'VERSION_ID="{v}' in release for v in ('24', '25', '26'))
@@ -39,4 +41,8 @@ def install_gui(runner):
     if not os.access(electron, os.X_OK): raise InstallError('Electron 可执行文件不可用')
     runner.run('gui-static-verify', ['node', app / 'scripts/verify.cjs'])
     runner.run('gui-backend-verify', [venv / 'bin/python', '-c', 'import sys, numpy, scipy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, profiles, runtime, model_runtime, tcp_calibration', app / 'backend'])
-    return {'gui': True, 'gui_status': 'ready', 'gui_path': str(app), 'gui_python': str(venv / 'bin/python')}
+    if gui_inputs(runner.root) != source_digest:
+        raise InstallError('GUI 安装期间源码发生变化，请重新执行安装')
+    return {'gui': True, 'gui_status': 'ready', 'gui_path': str(app),
+            'gui_python': str(venv / 'bin/python'), 'gui_source_sha256': source_digest,
+            'gui_assets_sha256': gui_assets(runner.root)}

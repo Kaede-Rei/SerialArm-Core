@@ -1,6 +1,7 @@
 {
   "name": "serial-arm-launcher",
   "private": true,
+  "license": "GPL-3.0-only",
   "description": "SerialArm desktop profile, diagnostics and runtime launcher",
   "main": "desktop/main.cjs",
   "scripts": {

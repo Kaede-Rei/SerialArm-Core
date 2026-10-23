@@ -4,7 +4,7 @@
     <version>0.6.0</version>
     <description>Damiao official USB2CAN module protocol adapter for SerialArm CAN transport.</description>
     <maintainer email="kaerei@foxmail.com">SerialArm Maintainer</maintainer>
-    <license>MIT</license>
+    <license>GPL-3.0-only</license>
     <buildtool_depend>ament_cmake</buildtool_depend>
     <depend>serial_arm_core</depend>
     <test_depend>gtest</test_depend>

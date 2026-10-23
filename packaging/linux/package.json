@@ -1,6 +1,7 @@
 {
   "name": "serial-arm-linux-packaging",
   "private": true,
+  "license": "GPL-3.0-only",
   "description": "Build tools for SerialArm Linux release packages",
   "devDependencies": {
     "electron-builder": "26.15.3"

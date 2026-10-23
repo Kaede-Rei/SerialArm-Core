@@ -11,6 +11,9 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/install'))
+from provenance import gui_assets, gui_inputs, installed_content, native_inputs
+
 REQUIRED_PACKAGES = (
     'serial_arm_core',
     'serial_arm_robot_profiles',
@@ -38,7 +41,8 @@ def copytree(source: Path, target: Path):
     # Colcon --symlink-install creates links back to the checkout
     # Dereference those links so a release never depends on the build host
     shutil.copytree(source, target, symlinks=False,
-                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '.DS_Store'))
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo',
+                                                  '.DS_Store', '.git', '.serialarm'))
 
 
 def read_manifest(root):
@@ -66,6 +70,18 @@ def read_manifest(root):
     prefix = Path(prefix_raw).resolve()
     if not prefix.is_relative_to((root / 'install').resolve()):
         fail('Installation prefix does not belong to this repository')
+    receipt = data.get('native_receipt')
+    if not isinstance(receipt, dict):
+        fail('Installation has no source receipt; rebuild the complete installation')
+    current = native_inputs(root, data)
+    if any(receipt.get(key) != value for key, value in current.items()):
+        fail('Native sources or build options changed; rebuild the complete installation')
+    if receipt.get('installed_sha256') != installed_content(prefix):
+        fail('Installed files changed after verification; rebuild the complete installation')
+    if data.get('gui_source_sha256') != gui_inputs(root):
+        fail('Launcher sources changed; reinstall the GUI before packaging')
+    if data.get('gui_assets_sha256') != gui_assets(root):
+        fail('Launcher dependencies changed; reinstall the GUI before packaging')
     for binary in REQUIRED_BINARIES:
         exe = prefix / 'bin' / binary
         if not exe.is_file() or not os.access(exe, os.X_OK):
@@ -285,6 +301,8 @@ def main():
         return
     if args.stage is None:
         parser.error('--stage is required unless --check-only is set')
+    receipt_text = (root / '.install/manifest.json').read_text(encoding='utf-8')
+    manifest = json.loads(receipt_text)
     check_elf_dependencies(prefix)
     stage = args.stage.resolve()
     project, payload = stage / 'project', stage / 'payload'
@@ -293,6 +311,8 @@ def main():
 
     print('[SerialArm] Copying full ROS2 overlay, Python Binding, MoveIt and DM-Arm')
     copytree(prefix, payload / 'native')
+    if installed_content(payload / 'native') != manifest['native_receipt']['installed_sha256']:
+        fail('Installed files changed while copying the release payload')
     bundle_external_libs(payload / 'native')
     print('[SerialArm] Staging Electron GUI and Python bridge')
     prepare_gui(root, project)
@@ -302,6 +322,10 @@ def main():
         copytree(fallback, payload / 'src/robot_supports/profiles/config')
     shutil.copy2(root / 'LICENSE', payload / 'LICENSE')
     python_gui_modules(root, payload)
+    if read_manifest(root) != prefix:
+        fail('Active installation changed while preparing the release payload')
+    if (root / '.install/manifest.json').read_text(encoding='utf-8') != receipt_text:
+        fail('Installation receipt changed while preparing the release payload')
     make_manifest(root, stage, payload)
     print('[SerialArm] Full release staged successfully')
 

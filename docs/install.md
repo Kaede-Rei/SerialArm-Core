@@ -59,11 +59,11 @@ ROS2 必须包含 Python Binding，内置 MoveIt 必须包含 ROS2 与 DM-Arm �
 ./build_linux.sh
 ```
 
-脚本优先复用已经通过验证的完整 ROS2 安装，未安装时自动执行完整 ROS2 / DM-Arm / MoveIt / GUI 安装，再将编译后的 ROS2 工作区、Python Binding、机器人资源和 Electron 工作台打包
+脚本核对源码指纹、构建选项、安装产物和 GUI 来源，仅复用与当前工程一致的完整 ROS2 安装，缺少记录或内容变化时重新执行安装，再将编译后的 ROS2 工作区、Python Binding、机器人资源和 Electron 工作台打包
 
 Electron 构建时直接复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时，不重复从网络下载 Electron
 
-已通过完整安装验证时，可以明确要求复用现有安装，如果没有有效安装状态则直接报错
+可以明确要求复用现有安装，缺少来源记录或源码、构建选项、安装文件、GUI 来源不匹配时直接报错
 
 ```bash
 ./build_linux.sh --reuse-install
@@ -80,6 +80,10 @@ SerialArm-Core-linux-x86_64.AppImage
 SerialArm-Core-linux-amd64.deb
 SHA256SUMS
 ```
+
+校验文件使用相对文件名，将三个文件放在同一目录后可执行 `sha256sum -c SHA256SUMS`
+
+打包期间锁定安装入口，避免其他安装或打包进程同时改写产物，运行记录与缓存不随发行包分发
 
 ### 安装发行包
 
