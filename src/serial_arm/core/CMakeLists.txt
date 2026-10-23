@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(serial_arm_core VERSION 0.6.0 LANGUAGES CXX)
+project(serial_arm_core VERSION 0.6.1 LANGUAGES CXX)
 
 # =============================================================================
 # 全局 C++ / CMake 配置
