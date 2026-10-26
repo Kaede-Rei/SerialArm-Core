@@ -197,6 +197,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const DamiaoBusCfg& cf
 
         ActuatorCapability capability;
         capability.actuator_name = actuator.name;
+        capability.joint_name = actuator.joint_name;
         capability.min_pos = -static_cast<double>(limit.q_max);
         capability.max_pos = static_cast<double>(limit.q_max);
         capability.max_vel = static_cast<double>(limit.dq_max);
@@ -652,7 +653,8 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cfg(const DamiaoBusCfg&
     nonzero_master_ids.reserve(cfg.actuators.size());
 
     for(const auto& actuator : cfg.actuators) {
-        if(actuator.name.empty() || actuator.joint_name.empty() || actuator.motor_id == 0 || !parse_motor_type(actuator.motor_type)) {
+        if(actuator.name.empty() || actuator.joint_name.empty() || actuator.motor_id == 0 || actuator.motor_id > 0x7ff || actuator.master_id > 0x7ff ||
+            (actuator.master_id == 0 && actuator.motor_id > 0x0f) || !parse_motor_type(actuator.motor_type)) {
             return tl::make_unexpected(MotorBusErr::INVALID_CFG);
         }
         if(std::find(motor_ids.begin(), motor_ids.end(), actuator.motor_id) != motor_ids.end()) {
@@ -773,6 +775,10 @@ void DamiaoMotorBus::release_connection_noexcept(bool keep_config) noexcept {
 }
 
 } // namespace serial_arm
+
+extern "C" std::uint64_t serial_arm_motor_bus_abi() {
+    return serial_arm::motor_bus_abi_fingerprint;
+}
 
 extern "C" serial_arm::MotorBus* create_motor_bus() {
     return new serial_arm::DamiaoMotorBus();

@@ -62,11 +62,11 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | `serial_arm/core/safety.hpp` | 状态与命令安全检查 |
 | `serial_arm/dynamics/dynamics.hpp` | Pinocchio Dynamics |
 | `serial_arm/interaction/admittance_observer_mode.hpp` | `FULL_ID / MOMENTUM` Observer 模式 |
-| `serial_arm/interaction/torque_residual_observer.hpp` | FULL_ID residual 计算 |
-| `serial_arm/interaction/generalized_momentum_observer.hpp` | Generalized Momentum Observer |
-| `serial_arm/interaction/external_torque_observer.hpp` | bias / friction / deadband 外力矩估计 |
-| `serial_arm/interaction/joint_admittance_controller.hpp` | 固定 M / D / K 关节空间导纳 |
-| `serial_arm/interaction/interaction_controller.hpp` | Observer 与关节空间导纳组合 |
+| `serial_arm/interaction/estimators/torque_residual_observer.hpp` | FULL_ID residual 计算 |
+| `serial_arm/interaction/estimators/generalized_momentum_observer.hpp` | Generalized Momentum Observer |
+| `serial_arm/interaction/estimators/external_torque_observer.hpp` | bias / friction / deadband 外力矩估计 |
+| `serial_arm/interaction/controllers/joint_admittance_controller.hpp` | 固定 M / D / K 关节空间导纳 |
+| `serial_arm/interaction/runtime/interaction_controller.hpp` | Observer 与关节空间导纳组合 |
 | `serial_arm/interaction/admittance_calibration.hpp` | 导纳静态 residual / friction 标定工具 |
 | `serial_arm/hardware/hardware_capability.hpp` | 执行器物理能力 |
 | `serial_arm/hardware/motor_bus.hpp` | Hardware Backend contract |

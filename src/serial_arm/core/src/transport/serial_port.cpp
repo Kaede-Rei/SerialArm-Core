@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 namespace serial_arm::transport {
@@ -85,6 +86,8 @@ void SerialPort::open(std::string port, const Config& config) {
     if(new_fd < 0) throw_system_error("open(" + port + ")");
 
     try {
+        if(::flock(new_fd, LOCK_EX | LOCK_NB) < 0) throw_system_error("serial device is already owned: " + port);
+        if(::ioctl(new_fd, TIOCEXCL) < 0) throw_system_error("exclusive serial device: " + port);
         configure_fd(new_fd, config);
         if(config.flush_on_open) flush_fd(new_fd, FlushDirection::Both);
     }
@@ -104,6 +107,7 @@ void SerialPort::open(std::string port, const Config& config) {
  */
 void SerialPort::close() noexcept {
     if(fd_ >= 0) {
+        (void)::ioctl(fd_, TIOCNXCL);
         (void)::close(fd_);
         fd_ = -1;
     }

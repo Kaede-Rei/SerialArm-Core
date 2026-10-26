@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.20)
+project(serial_arm_external_consumer LANGUAGES CXX)
+find_package(serial_arm_core CONFIG REQUIRED)
+add_executable(consumer main.cpp)
+target_link_libraries(consumer PRIVATE serial_arm::core serial_arm::config serial_arm::robot serial_arm::dynamics)

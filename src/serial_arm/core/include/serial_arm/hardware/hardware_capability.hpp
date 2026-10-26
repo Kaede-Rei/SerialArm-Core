@@ -20,6 +20,7 @@ struct ActuatorCapability {
     double max_effort{ 0.0 };  ///< 执行器最大力矩
     double max_kp{ 0.0 };      ///< 执行器侧最大 kp
     double max_kd{ 0.0 };      ///< 执行器侧最大 kd
+    std::string joint_name;    ///< 具名关节身份，用于命令、反馈与能力的双向对齐
 };
 
 using HardwareCapabilities = std::vector<ActuatorCapability>;

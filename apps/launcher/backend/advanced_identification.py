@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from full_inertial import (
-    _prepare_inputs, _articulated_mapping, _sampling_map, _extract_rows,
+    _prepare_inputs, _articulated_mapping, _sampling_map, _extract_rows, _assign_configuration,
     _fit_regressor, _dynamic_parameters_to_urdf_fields, physical_inertia,
 )
 
@@ -136,7 +136,7 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
     values = []
     for group, holdout, q, torque, nsamples in poses:
         qq = base.copy()
-        qq[q_idx] = q
+        _assign_configuration(model, qq, q_idx, q)
         full_y = np.asarray(pin.computeJointTorqueRegressor(model, data, qq, np.zeros(nv), np.zeros(nv)))
         prediction = full_y[v_idx] @ all_prior
         design = full_y[np.ix_(v_idx, selected)]
@@ -158,8 +158,7 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
     r = np.concatenate([v[2] for v in train])
     bias_design = np.tile(np.eye(n), (len(train), 1))
     # Centering prevents torque bias from being absorbed by mass / first moments
-    P = np.eye(len(r)) - bias_design @ np.linalg.pinv(bias_design)
-    centered = P @ Y
+    centered = Y - bias_design @ np.linalg.lstsq(bias_design, Y, rcond=None)[0]
     scale = np.maximum(np.linalg.norm(centered, axis=0), 1e-9)
     spectrum = np.linalg.svd(centered / scale, compute_uv=False)
     rank = int(np.sum(spectrum > max(1e-3 * (spectrum[0] if len(spectrum) else 0), 1e-9)))
@@ -170,9 +169,8 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
     def solve(blocks, regularization):
         yy = np.vstack([v[1] for v in blocks]); rr = np.concatenate([v[2] for v in blocks]);
         bb = np.tile(np.eye(n), (len(blocks), 1))
-        proj = np.eye(len(rr)) - bb @ np.linalg.pinv(bb)
-        a = proj @ yy / scale
-        rhs = proj @ rr
+        a = (yy - bb @ np.linalg.lstsq(bb, yy, rcond=None)[0]) / scale
+        rhs = rr - bb @ np.linalg.lstsq(bb, rr, rcond=None)[0]
         standardized = np.linalg.lstsq(np.vstack((a, np.sqrt(regularization) * np.eye(len(selected)))),
                                          np.concatenate((rhs, np.zeros(len(selected)))), rcond=1e-8)[0]
         delta = standardized / scale

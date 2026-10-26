@@ -59,7 +59,7 @@ def _articulated_mapping(root, model, sampled_joint_names):
         if jid is None or item is None or item.get('type') not in ('revolute', 'continuous', 'prismatic'):
             raise ValueError(f'采样关节 {name} 不存在或不是单自由度可动关节')
         joint = model.joints[jid]
-        if int(joint.nq) != 1 or int(joint.nv) != 1:
+        if int(joint.nq) not in (1, 2) or int(joint.nv) != 1:
             raise ValueError(f'采样关节 {name} 不是单自由度，无法按标定 CSV 映射')
         child = item.find('child')
         if child is None or child.get('link') not in links:
@@ -110,7 +110,7 @@ def _sampling_map(model, moving_joints):
     q_indices, v_indices, param_indices = [], [], []
     for jid, _name, _link in moving_joints:
         joint = model.joints[jid]
-        if int(joint.nq) != 1 or int(joint.nv) != 1:
+        if int(joint.nq) not in (1, 2) or int(joint.nv) != 1:
             raise ValueError(f'采样关节 {model.names[jid]} 无法映射到单自由度状态')
         q_indices.append(int(joint.idx_q))
         v_indices.append(int(joint.idx_v))
@@ -119,6 +119,17 @@ def _sampling_map(model, moving_joints):
         raise ValueError('采样关节状态索引不唯一')
     return q_indices, v_indices, param_indices
 
+
+
+def _assign_configuration(model, target, indices, values):
+    import numpy as np
+    joints = {int(model.joints[j].idx_q): model.joints[j] for j in range(1, model.njoints)}
+    for index, value in zip(indices, values):
+        if int(joints[index].nq) == 2:
+            target[index:index+2] = (np.cos(value), np.sin(value))
+        else:
+            target[index] = value
+    return target
 
 def _extract_rows(csvpath, joints, limit=500):
     import numpy as np
@@ -190,7 +201,7 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, acti
         if any(len(vector)!=nj for vector in (q,v,a,tau)):
             raise ValueError('标定数据关节数量与采样配置不一致')
         q_all=neutral.copy(); v_all=np.zeros(nv); a_all=np.zeros(nv)
-        q_all[q_indices]=q
+        _assign_configuration(model, q_all, q_indices, q)
         v_all[v_indices]=v
         a_all[v_indices]=a
         full_Y=np.asarray(pin.computeJointTorqueRegressor(model,data,q_all,v_all,a_all),dtype=float)

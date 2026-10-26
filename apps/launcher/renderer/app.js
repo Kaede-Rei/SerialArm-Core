@@ -459,7 +459,7 @@ function readinessStageText(value) { const keys = { description: 'descriptionSta
 function computeChain(base, tool, joints) { const byChild = new Map(joints.map(j => [j.child, j])); const reverse = []; let node = tool; const seen = new Set(); while (node && node !== base && !seen.has(node)) { seen.add(node); const j = byChild.get(node); if (!j) return []; reverse.push(j); node = j.parent; } if (node !== base) return []; return reverse.reverse(); }
 function syncDescriptionChain() {
     const a = state.descriptionAnalysis, d = state.descriptionDraft;
-    if (!a) return;
+    if (!a || !a.joints?.length) return;
     const chain = computeChain(d.base_frame, d.tool_frame, a.joints);
     d.joint_names = chain.filter(j => j.type !== 'fixed' && !j.mimic).map(j => j.name);
 }
@@ -473,6 +473,8 @@ function descriptionPage() {
     const pageTitle = pageHead('newDescription', 'newDescriptionDesc', `<div class="actions description-head-actions"><button id="description-home" class="button">${t('backHome')}</button>${a ? `<button id="description-reset" class="button">${state.language === 'en' ? 'Choose another Description' : '重新选择模型'}</button>` : ''}</div>`);
     const upload = `<div class="description-empty card"><div class="card-body"><div class="field"><label>${t('descriptionSource')}</label><div class="input-row"><input id="description-source" value="${esc(d.source)}" placeholder=".zip / .urdf / .xacro"><button id="description-browse" class="button">${t('selectDescription')}</button><button id="description-browse-dir" class="button">${state.language === 'en' ? 'Choose directory' : '选择目录'}</button></div></div><div class="actions"><button id="description-analyze" class="button primary">${t('analyzeDescription')}</button></div><p class="hint">${t('newModelHint')}</p></div></div>`;
     if (!a) return pageTitle + descriptionStepper(1) + upload;
+    if (a.model_choices) return pageTitle + descriptionStepper(1) + upload +
+        `<div class="card"><div class="card-body"><label>${state.language === 'en' ? 'Choose the robot model' : '选择机器人模型'}</label><select id="description-model"><option value="">${state.language === 'en' ? 'Select a model' : '请选择模型'}</option>${a.model_choices.map(name => `<option value="${esc(name)}">${esc(name)}</option>`).join('')}</select></div></div>`;
     syncDescriptionChain();
     const movable = a.joints.filter(j => j.type !== 'fixed' && !j.mimic);
     const basicOk = !!(a.links.length && a.roots?.length && movable.length);
@@ -609,7 +611,7 @@ const profileLabels = {
     compliant_hold: '柔性保持', compliant_drag: '柔性拖拽', compliant_tracking: '柔性跟踪',
     identification_tracking: '辨识跟踪', kp: '位置刚度 Kp', kd: '速度阻尼 Kd',
     position_margin: '关节位置余量 rad', cmd_vel_scale: '命令速度比例', state_vel_scale: '状态速度比例',
-    max_acc: '关节最大加速度 rad/s²', max_effort_override: '最大力矩覆盖 Nm',
+    max_acc: '关节最大加速度 rad/s²', max_effort_override: '前馈力矩上限 Nm',
     max_kp_override: 'Kp 安全上限', max_kd_override: 'Kd 安全上限',
     max_dt_s: '最大控制周期 s', state_timeout_s: '反馈超时 s', cmd_timeout_s: '命令超时 s',
     require_all_actuators_online: '要求全部电机在线', require_all_actuators_enabled: '要求全部电机使能',
@@ -640,7 +642,10 @@ const paramLabel = key => profileLabels[key] || key;
 function profileGet(draft, path) { return path.reduce((item, key) => item?.[key], draft); }
 function profileField(path, value) {
     const id = path.join('.');
-    const label = paramLabel(path.at(-1));
+    let label = paramLabel(path.at(-1));
+    const joint = path.find(part => state.profileEditor?.joint_names?.includes(part));
+    const linear = joint && state.profileEditor?.urdf_joint_limits?.[joint]?.type === 'prismatic';
+    if (linear) label = label.replace(/rad/g, 'm').replace(/Nm/g, 'N');
     const readonly = id === 'core.model.joint_names';
     const opts = profileEnums[id] ? [...new Set([...profileEnums[id], String(value)])] : null;
     const hardwareChoice = typeof value === 'string' ? hardwareChoiceField(path, value, readonly) : null;
@@ -2297,7 +2302,11 @@ async function importProfileSource(source) {
 }
 function collectDescriptionDraft() {
     const d = state.descriptionDraft;
-    if ($('description-source')) d.source = $('description-source').value.trim();
+    if ($('description-source')) {
+        const source = $('description-source').value.trim();
+        if (source !== d.source) d.model_relative = '';
+        d.source = source;
+    }
     if ($('draft-base')) d.base_frame = $('draft-base').value;
     if ($('draft-tool')) d.tool_frame = $('draft-tool').value;
     if ($('draft-profile')) d.profile = $('draft-profile').value.trim();
@@ -2307,7 +2316,7 @@ function collectDescriptionDraft() {
 async function analyzeDescription() {
     collectDescriptionDraft();
     if (!state.descriptionDraft.source) throw new Error(state.language === 'en' ? 'Choose a Description first' : '请先选择 Description 文件');
-    state.descriptionAnalysis = await api.request('description_inspect', { source: state.descriptionDraft.source });
+    state.descriptionAnalysis = await api.request('description_inspect', { source: state.descriptionDraft.source, model_relative: state.descriptionDraft.model_relative || '' });
     const a = state.descriptionAnalysis, d = state.descriptionDraft;
     d.base_frame = a.roots?.[0] || a.links?.[0] || '';
     d.tool_frame = a.preview?.native?.config?.tool_frame || a.leaves?.[0] || '';
@@ -2323,7 +2332,7 @@ async function createDescriptionProfile() {
     if (!d.destination) throw new Error(state.language === 'en' ? 'Choose a destination directory' : '请选择 Profile 保存目录');
     // Do not invent hardware mappings before the user reaches Profile setup
     const result = await api.request('description_create_profile', {
-        source: d.source, profile: d.profile, destination: d.destination,
+        source: d.source, model_relative: d.model_relative || '', profile: d.profile, destination: d.destination,
         base_frame: d.base_frame, tool_frame: d.tool_frame, joint_names: d.joint_names, hardware_plugin: ''
     });
     state.config = { ...result.config };
@@ -2525,8 +2534,13 @@ function bindPage() {
     if ($('library-import-dir')) $('library-import-dir').onclick = () => operation(async () => { const source = await api.selectProfilePackage(); if (source) await importProfileSource(source); });
     if ($('library-import-file')) $('library-import-file').onclick = () => operation(async () => { const source = await api.selectProfile(); if (source) await importProfileSource(source); });
     if ($('description-home')) $('description-home').onclick = resetToStart;
-    if ($('description-browse')) $('description-browse').onclick = () => operation(async () => { const file = await api.selectDescription(); if (file) { state.descriptionDraft.source = file; const node = $('description-source'); if (node) node.value = file; } });
-    if ($('description-browse-dir')) $('description-browse-dir').onclick = () => operation(async () => { const dir = await api.selectProfilePackage(); if (dir) { state.descriptionDraft.source = dir; const node = $('description-source'); if (node) node.value = dir; } });
+    if ($('description-browse')) $('description-browse').onclick = () => operation(async () => { const file = await api.selectDescription(); if (file) { state.descriptionDraft.source = file; state.descriptionDraft.model_relative = ''; const node = $('description-source'); if (node) node.value = file; } });
+    if ($('description-browse-dir')) $('description-browse-dir').onclick = () => operation(async () => { const dir = await api.selectProfilePackage(); if (dir) { state.descriptionDraft.source = dir; state.descriptionDraft.model_relative = ''; const node = $('description-source'); if (node) node.value = dir; } });
+    if ($('description-model')) $('description-model').onchange = event => {
+        if (!event.target.value) return;
+        state.descriptionDraft.model_relative = event.target.value;
+        blockingOperation(busyText('正在分析模型...', 'Analyzing model...'), analyzeDescription);
+    };
     if ($('description-analyze')) $('description-analyze').onclick = () => blockingOperation(busyText('正在分析 Description...', 'Analyzing Description...'), analyzeDescription);
     if ($('description-reset')) $('description-reset').onclick = () => { state.descriptionAnalysis = null; state.descriptionStep = 1; state.descriptionDraft = { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [] }; render(); };
     if ($('draft-base')) $('draft-base').onchange = () => { collectDescriptionDraft(); render(); };

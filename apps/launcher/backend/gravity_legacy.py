@@ -17,7 +17,7 @@ import xml.etree.ElementTree as ET
 
 from model_calibration_source import resolve_relative_mesh, verified_source_urdf
 from legacy_full_inertial import (_prepare_inputs, _articulated_mapping,
-                                  _extract_rows, _fit_regressor, _sampling_map)
+                                  _extract_rows, _fit_regressor, _sampling_map, _assign_configuration)
 from gravity_mass_com import fit_global_mass_com
 
 
@@ -141,7 +141,7 @@ def _static_holdout(folder, model, pin, mapped, prior):
     training, heldout = [], []
     for is_val, q, tau in poses:
         state = q_neutral.copy()
-        state[q_indices] = q
+        _assign_configuration(model, state, q_indices, q)
         Y = np.asarray(pin.computeJointTorqueRegressor(
             model, data, state, np.zeros(model.nv), np.zeros(model.nv)), dtype=float)[v_indices, :]
         moving = Y[:, param_indices]

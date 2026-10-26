@@ -20,6 +20,7 @@ enum class HardwareLoaderErr {
     CONFIG_OPEN_FAILED,      ///< Hardware YAML 无法打开
     CONFIG_SYNTAX_ERROR,     ///< Hardware YAML 语法错误
     INVALID_OVERRIDE,        ///< runtime override 参数非法
+    ABI_MISMATCH,            ///< Backend 与已安装 SDK 的对象布局不兼容
 };
 
 /**

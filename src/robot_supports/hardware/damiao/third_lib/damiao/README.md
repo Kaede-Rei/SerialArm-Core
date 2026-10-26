@@ -23,34 +23,11 @@
 
 ## 快速开始
 
-### 1) 编译 `dm_hw`
+在仓库根目录执行 `./install.sh --preset standalone --robot dm_arm`，然后通过 `./.install/run serial_arm_terminal --robot-profile dm_arm_gray` 进入现有终端
 
-在 ROS2 工作空间根目录执行
+该协议库随 `serial_arm_hardware_damiao` 构建，不提供独立的 `dm_hw` ROS 包或硬件测试可执行文件
 
-```bash
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select dm_hw
-source install/setup.bash
-```
-
-### 2) 连接硬件
-
-默认串口设备为 `/dev/ttyACM0`，默认波特率为 `921600`
-
-如果你使用其他设备节点，请在 `DamiaoBusCfg::serial_port` 或 YAML 配置中替换为实际路径
-
-### 3) 运行示例
-
-```bash
-ros2 run dm_hw test_damiao
-```
-
-示例程序会演示
-
-- 创建共享 CAN bus/channel 与控制器
-- 添加电机到控制器
-- 切换控制模式
-- 控制/刷新电机状态并打印位置、速度、电流（扭矩）
+连接设备与波特率由机械臂 Hardware YAML 配置，发送执行器命令前检查映射、限位和现场停机条件
 
 ## 核心 API
 
@@ -144,9 +121,9 @@ int main() {
     config.baudrate = 921600;
     auto channel = serial_arm::protocol::damiao_usb2can::acquire_channel("main_can", config, {});
     if(!channel) return 1;
-    MotorControl control(*channel);
+    damiao::MotorControl control(*channel);
 
-    Motor motor(DMH3510, 0x01, 0x00);
+    damiao::Motor motor(damiao::DMH3510, 0x01, 0x00);
     control.add_motor(&motor);
 
     control.disable(motor);

@@ -1,4 +1,5 @@
 #include "robot_session.hpp"
+#include "serial_arm/dynamics/gravity_correction.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -135,6 +136,7 @@ void PyRobotSession::configure(
     const std::string& hardware_plugin,
     const std::string& hardware_config,
     const HardwareConfigOverrides& hardware_overrides) {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(configured_) {
         throw SerialArmPythonError("RobotSession is already configured");
     }
@@ -152,15 +154,17 @@ void PyRobotSession::configure(
 
     RobotCfg cfg = cfg_result.value();
     auto dynamics = std::make_unique<Dynamics>();
-    const auto dynamics_result = dynamics->configure(cfg.dynamics);
+    const auto dynamics_result = configure_robot_dynamics(cfg, *dynamics);
     if(!dynamics_result) {
         throw SerialArmPythonError("Dynamics configure failed; DynamicsErr=" + std::to_string(static_cast<int>(dynamics_result.error())));
     }
 
+    const auto ordered_capabilities = capabilities_for_joint_order(hardware_bus->capabilities(), cfg.joint_names);
+    if(!ordered_capabilities) throw SerialArmPythonError("hardware joint identities do not match Core");
     std::vector<RobotSessionActuatorInfo> actuator_info;
-    actuator_info.reserve(hardware_bus->capabilities().size());
-    for(std::size_t i = 0; i < hardware_bus->capabilities().size(); ++i) {
-        const auto& item = hardware_bus->capabilities()[i];
+    actuator_info.reserve(ordered_capabilities->size());
+    for(std::size_t i = 0; i < ordered_capabilities->size(); ++i) {
+        const auto& item = (*ordered_capabilities)[i];
         const std::string joint_name = i < cfg.joint_names.size() ? cfg.joint_names[i] : std::string{ };
         actuator_info.push_back(RobotSessionActuatorInfo{
             item.actuator_name,
@@ -197,6 +201,7 @@ void PyRobotSession::configure(
         throw SerialArmPythonError(make_robot_error("Robot configure", robot_result.error()));
     }
 
+    std::lock_guard<std::mutex> snapshot_lock(mutex_);
     robot_ = std::move(robot);
     requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
     requested_gravity_scale_ = cfg_.dynamics.gravity_scale;
@@ -215,6 +220,7 @@ void PyRobotSession::configure(
 }
 
 void PyRobotSession::start() {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!configured_ || !robot_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
@@ -269,6 +275,7 @@ void PyRobotSession::start() {
 }
 
 void PyRobotSession::stop() {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     running_.store(false);
     fault_recovery_cv_.notify_all();
     if(worker_.joinable()) {
@@ -362,6 +369,9 @@ void PyRobotSession::set_impedance_mode(JointImpedanceMode mode) {
 }
 
 void PyRobotSession::set_model_feedforward_mode(ModelFeedforwardMode mode) {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    if(!cfg_.dynamics.gravity_correction_path.empty() && mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS)
+        throw SerialArmPythonError("gravity correction does not support full inverse dynamics");
     if(!configured_ || !robot_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
@@ -382,6 +392,7 @@ void PyRobotSession::set_model_feedforward_mode(ModelFeedforwardMode mode) {
 }
 
 void PyRobotSession::set_gravity_scale(const JointVector& gravity_scale) {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     validate_joint_vector(gravity_scale, "gravity_scale");
     for(double value : gravity_scale) {
         if(value < 0.0 || value > 2.0) {
@@ -465,6 +476,7 @@ RobotState PyRobotSession::get_state() const {
 }
 
 FaultHoldMode PyRobotSession::get_fault_hold_mode() const {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!robot_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
@@ -481,6 +493,7 @@ bool PyRobotSession::is_running() const noexcept {
 }
 
 RobotCfg PyRobotSession::get_config() const {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!configured_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
@@ -488,6 +501,7 @@ RobotCfg PyRobotSession::get_config() const {
 }
 
 DynamicsInfo PyRobotSession::get_dynamics_info() const {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!dynamics_) {
         throw SerialArmPythonError("Dynamics is not configured");
     }
@@ -495,6 +509,7 @@ DynamicsInfo PyRobotSession::get_dynamics_info() const {
 }
 
 std::vector<RobotSessionActuatorInfo> PyRobotSession::get_actuator_info() const {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     return actuator_info_;
 }
 
@@ -536,7 +551,7 @@ void PyRobotSession::loop() noexcept {
         if(now > next_time) next_time = now;
         double dt = std::chrono::duration<double>(now - previous_time).count();
         previous_time = now;
-        if(!std::isfinite(dt) || dt <= 0.0) {
+        if(!std::isfinite(dt) || dt <= 0.0 || dt > cfg_.safety.max_dt_s) {
             dt = target_dt;
         }
 
@@ -564,6 +579,8 @@ void PyRobotSession::loop() noexcept {
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 snapshot_.robot_state = robot_->get_state();
+                snapshot_.cycle.joint_state = robot_->get_joint_state();
+                snapshot_.valid = false;
                 fault_hold_mode_cache_ = robot_->get_state() == RobotState::FAULT ?
                     robot_->get_fault_hold_mode() : FaultHoldMode::RIGID_HOLD;
             }
@@ -666,7 +683,7 @@ void PyRobotSession::loop() noexcept {
                 set_worker_error(make_robot_error("Robot deactivate", result.error()));
             }
         }
-        else if(state == RobotState::FAULT && robot_->is_fault_holding()) {
+        else if(state == RobotState::FAULT) {
             const auto result = robot_->force_deactivate();
             if(!result) {
                 set_worker_error(make_robot_error("Robot force_deactivate", result.error()));

@@ -1,4 +1,5 @@
 #include "serial_arm/dynamics/dynamics.hpp"
+#include "serial_arm/dynamics/gravity_correction.hpp"
 
 #include <pinocchio/algorithm/aba.hpp>
 #include <pinocchio/algorithm/center-of-mass.hpp>
@@ -9,6 +10,7 @@
 #include <pinocchio/algorithm/model.hpp>
 #include <pinocchio/algorithm/rnea.hpp>
 #include <pinocchio/parsers/urdf.hpp>
+#include <urdf_parser/urdf_parser.h>
 
 #include <Eigen/Eigenvalues>
 
@@ -43,6 +45,7 @@ struct Dynamics::Impl {
     std::unique_ptr<pinocchio::Data> data;  ///< Pinocchio 数据对象
 
     std::vector<int> q_indices;     ///< 受控关节位置索引
+    std::vector<int> q_sizes;
     std::vector<int> v_indices;     ///< 受控关节速度索引
 
     pinocchio::FrameIndex base_frame_id{ 0 };   ///< base_frame 索引
@@ -80,88 +83,29 @@ std::string read_text_file(const std::string& path) {
     return out.str();
 }
 
-/**
- * @brief 从 XML 标签文本读取属性
- */
-std::optional<std::string> xml_attribute(const std::string& text, const std::string& name) {
-    const std::regex pattern(name + R"(\s*=\s*[\"']([^\"']*)[\"'])", std::regex::icase);
-    std::smatch match;
-    if(!std::regex_search(text, match, pattern)) return std::nullopt;
-    return match[1].str();
-}
-
-/**
- * @brief 解析空格分隔的三维向量
- */
-bool parse_vec3_text(const std::string& text, Eigen::Vector3d& value) {
-    std::istringstream stream(text);
-    double x = 0.0, y = 0.0, z = 0.0;
-    if(!(stream >> x >> y >> z)) return false;
-    std::string extra;
-    if(stream >> extra) return false;
-    if(!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) return false;
-    value = Eigen::Vector3d(x, y, z);
-    return true;
-}
-
-/**
- * @brief 解析 URDF 原始 Link 惯性参数
- */
 std::vector<GravityLinkParameterInfo> parse_urdf_gravity_links(const std::string& urdf_path) {
     std::vector<GravityLinkParameterInfo> links;
-    const std::string xml = read_text_file(urdf_path);
-    if(xml.empty()) return links;
-    const std::regex link_pattern(R"(<link\b([^>]*)>([\s\S]*?)</link\s*>)", std::regex::icase);
-    const std::regex inertial_pattern(R"(<inertial\b[^>]*>([\s\S]*?)</inertial\s*>)", std::regex::icase);
-    const std::regex origin_pattern(R"(<origin\b([^>]*)/?>)", std::regex::icase);
-    const std::regex mass_pattern(R"(<mass\b([^>]*)/?>)", std::regex::icase);
-    const std::regex inertia_pattern(R"(<inertia\b([^>]*)/?>)", std::regex::icase);
-    for(std::sregex_iterator it(xml.begin(), xml.end(), link_pattern), end; it != end; ++it) {
-        const auto name = xml_attribute((*it)[1].str(), "name");
-        if(!name || name->empty()) continue;
-        std::smatch inertial_match;
-        const std::string body = (*it)[2].str();
-        if(!std::regex_search(body, inertial_match, inertial_pattern)) continue;
-        const std::string inertial = inertial_match[1].str();
+    const auto parsed = ::urdf::parseURDF(read_text_file(urdf_path));
+    if(!parsed) return links;
+    for(const auto& entry : parsed->links_) {
+        const auto& inertial = entry.second->inertial;
+        if(!inertial) continue;
         GravityLinkParameterInfo info;
-        info.link_name = *name;
-        Eigen::Vector3d xyz = Eigen::Vector3d::Zero();
-        Eigen::Vector3d rpy = Eigen::Vector3d::Zero();
-        std::smatch match;
-        if(std::regex_search(inertial, match, origin_pattern)) {
-            const auto xyz_text = xml_attribute(match[1].str(), "xyz");
-            const auto rpy_text = xml_attribute(match[1].str(), "rpy");
-            if(xyz_text && !parse_vec3_text(*xyz_text, xyz)) continue;
-            if(rpy_text && !parse_vec3_text(*rpy_text, rpy)) continue;
-        }
-        if(!std::regex_search(inertial, match, mass_pattern)) continue;
-        const auto mass_text = xml_attribute(match[1].str(), "value");
-        if(!mass_text) continue;
-        try { info.mass = std::stod(*mass_text); }
-        catch(...) { continue; }
-        if(!std::isfinite(info.mass) || info.mass <= 0.0) continue;
-        if(!std::regex_search(inertial, match, inertia_pattern)) continue;
-        const std::string inertia_attrs = match[1].str();
-        auto get = [&](const char* key, double& out) {
-            const auto value = xml_attribute(inertia_attrs, key);
-            if(!value) return false;
-            try { out = std::stod(*value); }
-            catch(...) { return false; }
-            return std::isfinite(out);
-        };
-        double ixx=0.0, ixy=0.0, ixz=0.0, iyy=0.0, iyz=0.0, izz=0.0;
-        if(!get("ixx",ixx)||!get("ixy",ixy)||!get("ixz",ixz)||!get("iyy",iyy)||!get("iyz",iyz)||!get("izz",izz)) continue;
-        Eigen::Matrix3d inertia_matrix;
-        inertia_matrix << ixx, ixy, ixz, ixy, iyy, iyz, ixz, iyz, izz;
-        const Eigen::AngleAxisd roll(rpy.x(), Eigen::Vector3d::UnitX());
-        const Eigen::AngleAxisd pitch(rpy.y(), Eigen::Vector3d::UnitY());
-        const Eigen::AngleAxisd yaw(rpy.z(), Eigen::Vector3d::UnitZ());
-        const Eigen::Matrix3d rotation = (yaw * pitch * roll).toRotationMatrix();
-        info.center_of_mass = xyz;
-        info.inertia = rotation * inertia_matrix * rotation.transpose();
+        info.link_name = entry.first;
+        info.mass = inertial->mass;
+        info.center_of_mass = Eigen::Vector3d(inertial->origin.position.x, inertial->origin.position.y, inertial->origin.position.z);
+        Eigen::Matrix3d inertia;
+        inertia << inertial->ixx,inertial->ixy,inertial->ixz,
+                   inertial->ixy,inertial->iyy,inertial->iyz,
+                   inertial->ixz,inertial->iyz,inertial->izz;
+        const auto& q = inertial->origin.rotation;
+        const Eigen::Matrix3d rotation = Eigen::Quaterniond(q.w,q.x,q.y,q.z).normalized().toRotationMatrix();
+        info.inertia = rotation * inertia * rotation.transpose();
         const Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> eig(info.inertia);
-        info.inertia_valid = eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() >= -1.0e-10;
-        links.push_back(std::move(info));
+        info.inertia_valid = std::isfinite(info.mass) && info.mass > 0.0 && info.center_of_mass.allFinite() &&
+            info.inertia.allFinite() && eig.info() == Eigen::Success && eig.eigenvalues().minCoeff() >= -1e-10 &&
+            eig.eigenvalues().maxCoeff() <= eig.eigenvalues().sum() - eig.eigenvalues().maxCoeff() + 1e-10;
+        if(info.mass > 0.0) links.push_back(std::move(info));
     }
     return links;
 }
@@ -384,7 +328,7 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
         if(joint_id == 0 || static_cast<int>(joint_id) >= full_model.njoints) {
             return tl::make_unexpected(DynamicsErr::JOINT_NOT_FOUND);
         }
-        if(full_model.nqs[joint_id] != 1 || full_model.nvs[joint_id] != 1) {
+        if((full_model.nqs[joint_id] != 1 && full_model.nqs[joint_id] != 2) || full_model.nvs[joint_id] != 1) {
             return tl::make_unexpected(DynamicsErr::JOINT_NOT_1DOF);
         }
     }
@@ -408,7 +352,7 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     }
 
     const int expected_size = static_cast<int>(cfg.joint_names.size());
-    if(reduced_model.nq != expected_size || reduced_model.nv != expected_size) {
+    if(reduced_model.nv != expected_size) {
         return tl::make_unexpected(DynamicsErr::MODEL_SIZE_MISMATCH);
     }
 
@@ -421,7 +365,7 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
         if(joint_id == 0 || static_cast<int>(joint_id) >= reduced_model.njoints) {
             return tl::make_unexpected(DynamicsErr::JOINT_NOT_FOUND);
         }
-        if(reduced_model.nqs[joint_id] != 1 || reduced_model.nvs[joint_id] != 1) {
+        if((reduced_model.nqs[joint_id] != 1 && reduced_model.nqs[joint_id] != 2) || reduced_model.nvs[joint_id] != 1) {
             return tl::make_unexpected(DynamicsErr::JOINT_NOT_1DOF);
         }
 
@@ -443,12 +387,15 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     impl_->cfg.gravity_scale = std::move(gravity_scale);
     impl_->model = std::move(reduced_model);
     impl_->data = std::make_unique<pinocchio::Data>(impl_->model);
+    impl_->q_sizes.clear();
+    for(const auto& name : cfg.joint_names)
+        impl_->q_sizes.push_back(impl_->model.nqs[impl_->model.getJointId(name)]);
     impl_->q_indices = std::move(q_indices);
     impl_->v_indices = std::move(v_indices);
     impl_->base_frame_id = base_frame_id;
     impl_->tool_frame_id = tool_frame_id;
 
-    impl_->q_model = Eigen::VectorXd::Zero(impl_->model.nq);
+    impl_->q_model = pinocchio::neutral(impl_->model);
     impl_->dq_model = Eigen::VectorXd::Zero(impl_->model.nv);
     impl_->ddq_model = Eigen::VectorXd::Zero(impl_->model.nv);
     impl_->tau_model = Eigen::VectorXd::Zero(impl_->model.nv);
@@ -487,17 +434,11 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     // Fixed coordinates and unsampled auxiliary joints keep the recorded URDF prior
     const std::string urdf_xml = read_text_file(cfg.urdf_path);
     std::unordered_map<std::string,std::string> identifiable_links;
-    const std::regex joint_pattern(R"(<joint\b([^>]*)>([\s\S]*?)</joint\s*>)", std::regex::icase);
-    const std::regex child_pattern(R"(<child\b([^>]*)/?>)", std::regex::icase);
-    for(std::sregex_iterator it(urdf_xml.begin(), urdf_xml.end(), joint_pattern), end; it != end; ++it) {
-        const auto name = xml_attribute((*it)[1].str(), "name");
-        if(!name || controlled.find(*name) == controlled.end()) continue;
-        std::smatch child;
-        const std::string body = (*it)[2].str();
-        if(std::regex_search(body, child, child_pattern)) {
-            const auto link = xml_attribute(child[1].str(), "link");
-            if(link) identifiable_links.emplace(*link,*name);
-        }
+    const auto parsed_urdf = ::urdf::parseURDF(urdf_xml);
+    if(!parsed_urdf) return tl::make_unexpected(DynamicsErr::URDF_LOAD_FAILED);
+    for(const auto& entry : parsed_urdf->joints_) {
+        if(controlled.find(entry.first) != controlled.end())
+            identifiable_links.emplace(entry.second->child_link_name, entry.first);
     }
     for(auto info : parse_urdf_gravity_links(cfg.urdf_path)) {
         if(!impl_->model.existFrame(info.link_name)) continue;
@@ -543,6 +484,18 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
 
     impl_->is_configured = true;
     impl_->is_updated = false;
+    if(!cfg.gravity_correction_path.empty()) {
+        try {
+            const auto package = load_gravity_correction_package(cfg.gravity_correction_path, cfg.joint_names, cfg.urdf_path);
+            const auto applied = set_gravity_first_moment_override(package.first_moments);
+            if(!applied) { cleanup(); return applied; }
+            impl_->cfg.gravity_scale.assign(cfg.joint_names.size(), 1.0);
+        }
+        catch(const std::exception&) {
+            cleanup();
+            return tl::make_unexpected(DynamicsErr::INVALID_CFG);
+        }
+    }
     return {};
 }
 
@@ -587,10 +540,16 @@ tl::expected<void, DynamicsErr> Dynamics::update_state(const JointState& state, 
     if(!tor_valid) return tl::make_unexpected(tor_valid.error());
     if(!acc_valid) return tl::make_unexpected(acc_valid.error());
 
-    assign_joint_vector(state.pos, impl_->q_indices, impl_->q_model);
+    for(std::size_t i = 0; i < state.pos.size(); ++i) {
+        const auto index = impl_->q_indices[i];
+        impl_->q_model[index] = impl_->q_sizes[i] == 2 ? std::cos(state.pos[i]) : state.pos[i];
+        if(impl_->q_sizes[i] == 2) impl_->q_model[index + 1] = std::sin(state.pos[i]);
+    }
     assign_joint_vector(state.vel, impl_->v_indices, impl_->dq_model);
     assign_joint_vector(state.tor, impl_->v_indices, impl_->tau_model);
 
+    if(impl_->is_updated && state.pos == impl_->state.pos && state.vel == impl_->state.vel &&
+        state.tor == impl_->state.tor && acc == impl_->state.acc) return {};
     impl_->is_updated = false;
 
     try {
@@ -805,7 +764,11 @@ tl::expected<GravityRegressionResult, DynamicsErr> Dynamics::get_gravity_regress
     if(!valid) return tl::make_unexpected(valid.error());
     try {
         Eigen::VectorXd q_model = Eigen::VectorXd::Zero(impl_->model.nq);
-        assign_joint_vector(positions, impl_->q_indices, q_model);
+        for(std::size_t i = 0; i < positions.size(); ++i) {
+            const auto index = impl_->q_indices[i];
+            q_model[index] = impl_->q_sizes[i] == 2 ? std::cos(positions[i]) : positions[i];
+            if(impl_->q_sizes[i] == 2) q_model[index + 1] = std::sin(positions[i]);
+        }
         Eigen::VectorXd dq_model = Eigen::VectorXd::Zero(impl_->model.nv);
         pinocchio::Data data(impl_->model);
         pinocchio::computeAllTerms(impl_->model, data, q_model, dq_model);

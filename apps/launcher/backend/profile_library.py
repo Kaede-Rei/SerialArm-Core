@@ -11,6 +11,8 @@ import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 import zipfile
+import subprocess
+import sys
 
 import yaml
 
@@ -34,7 +36,12 @@ def _safe_extract(source, destination):
     destination = Path(destination).resolve()
     destination.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(source) as archive:
-        for member in archive.infolist():
+        members = archive.infolist()
+        if len(members) > 10000 or sum(m.file_size for m in members) > 512 * 1024 * 1024:
+            raise ValueError('description archive exceeds extraction limits')
+        for member in members:
+            if member.file_size > 64 * 1024 * 1024 or (member.external_attr >> 16) & 0o170000 == 0o120000:
+                raise ValueError('description archive contains an oversized file or symbolic link')
             target = (destination / member.filename).resolve()
             if destination not in target.parents and target != destination:
                 raise ValueError('description archive contains an unsafe path')
@@ -302,7 +309,7 @@ class ProfileLibrary:
             profile_setup = False
             values['profile_setup'] = 'pending'
             reason = 'Safety 必须为各关节配置正值 max_acc，才能启用真实硬件'
-        state = 'ready' if profile_setup else 'configuring'
+        state = ('needs_revalidation' if stale else 'pending_validation' if missing else 'ready') if profile_setup else 'configuring'
         urdf_limits = {}
         if profile_setup:
             try:
@@ -330,7 +337,7 @@ class ProfileLibrary:
             'fault_recovery': dict(safety.get('fault_recovery') or {}),
             'urdf_limits': urdf_limits,
         }
-        return {'state': state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
+        return {'state': state, 'next_stage': 'profile_setup' if not profile_setup else (missing[0] if missing else 'ready'),
                 'checks': values, 'modes': mode_states, 'reason': reason,
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
@@ -541,28 +548,82 @@ class ProfileLibrary:
         if path.is_file() and path.suffix.lower()=='.zip':
             stamp=hashlib.sha256((str(path)+str(path.stat().st_mtime_ns)+str(path.stat().st_size)).encode()).hexdigest()[:20]
             root=self.cache/stamp
-            if not root.is_dir(): _safe_extract(path, root)
+            if not root.is_dir():
+                self.cache.mkdir(parents=True, exist_ok=True)
+                temporary = Path(tempfile.mkdtemp(prefix='extract-', dir=self.cache))
+                try:
+                    _safe_extract(path, temporary)
+                    temporary.rename(root)
+                finally:
+                    if temporary.exists(): shutil.rmtree(temporary)
             return root
         if path.is_dir(): return path
         if path.is_file() and (path.name.endswith('.urdf') or path.name.endswith('.xacro')): return path.parent
         raise ValueError('select a Description directory, ZIP, URDF, or Xacro')
 
-    def inspect_description(self, source):
-        root=self._description_source(source)
-        packages=[]
-        for package_xml in sorted(root.glob('**/package.xml'))[:30]:
-            try:
-                node=ET.parse(package_xml).getroot(); name=(node.findtext('name') or '').strip()
-            except ET.ParseError: continue
-            urdfs=[p for p in package_xml.parent.glob('**/*.urdf') if not p.name.endswith('.urdf.xacro')]
-            if urdfs: packages.append((package_xml.parent,name,urdfs))
-        if not packages:
-            urdfs=list(root.glob('**/*.urdf'))
-            if not urdfs: raise ValueError('Description contains no URDF')
-            package_root=urdfs[0].parent; package_name=package_root.name; packages=[(package_root,package_name,urdfs)]
-        package_root, package_name, urdfs=packages[0]
-        urdf=urdfs[0]
-        raw=self.inspector._parse_urdf(urdf,[str(root),str(package_root.parent),str(package_root)])
+    def inspect_description(self, source, model_relative=""):
+        selected = Path(source).expanduser().resolve()
+        root = self._description_source(source)
+        if model_relative:
+            selected = (root / text(model_relative)).resolve()
+            if not selected.is_relative_to(root) or not selected.is_file():
+                raise ValueError('Selected model is outside the Description')
+        explicit = selected.is_file() and selected.suffix.lower() in ('.urdf', '.xacro')
+        package_root = None
+        if explicit:
+            for parent in selected.parents:
+                if (parent / 'package.xml').is_file():
+                    package_root = parent
+                    root = parent
+                    break
+            package_root = package_root or selected.parent
+            urdf = selected
+        else:
+            candidates = sorted(root.glob('**/*.urdf'))
+            if not candidates:
+                candidates = sorted(p for p in root.glob('**/*.xacro')
+                    if not any(word in p.name.lower() for word in ('ros2_control', 'material', 'macro')))
+            if not candidates:
+                raise ValueError('Description contains no URDF or model Xacro')
+            if len(candidates) > 1:
+                return {'model_choices': [str(p.relative_to(root)) for p in candidates],
+                        'source_root': str(root), 'joints': [], 'links': []}
+            urdf = candidates[0]
+            for parent in urdf.parents:
+                if not parent.is_relative_to(root): break
+                if (parent / 'package.xml').is_file():
+                    package_root = parent
+                    break
+            package_root = package_root or urdf.parent
+        metadata = package_root / 'package.xml'
+        package_name = (ET.parse(metadata).getroot().findtext('name') or '').strip() if metadata.is_file() else package_root.name
+        if not package_name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in package_name):
+            raise ValueError('Description package name is invalid')
+        if urdf.suffix.lower() == '.xacro':
+            # Expand in a cache copy, preserving all relative mesh and include paths
+            digest = hashlib.sha256()
+            for item in sorted(package_root.rglob('*')):
+                if item.is_file() and item.suffix.lower() in ('.xacro', '.urdf', '.yaml', '.xml'):
+                    digest.update(str(item.relative_to(package_root)).encode())
+                    digest.update(item.read_bytes())
+            cache = self.cache / ('expanded-' + digest.hexdigest())
+            copied = cache / package_root.name
+            relative = urdf.relative_to(package_root)
+            expanded = copied / relative.with_name(relative.name + '.expanded.urdf')
+            if not expanded.is_file():
+                cache.mkdir(parents=True, exist_ok=True)
+                if copied.exists(): shutil.rmtree(copied)
+                shutil.copytree(package_root, copied, ignore=shutil.ignore_patterns('.git', '__pycache__', '.serialarm'))
+                script = 'import sys,xacro; print(xacro.process_file(sys.argv[1]).toxml())'
+                result = subprocess.run([sys.executable, '-c', script, str(copied / relative)],
+                    capture_output=True, text=True, timeout=30)
+                if result.returncode:
+                    shutil.rmtree(cache, ignore_errors=True)
+                    raise ValueError('Xacro expansion failed: ' + result.stderr[-1600:])
+                ET.fromstring(result.stdout)
+                expanded.write_text(result.stdout, encoding='utf-8')
+            root, package_root, urdf = cache, copied, expanded
+        raw=self.inspector._parse_urdf(urdf,[str(root),str(package_root.parent),str(package_root), *self.inspector.roots(config_values({}), str(urdf))])
         children={j['child'] for j in raw['joints']}; roots=[l['name'] for l in raw['links'] if l['name'] not in children]
         parent_joint={j['child']:j for j in raw['joints']}; by_parent={}
         for j in raw['joints']: by_parent.setdefault(j['parent'],[]).append(j)
@@ -586,80 +647,91 @@ class ProfileLibrary:
     def _joint_map(names, value): return {name:value for name in names}
 
     def create_profile(self, options):
-        source=text(options.get('source')); analysis=self.inspect_description(source)
+        source=text(options.get('source')); analysis=self.inspect_description(source, options.get('model_relative', ''))
+        if analysis.get('model_choices'): raise ValueError('Select a model before creating the Profile')
         profile=text(options.get('profile'))
         if not profile or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in profile): raise ValueError('Profile id may contain letters, numbers, underscore, and hyphen only')
         destination=Path(text(options.get('destination'))).expanduser().resolve()
         package_dir=destination/profile
         if package_dir.exists() and any(package_dir.iterdir()): raise ValueError('destination Profile package already exists and is not empty')
-        package_dir.mkdir(parents=True,exist_ok=True)
-        copied=package_dir/analysis['package_name']; shutil.copytree(analysis['package_root'],copied,dirs_exist_ok=True)
-        config_dir=copied/'config'/'serialarm'; config_dir.mkdir(parents=True,exist_ok=True)
-        joints=[text(x) for x in options.get('joint_names',[]) if text(x)]
-        if not joints: raise ValueError('select at least one controlled joint')
-        base=text(options.get('base_frame')); tool=text(options.get('tool_frame'))
-        if base not in analysis['links'] or tool not in analysis['links']: raise ValueError('base/tool frame must exist in the Description')
-        zeros=self._joint_map(joints,0.0); ones=self._joint_map(joints,1.0)
-        limits = {item['name']: item.get('limit') or {} for item in analysis['joints']}
-        park = {}
-        for name in joints:
-            low, high = limits[name].get('lower'), limits[name].get('upper')
-            if low is not None and high is not None:
-                if float(low) > float(high): raise ValueError(f'{name} URDF 关节限位上下界错误')
-                park[name] = max(float(low), min(float(high), 0.0))
-            else: park[name] = 0.0
-        kp_rigid=self._joint_map(joints,20.0); kd_rigid=self._joint_map(joints,0.5); kp_soft=self._joint_map(joints,3.0); kd_soft=self._joint_map(joints,0.1)
-        core={
-          'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
-          'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
-          'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'identification_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
-          'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_kp_override':self._joint_map(joints,50.0),'max_kd_override':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
-          'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
-          'capability':{'admittance':{'enabled':False,'joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
-        }
-        # If the Description already supplies a robot-specific Core config,
-        # use it as the authoritative profile configuration. In particular,
-        # do not silently replace validated joint-specific gains by the generic
-        # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults.
-        authored_config = copied / 'config' / 'core' / f'{profile}.yaml'
-        if authored_config.is_file():
-            authored_core = read_yaml(authored_config)
-            authored_model = authored_core.get('model') or {}
-            if (authored_model.get('joint_names') != joints or
-                authored_model.get('base_frame') != base or
-                authored_model.get('tool_frame') != tool):
-                raise ValueError('Description 自带 Core 配置的关节或坐标系与当前 Profile 不匹配，请核对后再导入')
-            authored_urdf = (authored_config.parent / str(authored_model.get('urdf_path', ''))).resolve()
-            expected_urdf = (copied / analysis['urdf_relative']).resolve()
-            if authored_urdf != expected_urdf or not authored_urdf.is_file():
-                raise ValueError('Description 自带 Core 配置中的 URDF 路径与所选模型不匹配')
-            core_config_relative = f'config/core/{profile}.yaml'
-            # Keep an already included legacy copy consistent, for consumers
-            # still accessing config/serialarm/core.yaml directly.
-            legacy_copy = config_dir / 'core.yaml'
-            if legacy_copy.is_file():
-                legacy_copy.write_bytes(authored_config.read_bytes())
-        else:
-            core_config_relative = 'config/serialarm/core.yaml'
-            _atomic_yaml(config_dir/'core.yaml',core)
-        hardware_plugin=text(options.get('hardware_plugin'))
-        if hardware_plugin not in ('', 'serial_arm_hardware_damiao'):
-            raise ValueError('hardware_plugin 目前仅支持未配置或 serial_arm_hardware_damiao')
-        hardware={}
-        actuators=options.get('actuators') or []
-        complete=hardware_plugin=='serial_arm_hardware_damiao' and len(actuators)==len(joints) and all(text(a.get('motor_type')) and int(a.get('motor_id',0))>0 for a in actuators)
-        if hardware_plugin=='serial_arm_hardware_damiao':
-            if len(actuators)!=len(joints):
-                actuators = list(actuators[:len(joints)]) + [{} for _ in range(max(0,len(joints)-len(actuators)))]
-            bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
-            hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
-        _atomic_yaml(config_dir/'hardware.yaml',hardware)
-        entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin if hardware_plugin=='serial_arm_hardware_damiao' else '','config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
-        if analysis['ros2_control_xacro']:
-            entry['description']['ros2_control_xacro']=str(Path(analysis['ros2_control_xacro']).relative_to(analysis['package_root'])).replace('\\','/')
-        profile_file=package_dir/'robot_profiles.yaml'; _atomic_yaml(profile_file,{'profiles':{profile:entry}})
-        readiness=self._readiness_path(profile_file, profile); _atomic_yaml(readiness,{'profile':profile,'managed_by_launcher':True,'source_urdf_fingerprint':analysis['fingerprint'],'stages':{}})
-        return {'package':str(package_dir),'profile_file':str(profile_file),'profile':profile,'resource_paths':str(package_dir),'hardware_complete':complete,'config':{'profile':profile,'profile_file':str(profile_file),'resource_paths':str(package_dir),'serial_port':'','baudrate':'','bus':''}}
+        requested_joints = options.get('joint_names') or []
+        known_joints = {j['name'] for j in analysis['joints'] if j['type'] != 'fixed'}
+        if not isinstance(requested_joints, list) or not requested_joints or len(set(requested_joints)) != len(requested_joints) or not set(requested_joints).issubset(known_joints):
+            raise ValueError('select unique controlled joints from the Description')
+        if options.get('base_frame') not in analysis['links'] or options.get('tool_frame') not in analysis['links']:
+            raise ValueError('base/tool frame must exist in the Description')
+        try:
+            package_dir.mkdir(parents=True,exist_ok=True)
+            copied=package_dir/analysis['package_name']; shutil.copytree(analysis['package_root'],copied,dirs_exist_ok=True)
+            config_dir=copied/'config'/'serialarm'; config_dir.mkdir(parents=True,exist_ok=True)
+            joints=[text(x) for x in options.get('joint_names',[]) if text(x)]
+            if not joints: raise ValueError('select at least one controlled joint')
+            base=text(options.get('base_frame')); tool=text(options.get('tool_frame'))
+            if base not in analysis['links'] or tool not in analysis['links']: raise ValueError('base/tool frame must exist in the Description')
+            zeros=self._joint_map(joints,0.0); ones=self._joint_map(joints,1.0)
+            limits = {item['name']: item.get('limit') or {} for item in analysis['joints']}
+            park = {}
+            for name in joints:
+                low, high = limits[name].get('lower'), limits[name].get('upper')
+                if low is not None and high is not None:
+                    if float(low) > float(high): raise ValueError(f'{name} URDF 关节限位上下界错误')
+                    park[name] = max(float(low), min(float(high), 0.0))
+                else: park[name] = 0.0
+            kp_rigid=self._joint_map(joints,20.0); kd_rigid=self._joint_map(joints,0.5); kp_soft=self._joint_map(joints,3.0); kd_soft=self._joint_map(joints,0.1)
+            core={
+              'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
+              'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
+              'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'identification_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
+              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_kp_override':self._joint_map(joints,50.0),'max_kd_override':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
+              'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
+              'capability':{'admittance':{'enabled':False,'joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
+            }
+            # If the Description already supplies a robot-specific Core config,
+            # use it as the authoritative profile configuration. In particular,
+            # do not silently replace validated joint-specific gains by the generic
+            # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults.
+            authored_config = copied / 'config' / 'core' / f'{profile}.yaml'
+            if authored_config.is_file():
+                authored_core = read_yaml(authored_config)
+                authored_model = authored_core.get('model') or {}
+                if (authored_model.get('joint_names') != joints or
+                    authored_model.get('base_frame') != base or
+                    authored_model.get('tool_frame') != tool):
+                    raise ValueError('Description 自带 Core 配置的关节或坐标系与当前 Profile 不匹配，请核对后再导入')
+                authored_urdf = (authored_config.parent / str(authored_model.get('urdf_path', ''))).resolve()
+                expected_urdf = (copied / analysis['urdf_relative']).resolve()
+                if authored_urdf != expected_urdf or not authored_urdf.is_file():
+                    raise ValueError('Description 自带 Core 配置中的 URDF 路径与所选模型不匹配')
+                core_config_relative = f'config/core/{profile}.yaml'
+                # Keep an already included legacy copy consistent, for consumers
+                # still accessing config/serialarm/core.yaml directly.
+                legacy_copy = config_dir / 'core.yaml'
+                if legacy_copy.is_file():
+                    legacy_copy.write_bytes(authored_config.read_bytes())
+            else:
+                core_config_relative = 'config/serialarm/core.yaml'
+                _atomic_yaml(config_dir/'core.yaml',core)
+            hardware_plugin=text(options.get('hardware_plugin'))
+            if hardware_plugin and any(c in hardware_plugin for c in '\0\r\n'):
+                raise ValueError('hardware_plugin contains an invalid path')
+            hardware={}
+            actuators=options.get('actuators') or []
+            complete=hardware_plugin=='serial_arm_hardware_damiao' and len(actuators)==len(joints) and all(text(a.get('motor_type')) and int(a.get('motor_id',0))>0 for a in actuators)
+            if hardware_plugin=='serial_arm_hardware_damiao':
+                if len(actuators)!=len(joints):
+                    actuators = list(actuators[:len(joints)]) + [{} for _ in range(max(0,len(joints)-len(actuators)))]
+                bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
+                hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
+            _atomic_yaml(config_dir/'hardware.yaml',hardware)
+            entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin,'config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
+            if analysis['ros2_control_xacro']:
+                entry['description']['ros2_control_xacro']=str(Path(analysis['ros2_control_xacro']).relative_to(analysis['package_root'])).replace('\\','/')
+            profile_file=package_dir/'robot_profiles.yaml'; _atomic_yaml(profile_file,{'profiles':{profile:entry}})
+            readiness=self._readiness_path(profile_file, profile); _atomic_yaml(readiness,{'profile':profile,'managed_by_launcher':True,'source_urdf_fingerprint':analysis['fingerprint'],'stages':{}})
+            return {'package':str(package_dir),'profile_file':str(profile_file),'profile':profile,'resource_paths':str(package_dir),'hardware_complete':complete,'config':{'profile':profile,'profile_file':str(profile_file),'resource_paths':str(package_dir),'serial_port':'','baudrate':'','bus':''}}
+        except Exception:
+            if package_dir.exists(): shutil.rmtree(package_dir)
+            raise
 
     def mark_stage(self, config, stage, confirmed=True):
         raise ValueError('已停用单击确认，请使用带观察记录和运行证据的阶段验收')
@@ -911,7 +983,7 @@ class ProfileLibrary:
         for key in ('speed_scale','compliant_phase_ratio'):
             if key in shut: scalar('shutdown.'+key,1e-7,1)
         for key in ('position_tolerance','velocity_tolerance','settle_time_s','relaxed_tolerance_ratio','timeout_s'):
-            scalar('shutdown.'+key,1e-7)
+            scalar('shutdown.'+key,0 if key=='settle_time_s' else 1e-7)
         for name in names:
             lim = joints_xml[name].find('limit')
             if lim is not None and lim.get('lower') is not None and lim.get('upper') is not None:
@@ -966,8 +1038,10 @@ class ProfileLibrary:
                     raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 未选择电机型号')
                 if item.get('motor_type') and item['motor_type'] not in self._DAMIAO_MOTOR_TYPES:
                     raise ValueError(f'hardware.damiao.actuators.{name}.motor_type 不支持型号 {item["motor_type"]}，请从列表选择')
-                self._finite(item.get('motor_id'),f'hardware.damiao.actuators.{name}.motor_id',1,integer=True)
-                self._finite(item.get('master_id'),f'hardware.damiao.actuators.{name}.master_id',0,integer=True)
+                self._finite(item.get('motor_id'),f'hardware.damiao.actuators.{name}.motor_id',1,0x7ff,integer=True)
+                self._finite(item.get('master_id'),f'hardware.damiao.actuators.{name}.master_id',0,0x7ff,integer=True)
+                if item['master_id'] == 0 and item['motor_id'] > 0x0f:
+                    raise ValueError(f'hardware.damiao.actuators.{name} requires an unambiguous feedback ID')
                 bus_key = (bus,item['motor_id'])
                 if bus_key in ids: raise ValueError(f'hardware.damiao.actuators.{name}.motor_id 重复')
                 ids.add(bus_key)

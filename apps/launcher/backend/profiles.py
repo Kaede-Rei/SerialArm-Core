@@ -224,6 +224,11 @@ class Inspector:
         det3 = a * (d * f - e * e) - b * (b * f - e * c) + c * (b * e - d * c)
         if not all(math.isfinite(x) for row in matrix for x in row): return False, 'inertia contains non-finite values'
         if a <= 0 or det2 <= 0 or det3 <= 0: return False, 'inertia matrix is not positive definite'
+        # Physical inertia requires 0.5*trace(I)*Identity-I to be positive semidefinite
+        import numpy as np
+        values = np.linalg.eigvalsh(np.asarray(matrix, dtype=float))
+        if values[-1] > values[0] + values[1] + 1e-10:
+            return False, 'inertia principal moments violate the triangle inequality'
         return True, ''
 
     def _parse_urdf(self, urdf, roots):
@@ -387,10 +392,24 @@ class Inspector:
         try: moveit_ready = bool(moveit_package and (self.share(moveit_package, roots) / 'package.xml').is_file())
         except ValueError: moveit_ready = False
         available['moveit'] = available['hardware'] and moveit_ready and ament_ready(moveit_package)
-        fingerprint = hashlib.sha256((json.dumps(profile, sort_keys=True) + json.dumps(c, sort_keys=True) + ''.join(Path(v).read_text(errors='replace') for k, v in resources.items() if k in ('core', 'hardware') and Path(v).is_file())).encode()).hexdigest()
+        model_path = (Path(resources['core']).parent / core['model']['urdf_path']).resolve() if core.get('model') else None
+        model_digest = hashlib.sha256(model_path.read_bytes()).hexdigest() if model_path and model_path.is_file() else ''
+        joint_units = {}
+        if model_path and model_path.is_file():
+            try:
+                for node in ET.parse(model_path).getroot().findall('joint'):
+                    linear = node.get('type') == 'prismatic'
+                    joint_units[node.get('name')] = {'position': 'm' if linear else 'rad',
+                        'velocity': 'm/s' if linear else 'rad/s', 'effort': 'N' if linear else 'Nm'}
+            except ET.ParseError:
+                pass
+        correction = (core.get('model') or {}).get('gravity_correction_path')
+        correction_path = (Path(resources['core']).parent / correction).resolve() if correction else None
+        correction_digest = hashlib.sha256(correction_path.read_bytes()).hexdigest() if correction_path and correction_path.is_file() else ''
+        fingerprint = hashlib.sha256((model_digest + correction_digest + json.dumps(profile, sort_keys=True) + json.dumps(c, sort_keys=True) + ''.join(Path(v).read_text(errors='replace') for k, v in resources.items() if k in ('core', 'hardware') and Path(v).is_file())).encode()).hexdigest()
         return {'fingerprint': fingerprint, 'profile': c['profile'], 'profile_file': listing['profile_file'], 'resources': resources,
                 'checks': checks, 'available': available, 'write_enabled': write_enabled,
                 'devices': devices, 'default_port': default_port, 'default_baudrate': selected.get('baudrate', ''),
-                'bus': bus_name, 'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
+                'joint_units': joint_units, 'bus': bus_name, 'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
                 'controllers': (profile.get('controllers') or {}).get('spawn', ['joint_state_broadcaster', 'joint_trajectory_controller']),
                 'moveit_package': moveit_package, 'resource_paths': c['resource_paths']}

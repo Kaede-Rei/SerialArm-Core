@@ -1,6 +1,7 @@
 #include "serial_arm/config/config.hpp"
 #include "serial_arm/config/robot_profile.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
+#include "serial_arm/dynamics/gravity_correction.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/dynamics/calibration_retime.hpp"
 #include "serial_arm/dynamics/calibration_measurement_quality.hpp"
@@ -119,83 +120,6 @@ struct ModelCalibrationPoseTarget {
 };
 
 
-struct GravityCorrectionPackage {
-    std::string urdf_fingerprint;
-    std::vector<std::string> joint_names;
-    std::vector<GravityFirstMoment> first_moments;
-    JointVector torque_bias;
-    JointVector torque_threshold;
-    bool static_pass{ false };
-    bool friction_pass{ false };
-    FrictionResidualModelCfg friction;
-};
-
-GravityCorrectionPackage load_gravity_correction_package(
-    const std::string& path,
-    const std::vector<std::string>& expected_joint_names,
-    const std::string& expected_urdf_path) {
-    const YAML::Node root = YAML::LoadFile(path);
-    if(!root || !root.IsMap() || !root["schema"] || root["schema"].as<std::string>() != "serial_arm_gravity_correction") {
-        throw std::runtime_error("invalid gravity correction schema");
-    }
-    GravityCorrectionPackage package;
-    package.urdf_fingerprint = root["urdf_fingerprint"] ? root["urdf_fingerprint"].as<std::string>() : std::string{ };
-    if(package.urdf_fingerprint.empty() || package.urdf_fingerprint != model_calibration_file_fingerprint(expected_urdf_path)) {
-        throw std::runtime_error("gravity correction URDF fingerprint mismatch");
-    }
-    if(!root["joint_names"] || !root["joint_names"].IsSequence()) throw std::runtime_error("gravity correction joint_names are missing");
-    package.joint_names = root["joint_names"].as<std::vector<std::string>>();
-    if(package.joint_names != expected_joint_names) throw std::runtime_error("gravity correction joint order mismatch");
-    package.static_pass = root["static_pass"] && root["static_pass"].as<bool>();
-    package.friction_pass = root["friction_pass"] && root["friction_pass"].as<bool>();
-    if(!package.static_pass) throw std::runtime_error("gravity correction static validation did not pass");
-    const YAML::Node moments = root["first_moments"];
-    if(!moments || !moments.IsMap()) throw std::runtime_error("gravity correction first_moments are missing");
-    const YAML::Node masses = root["candidate_masses"];
-    if(masses && !masses.IsMap()) throw std::runtime_error("gravity correction masses must be a mapping");
-    for(auto it = moments.begin(); it != moments.end(); ++it) {
-        const std::string name = it->first.as<std::string>();
-        const JointVector values = it->second.as<JointVector>();
-        if(values.size() != 3 || !std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })) {
-            throw std::runtime_error("invalid gravity correction first moment for " + name);
-        }
-        double mass = 0.0;
-        if(masses && masses[name]) {
-            mass = masses[name].as<double>();
-            if(!std::isfinite(mass) || mass <= 0.0)
-                throw std::runtime_error("invalid candidate mass for " + name);
-        }
-        package.first_moments.push_back(GravityFirstMoment{ name, Eigen::Vector3d(values[0], values[1], values[2]), mass });
-    }
-    if(masses) {
-        for(auto it = masses.begin(); it != masses.end(); ++it) {
-            const auto name = it->first.as<std::string>();
-            if(!moments[name]) throw std::runtime_error("candidate mass missing matching first moment: " + name);
-        }
-    }
-    auto required_vector = [&](const YAML::Node& parent, const char* key) {
-        if(!parent || !parent[key]) throw std::runtime_error(std::string("gravity correction missing ") + key);
-        JointVector values = parent[key].as<JointVector>();
-        if(values.size() != expected_joint_names.size() || !std::all_of(values.begin(), values.end(), [](double value) { return std::isfinite(value); })) {
-            throw std::runtime_error(std::string("invalid gravity correction vector ") + key);
-        }
-        return values;
-        };
-    const YAML::Node residual = root["residual"];
-    package.torque_bias = required_vector(residual, "torque_bias");
-    package.torque_threshold = required_vector(residual, "torque_threshold");
-    package.friction.enabled = false;
-    if(package.friction_pass && residual["friction"] && residual["friction"].IsMap()) {
-        const YAML::Node friction = residual["friction"];
-        package.friction.enabled = true;
-        package.friction.velocity_transition = friction["velocity_transition"] ? friction["velocity_transition"].as<double>() : 0.03;
-        package.friction.positive_coulomb = required_vector(friction, "positive_coulomb");
-        package.friction.positive_viscous = required_vector(friction, "positive_viscous");
-        package.friction.negative_coulomb = required_vector(friction, "negative_coulomb");
-        package.friction.negative_viscous = required_vector(friction, "negative_viscous");
-    }
-    return package;
-}
 
 struct ModelCalibrationTaskOptions {
     std::size_t pose_budget{ 12 };
@@ -338,6 +262,7 @@ std::string to_string(HardwareLoaderErr value) {
         case HardwareLoaderErr::CONFIG_OPEN_FAILED: return "CONFIG_OPEN_FAILED";
         case HardwareLoaderErr::CONFIG_SYNTAX_ERROR: return "CONFIG_SYNTAX_ERROR";
         case HardwareLoaderErr::INVALID_OVERRIDE: return "INVALID_OVERRIDE";
+        case HardwareLoaderErr::ABI_MISMATCH: return "ABI_MISMATCH: rebuild the Backend using the installed SDK";
     }
     return "UNKNOWN";
 }
@@ -817,49 +742,26 @@ public:
     }
 
     tl::expected<void, std::string> initialize() {
-        const auto dynamics_result = dynamics_.configure(cfg_.dynamics);
+        RobotCfg robot_cfg = cfg_;
+        const auto dynamics_result = configure_robot_dynamics(robot_cfg, dynamics_);
         if(!dynamics_result) return tl::make_unexpected("Dynamics configure() 失败: " + to_string(dynamics_result.error()));
         model_calibration_links_cache_.clear();
         if(const auto links = dynamics_.get_gravity_regression(JointVector(cfg_.joint_names.size(), 0.0)); links)
             model_calibration_links_cache_ = links->links;
-
-        RobotCfg robot_cfg = cfg_;
         if(!cfg_.dynamics.gravity_correction_path.empty()) {
-            try {
-                if(cfg_.runtime.model_feedforward_mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS) {
-                    return tl::make_unexpected(std::string("gravity correction is incompatible with FULL_INVERSE_DYNAMICS"));
-                }
-                if(cfg_.capability.admittance.observer.mode == AdmittanceObserverMode::FULL_ID) {
-                    return tl::make_unexpected(std::string("gravity correction is incompatible with FULL_ID observer mode"));
-                }
-                const GravityCorrectionPackage package = load_gravity_correction_package(
-                    cfg_.dynamics.gravity_correction_path, cfg_.joint_names, cfg_.dynamics.urdf_path);
-                model_calibration_applied_original_gravity_scale_ = cfg_.dynamics.gravity_scale;
-                model_calibration_applied_original_admittance_ = cfg_.capability.admittance;
-                JointVector unit_scale(cfg_.joint_names.size(), 1.0);
-                const auto scale_result = dynamics_.set_gravity_scale(unit_scale);
-                if(!scale_result) return tl::make_unexpected(std::string("failed to activate gravity correction unit scale"));
-                const auto override_result = dynamics_.set_gravity_first_moment_override(package.first_moments);
-                if(!override_result) return tl::make_unexpected(std::string("failed to activate configured gravity correction"));
-                robot_cfg.dynamics.gravity_scale = unit_scale;
-                robot_cfg.capability.admittance.calibration.torque_bias = package.torque_bias;
-                robot_cfg.capability.admittance.calibration.torque_threshold = package.torque_threshold;
-                robot_cfg.capability.admittance.calibration.friction = package.friction;
-                cfg_.dynamics.gravity_scale = unit_scale;
-                cfg_.capability.admittance = robot_cfg.capability.admittance;
-                model_calibration_candidate_applied_ = true;
-                persistent_gravity_correction_loaded_ = true;
-            }
-            catch(const std::exception& error) {
-                dynamics_.clear_gravity_first_moment_override();
-                return tl::make_unexpected(std::string("gravity correction load failed: ") + error.what());
-            }
+            model_calibration_applied_original_gravity_scale_ = cfg_.dynamics.gravity_scale;
+            model_calibration_applied_original_admittance_ = cfg_.capability.admittance;
+            cfg_ = robot_cfg;
+            model_calibration_candidate_applied_ = true;
+            persistent_gravity_correction_loaded_ = true;
         }
 
         auto hardware_result = hardware_loader_.load(hardware_plugin_, hardware_config_, hardware_overrides_);
         if(!hardware_result) return tl::make_unexpected("HardwareLoader 失败: " + to_string(hardware_result.error()));
         std::unique_ptr<MotorBus> hardware_bus = std::move(hardware_result.value());
-        actuator_info_ = hardware_bus->capabilities();
+        const auto ordered_capabilities = capabilities_for_joint_order(hardware_bus->capabilities(), cfg_.joint_names);
+        if(!ordered_capabilities) return tl::make_unexpected(std::string("hardware joint identities do not match Core"));
+        actuator_info_ = *ordered_capabilities;
 
         std::unique_ptr<MotorBus> motor_bus;
         if(cfg_.runtime.write_enabled) {
@@ -4340,7 +4242,8 @@ private:
         for(std::size_t i = 0; i < model_calibration_options_.locked_links.size(); ++i) { if(i)out << ','; out << '"' << machine_json_escape(model_calibration_options_.locked_links[i]) << '"'; }
         out << "],\"identifiable_links\":[";
         for(std::size_t i = 0; i < model_calibration_links_cache_.size(); ++i) {
-            if(i)out << ','; const auto& info = model_calibration_links_cache_[i];
+            if(i) out << ',';
+            const auto& info = model_calibration_links_cache_[i];
             out << "{\"name\":\"" << machine_json_escape(info.link_name) << "\",\"joint\":\"" << machine_json_escape(info.joint_name) << "\",\"mass\":" << info.mass << ",\"com\":[" << info.center_of_mass.x() << "," << info.center_of_mass.y() << "," << info.center_of_mass.z() << "]}";
         }
         out << ']';
@@ -4822,7 +4725,7 @@ private:
                 else if(robot_.get_state() == RobotState::FAULT && robot_.is_fault_holding()) {
                     const auto hold_result = robot_.maintain_fault_hold();
                     if(!hold_result) {
-                        std::cout << "\n[故障保持刷新失败，硬件已降级失能]\n";
+                        std::cout << "\n[故障保持刷新失败，请检查失能结果与硬件状态]\n";
                         print_fault(hold_result.error());
                         std::cout << "请输入菜单编号继续\n";
                     }

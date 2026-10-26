@@ -51,7 +51,7 @@ def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=
     poses = G.reshape(-1, joints, G.shape[1])
     centered = poses - np.mean(poses, axis=0, keepdims=True)
     weighted = (centered / sigma[None, :, None]).reshape(-1, G.shape[1])
-    _, singular, right = np.linalg.svd(weighted, full_matrices=True)
+    _, singular, right = np.linalg.svd(weighted, full_matrices=False)
     if not len(singular) or singular[0] <= 1e-12:
         raise ValueError('示教轨迹静态姿态不足以辨识重力参数')
     rank = int(np.sum(singular > max(1e-10, relative_threshold*singular[0])))

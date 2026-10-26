@@ -13,6 +13,8 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+set(CMAKE_INSTALL_RPATH "$ORIGIN;$ORIGIN/../lib;$ORIGIN/../../../lib;$ORIGIN/../../../../lib")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE)
 
 # ROS 2 integration is optional. Standalone/bootstrap builds explicitly set
 # this OFF so a sourced ROS environment cannot silently change a pure C++ build
@@ -84,6 +86,7 @@ set(SERIAL_ARM_INSTALL_TARGETS)
 add_library(serial_arm_core SHARED
     src/core/joints_ctrller.cpp
     src/core/joint_actuator_mapper.cpp
+    src/core/ordered_motor_bus.cpp
     src/core/safety.cpp
     src/transport/bus.cpp
     src/transport/serial_bus.cpp
@@ -130,8 +133,10 @@ target_include_directories(serial_arm_config
         $<BUILD_INTERFACE:${SERIAL_ARM_TL_INCLUDE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-if(pinocchio_INCLUDE_DIRS)
-    target_include_directories(serial_arm_config PUBLIC ${pinocchio_INCLUDE_DIRS})
+if(NOT TARGET pinocchio::pinocchio AND pinocchio_INCLUDE_DIRS)
+    foreach(directory IN LISTS pinocchio_INCLUDE_DIRS)
+        target_include_directories(serial_arm_config PUBLIC $<BUILD_INTERFACE:${directory}>)
+    endforeach()
 endif()
 target_compile_features(serial_arm_config PUBLIC cxx_std_17)
 target_compile_definitions(serial_arm_config
@@ -178,6 +183,7 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 add_library(serial_arm_dynamics
     src/dynamics/dynamics.cpp
     src/dynamics/gravity_calibration.cpp
+    src/dynamics/gravity_correction.cpp
 )
 add_library(serial_arm::dynamics ALIAS serial_arm_dynamics)
 set_target_properties(serial_arm_dynamics PROPERTIES EXPORT_NAME dynamics)
@@ -192,6 +198,7 @@ target_include_directories(serial_arm_dynamics
 target_link_libraries(serial_arm_dynamics
     PUBLIC
         serial_arm_core
+        ${SERIAL_ARM_YAML_CPP_TARGET}
         Eigen3::Eigen
 )
 
@@ -199,7 +206,9 @@ target_link_libraries(serial_arm_dynamics
 if(TARGET pinocchio::pinocchio)
     target_link_libraries(serial_arm_dynamics PUBLIC pinocchio::pinocchio)
 elseif(pinocchio_LIBRARIES)
-    target_include_directories(serial_arm_dynamics PUBLIC ${pinocchio_INCLUDE_DIRS})
+    foreach(directory IN LISTS pinocchio_INCLUDE_DIRS)
+        target_include_directories(serial_arm_dynamics PUBLIC $<BUILD_INTERFACE:${directory}>)
+    endforeach()
     target_link_libraries(serial_arm_dynamics PUBLIC ${pinocchio_LIBRARIES})
 else()
     message(FATAL_ERROR
@@ -385,172 +394,29 @@ endif()
 # 测试
 # =============================================================================
 
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+if(BUILD_TESTING)
+    add_library(serial_arm_mock_hardware SHARED tests/mock_hardware.cpp)
+    target_link_libraries(serial_arm_mock_hardware PRIVATE serial_arm_core ${SERIAL_ARM_YAML_CPP_TARGET})
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    find_package(GTest REQUIRED)
-
-    add_test(
-        NAME serial_arm_standalone_dependency_contract
-        COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/standalone_dependency_contract.py
-    )
-
-    add_test(
-        NAME serial_arm_robot_session_fault_recovery_contract
-        COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/robot_session_fault_recovery_contract.py
-    )
-
-    add_test(
-        NAME serial_arm_python_profile_binding_contract
-        COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_profile_binding_contract.py
-    )
-
-    add_test(
-        NAME serial_arm_bootstrap_standalone_cli
-        COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/bootstrap_standalone_cli_test.py
-    )
-
-    find_package(Threads REQUIRED)
-
-    add_library(serial_arm_fault_inject_hardware_plugin SHARED
-        tests/fault_inject_hardware_plugin.cpp
-    )
-    target_link_libraries(serial_arm_fault_inject_hardware_plugin
-        PRIVATE
-            serial_arm_core
-    )
-    target_compile_features(serial_arm_fault_inject_hardware_plugin PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_fault_inject_hardware_plugin)
-
-    add_executable(serial_arm_robot_session_fault_recovery_runtime_tests
-        tests/robot_session_fault_recovery_runtime_tests.cpp
-        python/robot_session.cpp
-    )
-    target_include_directories(serial_arm_robot_session_fault_recovery_runtime_tests
-        PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/python
-    )
-    target_compile_definitions(serial_arm_robot_session_fault_recovery_runtime_tests
-        PRIVATE
-            SERIAL_ARM_TEST_FAULT_INJECT_HARDWARE_PLUGIN="$<TARGET_FILE:serial_arm_fault_inject_hardware_plugin>"
-            SERIAL_ARM_TEST_DM_ARM_CORE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_supports/robots/dm_arm/description/config/core/gray.yaml"
-            SERIAL_ARM_TEST_DM_ARM_HARDWARE_CONFIG="${CMAKE_CURRENT_SOURCE_DIR}/../../robot_supports/robots/dm_arm/description/config/hardware.yaml"
-    )
-    target_link_libraries(serial_arm_robot_session_fault_recovery_runtime_tests
-        PRIVATE
-            serial_arm_core
-            serial_arm_config
-            serial_arm_robot
-            serial_arm_dynamics
-            Threads::Threads
-            GTest::gtest_main
-    )
-    add_dependencies(
-        serial_arm_robot_session_fault_recovery_runtime_tests
-        serial_arm_fault_inject_hardware_plugin
-    )
-    target_compile_features(serial_arm_robot_session_fault_recovery_runtime_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_robot_session_fault_recovery_runtime_tests)
-
-    add_test(
-        NAME serial_arm_robot_session_fault_recovery_runtime_tests
-        COMMAND serial_arm_robot_session_fault_recovery_runtime_tests
-    )
-
-    add_executable(serial_arm_core_contract_tests
-        tests/core_contract_tests.cpp
-    )
-    target_compile_definitions(serial_arm_core_contract_tests
-        PRIVATE
-            SERIAL_ARM_TEST_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
-            SERIAL_ARM_TEST_REPO_ROOT="${CMAKE_CURRENT_SOURCE_DIR}/../../.."
-            SERIAL_ARM_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    target_link_libraries(serial_arm_core_contract_tests
-        PRIVATE
-            serial_arm_core
-            serial_arm_config
-            serial_arm_dynamics
-            serial_arm_robot
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_core_contract_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_core_contract_tests)
-
-    add_test(NAME serial_arm_core_contract_tests COMMAND serial_arm_core_contract_tests)
-
-    add_library(serial_arm_fake_hardware_plugin SHARED
-        tests/fake_hardware_plugin.cpp
-    )
-    target_link_libraries(serial_arm_fake_hardware_plugin
-        PRIVATE
-            serial_arm_core
-            ${SERIAL_ARM_YAML_CPP_TARGET}
-    )
-    target_compile_features(serial_arm_fake_hardware_plugin PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_fake_hardware_plugin)
-
-    add_executable(serial_arm_hardware_override_tests
-        tests/hardware_override_tests.cpp
-    )
-    target_compile_definitions(serial_arm_hardware_override_tests
-        PRIVATE
-            SERIAL_ARM_TEST_TMP_DIR="${CMAKE_CURRENT_BINARY_DIR}"
-            SERIAL_ARM_TEST_FAKE_HARDWARE_PLUGIN="$<TARGET_FILE:serial_arm_fake_hardware_plugin>"
-    )
-    target_link_libraries(serial_arm_hardware_override_tests
-        PRIVATE
-            serial_arm_config
-            GTest::gtest_main
-    )
-    add_dependencies(serial_arm_hardware_override_tests serial_arm_fake_hardware_plugin)
-    target_compile_features(serial_arm_hardware_override_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_hardware_override_tests)
-
-    add_test(NAME serial_arm_hardware_override_tests COMMAND serial_arm_hardware_override_tests)
-
-    add_executable(serial_arm_serial_port_tests
-        tests/serial_port_tests.cpp
-    )
-    target_link_libraries(serial_arm_serial_port_tests
-        PRIVATE
-            serial_arm_core
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_serial_port_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_serial_port_tests)
-
-    add_test(NAME serial_arm_serial_port_tests COMMAND serial_arm_serial_port_tests)
-
-    add_executable(serial_arm_transport_tests
-        tests/transport_tests.cpp
-    )
-    target_link_libraries(serial_arm_transport_tests
-        PRIVATE
-            serial_arm_core
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_transport_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_transport_tests)
-
-    add_test(NAME serial_arm_transport_tests COMMAND serial_arm_transport_tests)
-
-    add_executable(serial_arm_interaction_tests
-        tests/interaction_tests.cpp
-    )
-    target_link_libraries(serial_arm_interaction_tests
-        PRIVATE
-            serial_arm_interaction
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_interaction_tests PRIVATE cxx_std_17)
-    serial_arm_enable_warnings(serial_arm_interaction_tests)
-
-    add_test(NAME serial_arm_interaction_tests COMMAND serial_arm_interaction_tests)
-
+    add_test(NAME serial_arm_sdk_relocation COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdk_consumer.py ${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME serial_arm_launcher_contracts COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
+        -s ${CMAKE_CURRENT_SOURCE_DIR}/../../../apps/launcher/tests)
+    set_tests_properties(serial_arm_launcher_contracts PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    if(SERIAL_ARM_BUILD_PYTHON)
+        add_test(NAME serial_arm_python_runtime COMMAND ${Python_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_runtime_tests.py
+            $<TARGET_FILE_DIR:_serial_arm> $<TARGET_FILE:serial_arm_mock_hardware>
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+        set_tests_properties(serial_arm_python_runtime PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
+    endif()
+    add_executable(serial_arm_runtime_contract_tests tests/runtime_contract_tests.cpp)
+    target_compile_definitions(serial_arm_runtime_contract_tests PRIVATE
+        SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")
+    target_link_libraries(serial_arm_runtime_contract_tests PRIVATE
+        serial_arm_robot serial_arm_config serial_arm_dynamics)
+    serial_arm_enable_warnings(serial_arm_runtime_contract_tests)
+    add_test(NAME serial_arm_runtime_contracts COMMAND serial_arm_runtime_contract_tests)
 endif()
 
 # =============================================================================

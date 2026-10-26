@@ -761,7 +761,6 @@ void bind_dynamics(py::module_& module) {
     py::class_<Dynamics>(module, "Dynamics")
         .def(py::init<>())
         .def("configure", [](Dynamics& self, const DynamicsCfg& cfg) {
-        py::gil_scoped_release release;
         unwrap_void(self.configure(cfg), [](DynamicsErr error) { return enum_error_message("DynamicsErr", error); });
             })
         .def("update", [](Dynamics& self, const DoubleArray& pos, const DoubleArray& vel, const DoubleArray& acc, const DoubleArray& tor, const DoubleArray& ref_acc) {
@@ -772,13 +771,11 @@ void bind_dynamics(py::module_& module) {
         state.tor = numpy_to_joint_vector(tor, size, "tor");
         JointVector acc_values = numpy_to_joint_vector(acc, size, "acc");
         JointVector ref_acc_values = numpy_to_joint_vector(ref_acc, size, "ref_acc");
-        py::gil_scoped_release release;
         unwrap_void(self.update(state, acc_values, ref_acc_values), [](DynamicsErr error) { return enum_error_message("DynamicsErr", error); });
             })
         .def("update_state", [](Dynamics& self, const JointState& state, const DoubleArray& acc, const DoubleArray& ref_acc) {
         JointVector acc_values = numpy_to_joint_vector(acc, state.pos.size(), "acc");
         JointVector ref_acc_values = numpy_to_joint_vector(ref_acc, state.pos.size(), "ref_acc");
-        py::gil_scoped_release release;
         unwrap_void(self.update(state, acc_values, ref_acc_values), [](DynamicsErr error) { return enum_error_message("DynamicsErr", error); });
             })
         .def("set_gravity_scale", &dynamics_set_gravity_scale)

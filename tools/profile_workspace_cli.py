@@ -42,6 +42,7 @@ def main():
 
     inspect_desc = sub.add_parser('inspect-description', help='Inspect a Description directory, ZIP, URDF, or Xacro')
     inspect_desc.add_argument('source')
+    inspect_desc.add_argument('--model', default='', help='Model path relative to a Description directory or ZIP')
 
     discover = sub.add_parser('discover-profile', help='Find Profiles in an external package or YAML')
     discover.add_argument('source')
@@ -69,6 +70,7 @@ def main():
 
     create = sub.add_parser('create-profile', help='Create a draft Profile package from a Description')
     create.add_argument('--source', required=True)
+    create.add_argument('--model', default='')
     create.add_argument('--profile', required=True)
     create.add_argument('--destination', required=True)
     create.add_argument('--base-frame', required=True)
@@ -89,7 +91,7 @@ def main():
     if args.command == 'library':
         dump(library.list()); return 0
     if args.command == 'inspect-description':
-        dump(library.inspect_description(args.source)); return 0
+        dump(library.inspect_description(args.source, args.model)); return 0
     if args.command == 'discover-profile':
         dump(library.discover_profile_source(args.source)); return 0
     if args.command == 'import-profile':
@@ -120,6 +122,7 @@ def main():
                 })
         result = library.create_profile({
             'source': args.source,
+            'model_relative': args.model,
             'profile': args.profile,
             'destination': args.destination,
             'base_frame': args.base_frame,

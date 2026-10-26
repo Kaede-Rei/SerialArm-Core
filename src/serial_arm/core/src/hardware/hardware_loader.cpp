@@ -251,6 +251,11 @@ tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> HardwareLoader::load(
     }
     if(!handle) return tl::make_unexpected(HardwareLoaderErr::OPEN_FAILED);
 
+    const auto abi = reinterpret_cast<std::uint64_t (*)()>(dlsym(handle, "serial_arm_motor_bus_abi"));
+    if(!abi || abi() != motor_bus_abi_fingerprint) {
+        close_handle(handle);
+        return tl::make_unexpected(HardwareLoaderErr::ABI_MISMATCH);
+    }
     auto create = reinterpret_cast<CreateMotorBusFn>(dlsym(handle, "create_motor_bus"));
     auto destroy = reinterpret_cast<DestroyMotorBusFn>(dlsym(handle, "destroy_motor_bus"));
     if(!create || !destroy) {

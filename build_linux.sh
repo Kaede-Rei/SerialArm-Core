@@ -74,7 +74,7 @@ PREFIX="$(/usr/bin/python3 "$PKG/stage.py" --root "$ROOT" --check-only)" || fail
 BUILDER="$PKG/node_modules/.bin/electron-builder"
 if [[ ! -x "$BUILDER" ]]; then
     echo '[SerialArm] Installing electron-builder'
-    npm --prefix "$PKG" install --no-audit --no-fund --ignore-scripts --package-lock=false
+    npm --prefix "$PKG" ci --no-audit --no-fund --ignore-scripts
 fi
 [[ -x "$BUILDER" ]] || fail 'electron-builder not available'
 
@@ -113,6 +113,9 @@ done
 if command -v dpkg-deb >/dev/null 2>&1; then
     dpkg-deb --field "$STAGING/output/$DEB" >/dev/null || fail 'Invalid deb metadata'
 fi
+/usr/bin/python3 "$PKG/verify.py" --root "$ROOT" \
+    --deb "$STAGING/output/$DEB" --appimage "$STAGING/output/$APPIMAGE" \
+    || fail 'Release payload verification failed'
 # Publish only after both targets succeeded
 mv -f -- "$STAGING/output/$APPIMAGE" "$OUTPUT/$APPIMAGE"
 mv -f -- "$STAGING/output/$DEB" "$OUTPUT/$DEB"

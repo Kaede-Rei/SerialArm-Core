@@ -1,5 +1,7 @@
 from pathlib import Path
 import sys
+import xacro
+import yaml
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -29,33 +31,28 @@ def resolve_profile(context):
     bus = context.launch_configurations.get("bus", "")
     controllers_file = profile["controllers_path"]
     description_xacro = profile["ros2_control_xacro_path"]
-    robot_description = Command(
-        [
-            FindExecutable(name="xacro"),
-            " ",
-            description_xacro,
-            " config_file:=",
-            config_file,
-            " hardware_plugin:=",
-            hardware_plugin,
-            " hardware_config:=",
-            hardware_config,
-            " serial_port:=",
-            serial_port,
-            " baudrate:=",
-            baudrate,
-            " bus:=",
-            bus,
-        ]
-    )
+    robot_description = xacro.process_file(description_xacro, mappings={
+        'config_file': config_file, 'hardware_plugin': hardware_plugin,
+        'hardware_config': hardware_config, 'serial_port': serial_port,
+        'baudrate': str(baudrate), 'bus': bus,
+    }).toxml()
     robot_description_param = ParameterValue(robot_description, value_type=str)
     controller_manager_name = context.launch_configurations.get(
         "controller_manager_name", "/controller_manager"
     )
 
+    manager_path = Path(controller_manager_name)
+    if not manager_path.name:
+        raise ValueError('controller_manager_name requires a node name')
+    robot_namespace = str(manager_path.parent) if str(manager_path.parent) != '.' else ''
+    controller_config = yaml.safe_load(Path(controllers_file).read_text(encoding='utf-8')) or {}
+    manager_parameters = (controller_config.get(manager_path.name) or
+                          controller_config.get('controller_manager') or {}).get('ros__parameters', {})
+
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
+        namespace=robot_namespace,
         parameters=[
             {
                 "robot_description": robot_description_param,
@@ -66,18 +63,22 @@ def resolve_profile(context):
     ros2_control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
+        name=manager_path.name,
+        namespace=robot_namespace,
         parameters=[
             {"robot_description": robot_description_param},
             controllers_file,
+            manager_parameters,
         ],
         remappings=[
-            ("~/robot_description", "/robot_description"),
+            ("~/robot_description", "robot_description"),
         ],
     )
     controller_spawners = [
         Node(
             package="controller_manager",
             executable="spawner",
+            namespace=robot_namespace,
             arguments=[
                 controller_name,
                 "--controller-manager",

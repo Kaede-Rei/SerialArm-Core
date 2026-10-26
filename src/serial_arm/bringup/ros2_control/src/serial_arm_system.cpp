@@ -1,4 +1,5 @@
 #include "serial_arm_ros2_control/serial_arm_system.hpp"
+#include "serial_arm/dynamics/gravity_correction.hpp"
 
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <pluginlib/class_list_macros.hpp>
@@ -442,7 +443,7 @@ hardware_interface::CallbackReturn SerialArmSystem::validate_hardware_info() {
  */
 hardware_interface::CallbackReturn SerialArmSystem::configure_robot() {
     dynamics_ = std::make_unique<serial_arm::Dynamics>();
-    const auto dynamics_result = dynamics_->configure(cfg_.dynamics);
+    const auto dynamics_result = serial_arm::configure_robot_dynamics(cfg_, *dynamics_);
     if(!dynamics_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Dynamics configure failed; DynamicsErr=%d", static_cast<int>(dynamics_result.error()));
         return hardware_interface::CallbackReturn::ERROR;

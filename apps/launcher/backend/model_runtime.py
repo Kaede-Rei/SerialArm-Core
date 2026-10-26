@@ -54,7 +54,7 @@ class ModelRuntime:
         probe = inspector.model_probe()
         if not probe:
             raise ValueError('serial_arm_model_probe is not installed')
-        key = (str(Path(probe).resolve()), str(Path(core).resolve()))
+        key = (str(Path(probe).resolve()), str(Path(core).resolve()), info['fingerprint'])
         if not force_restart and self.process is not None and self.key == key and self.process.poll() is None:
             return c, info
         self._close_locked()

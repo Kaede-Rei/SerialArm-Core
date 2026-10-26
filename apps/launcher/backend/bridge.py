@@ -316,7 +316,7 @@ def main():
                 elif method == 'profile_source_inspect': result = profile_library.discover_profile_source(params.get('source', ''))
                 elif method == 'profile_library_register': result = profile_library.register(params.get('profile_file', ''), params.get('profile', ''), params.get('resource_paths', ''), params.get('policy', 'error'))
                 elif method == 'profile_library_remove': result = profile_library.remove(params.get('id', ''))
-                elif method == 'description_inspect': result = profile_library.inspect_description(params.get('source', ''))
+                elif method == 'description_inspect': result = profile_library.inspect_description(params.get('source', ''), params.get('model_relative', ''))
                 elif method == 'description_create_profile': result = profile_library.create_profile(params)
                 elif method == 'readiness': result = profile_library._readiness(config_values(params.get('config', params)))
                 elif method == 'readiness_mark': result = profile_library.mark_stage(config_values(params.get('config', {})), params.get('stage', ''), params.get('confirmed', True) is True)
@@ -436,7 +436,8 @@ def main():
                             requested_info = inspector.inspect(config)
                             if (active_info['profile_file'] != requested_info['profile_file'] or
                                     active_info['profile'] != requested_info['profile'] or
-                                    active_info['resources'] != requested_info['resources']):
+                                    active_info['resources'] != requested_info['resources'] or
+                                    active_info['fingerprint'] != active_workbench_fingerprint):
                                 raise ValueError('几何采样会话与当前真机连接不匹配')
                             previous = native.request('status', {}, timeout=8)
                             time.sleep(0.12)

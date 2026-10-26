@@ -91,6 +91,16 @@ tl::expected<void, RobotFault> Robot::configure(
     if(!valid_cfg) {
         return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     }
+    auto aligned_bus = align_motor_bus(std::move(motor_bus), cfg.joint_names);
+    if(!aligned_bus) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    motor_bus = std::move(*aligned_bus);
+    const auto& capabilities = motor_bus->capabilities();
+    if(capabilities.size() != cfg.joint_names.size())
+        return tl::make_unexpected(make_fault(RobotErr::MOTOR_BUS_SIZE_MISMATCH));
+    for(std::size_t i = 0; i < capabilities.size(); ++i) {
+        if(!capabilities[i].joint_name.empty() && capabilities[i].joint_name != cfg.joint_names[i])
+            return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    }
     if(motor_bus->size() != cfg.joint_names.size()) {
         return tl::make_unexpected(make_fault(RobotErr::MOTOR_BUS_SIZE_MISMATCH));
     }
@@ -564,6 +574,11 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(fault);
     }
 
+    actuator_state_ = actuator_state.value();
+    joint_state_ = joint_state.value();
+    last_state_time_ = state_received_at;
+    has_state_ = true;
+
     if(is_tracking_mode() && has_external_cmd_) {
         const double cmd_age_s = seconds_between(now, last_cmd_time_);
         const auto cmd_age = safety_.check_cmd_age(cmd_age_s);
@@ -1019,7 +1034,12 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
 tl::expected<void, RobotFault> Robot::maintain_fault_hold() {
     if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
     if(!fault_hold_active_) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
-    return update_fault_reaction(Clock::now());
+    const auto result = update_fault_reaction(Clock::now());
+    if(!result) {
+        fault_hold_active_ = false;
+        disable_noexcept();
+    }
+    return result;
 }
 
 /**
@@ -1289,13 +1309,17 @@ void Robot::stop_or_disable_noexcept() noexcept {
  * @brief 使用最近一次合法状态构造并发送故障刚性保持命令
  */
 bool Robot::start_fault_hold_noexcept() noexcept {
-    if(!motor_bus_ || !has_state_ || joint_state_.pos.size() != cfg_.joint_names.size()) return false;
+    if(!motor_bus_ || !has_state_ || joint_state_.pos.size() != cfg_.joint_names.size() ||
+        seconds_between(Clock::now(), last_state_time_) > cfg_.safety.state_timeout_s) return false;
 
     if(!reset_reference_to_measured(joint_state_)) return false;
     const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
     const auto hold_cmd = build_fault_joint_cmd(joint_state_, FaultHoldMode::RIGID_HOLD, nominal_dt);
     if(!hold_cmd) return false;
-    const auto actuator_cmd = mapper_.to_actuator_cmd(hold_cmd.value());
+    safety_.clear_cmd_history();
+    const auto safe_hold = safety_.check_joint_cmd_for_position_recovery(joint_state_, hold_cmd.value(), nominal_dt);
+    if(!safe_hold) return false;
+    const auto actuator_cmd = mapper_.to_actuator_cmd(safe_hold.value());
     if(!actuator_cmd) return false;
     const auto written = motor_bus_->write(actuator_cmd.value());
     if(!written) return false;
@@ -1345,6 +1369,14 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
         ++clear_fault_valid_cycles_;
     }
 
+    if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY) {
+        for(std::size_t i = 0; i < joint_state->vel.size(); ++i) {
+            if(std::abs(joint_state->vel[i]) > cfg_.safety.fault_recovery.compliant_recovery.max_vel[i]) {
+                fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
+                break;
+            }
+        }
+    }
     const auto joint_cmd = build_fault_joint_cmd(joint_state.value(), fault_hold_mode_, dt);
     if(!joint_cmd) return tl::make_unexpected(joint_cmd.error());
     const bool bypass_position_cmd_limit = position_limit_recovery;
@@ -1375,6 +1407,7 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
     const auto result = motor_bus_->write(fault_hold_cmd_);
     if(!result) {
         fault_hold_active_ = false;
+        disable_noexcept();
         return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_WRITE_FAILED, result.error()));
     }
 
@@ -1399,7 +1432,12 @@ tl::expected<JointCtrlCmd, RobotFault> Robot::build_fault_joint_cmd(const JointS
     if(mode == FaultHoldMode::COMPLIANT_RECOVERY) {
         cmd.kp = cfg_.safety.fault_recovery.compliant_recovery.kp;
         cmd.kd = cfg_.safety.fault_recovery.compliant_recovery.kd;
-        cmd.pos = state.pos;
+        const auto& recovery = cfg_.safety.fault_recovery.compliant_recovery;
+        const double reference_dt = std::min(dt, cfg_.safety.max_dt_s);
+        for(std::size_t i = 0; i < cmd.pos.size(); ++i) {
+            const double step = recovery.max_vel[i] * reference_dt;
+            cmd.pos[i] += std::clamp(state.pos[i] - cmd.pos[i], -step, step);
+        }
         cmd.vel.assign(cfg_.joint_names.size(), 0.0);
     }
 

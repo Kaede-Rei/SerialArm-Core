@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const {pathToFileURL} = require('node:url');
 const {spawnSync} = require('node:child_process');
 const {Bridge} = require('./bridge.cjs');
+const {synchronizeResources} = require('./resources.cjs');
 const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : path.resolve(__dirname, '../../..');
 const entry = path.resolve(__dirname, '../renderer/index.html');
 let win, bridge, closing = false;
@@ -13,7 +14,10 @@ app.setPath('userData', path.join(app.getPath('appData'), 'serial-arm'));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-  app.whenReady().then(start).catch(error => { dialog.showErrorBox('SerialArm Launcher', error.message); app.quit(); });
+  app.whenReady().then(start).catch(error => {
+    if (app.commandLine.hasSwitch('smoke-test')) { process.stderr.write(error.stack + '\n'); app.exit(1); }
+    else { dialog.showErrorBox('SerialArm Launcher', error.message); app.quit(); }
+  });
 }
 const prefsPath = () => path.join(app.getPath('userData'), 'launcher.json');
 function readPrefs() { try { return JSON.parse(fs.readFileSync(prefsPath(), 'utf8')); } catch { return {}; } }
@@ -80,8 +84,10 @@ function packagedBackend() {
   const writable = path.join(app.getPath('userData'), 'profile-resources');
   const writableShare = path.join(writable, 'share');
   fs.mkdirSync(writableShare, {recursive: true});
-  fs.cpSync(path.join(native, 'share'), writableShare,
-    {recursive: true, force: false, errorOnExist: false});
+  const resourceConflicts = synchronizeResources(path.join(native, 'share'), writableShare);
+  if (resourceConflicts.length) dialog.showErrorBox('SerialArm resources',
+    '部分本地配置与安装包默认资源不同，已保留本地修改并生成 .incoming 候选，请比较后重新验证\n' +
+    resourceConflicts.slice(0, 8).map(item => item.path).join('\n'));
   for (const folder of ['lib', 'lib64']) {
     const from = path.join(native, folder);
     const to = path.join(writable, folder);
@@ -127,6 +133,9 @@ function packagedBackend() {
 }
 
 async function start() {
+  if (app.commandLine.hasSwitch('no-sandbox') && process.env.SERIAL_ARM_ALLOW_NO_SANDBOX !== '1') {
+    throw new Error('系统未启用 Electron 沙箱，请启用用户命名空间；如需明确接受禁用沙箱运行，请设置 SERIAL_ARM_ALLOW_NO_SANDBOX=1');
+  }
   const prefs = readPrefs();
   const backend = app.isPackaged ? packagedBackend() : {
     python: process.env.SERIAL_ARM_LAUNCHER_PYTHON || '/usr/bin/python3',
@@ -141,7 +150,7 @@ async function start() {
   win.webContents.setWindowOpenHandler(() => ({action: 'deny'}));
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => { if (!app.commandLine.hasSwitch('smoke-test')) win.show(); });
   const methods = new Set(['status', 'profiles', 'profile_library', 'profile_source_inspect', 'profile_library_register', 'profile_library_remove', 'description_inspect', 'description_create_profile', 'readiness', 'readiness_mark', 'readiness_record', 'readiness_approve_mode', 'profile_editor_load', 'profile_editor_save', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'model_calibration_load', 'model_calibration_model_alignment', 'model_calibration_records', 'model_calibration_preview_save', 'model_calibration_save', 'model_calibration_restore_config', 'model_calibration_export_friction', 'model_calibration_export_urdf', 'model_calibration_export_full_inertial', 'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute', 'calibration_tool_records', 'calibration_tool_load', 'calibration_tool_export', 'calibration_tool_export_record', 'geometry_fixed_state', 'geometry_fixed_begin', 'geometry_fixed_capture', 'geometry_fixed_solve', 'geometry_fixed_validate', 'geometry_fixed_discard', 'geometry_fixed_report', 'geometry_fixed_export_tcp', 'geometry_repeat_status', 'geometry_repeat_record_begin', 'geometry_repeat_record_stop', 'geometry_repeat_load', 'geometry_repeat_save', 'geometry_repeat_play', 'geometry_repeat_stop', 'trajectory_list', 'trajectory_save', 'trajectory_load', 'trajectory_rename', 'trajectory_remove', 'trajectory_export', 'trajectory_import', 'calibration_candidate_prepare', 'calibration_candidate_apply', 'calibration_candidate_restore', 'calibration_candidate_status', 'start', 'input', 'resize', 'stop']);
   ipcMain.handle('launcher:request', async (event, method, params = {}) => {
     trusted(event);
@@ -221,5 +230,19 @@ async function start() {
     else throw new Error('Unknown window action');
   });
   await win.loadFile(entry);
+  if (app.commandLine.hasSwitch('smoke-test')) {
+    const result = await win.webContents.executeJavaScript(`(async () => {
+      const catalogue = await window.serialArm.request('profiles', {});
+      if (!catalogue.profiles.length) throw new Error('No packaged profiles');
+      const config = {profile: catalogue.profiles[0].name, profile_file: catalogue.profile_file};
+      const model = await window.serialArm.request('model', {config});
+      if (!model.native?.ok || !model.model?.links?.length) throw new Error('Packaged model failed');
+      return {profile: config.profile, links: model.model.links.length};
+    })()`);
+    process.stdout.write('SERIAL_ARM_SMOKE_PASS ' + JSON.stringify(result) + '\n');
+    await bridge.close();
+    win.destroy();
+    app.quit();
+  }
 }
 app.on('window-all-closed', () => app.quit());

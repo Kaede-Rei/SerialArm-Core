@@ -120,6 +120,8 @@ class Runner:
         self.state = self.root / ".install"
         self.env = os.environ.copy()
         self.env["JOBS"] = str(plan.jobs)
+        self.env["CMAKE_BUILD_PARALLEL_LEVEL"] = str(plan.jobs)
+        self.env["MAKEFLAGS"] = f"-j{plan.jobs} -l{plan.jobs}"
         self.env["SERIAL_ARM_ALLOW_SOURCE_BUILD"] = (
             "1" if plan.allow_source_build else "0"
         )

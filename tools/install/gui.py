@@ -1,5 +1,6 @@
 """Provision the Electron launcher without global npm or Python packages"""
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -26,8 +27,23 @@ def install_gui(runner):
     python = Path('/usr/bin/python3') if Path('/usr/bin/python3').exists() else Path(sys.executable)
     venv = runner.state / 'gui-venv'
     runner.run('gui-python-venv', [python, '-m', 'venv', '--system-site-packages', venv])
-    runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7', 'numpy>=1.21,<2', 'scipy>=1.9,<2'])
-    runner.run('gui-npm', ['npm', '--prefix', app, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'])
+    probe = subprocess.run([str(venv / 'bin/python'), '-c',
+        'import numpy,scipy,yaml; assert int(numpy.__version__.split(".")[0])<2; '
+        'assert tuple(map(int,scipy.__version__.split(".")[:2])) >= (1,9)'], capture_output=True)
+    if probe.returncode:
+        runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7', 'numpy>=1.21,<2', 'scipy>=1.9,<2'])
+    expected = json.loads((app / 'package.json').read_text())
+    graph_ready = True
+    for name, wanted in {**expected['dependencies'], **expected['devDependencies']}.items():
+        try:
+            installed = json.loads((app / 'node_modules' / name / 'package.json').read_text())
+            graph_ready &= installed.get('version') == wanted
+        except (OSError, ValueError):
+            graph_ready = False
+    graph_ready &= subprocess.run(['npm', '--prefix', str(app), 'ls', '--all', '--parseable'],
+                                  capture_output=True).returncode == 0
+    if not graph_ready:
+        runner.run('gui-npm', ['npm', '--prefix', app, 'ci', '--ignore-scripts', '--no-audit', '--no-fund'])
     runner.run('gui-three-vendor', ['node', app / 'scripts/vendor-three.cjs'])
     electron = app / 'node_modules/electron/dist/electron'
     if not electron.is_file():

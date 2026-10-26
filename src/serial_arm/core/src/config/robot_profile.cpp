@@ -194,6 +194,7 @@ std::vector<std::string> robot_profile_search_paths(const RobotProfileLoadOption
 }
 
 tl::expected<RobotProfileCore, RobotProfileErrInfo> load_robot_profile_core(const std::string& profile_name, const RobotProfileLoadOptions& options) {
+    try {
     if(profile_name.empty()) {
         return tl::make_unexpected(err(RobotProfileErr::PROFILE_NOT_FOUND, "robot_profile 不能为空"));
     }
@@ -265,6 +266,11 @@ tl::expected<RobotProfileCore, RobotProfileErrInfo> load_robot_profile_core(cons
         message << checked_files[i];
     }
     return tl::make_unexpected(err(RobotProfileErr::PROFILE_NOT_FOUND, message.str()));
+    }
+    catch(const std::exception& error_value) {
+        return tl::make_unexpected(err(RobotProfileErr::PROFILE_LOAD_FAILED,
+            std::string("Invalid Robot Profile: ") + error_value.what()));
+    }
 }
 
 } // namespace serial_arm

@@ -35,9 +35,9 @@ enum class ModelFeedforwardMode {
  * @brief 关节状态
  *
  * 所有数据均位于关节侧：
- * - pos: rad
- * - vel: rad/s
- * - tor: N·m
+ * - pos: rad for revolute/continuous, m for prismatic
+ * - vel: rad/s or m/s
+ * - tor: generalized effort, N·m or N
  */
 struct JointState {
     JointVector pos;    ///< 关节位置

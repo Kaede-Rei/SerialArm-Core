@@ -58,21 +58,11 @@ install(FILES package.xml
     DESTINATION ${CMAKE_INSTALL_DATADIR}/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-    find_package(GTest REQUIRED)
-
-    add_executable(serial_arm_hardware_damiao_tests
-        tests/damiao_config_tests.cpp
-        tests/damiao_motor_control_tests.cpp
-    )
-    target_link_libraries(serial_arm_hardware_damiao_tests
-        PRIVATE
-            serial_arm_hardware_damiao
-            GTest::gtest_main
-    )
-    target_compile_features(serial_arm_hardware_damiao_tests PRIVATE cxx_std_17)
-
-    add_test(NAME serial_arm_hardware_damiao_tests COMMAND serial_arm_hardware_damiao_tests)
+if(BUILD_TESTING)
+    add_executable(serial_arm_damiao_config_contracts tests/config_contract_tests.cpp)
+    target_link_libraries(serial_arm_damiao_config_contracts PRIVATE serial_arm_hardware_damiao)
+    target_compile_definitions(serial_arm_damiao_config_contracts PRIVATE SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../../..")
+    add_test(NAME serial_arm_damiao_config_contracts COMMAND serial_arm_damiao_config_contracts)
 endif()
 
 if(ament_cmake_FOUND)

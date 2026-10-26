@@ -220,6 +220,7 @@ private:
     std::unique_ptr<Robot> robot_;                      ///< Robot 闭环
     std::vector<RobotSessionActuatorInfo> actuator_info_;     ///< 执行器静态信息
 
+    mutable std::recursive_mutex lifecycle_mutex_;      ///< 串行化配置与启停
     mutable std::mutex mutex_;                          ///< 请求与快照互斥锁
     std::condition_variable fault_recovery_cv_;          ///< 在线 FAULT 恢复请求完成通知
     RobotSessionSnapshot snapshot_;                     ///< 最近一次完整快照
@@ -239,7 +240,7 @@ private:
     std::string fault_recovery_error_;                   ///< 最近一次 FAULT 恢复请求错误
     FaultHoldMode fault_hold_mode_cache_{ FaultHoldMode::RIGID_HOLD }; ///< 线程安全的 FAULT 模式缓存
     bool has_goal_{ false };                            ///< 是否存在位置目标
-    bool configured_{ false };                          ///< 会话是否已完成配置
+    std::atomic<bool> configured_{ false };                          ///< 会话是否已完成配置
 
     std::thread worker_;                                ///< C++ 控制线程
     std::atomic<bool> running_{ false };                ///< 工作线程运行标志

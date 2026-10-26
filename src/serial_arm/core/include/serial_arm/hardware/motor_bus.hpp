@@ -1,6 +1,7 @@
 #pragma once
 
 #include <tl/expected.hpp>
+#include <memory>
 
 #include "serial_arm/core/types.hpp"
 #include "serial_arm/hardware/hardware_capability.hpp"
@@ -33,6 +34,11 @@ enum class MotorBusErr {
 };
 
 // ! ========================= 接 口 类 / 函 数 声 明 ========================= ! //
+
+inline constexpr std::uint64_t motor_bus_abi_fingerprint =
+    (static_cast<std::uint64_t>(sizeof(ActuatorCapability)) << 32) ^
+    (static_cast<std::uint64_t>(sizeof(ActuatorState)) << 16) ^
+    sizeof(ActuatorCtrlCmd) ^ (sizeof(std::string) << 8);
 
 class MotorBus {
 public:
@@ -113,6 +119,12 @@ public:
      */
     virtual std::size_t size() const noexcept = 0;
 };
+
+tl::expected<HardwareCapabilities, MotorBusErr> capabilities_for_joint_order(
+    const HardwareCapabilities& capabilities, const std::vector<std::string>& joint_names);
+
+tl::expected<std::unique_ptr<MotorBus>, MotorBusErr> align_motor_bus(
+    std::unique_ptr<MotorBus> bus, const std::vector<std::string>& joint_names);
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

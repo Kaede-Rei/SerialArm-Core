@@ -2,6 +2,7 @@
 
 #include "serial_arm/config/limit_resolver.hpp"
 #include "serial_arm/hardware/hardware_capability.hpp"
+#include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/model/model_loader.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -611,8 +612,40 @@ tl::expected<RobotCfg, ConfigErrInfo> load_robot_cfg(const std::string& path, co
         if(!root || !root.IsMap()) {
             return tl::make_unexpected(make_err(ConfigErr::SYNTAX_ERROR, "configuration root must be a YAML map"));
         }
-        if(root["model"] && root["calibration"] && root["control"] && root["safety_policy"] && root["shutdown"]) return load_sectioned_robot_cfg(path, capabilities);
-        return load_flat_robot_cfg(path, capabilities);
+        const auto model = load_dynamics_cfg(path);
+        if(!model) return tl::make_unexpected(model.error());
+        const auto ordered = capabilities_for_joint_order(capabilities, model->joint_names);
+        if(!ordered) return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, "hardware joint identities do not match Core"));
+        const auto& ordered_capabilities = *ordered;
+        const bool sectioned = root["model"] && root["calibration"] && root["control"] && root["safety_policy"] && root["shutdown"];
+        auto loaded = sectioned ? load_sectioned_robot_cfg(path, ordered_capabilities) : load_flat_robot_cfg(path, ordered_capabilities);
+        if(!loaded) return loaded;
+        auto& cfg = loaded.value();
+        if(capabilities.size() != cfg.joint_names.size())
+            return tl::make_unexpected(make_err(ConfigErr::INVALID_SIZE, "hardware joint count does not match Core"));
+        for(std::size_t i = 0; i < capabilities.size(); ++i) {
+            const auto& cap = ordered_capabilities[i];
+            if(!cap.joint_name.empty() && cap.joint_name != cfg.joint_names[i])
+                return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE,
+                    "hardware order mismatch: expected " + cfg.joint_names[i] + ", got " + cap.joint_name));
+            if(sectioned) continue;
+            const double ratio = cfg.mapper.direction[i] * cfg.mapper.pos_ratio[i];
+            if(!std::isfinite(cap.min_pos) || !std::isfinite(cap.max_pos) || cap.min_pos >= cap.max_pos ||
+                !std::isfinite(cap.max_vel) || cap.max_vel <= 0.0)
+                return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, "invalid hardware physical bounds"));
+            const double a = cfg.mapper.joint_zero_offset[i] + (cap.min_pos - cfg.mapper.actuator_zero_offset[i]) / ratio;
+            const double b = cfg.mapper.joint_zero_offset[i] + (cap.max_pos - cfg.mapper.actuator_zero_offset[i]) / ratio;
+            auto& limits = cfg.safety.limits;
+            limits.min_pos[i] = std::max(limits.min_pos[i], std::min(a,b));
+            limits.max_pos[i] = std::min(limits.max_pos[i], std::max(a,b));
+            limits.max_vel[i] = std::min(limits.max_vel[i], cap.max_vel / std::abs(ratio));
+            limits.max_effort[i] = std::min(limits.max_effort[i], cap.max_effort * cfg.mapper.tor_ratio[i]);
+            const double gain_ratio = cfg.mapper.pos_ratio[i] * cfg.mapper.tor_ratio[i];
+            limits.max_kp[i] = std::min(limits.max_kp[i], cap.max_kp * gain_ratio);
+            limits.max_kd[i] = std::min(limits.max_kd[i], cap.max_kd * gain_ratio);
+        }
+        if(const auto valid = validate_robot_cfg(cfg); !valid) return tl::make_unexpected(valid.error());
+        return loaded;
     }
     catch(const YAML::BadFile&) {
         return tl::make_unexpected(make_err(ConfigErr::FILE_OPEN_FAILED, "failed to open configuration file: " + path));

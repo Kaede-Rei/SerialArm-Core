@@ -1,5 +1,6 @@
 from pathlib import Path
 import sys
+import xacro
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -24,13 +25,7 @@ def resolve_profile(context):
     ).lower() in ("true", "1", "yes")
 
     if profile["description_type"] == "xacro":
-        robot_description = Command(
-            [
-                FindExecutable(name="xacro"),
-                " ",
-                profile["description_path"],
-            ]
-        )
+        robot_description = xacro.process_file(profile['description_path']).toxml()
     else:
         description_urdf = Path(profile["description_path"])
         robot_description = description_urdf.read_text(encoding="utf-8")

@@ -2,6 +2,8 @@
 """Prepare a relocatable installed ROS2 overlay for an Electron Linux release"""
 
 import argparse
+import hashlib
+import platform
 import json
 import os
 from pathlib import Path
@@ -188,6 +190,7 @@ def python_gui_modules(root, payload):
     venv = root / '.install/gui-venv/bin/python'
     query = '''import json, sys, numpy, scipy, yaml
 from pathlib import Path
+from importlib import metadata
 modules = (numpy, scipy, yaml)
 paths = []
 for module in modules:
@@ -196,6 +199,10 @@ for module in modules:
     for suffix in ('libs', '.libs'):
         sibling = source.parent / (source.name + suffix)
         if sibling.is_dir(): paths.append([sibling.name, str(sibling)])
+for name in ('numpy', 'scipy', 'PyYAML'):
+    distribution = metadata.distribution(name)
+    info = Path(distribution._path)
+    paths.append([info.name, str(info)])
 print(json.dumps({'minor': sys.version_info.minor, 'paths': paths}))'''
     probe = subprocess.run([str(venv), '-c', query], capture_output=True, text=True)
     if probe.returncode != 0:
@@ -220,6 +227,57 @@ print(json.dumps({'minor': sys.version_info.minor, 'paths': paths}))'''
     if verify.returncode != 0:
         fail('Packaged Python dependencies failed to import: ' + verify.stderr[-1400:])
     print('[SerialArm] GUI Python modules copied: numpy, scipy, PyYAML')
+
+
+def release_evidence(root, payload, manifest):
+    def command(argv):
+        result = subprocess.run(argv, cwd=root, capture_output=True, text=True)
+        if result.returncode: fail('Unable to record release provenance: ' + ' '.join(argv))
+        return result.stdout.strip()
+    source = {'commit': command(['git', 'rev-parse', 'HEAD']),
+              'dirty': bool(command(['git', 'status', '--porcelain'])),
+              'native': native_inputs(root, manifest)['source_sha256'], 'gui': gui_inputs(root)}
+    if source['native'] != manifest['native_receipt']['source_sha256'] or source['gui'] != manifest['gui_source_sha256']:
+        fail('Release inputs changed after installation')
+    licenses = payload / 'licenses'
+    licenses.mkdir(exist_ok=True)
+    for name, source_file in (
+        ('pybind11', root / 'src/serial_arm/core/third_lib/pybind11/LICENSE'),
+        ('tl', root / 'src/serial_arm/core/third_lib/tl/COPYING'),
+    ):
+        shutil.copy2(source_file, licenses / (name + '.txt'))
+    for source_file in sorted((root / 'packaging/linux/licenses').glob('*.txt')):
+        shutil.copy2(source_file, licenses / source_file.name)
+    for name in ('pinocchio', 'coal', 'eigenpy', 'boost'):
+        found = []
+        for base in (Path('/opt/openrobots/share'), Path('/usr/share/doc')):
+            for directory in sorted(set(base.glob('*' + name + '*')) | set((base / 'doc').glob('*' + name + '*'))):
+                if not directory.is_dir(): continue
+                found.extend(p for p in directory.rglob('*') if p.is_file() and
+                    any(word in p.name.lower() for word in ('license', 'copying', 'copyright')))
+        if not found and name in ('pinocchio', 'coal'):
+            fail('Missing dependency license material: ' + name)
+        for index, source_file in enumerate(found):
+            shutil.copy2(source_file, licenses / (name + '-' + str(index) + '-' + source_file.name))
+    files = {}
+    for path in sorted(payload.rglob('*')):
+        if path.is_file(): files[str(path.relative_to(payload))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    evidence = {'source': source, 'target': platform.machine(),
+                'compiler': command(['c++', '-dumpmachine']), 'files': files}
+    (payload / 'build-receipt.json').write_text(json.dumps(evidence, indent=2) + '\n')
+
+
+def wrap_native_entrypoints(native):
+    real = native / 'libexec' / 'serial-arm'
+    real.mkdir(parents=True, exist_ok=True)
+    for name in REQUIRED_BINARIES:
+        executable = native / 'bin' / name
+        shutil.move(executable, real / name)
+        executable.write_text('#!/usr/bin/env bash\nset -euo pipefail\n'
+            'prefix="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"\n'
+            'export LD_LIBRARY_PATH="$prefix/lib:$prefix/lib64:${LD_LIBRARY_PATH:-}"\n'
+            'exec "$prefix/libexec/serial-arm/' + name + '" "$@"\n')
+        executable.chmod(0o755)
 
 
 def make_manifest(root, stage, payload):
@@ -262,6 +320,7 @@ def make_manifest(root, stage, payload):
                 'icon': str(root / 'packaging/linux/icon.png'),
                 'artifactName': 'SerialArm-Core-linux-${arch}.${ext}',
             },
+            'appImage': {'executableArgs': []},
             'deb': {
                 'depends': [
                     'libgtk-3-0', 'libnss3', 'libxss1', 'libasound2',
@@ -314,6 +373,7 @@ def main():
     if installed_content(payload / 'native') != manifest['native_receipt']['installed_sha256']:
         fail('Installed files changed while copying the release payload')
     bundle_external_libs(payload / 'native')
+    wrap_native_entrypoints(payload / 'native')
     print('[SerialArm] Staging Electron GUI and Python bridge')
     prepare_gui(root, project)
     copytree(root / 'apps/launcher/backend', payload / 'apps/launcher/backend')
@@ -326,6 +386,7 @@ def main():
         fail('Active installation changed while preparing the release payload')
     if (root / '.install/manifest.json').read_text(encoding='utf-8') != receipt_text:
         fail('Installation receipt changed while preparing the release payload')
+    release_evidence(root, payload, manifest)
     make_manifest(root, stage, payload)
     print('[SerialArm] Full release staged successfully')
 
