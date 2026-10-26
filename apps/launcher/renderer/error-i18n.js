@@ -41,6 +41,8 @@
         [/\bJOINT_POS_LIMIT\b/i, '关节位置超出安全范围 请检查关节姿态与零位配置'],
         [/\bJOINT_VEL_LIMIT\b/i, '实测关节速度超出安全限制'],
         [/\bCMD_VEL_LIMIT\b/i, '下发的关节速度超过安全限制'],
+        [/\bSTATE_TIMEOUT\b/i, '机械臂状态反馈已超时，已停止当前任务 请检查反馈连续性与控制调度，不会自动恢复示教'],
+        [/failed to (?:return|switch|enter).*RIGID_HOLD/i, '任务结束时未能恢复刚性保持，请查看最初的机器人故障，故障未恢复前不会继续运动'],
         [/\bSAFETY_FAILED\b/i, '机器人安全检查未通过，请核对关节状态、反馈和控制限制'],
         [/trajectory replay soft following recovery timed out/i, '示教回放中关节未能在限定时间内追上参考轨迹，任务已停止 这不是触及硬安全限位 柔性跟踪可尝试降低回放速度或调整对应关节的跟踪增益'],
         [/trajectory replay hard following limit reached/i, '示教回放已触及硬跟踪误差保护，任务已中止 请检查控制增益、负载、摩擦和实际关节响应'],
@@ -86,7 +88,7 @@
         fault_rigid: '刚性恢复', set_impedance_mode: '切换阻抗模式',
         set_model_feedforward_mode: '切换模型前馈模式',
     };
-    const codePattern = /\b(?:MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
+    const codePattern = /\b(?:MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
     function translate(raw, lang = 'zh-CN') {
         const input = String(raw ?? '').trim();
         if (lang === 'en' || !input) return input;

@@ -410,6 +410,13 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
         set_tests_properties(serial_arm_python_runtime PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
     endif()
+    if(SERIAL_ARM_BUILD_TERMINAL)
+        add_test(NAME serial_arm_terminal_teaching COMMAND ${Python3_EXECUTABLE} -B
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/terminal_teaching_tests.py
+            $<TARGET_FILE:serial_arm_terminal> $<TARGET_FILE:serial_arm_mock_hardware>
+            ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+        set_tests_properties(serial_arm_terminal_teaching PROPERTIES TIMEOUT 40 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
+    endif()
     add_executable(serial_arm_runtime_contract_tests tests/runtime_contract_tests.cpp)
     target_compile_definitions(serial_arm_runtime_contract_tests PRIVATE
         SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")

@@ -9,6 +9,7 @@
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
+#include <thread>
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -19,7 +20,7 @@ void require(bool result, const char* message) { if(!result) throw std::runtime_
 struct FakeBus final : MotorBus {
     HardwareCapabilities caps;
     ActuatorState state;
-    bool fail_read{false}, fail_write{false}, fail_activate{false}, fail_disable{false};
+    bool fail_read{false}, fail_write{false}, fail_activate{false}, fail_disable{false}, fresh_timestamps{false};
     int disables{0}, stops{0}, writes{0};
     double peak_torque{0};
     ActuatorCtrlCmd last_command;
@@ -47,6 +48,10 @@ struct FakeBus final : MotorBus {
     }
     tl::expected<ActuatorState,MotorBusErr> read() override {
         if(fail_read) { fail_read=false;return tl::make_unexpected(MotorBusErr::READ_FAILED); }
+        if(fresh_timestamps) {
+            const auto stamp=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            state.feedback_received_ns.assign(size(),stamp);
+        }
         return state;
     }
     tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd& cmd) override {
@@ -202,6 +207,31 @@ void recording_roundtrip(const fs::path& temp) {
     require(loaded->front().feedback_received_ns==frame.feedback_received_ns,"nanosecond timestamp roundtrip is exact");
     require(loaded->front().feedback_timing_valid==frame.feedback_timing_valid,"timing validity roundtrip");
 }
+void feedback_age_is_not_control_gap() {
+    auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
+    raw->fresh_timestamps=true;
+    require(bool(robot.configure(cfg,std::move(bus)))&&bool(robot.activate()),"fresh feedback robot setup");
+    require(bool(robot.cycle()),"first fresh cycle");
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    require(bool(robot.cycle()),"fresh timestamp must not be labeled stale after a scheduler gap");
+    raw->fresh_timestamps=false;
+    const auto now=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    raw->state.feedback_received_ns.assign(cfg.joint_names.size(),now);
+    raw->state.feedback_received_ns[2]=now-70000000;
+    const auto stale=robot.cycle();
+    require(!stale&&stale.error().safety_fault.code==SafetyErr::STATE_TIMEOUT,"genuine stale feedback still faults immediately");
+    require(stale.error().safety_fault.index==2,"timeout identifies the stale joint");
+
+    auto timed_bus=std::make_unique<FakeBus>(cfg);timed_bus->fresh_timestamps=true;Robot timed;
+    require(bool(timed.configure(cfg,std::move(timed_bus)))&&bool(timed.activate())&&bool(timed.cycle()),"dt watchdog setup");
+    for(int i=0;i<3;++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+        const auto result=timed.cycle();
+        if(i<2)require(bool(result),"isolated timing gaps retain watchdog grace");
+        else require(!result&&result.error().safety_fault.code==SafetyErr::INVALID_DT,"repeated controller delays still fault as INVALID_DT");
+    }
+}
+
 void sampled_acceleration() {
     auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
     const auto n=cfg.joint_names.size();
@@ -249,7 +279,7 @@ void full_id_validity() {
 int main() {
     const auto temp=fs::temp_directory_path()/("serialarm-contract-"+std::to_string(::getpid()));fs::create_directories(temp);
     try {
-        recording_roundtrip(temp);sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
+        recording_roundtrip(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
         fs::remove_all(temp);std::cout<<"runtime contracts passed\n";return 0;
     } catch(const std::exception& error) {fs::remove_all(temp);std::cerr<<error.what()<<'\n';return 1;}
 }

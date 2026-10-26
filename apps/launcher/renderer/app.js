@@ -51,7 +51,7 @@ const robotArtwork = () => '<img class="association-icon" src="brand/arm.png" al
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', compact: false, mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayMode: 'RIGID_TRACKING', teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryMode: 'RIGID_TRACKING', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', compact: false, mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayMode: 'RIGID_TRACKING', teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryMode: 'RIGID_TRACKING', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -95,7 +95,7 @@ function normalizeDialogError(source, kind = 'operation') {
     const defaultTitle = kind === 'fault' ? busyText('机械臂安全故障', 'Robot safety fault')
         : kind === 'replay' ? busyText('示教回放失败', 'Trajectory playback failed') : t('error');
     const title = kind === 'fault' ? defaultTitle : (detail?.title || defaultTitle);
-    const summary = detail?.message ? localizedError(detail.message) : localizedError(rawSummary);
+    const summary = detail?.message && /[\u3400-\u9fff]/.test(detail.message) ? detail.message : localizedError(detail?.message || rawSummary);
     const advice = detail?.advice || (kind === 'fault'
         ? busyText('请先确认机械臂、供电与执行器状态，关闭弹窗不会恢复运动或自动清除故障', 'Inspect the robot and hardware. Dismissing does not recover motion or clear faults')
         : busyText('当前操作未成功完成，不会自动重试，请查看下方技术详情以确定原因', 'The operation did not finish. It will not retry automatically; inspect technical details below'));
@@ -181,6 +181,19 @@ function describeRuntimeFault(snapshot) {
     const code = f.code || snapshot?.last_fault || 'FAULT';
     const reason = [code, f.motor_bus_error, f.safety_code].filter(Boolean).join(' / ');
     const name = f.joint_name || (Number.isInteger(f.joint_index) ? `joint${f.joint_index + 1}` : '');
+    if(f.safety_code==='STATE_TIMEOUT') {
+        const en=state.language==='en';
+        const value=Number.isFinite(f.value)?(f.value*1000).toFixed(2):'?';
+        const limit=Number.isFinite(f.limit)?(f.limit*1000).toFixed(2):'?';
+        const received=f.feedback_age_source==='host_transport_receive';
+        const subject=received?(en?`${name || 'Joint'} host-received feedback age`:`${name || '关节'} 的主机接收反馈年龄`):
+            (en?'State read interval (receive timestamp unavailable)':'状态读取间隔（缺少接收时间戳）');
+        return {code:'STATE_TIMEOUT',category:'safety',
+            message:en?`${subject} ${value} ms exceeds ${limit} ms`:`${subject} ${value} ms，超过 ${limit} ms 安全限制`,
+            advice:en?'Inspect feedback continuity and control scheduling; the session remains faulted and will not resume automatically':
+                '请检查对应关节的反馈连续性与控制调度，故障仍保持锁存，关闭提示不会自动恢复示教或运动',
+            technical:JSON.stringify(f,null,2)};
+    }
     const isDt = f.safety_code === 'INVALID_DT';
     const value = Number.isFinite(f.value) ? `${isDt ? (f.value * 1000).toFixed(2) : Number(f.value).toFixed(4)}` : null;
     const limit = Number.isFinite(f.limit) ? `${isDt ? (f.limit * 1000).toFixed(2) : Number(f.limit).toFixed(4)}` : null;
@@ -199,7 +212,7 @@ function checkRuntimeAlerts(snapshot) {
         if (key !== lastRuntimeFaultKey) { lastRuntimeFaultKey = key; showPriorityError(describeRuntimeFault(snapshot), 'fault'); }
     } else lastRuntimeFaultKey = '';
     const cal = snapshot?.model_calibration;
-    if (cal?.phase === 'failed' && cal.error) {
+    if (cal?.phase === 'failed' && cal.error && !cal.fault_interrupted) {
         const key = `${cal.task_id || 'unknown'}:${cal.error}`;
         if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); showPriorityError(cal.error); }
     }
@@ -962,7 +975,7 @@ function gravityCandidatePreviewState() {
 }
 function currentModelCalibration() {
     if (state.modelCalibrationOffline?.result) return state.modelCalibrationOffline.result;
-    return state.telemetry?.model_calibration || null;
+    return workbenchConnected() ? state.telemetry?.model_calibration || null : null;
 }
 function modelCalibrationModelBinding() {
     const expected = state.modelCalibrationOffline?.metadata?.urdf_fingerprint || currentModelCalibration()?.urdf_fingerprint || '';
@@ -1330,12 +1343,12 @@ async function temporaryCandidateAction(action, kind) {
 }
 function calibrationStandalonePanelHtml(kind) {
     const en = state.language === 'en';
-    const status = currentModelCalibration() || {};
+    const isTeach = kind === 'teaching';
+    const status = (isTeach ? (workbenchConnected()?state.telemetry?.model_calibration:null) : currentModelCalibration()) || {};
     const phase = status.phase || 'idle';
-    const live = workbenchConnected() && !state.modelCalibrationOffline;
+    const live = workbenchConnected() && (isTeach || !state.modelCalibrationOffline);
     const robotActive = state.telemetry?.robot_state === 'ACTIVE';
     const selected = state.calibrationToolSelected[kind];
-    const isTeach = kind === 'teaching';
     const waiting = live && phase === 'waiting_replay_confirmation';
     const active = live && modelCalibrationActive(status);
     const buttons = [];
@@ -1465,7 +1478,7 @@ function refreshCalibrationActionControls() {
     const robotState = connected ? state.telemetry?.robot_state : 'OFFLINE';
     const active = robotState === 'ACTIVE';
     const inactive = robotState === 'INACTIVE';
-    const live = !state.modelCalibrationOffline;
+    const live = state.calibrationEntry === 'teaching' || !state.modelCalibrationOffline;
     const phase = state.telemetry?.model_calibration?.phase || 'idle';
     const ready = ['idle', 'complete', 'cancelled', 'failed'].includes(phase);
     const en = state.language === 'en';
@@ -1739,6 +1752,29 @@ function calibrationComOverlayHtml() {
     const candidate = binding.historical ? (state.language === 'en' ? 'Historical candidate COM' : '历史候选质心') : (state.language === 'en' ? 'Candidate COM' : '候选质心');
     const zoom = state.language === 'en' ? 'Visual displacement only' : '仅放大显示位移，不更改实际坐标';
     return `<div class="calibration-com-overlay" aria-label="${title}"><div class="calibration-com-heading">${title}</div><div class="calibration-com-legend"><span><i class="com-swatch original"></i>${original}</span><span><i class="com-swatch candidate"></i>${candidate}</span><span class="com-connector">─</span>${state.language === 'en' ? 'Offset' : '质心偏移'}</div>${hasComparison ? `<div class="calibration-com-scale"><span>${state.language === 'en' ? 'Display' : '显示比例'}</span>${[1, 12, 25].map(value => `<button type="button" class="${scale === value ? 'active' : ''}" data-calibration-com-scale="${value}" aria-pressed="${scale === value}">×${value}</button>`).join('')}</div><label class="calibration-com-unchanged"><input type="checkbox" id="calibration-com-unchanged" ${state.modelCalibrationShowUnchanged ? 'checked' : ''}>${state.language === 'en' ? 'Show unchanged links' : '显示未变化的 Link'}</label><div class="calibration-com-hint">${scale === 1 ? (state.language === 'en' ? 'True 3D locations' : '真实三维位置') : zoom}</div>` : `<div class="calibration-com-hint">${binding.comparable ? pending : esc(binding.reason)}</div>`}</div>`;
+}
+function synchronizeWorkbenchSession(session) {
+    const identity=session.session_id || session.pid;
+    const running=['running','stopping'].includes(session.state);
+    if(!running && state.workbenchIdentity && identity && identity!==state.workbenchIdentity)return false;
+    if((running && identity!==state.workbenchIdentity) || (!running && state.workbenchIdentity)) {
+        state.workbenchEpoch=(state.workbenchEpoch || 0)+1;
+        state.telemetry=null;
+        state.telemetryHistory=[];
+        state.telemetryReceivedAt=0;
+        state.admittance=null;
+        state.tuneDraft=null;
+        state.calibrationRuntimeCandidates=null;
+        if(!state.modelCalibrationOffline)state.modelCalibrationDirectory='';
+        state.confirmedActivationPid=null;
+        state.commandState='idle';
+        lastRuntimeFaultKey='';
+        lastTeachReplayErrorKey='';
+        reportedCalibrationErrors.clear();
+        state.workbenchIdentity=running?identity:null;
+    }
+    state.session=session;
+    return true;
 }
 function workbenchRecoveryRequired() { return workbenchConnected() && state.session?.recovery_required === true; }
 function workbenchForceDisconnectAvailable() {
@@ -2073,44 +2109,56 @@ function updateModelCalibrationTaskOverlay() {
     $('model-calibration-task-disable').disabled = state.telemetry?.robot_state === 'INACTIVE';
 }
 function modelCalibrationTaskParams(params = {}) {
-    const taskId = currentModelCalibration()?.task_id || state.telemetry?.model_calibration?.task_id || '';
+    const taskId = state.telemetry?.model_calibration?.task_id || '';
     return taskId ? { ...params, task_id: taskId } : { ...params };
 }
 async function finishTeachingSafely(cleanupOnly = false) {
+    const epoch=state.workbenchEpoch;
     return blockingOperation(busyText('正在结束示教并同步任务状态...', 'Closing demonstration and syncing task state...'), async () => {
-        const method = cleanupOnly ? 'model_calibration_cancel' : 'model_calibration_teach_stop';
+        const method=cleanupOnly?'model_calibration_cancel':'model_calibration_teach_stop';
         try {
-            const result = await workbenchRequest(method, modelCalibrationTaskParams());
-            if (result && state.telemetry) state.telemetry.model_calibration = result;
-            if (result?.directory) state.modelCalibrationDirectory = result.directory;
+            const result=await workbenchRequest(method,modelCalibrationTaskParams());
+            if(epoch===state.workbenchEpoch && result && state.telemetry) {
+                state.telemetry.model_calibration=result;
+                state.modelCalibrationDirectory=result.directory || '';
+            }
+        } catch(error) {
+            if(epoch===state.workbenchEpoch)throw error;
         } finally {
-            // Native teaching may have ended asynchronously on disable or FAULT
-            // Always read the authoritative phase even if the close request failed
-            try {
-                const latest = await workbenchRequest('model_calibration_status', {});
-                if (latest && state.telemetry) state.telemetry.model_calibration = latest;
-                if (latest?.directory) state.modelCalibrationDirectory = latest.directory;
-            } catch { /* Preserve the original close error */ }
-            render();
+            if(epoch===state.workbenchEpoch) {
+                try {
+                    const latest=await workbenchRequest('model_calibration_status',{});
+                    if(epoch===state.workbenchEpoch && latest && state.telemetry) {
+                        state.telemetry.model_calibration=latest;
+                        state.modelCalibrationDirectory=latest.directory || '';
+                    }
+                } catch { /* Preserve the original close error */ }
+                if(epoch===state.workbenchEpoch)render();
+            }
         }
     });
 }
+
 async function modelCalibrationQuick(method, params = {}) {
+    const epoch=state.workbenchEpoch;
+    const before=state.telemetry?.model_calibration?.phase;
     try {
-        const before = state.telemetry?.model_calibration?.phase;
         const requestParams = method === 'model_calibration_teach_begin' ? params : modelCalibrationTaskParams(params);
         const result = await workbenchRequest(method, requestParams);
+        if(epoch!==state.workbenchEpoch)return null;
         if (method.startsWith('model_calibration_') && result && state.telemetry) { state.telemetry.model_calibration = result; if (result.directory) state.modelCalibrationDirectory = result.directory; }
         if (result?.phase !== before && ['waiting_replay_confirmation', 'complete', 'cancelled', 'failed'].includes(result?.phase)) render();
         else { updateModelCalibrationTaskOverlay(); updateModelCalibrationLive(); }
         return result;
     } catch (error) {
+        if(epoch!==state.workbenchEpoch)return null;
         // Refresh immediately: teach_stop can transition into FAILED before
         // the next telemetry event. Never leave a stale teaching mask onscreen.
         try {
             const latest = await workbenchRequest('model_calibration_status', {});
-            if (latest && state.telemetry) state.telemetry.model_calibration = latest;
+            if (epoch===state.workbenchEpoch && latest && state.telemetry) state.telemetry.model_calibration = latest;
         } catch { /* preserve the original request error */ }
+        if(epoch!==state.workbenchEpoch)return null;
         showPriorityError(error);
         if (state.telemetry?.model_calibration?.phase !== before) render();
         else { updateModelCalibrationTaskOverlay(); updateModelCalibrationLive(); }
@@ -2895,7 +2943,20 @@ function bindPage() {
             await ensureCalibrationSelectableLinks();
             editCalibrationLockedLinks();
         });
-        if ($('model-calibration-teach-start')) $('model-calibration-teach-start').onclick = () => blockingOperation(busyText('正在启动拖动示教...', 'Starting demonstration...'), async () => { captureModelCalibrationOptions(); state.modelCalibrationCandidateSource = 'online'; state.modelCalibrationOffline = null; state.modelCalibrationSavePreview = null; state.modelCalibrationExport = null; state.modelCalibrationSaved = null; const result = await workbenchRequest('model_calibration_teach_begin', state.modelCalibrationOptions); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationDirectory = result.directory || ''; render(); updateModelCalibrationTaskOverlay(); });
+        if ($('model-calibration-teach-start')) $('model-calibration-teach-start').onclick = () => blockingOperation(busyText('正在启动拖动示教...', 'Starting demonstration...'), async () => {
+            const epoch=state.workbenchEpoch;
+            captureModelCalibrationOptions();
+            const result=await workbenchRequest('model_calibration_teach_begin',state.modelCalibrationOptions);
+            if(epoch!==state.workbenchEpoch || !result)return;
+            state.modelCalibrationCandidateSource='online';
+            state.modelCalibrationOffline=null;
+            state.modelCalibrationSavePreview=null;
+            state.modelCalibrationExport=null;
+            state.modelCalibrationSaved=null;
+            if(state.telemetry)state.telemetry.model_calibration=result;
+            state.modelCalibrationDirectory=result.directory || '';
+            render();updateModelCalibrationTaskOverlay();
+        });
         if ($('model-calibration-teach-stop')) $('model-calibration-teach-stop').onclick = () => finishTeachingSafely();
         if ($('model-calibration-teach-cleanup')) $('model-calibration-teach-cleanup').onclick = () => finishTeachingSafely(true);
         if ($('model-calibration-replay-confirm')) $('model-calibration-replay-confirm').onclick = modelCalibrationReplayConfirm;
@@ -2974,7 +3035,7 @@ async function startWorkbench() {
         return blockingOperation(busyText('正在连接控制工作台...', 'Connecting control workspace...'), () => connectWorkbench(false));
     return workbenchConfirm();
 }
-async function connectWorkbench(confirmed) { state.readiness = await api.request('readiness', { config: state.config }); state.busy = true; render(); try { state.session = await api.request('workbench_start', { config: state.config, confirmed, fingerprint: state.info?.fingerprint }); await loadAdmittance(); await refreshTeachTrajectories(); if (state.page === 'geometry') await refreshGeometryRepeatStatus(); state.calibrationRuntimeCandidates = await api.request('calibration_candidate_status', {}); state.teachLoadedId = ''; } finally { state.busy = false; render(); } }
+async function connectWorkbench(confirmed) { state.readiness = await api.request('readiness', { config: state.config }); state.busy = true; render(); try { synchronizeWorkbenchSession(await api.request('workbench_start', { config: state.config, confirmed, fingerprint: state.info?.fingerprint })); await loadAdmittance(); await refreshTeachTrajectories(); if (state.page === 'geometry') await refreshGeometryRepeatStatus(); state.calibrationRuntimeCandidates = await api.request('calibration_candidate_status', {}); state.teachLoadedId = ''; } finally { state.busy = false; render(); } }
 function confirmCalibrationPark(action) {
     if (action !== 'park' || !modelCalibrationActive()) return false;
     const dialog = $('confirm-dialog');
@@ -3177,6 +3238,7 @@ function onEvent(event) {
     if (event.event === 'output') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'native_log') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'telemetry') {
+        if(!workbenchConnected() || (event.session_id && event.session_id!==state.session?.session_id))return;
         const previousGeometryReplayPhase = state.telemetry?.teach_replay?.phase;
         const previousCalibrationPhase = state.telemetry?.model_calibration?.phase;
         const previousRobotState = state.telemetry?.robot_state;
@@ -3202,7 +3264,7 @@ function onEvent(event) {
         if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); }
         syncCompletedGainCandidate(calibration);
     }
-    if (event.event === 'session') { if (event.mode === 'workbench' && event.state === 'running' && (event.pid !== state.session?.pid || !['running', 'stopping'].includes(state.session?.state))) { state.telemetry = null; state.telemetryHistory = []; state.telemetryReceivedAt = 0; } state.session = event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.tuneDraft = null; const hadTemporary = activeTemporaryOverrides().length > 0; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
+    if (event.event === 'session') { const hadTemporary=activeTemporaryOverrides().length>0; if(event.mode==='workbench') { if(!synchronizeWorkbenchSession(event))return; } else state.session=event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.tuneDraft = null; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
     if (event.event === 'error') { state.backendError = event.error; toast(event.error, true); statusUI(); }
 }
 async function boot() {
@@ -3213,7 +3275,7 @@ async function boot() {
         applyTheme(); document.documentElement.lang = state.language; shell();
         $('priority-error-ack').onclick = acknowledgePriorityError;
         api.onEvent(onEvent);
-        state.status = await api.request('status'); state.session = state.status.session || { state: 'idle' }; outputBuffer = await api.request('logs'); if (outputBuffer) term?.write(outputBuffer);
+        state.status = await api.request('status'); state.session = state.status.session || { state: 'idle' }; if(state.session.mode==='workbench')synchronizeWorkbenchSession(state.session); outputBuffer = await api.request('logs'); if (outputBuffer) term?.write(outputBuffer);
         await refreshLibrary(); render();
     } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(error, true); } }
 }

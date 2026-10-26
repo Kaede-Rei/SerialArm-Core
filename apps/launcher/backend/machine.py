@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 
 
@@ -60,15 +61,14 @@ class NativeSession:
                 raise
             self.telemetry_history.clear()
             self.state = {'state': 'running', 'mode': 'workbench', 'recovery_required': False, 'pid': self.proc.pid,
-                          'started_at': time.time(), 'devices': list(devices), 'command': list(argv)}
+                          'session_id':uuid.uuid4().hex, 'started_at': time.time(), 'devices': list(devices), 'command': list(argv)}
             self.emit({'event': 'session', **self.state})
-            self.reader = threading.Thread(target=self._read_stdout, daemon=True)
+            self.reader = threading.Thread(target=self._read_stdout, args=(self.proc,self.state['session_id']), daemon=True)
             self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
             self.reader.start(); self.stderr_reader.start()
             return self.status()
 
-    def _read_stdout(self):
-        proc = self.proc
+    def _read_stdout(self, proc, session_id):
         try:
             for line in proc.stdout:
                 try: message = json.loads(line)
@@ -79,7 +79,7 @@ class NativeSession:
                     if message.get('event') == 'telemetry':
                         with self.mutex:
                             self.telemetry_history.append(message)
-                    self.emit(message)
+                    self.emit({**message,'session_id':session_id,'session_pid':proc.pid})
                     continue
                 request = None
                 with self.mutex: request = self.pending.pop(message.get('id'), None)

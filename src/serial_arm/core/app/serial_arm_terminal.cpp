@@ -1258,6 +1258,11 @@ private:
            fault.code == RobotErr::MOTOR_BUS_WRITE_FAILED ||
            fault.code == RobotErr::MOTOR_BUS_DEACTIVATE_FAILED)
             detail += " / " + to_string(fault.motor_bus_err);
+        if(fault.code==RobotErr::SAFETY_FAILED) {
+            detail += " / " + to_string(fault.safety_fault.code);
+            if(fault.safety_fault.index!=kInvalidIndex) detail += " / joint_index=" + std::to_string(fault.safety_fault.index);
+            detail += " / value=" + std::to_string(fault.safety_fault.value) + " / limit=" + std::to_string(fault.safety_fault.limit);
+        }
         return std::runtime_error(detail);
     }
 
@@ -1788,6 +1793,7 @@ private:
     }
 
     void model_calibration_reset_task_state() {
+        model_calibration_fault_interrupted_.store(false);
         model_calibration_cancel_.store(false);
         model_calibration_pause_.store(false);
         model_calibration_resume_confirmed_.store(false);
@@ -3723,7 +3729,11 @@ private:
             model_calibration_write_result_file();
         }
         catch(const std::exception& error) {
-            model_calibration_error_ = error.what();
+            {
+                std::lock_guard<std::mutex> error_lock(model_calibration_mutex_);
+                if(!model_calibration_fault_interrupted_.load() || model_calibration_error_.empty())
+                    model_calibration_error_ = error.what();
+            }
             model_calibration_pose_group_.store(0);
             model_calibration_validation_.store(false);
             model_calibration_direction_.store(0);
@@ -4284,6 +4294,7 @@ private:
         out << ",\"gain_adaptation_passes\":" << model_calibration_adaptation_passes_.load()
             << ",\"gain_adaptation_revisions\":" << model_calibration_adaptation_revisions_.load()
             << ",\"gain_adaptation_converged\":" << (model_calibration_adaptation_converged_.load()?"true":"false");
+        out << ",\"fault_interrupted\":" << (model_calibration_fault_interrupted_.load()?"true":"false");
         out << ",\"teaching_wall_duration_s\":" << (model_calibration_phase_.load() == ModelCalibrationPhase::TEACHING && model_calibration_teaching_started_at_ ?
             std::chrono::duration<double>(Robot::Clock::now() - *model_calibration_teaching_started_at_).count() : model_calibration_teaching_wall_duration_s_)
             << ",\"teaching_cleanup_pending\":" << (model_calibration_teach_thread_.joinable() &&
@@ -4617,6 +4628,9 @@ private:
                         out << ",\"joint_index\":" << safety.index << ",\"joint_name\":";
                         machine_json_string(out, cfg_.joint_names[safety.index]);
                     }
+                    if(safety.code==SafetyErr::STATE_TIMEOUT) {
+                        out << ",\"feedback_age_source\":\"" << (safety.index<cfg_.joint_names.size()?"host_transport_receive":"legacy_state_read_interval") << "\"";
+                    }
                     if(std::isfinite(safety.value)) out << ",\"value\":" << safety.value;
                     if(std::isfinite(safety.limit)) out << ",\"limit\":" << safety.limit;
                 }
@@ -4896,13 +4910,14 @@ private:
             model_calibration_pause_.store(false);
             model_calibration_cv_.notify_all();
             cycle_cv_.notify_all();
+            {
+                std::lock_guard<std::mutex> error_lock(model_calibration_mutex_);
+                model_calibration_error_=machine_robot_error("model calibration stopped by safety fault",fault).what();
+            }
             // Teaching and waiting-for-confirmation have no replay worker to
             // transition them into FAILED, so latch that phase here.
             if(calibration_phase == ModelCalibrationPhase::TEACHING ||
                 calibration_phase == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION) {
-                model_calibration_error_ = std::string("model calibration stopped by safety fault: ") +
-                    to_string(fault.code) +
-                    (fault.code == RobotErr::SAFETY_FAILED ? std::string(" / ") + to_string(fault.safety_fault.code) : std::string());
                 model_calibration_set_phase(ModelCalibrationPhase::FAILED);
                 // WAITING has no worker to clean up its recorder; the already
                 // saved trajectory.csv remains available for later inspection.

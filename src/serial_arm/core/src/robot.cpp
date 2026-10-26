@@ -44,6 +44,27 @@ static double available_feedback_age_s(const ActuatorState& state, std::size_t j
     return static_cast<double>(now_ns-oldest)/1.0e9;
 }
 
+// Timestamped backends measure data age at transport reception. A delayed
+// control thread is a separate dt-watchdog condition, not stale sensor data
+static tl::expected<void,SafetyFault> check_observed_state(
+    const Safety& safety, const JointState& joints, const ActuatorState& actuators,
+    double legacy_read_interval = 0.0, bool position_recovery = false) {
+    const auto& stamps=actuators.feedback_received_ns;
+    const double age=stamps.empty()?legacy_read_interval:available_feedback_age_s(actuators,joints.pos.size());
+    auto result=position_recovery?safety.check_state_for_position_recovery(joints,actuators,age):
+        safety.check_state(joints,actuators,age);
+    if(!result && !stamps.empty() && stamps.size()==joints.pos.size() &&
+       (result.error().code==SafetyErr::STATE_TIMEOUT || result.error().code==SafetyErr::INVALID_STATE_AGE)) {
+        result.error().index=static_cast<std::size_t>(std::min_element(stamps.begin(),stamps.end())-stamps.begin());
+        if(result.error().code==SafetyErr::INVALID_STATE_AGE) {
+            const auto now_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count();
+            const auto invalid=std::find_if(stamps.begin(),stamps.end(),[&](auto stamp){return stamp==0 || stamp>static_cast<std::uint64_t>(now_ns);});
+            if(invalid!=stamps.end())result.error().index=static_cast<std::size_t>(invalid-stamps.begin());
+        }
+    }
+    return result;
+}
+
 InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count) {
     InteractionControllerCfg interaction_cfg;
     interaction_cfg.enabled = admittance.enabled;
@@ -211,7 +232,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(fault);
     }
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+    const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value());
     if(!checked_state) {
         const RobotFault fault = make_safety_fault(checked_state.error());
         const SafetyAction action = safety_.action_for(checked_state.error().code);
@@ -572,8 +593,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     const TimePoint state_received_at = Clock::now();
-    double state_age_s = has_completed_cycle_ ? seconds_between(state_received_at, last_state_time_) : 0.0;
-    state_age_s = std::max(state_age_s, available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+    const double legacy_read_interval = has_completed_cycle_ ? seconds_between(state_received_at, last_state_time_) : 0.0;
 
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) {
@@ -582,7 +602,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(fault);
     }
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), state_age_s);
+    const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value(),legacy_read_interval);
     if(!checked_state) {
         const RobotFault fault = make_safety_fault(checked_state.error());
         enter_fault(fault, safety_.action_for(checked_state.error().code));
@@ -956,8 +976,8 @@ tl::expected<void, RobotFault> Robot::enter_fault_compliant_recovery() {
         current_fault_->code == RobotErr::SAFETY_FAILED &&
         current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
     const auto checked_state = position_limit_recovery ?
-        safety_.check_state_for_position_recovery(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size())) :
-        safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+        check_observed_state(safety_,joint_state.value(),actuator_state.value(),0.0,true) :
+        check_observed_state(safety_,joint_state.value(),actuator_state.value());
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
         return tl::make_unexpected(make_safety_fault(checked_state.error()));
@@ -1020,7 +1040,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+    const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value());
     if(!checked_state) return tl::make_unexpected(make_safety_fault(checked_state.error()));
 
     for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
@@ -1417,15 +1437,14 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
     const bool position_limit_recovery = current_fault_ &&
         current_fault_->code == RobotErr::SAFETY_FAILED &&
         current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+    const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value());
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
         if(checked_state.error().code != SafetyErr::JOINT_POS_LIMIT) {
             return tl::make_unexpected(make_safety_fault(checked_state.error()));
         }
         if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY && position_limit_recovery) {
-            const auto recovery_state = safety_.check_state_for_position_recovery(
-                joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
+            const auto recovery_state = check_observed_state(safety_,joint_state.value(),actuator_state.value(),0.0,true);
             if(!recovery_state) return tl::make_unexpected(make_safety_fault(recovery_state.error()));
         }
     }
