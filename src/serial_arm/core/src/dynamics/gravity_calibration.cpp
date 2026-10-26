@@ -312,6 +312,14 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << std::setprecision(17) << "{\n";
     out << "  \"task_id\":\"" << json_escape(metadata_.task_id) << "\",\n";
     out << "  \"profile\":\"" << json_escape(metadata_.profile) << "\",\n";
+    std::error_code executable_error;
+    const auto executable = std::filesystem::read_symlink("/proc/self/exe", executable_error);
+    out << "  \"runtime_provenance\":{\"fingerprint_algorithm\":\"serialarm_fnv1a64_variant\",\"executable_path\":\""
+        << json_escape(executable_error ? std::string{} : executable.string())
+        << "\",\"executable_fingerprint\":\"" << json_escape(model_calibration_file_fingerprint("/proc/self/exe"))
+        << "\",\"hardware_plugin_file_path\":\"" << json_escape(metadata_.hardware_plugin_path)
+        << "\",\"hardware_plugin_file_fingerprint\":\"" << json_escape(metadata_.hardware_plugin_file_fingerprint)
+        << "\",\"hardware_plugin_identity\":\"on_disk_file_at_task_start_not_loaded_image_attestation\"},\n";
     out << "  \"core_config_path\":\"" << json_escape(metadata_.core_config_path) << "\",\n";
     out << "  \"core_fingerprint\":\"" << json_escape(metadata_.core_fingerprint) << "\",\n";
     out << "  \"urdf_path\":\"" << json_escape(metadata_.urdf_path) << "\",\n";
@@ -332,7 +340,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << ",\"joint_zero_offset\":"; json_vector(out, metadata_.mapping_joint_zero_offset);
     out << ",\"actuator_zero_offset\":"; json_vector(out, metadata_.mapping_actuator_zero_offset); out << "},\n";
     out << "  \"original_gravity_scale\":"; json_vector(out, metadata_.original_gravity_scale); out << ",\n";
-    out << "  \"measurement_policy\":{\"type\":\"model_initialized_response_adaptive\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"static_source\":\"accepted_static.csv\",\"gain_values_recorded_in_frames\":true,\"hold_kp\":";
+    out << "  \"measurement_policy\":{\"type\":\"model_initialized_response_adaptive\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"static_source\":\"accepted_static.csv\",\"gain_values_recorded_in_frames\":true,\"feedback_age_source\":\"backend_steady_clock_receive_timestamp_or_unknown\",\"acceleration_validity\":\"acceleration_source_column\",\"hold_kp\":";
     json_vector(out,metadata_.measurement_hold_kp);
     out << ",\"hold_kd\":"; json_vector(out,metadata_.measurement_hold_kd);
     out << ",\"tracking_kp\":";json_vector(out,metadata_.measurement_tracking_kp);
@@ -893,6 +901,8 @@ std::string gravity_calibration_result_json(const GravityCalibrationResult& resu
     out << ",\"regression_reconstruction_rms\":" << result.regression_reconstruction_rms << ",\"singular_values\":[";
     for(std::size_t i=0;i<result.singular_values.size();++i){if(i)out<<',';out<<result.singular_values[i];} out<<']';
     out << ",\"parameter_observable\":[";for(std::size_t i=0;i<result.parameter_observable.size();++i){if(i)out<<',';out<<static_cast<int>(result.parameter_observable[i]);}out<<']';
+    out << ",\"torque_bias_convention\":\"model_minus_measured\"";
+    out << ",\"parameter_scope\":\"static_first_moment_fixed_mass\"";
     out << ",\"torque_bias\":";json_vector(out,result.torque_bias);
     out << ",\"first_moments\":[";
     for(std::size_t i=0;i<result.first_moments.size();++i){if(i)out<<',';const auto& item=result.first_moments[i];out<<"{\"link_name\":\""<<json_escape(item.link_name)<<"\",\"value\":["<<item.value.x()<<','<<item.value.y()<<','<<item.value.z()<<"]}";}out<<']';

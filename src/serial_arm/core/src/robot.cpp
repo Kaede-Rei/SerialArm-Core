@@ -30,6 +30,20 @@ bool finite_vector(const JointVector& values) {
         });
 }
 
+// Unknown timestamps leave legacy backend safety checks unchanged; callers
+// must still expose unknown measurement age in telemetry rather than zero
+// Malformed, future, or missing per-axis timestamps in a supplied vector fail closed
+static double available_feedback_age_s(const ActuatorState& state, std::size_t joints) {
+    const auto& stamps = state.feedback_received_ns;
+    if(stamps.empty()) return 0.0;
+    if(stamps.size() != joints) return std::numeric_limits<double>::infinity();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count();
+    const auto oldest = *std::min_element(stamps.begin(), stamps.end());
+    const auto newest = *std::max_element(stamps.begin(), stamps.end());
+    if(oldest == 0 || newest > static_cast<std::uint64_t>(now_ns)) return std::numeric_limits<double>::infinity();
+    return static_cast<double>(now_ns-oldest)/1.0e9;
+}
+
 InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count) {
     InteractionControllerCfg interaction_cfg;
     interaction_cfg.enabled = admittance.enabled;
@@ -197,7 +211,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(fault);
     }
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
+    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
     if(!checked_state) {
         const RobotFault fault = make_safety_fault(checked_state.error());
         const SafetyAction action = safety_.action_for(checked_state.error().code);
@@ -558,7 +572,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     const TimePoint state_received_at = Clock::now();
-    const double state_age_s = has_completed_cycle_ ? seconds_between(state_received_at, last_state_time_) : 0.0;
+    double state_age_s = has_completed_cycle_ ? seconds_between(state_received_at, last_state_time_) : 0.0;
+    state_age_s = std::max(state_age_s, available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
 
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) {
@@ -574,6 +589,9 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(fault);
     }
 
+    // Estimate before replacing the previous observation, using feedback sampling times
+    bool joint_acc_valid = false;
+    const JointVector joint_acc = estimate_joint_acc(joint_state.value(), actuator_state.value(), seconds_between(state_received_at, last_state_time_), joint_acc_valid);
     actuator_state_ = actuator_state.value();
     joint_state_ = joint_state.value();
     last_state_time_ = state_received_at;
@@ -596,7 +614,6 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(fault);
     }
 
-    const JointVector joint_acc = estimate_joint_acc(joint_state.value(), controller_dt);
 
     JointCtrllerInput input;
     input.state = joint_state.value();
@@ -817,6 +834,15 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     output.model_feedforward = model_feedforward_cache_;
     output.joint_cmd = safe_cmd.value();
     output.actuator_cmd = actuator_cmd.value();
+    output.joint_acc_valid = joint_acc_valid;
+    const auto& received = actuator_state_.feedback_received_ns;
+    if(received.size() == cfg_.joint_names.size()) {
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+        const auto oldest = *std::min_element(received.begin(), received.end());
+        const auto newest = *std::max_element(received.begin(), received.end());
+        if(oldest > 0 && newest <= static_cast<std::uint64_t>(now_ns))
+            output.feedback_age_ms = static_cast<double>(now_ns - oldest) / 1.0e6;
+    }
     output.dt = dt;
     output.admittance_active = admittance_active;
     if(admittance_active) {
@@ -929,8 +955,8 @@ tl::expected<void, RobotFault> Robot::enter_fault_compliant_recovery() {
         current_fault_->code == RobotErr::SAFETY_FAILED &&
         current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
     const auto checked_state = position_limit_recovery ?
-        safety_.check_state_for_position_recovery(joint_state.value(), actuator_state.value(), 0.0) :
-        safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
+        safety_.check_state_for_position_recovery(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size())) :
+        safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
         return tl::make_unexpected(make_safety_fault(checked_state.error()));
@@ -993,7 +1019,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     const auto joint_state = mapper_.to_joint_state(actuator_state.value());
     if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
 
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
+    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
     if(!checked_state) return tl::make_unexpected(make_safety_fault(checked_state.error()));
 
     for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
@@ -1128,16 +1154,44 @@ FaultHoldMode Robot::get_fault_hold_mode() const noexcept {
 /**
  * @brief 计算当前周期的关节加速度估计
  */
-JointVector Robot::estimate_joint_acc(const JointState& state, double dt) const {
+JointVector Robot::estimate_joint_acc(const JointState& state, const ActuatorState& observed, double dt, bool& valid) const {
     JointVector result(cfg_.joint_names.size(), 0.0);
+    valid = false;
     if(!has_completed_cycle_ || joint_state_.vel.size() != state.vel.size()) return result;
-
-    const double alpha = cfg_.runtime.joint_acc_filter_alpha;
+    const auto& current = observed.feedback_received_ns;
+    const auto& previous = actuator_state_.feedback_received_ns;
+    const bool timestamped = current.size() == result.size() && previous.size() == result.size();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+    bool all_valid = timestamped && cfg_.runtime.joint_acc_filter_alpha > 0.0;
     for(std::size_t i = 0; i < result.size(); ++i) {
-        const double raw_acc = (state.vel[i] - joint_state_.vel[i]) / dt;
+        double sample_dt = dt;
+        if(timestamped) {
+            if(previous[i] > 0 && current[i] == previous[i] && current[i] <= static_cast<std::uint64_t>(now_ns) &&
+               static_cast<double>(now_ns-current[i])/1.0e9 <= cfg_.safety.state_timeout_s) {
+                // No new observation: preserve filter memory but do not label
+                // a repeated cached sample as a measured zero acceleration
+                result[i] = i < joint_acc_.size() ? joint_acc_[i] : 0.0;
+                all_valid = false;
+                continue;
+            }
+            if(previous[i] == 0 || current[i] <= previous[i] || current[i] > static_cast<std::uint64_t>(now_ns) ||
+               static_cast<double>(now_ns-current[i])/1.0e9 > cfg_.safety.state_timeout_s) {
+                all_valid = false;
+                continue;
+            }
+            sample_dt = static_cast<double>(current[i]-previous[i])/1.0e9;
+        }
+        // Never use controller retiming to differentiate measured velocities
+        if(!std::isfinite(sample_dt) || sample_dt <= 0 || sample_dt > cfg_.safety.state_timeout_s) {
+            all_valid = false;
+            continue;
+        }
+        const double raw = (state.vel[i]-joint_state_.vel[i])/sample_dt;
         const double previous_acc = i < joint_acc_.size() ? joint_acc_[i] : 0.0;
-        result[i] = alpha * raw_acc + (1.0 - alpha) * previous_acc;
+        result[i] = cfg_.runtime.joint_acc_filter_alpha*raw + (1.0-cfg_.runtime.joint_acc_filter_alpha)*previous_acc;
+        if(!std::isfinite(result[i])) { result[i] = 0.0; all_valid = false; }
     }
+    valid = all_valid;
     return result;
 }
 
@@ -1310,7 +1364,8 @@ void Robot::stop_or_disable_noexcept() noexcept {
  */
 bool Robot::start_fault_hold_noexcept() noexcept {
     if(!motor_bus_ || !has_state_ || joint_state_.pos.size() != cfg_.joint_names.size() ||
-        seconds_between(Clock::now(), last_state_time_) > cfg_.safety.state_timeout_s) return false;
+        seconds_between(Clock::now(), last_state_time_) > cfg_.safety.state_timeout_s ||
+        available_feedback_age_s(actuator_state_, cfg_.joint_names.size()) > cfg_.safety.state_timeout_s) return false;
 
     if(!reset_reference_to_measured(joint_state_)) return false;
     const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
@@ -1353,7 +1408,7 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
     const bool position_limit_recovery = current_fault_ &&
         current_fault_->code == RobotErr::SAFETY_FAILED &&
         current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
-    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), 0.0);
+    const auto checked_state = safety_.check_state(joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
     if(!checked_state) {
         clear_fault_valid_cycles_ = 0;
         if(checked_state.error().code != SafetyErr::JOINT_POS_LIMIT) {
@@ -1361,7 +1416,7 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
         }
         if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY && position_limit_recovery) {
             const auto recovery_state = safety_.check_state_for_position_recovery(
-                joint_state.value(), actuator_state.value(), 0.0);
+                joint_state.value(), actuator_state.value(), available_feedback_age_s(*actuator_state, cfg_.joint_names.size()));
             if(!recovery_state) return tl::make_unexpected(make_safety_fault(recovery_state.error()));
         }
     }

@@ -313,10 +313,13 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
 
 void DamiaoMotorBus::update_feedback_state() {
     const TimePoint now = Clock::now();
+    last_state_.feedback_received_ns.resize(motors_.size());
     for(std::size_t i = 0; i < motors_.size(); ++i) {
         const auto& motor = *motors_[i];
         has_feedback_[i] = motor.get_state_seq() != 0;
         last_feedback_time_[i] = motor.get_state_received_at();
+        last_state_.feedback_received_ns[i] = has_feedback_[i] ?
+            std::chrono::duration_cast<std::chrono::nanoseconds>(last_feedback_time_[i].time_since_epoch()).count() : 0;
         const double age = has_feedback_[i] ?
             std::chrono::duration<double>(now - last_feedback_time_[i]).count() :
             std::numeric_limits<double>::infinity();

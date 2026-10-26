@@ -473,6 +473,7 @@ void bind_state_types(py::module_& module) {
 
     py::class_<ActuatorState>(module, "ActuatorState")
         .def(py::init<>())
+        .def_readwrite("feedback_received_ns", &ActuatorState::feedback_received_ns)
         .def_property("pos", &get_double_member<ActuatorState, &ActuatorState::pos>, &set_double_member<ActuatorState, &ActuatorState::pos>)
         .def_property("vel", &get_double_member<ActuatorState, &ActuatorState::vel>, &set_double_member<ActuatorState, &ActuatorState::vel>)
         .def_property("tor", &get_double_member<ActuatorState, &ActuatorState::tor>, &set_double_member<ActuatorState, &ActuatorState::tor>)
@@ -823,6 +824,8 @@ void bind_robot_session(py::module_& module) {
         .def_property_readonly("model_feedforward", [](const RobotCycleOutput& self) { return vector_to_numpy(self.model_feedforward); })
         .def_readonly("joint_cmd", &RobotCycleOutput::joint_cmd)
         .def_readonly("actuator_cmd", &RobotCycleOutput::actuator_cmd)
+        .def_readonly("joint_acc_valid", &RobotCycleOutput::joint_acc_valid)
+        .def_readonly("feedback_age_ms", &RobotCycleOutput::feedback_age_ms)
         .def_readonly("dt", &RobotCycleOutput::dt);
 
     py::class_<RobotSessionActuatorInfo>(module, "ActuatorInfo")

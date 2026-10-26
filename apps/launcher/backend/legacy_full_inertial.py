@@ -7,6 +7,7 @@ no external contacts, and accurate joint accelerations to be trusted.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import shutil
@@ -132,159 +133,18 @@ def _assign_configuration(model, target, indices, values):
     return target
 
 def _extract_rows(csvpath, joints, limit=500):
-    import numpy as np
-    valid=[]
-    with open(csvpath, newline='') as inp:
-        reader=csv.DictReader(inp)
-        required = [f'{k}:{j}' for k in ('q','dq','acc','tau') for j in joints]
-        missing = [k for k in required if k not in (reader.fieldnames or [])]
-        if missing:
-            raise ValueError('标定帧缺少列'+', '.join(missing))
-        for row in reader:
-            # Drag demonstration is not a closed-loop motor model identification dataset.
-            phase=row.get('phase', '')
-            if phase not in ('static_reverse','friction_forward_fast') or row.get('valid') != '1':
-                continue
-            if float(row.get('feedback_age_ms') or 999) > 30:
-                continue
-            try:
-                q=np.array([float(row[f'q:{j}']) for j in joints]);
-                v=np.array([float(row[f'dq:{j}']) for j in joints]);
-                a=np.array([float(row[f'acc:{j}']) for j in joints]);
-                tau=np.array([float(row[f'tau:{j}']) for j in joints]);
-            except (TypeError,ValueError):
-                continue
-            if not all(np.isfinite(x).all() for x in (q,v,a,tau)) or np.max(np.abs(v)) < 0.06:
-                continue
-            valid.append((phase,q,v,a,tau))
-    if len(valid) < 120:
-        raise ValueError(f'有效自动运动帧不足（{len(valid)}）；需要更多双向激励，不能从手动拖拽帧估计惯量')
-    if set(item[0] for item in valid) != {'static_reverse','friction_forward_fast'}:
-        raise ValueError('缺少反向或正向回放数据，无法做双向辨识')
-    if len(valid) > limit:
-        stride = len(valid) / limit
-        valid = [valid[min(len(valid)-1,int(i*stride))] for i in range(limit)]
-    return valid
+    from full_inertial import _extract_rows as validated_rows
+    return validated_rows(csvpath, joints, limit)
 
 
-def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15):
-    import numpy as np
-    data=model.createData()
-    nj=len(moving_joints)
-    nq, nv=int(model.nq), int(model.nv)
-    q_indices, v_indices, param_indices = _sampling_map(model, moving_joints)
-    full_prior=np.concatenate([np.asarray(model.inertias[j].toDynamicParameters(), dtype=float)
-                               for j in range(1,model.njoints)])
-    prior=full_prior[param_indices]
-    nparam=len(prior)
-    # Neutral is used ONLY for unsampled joints; do not pretend their motion
-    # was measured, and do not overwrite their original URDF inertias
-    neutral=np.asarray(pin.neutral(model),dtype=float)
-    if neutral.shape!=(nq,) or not np.isfinite(neutral).all():
-        raise ValueError('无法获取完整 URDF 模型的有效中立位姿')
-    X=[]; y=[]; labels=[]
-    for phase,q,v,a,tau in rows:
-        if any(len(vector)!=nj for vector in (q,v,a,tau)):
-            raise ValueError('标定数据关节数量与采样配置不一致')
-        q_all=neutral.copy(); v_all=np.zeros(nv); a_all=np.zeros(nv)
-        _assign_configuration(model, q_all, q_indices, q)
-        v_all[v_indices]=v
-        a_all[v_indices]=a
-        full_Y=np.asarray(pin.computeJointTorqueRegressor(model,data,q_all,v_all,a_all),dtype=float)
-        if full_Y.shape!=(nv,len(full_prior)):
-            raise ValueError('Pinocchio 力矩回归矩阵维度不匹配')
-        measured_Y=full_Y[v_indices,:]
-        Y=measured_Y[:,param_indices]
-        # Known contributions of unmeasured auxiliary branches are subtracted
-        # They are retained unchanged in the exported source URDF
-        fixed_torque=measured_Y@full_prior - Y@prior
-        F=np.zeros((nj,5*nj))
-        for k in range(nj):
-            vel=float(v[k])
-            F[k,5*k]=1
-            F[k,5*k+1]=float(vel>0.05)
-            F[k,5*k+2]=max(vel,0.0)
-            F[k,5*k+3]=float(vel< -0.05)
-            F[k,5*k+4]=min(vel,0.0)
-        X.append(np.concatenate((Y,F),axis=1))
-        y.append(np.asarray(tau,dtype=float)-fixed_torque)
-        labels.append(phase)
-    X=np.concatenate(X);y=np.concatenate(y)
-    phase_counts={p:[i for i,l in enumerate(labels) if l==p] for p in set(labels)}
-    hold=set()
-    for phase,indices in phase_counts.items():
-        hold.update(indices[int(0.8*len(indices)):])
-    train_indices=np.concatenate([np.arange(i*nj,(i+1)*nj) for i in range(len(labels)) if i not in hold])
-    val_indices=np.concatenate([np.arange(i*nj,(i+1)*nj) for i in range(len(labels)) if i in hold])
-    A=X[train_indices];b=y[train_indices]
-    V=X[val_indices];t=y[val_indices]
-    colnorm=np.linalg.norm(A,axis=0)
-    scale=np.maximum(colnorm,1e-10)
-    dynamic=A[:,:nparam]
-    friction=A[:,nparam:]
-    cleaned=dynamic-friction@np.linalg.lstsq(friction,dynamic,rcond=1e-9)[0]
-    clean_scale=np.maximum(np.linalg.norm(cleaned,axis=0),1e-10)
-    rank=int(np.linalg.matrix_rank(cleaned/clean_scale,tol=1e-3))
-    nuisance=np.zeros(5*nj)
-    xprior=np.concatenate((prior,nuisance))
-    A2=A/scale
-    reg=np.ones(A.shape[1])*regularization
-    reg[nparam:]=regularization*0.1
-    rhs=b-A@xprior
-    z=np.zeros(len(reg))
-    for _ in range(5):
-        residual=rhs-A2@z
-        mad=float(np.median(np.abs(residual-np.median(residual))))
-        threshold=max(0.05,1.345*1.4826*mad)
-        weight=np.minimum(1.0,threshold/np.maximum(np.abs(residual),threshold))
-        root=np.sqrt(weight)
-        z=np.linalg.lstsq(np.vstack((A2*root[:,None],np.diag(reg))),
-                          np.concatenate((rhs*root,np.zeros(len(reg)))),rcond=1e-9)[0]
-    delta=z/scale
-    return {
-        'prior':prior,'candidate':prior+delta[:nparam], 'nuisance':delta[nparam:],
-        'rank':rank,'degrees':nparam,'train':(A,b), 'validation':(V,t),
-        'X':X,'full_prior':xprior,'full_model_prior':full_prior,'sampled_joints':[name for _,name,_ in moving_joints],
-    }
+def _fit_regressor(rows, model, pin, moving_joints, **options):
+    from full_inertial import _fit_regressor as reduced_fit
+    return reduced_fit(rows, model, pin, moving_joints, **options)
 
 
 def _review_candidate(fit, model, pin, moving_joints=None):
-    """Return the numerical optimum unchanged; never gate it on a CAD delta or holdout score."""
-    import numpy as np
-    prior=np.asarray(fit['prior'],dtype=float)
-    target=np.asarray(fit['candidate'],dtype=float)
-    if not np.isfinite(target).all():
-        raise ValueError('惯量回归结果包含非有限数值，无法生成有意义的候选')
-    V,t=fit['validation']
-    nuisance=np.asarray(fit['nuisance'],dtype=float)
-    baseline=float(np.sqrt(np.mean((t-V@np.concatenate((prior,nuisance)))**2)))
-    candidate_rms=float(np.sqrt(np.mean((t-V@np.concatenate((target,nuisance)))**2)))
-    warnings=[]
-    if moving_joints is None:
-        moving_joints = [(j,str(model.names[j]),None) for j in range(1,model.njoints)]
-    for k,(j,_linkname,_link) in enumerate(moving_joints):
-        name=str(model.names[j]);old=model.inertias[j]
-        sl=target[10*k:10*(k+1)]
-        try:
-            new=pin.Inertia.FromDynamicParameters(sl)
-            if not physical_inertia(float(new.mass),np.asarray(new.lever),np.asarray(new.inertia)):
-                warnings.append(f'{name}: 候选质量/质心/惯性张量不满足物理一致性（仅供审核）')
-            if float(old.mass)>0:
-                delta=abs(float(new.mass)-float(old.mass))/float(old.mass)
-                if delta>0.3:
-                    warnings.append(f'{name}: 相对原模型质量变化 {delta:.1%}（仅提示，不约束）')
-            com_shift=float(np.linalg.norm(np.asarray(new.lever)-np.asarray(old.lever)))
-            if com_shift>0.05:
-                warnings.append(f'{name}: 相对原模型质心偏移 {com_shift:.3f} m（仅提示，不约束）')
-        except Exception as exc:
-            warnings.append(f'{name}: 反解惯性参数异常：{exc}（仅供审核）')
-    if not np.isfinite(candidate_rms) or not np.isfinite(baseline):
-        raise ValueError('候选验证误差非有限数值，无法生成有意义的候选')
-    if candidate_rms>=baseline:
-        warnings.append(f'留出集 RMS 从 {baseline:.4f} 增加至 {candidate_rms:.4f} Nm（仅提示，不阻止导出）')
-    if fit['rank']<fit['degrees']:
-        warnings.append(f'惯量回归矩阵仅秩 {fit["rank"]}/{fit["degrees"]}，未辨识方向仍依赖 CAD 先验')
-    return (target,candidate_rms,1.0),baseline,warnings
+    from full_inertial import _review_candidate as review
+    return review(fit, model, pin, moving_joints)
 
 
 def _dynamic_parameters_to_urdf_fields(parameters):
@@ -316,7 +176,8 @@ def export_full_inertial_candidate(directory, destination=None):
         raise ValueError('完整惯性辨识需要 Python Pinocchio；此功能可选，不会自动安装请在 Launcher 使用的 Python 环境安装 pinocchio 后重试') from exc
     directory,metadata,result,snapshot,source=_prepare_inputs(directory)
     tree=ET.parse(snapshot);root=tree.getroot()
-    model=pin.buildModelFromUrdf(str(snapshot))
+    from full_inertial import _apply_recorded_gravity
+    model=_apply_recorded_gravity(pin.buildModelFromUrdf(str(snapshot)),metadata)
     joints=metadata.get('joint_names',[])
     if not isinstance(joints,list) or not joints or len(set(joints))!=len(joints):
         raise ValueError('任务记录中缺少有效的关节采样顺序')
@@ -378,6 +239,11 @@ def export_full_inertial_candidate(directory, destination=None):
         review_warnings.append(f'候选惯量未通过 Pinocchio 重新载入检查：{exc}')
     tmp.replace(dst)
     report={
+      'solver':'dynamic_reduced_svd_irls',
+      'acceleration_input':'recorded_acceleration_no_reconstruction',
+      'runtime_provenance':metadata.get('runtime_provenance'),
+      'frames_sha256':hashlib.sha256((directory/'frames.csv').read_bytes()).hexdigest(),
+      'solver_source_sha256':hashlib.sha256(Path(__file__).with_name('full_inertial.py').read_bytes()).hexdigest(),
       'candidate_urdf':str(dst),'status':'unconstrained_candidate_requires_human_review',
       'verified_joint_inertials':[name for _,name,_ in mapped],
       'unchanged_inertials':unchanged,

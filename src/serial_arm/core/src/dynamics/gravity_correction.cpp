@@ -61,6 +61,15 @@ GravityCorrectionPackage load_gravity_correction_package(
         };
     const YAML::Node residual = root["residual"];
     package.torque_bias = required_vector(residual, "torque_bias");
+    if(residual["convention"]) {
+        if(residual["convention"].as<std::string>() != "model_minus_measured")
+            throw std::runtime_error("unsupported gravity correction residual convention");
+    } else if(root["candidate_source"] && root["candidate_source"].as<std::string>() == "recomputed-candidate.json" &&
+              (!root["torque_bias_source"] || root["torque_bias_source"].as<std::string>() != "original_core_unrecalibrated")) {
+        // Historical offline packages stored measured-minus-model; online
+        // packages and Core configuration already use model-minus-measured
+        for(double& bias : package.torque_bias) bias = -bias;
+    }
     package.torque_threshold = required_vector(residual, "torque_threshold");
     package.friction.enabled = false;
     if(package.friction_pass && residual["friction"] && residual["friction"].IsMap()) {

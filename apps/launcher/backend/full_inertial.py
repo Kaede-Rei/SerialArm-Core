@@ -7,6 +7,7 @@ no external contacts, and accurate joint accelerations to be trusted.
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import shutil
@@ -26,6 +27,16 @@ def physical_inertia(mass, com, inertia, *, min_mass=1e-7):
         return False
     eig = np.linalg.eigvalsh(tensor)
     return bool(eig[0] > 1e-10 and eig[2] <= eig[0] + eig[1] + 1e-9)
+
+
+def _apply_recorded_gravity(model, metadata):
+    import numpy as np
+    if 'gravity' in metadata:
+        gravity = np.asarray(metadata['gravity'], dtype=float)
+        if gravity.shape != (3,) or not np.isfinite(gravity).all():
+            raise ValueError('记录的重力向量无效')
+        model.gravity.linear = gravity
+    return model
 
 
 def _prepare_inputs(directory):
@@ -131,6 +142,23 @@ def _assign_configuration(model, target, indices, values):
             target[index] = value
     return target
 
+def _validate_dynamic_acceleration(rows):
+    """Diagnose historical broken acceleration without rewriting observations."""
+    import numpy as np
+    if not rows:
+        return
+    velocities = np.asarray([item[2] for item in rows])
+    accelerations = np.asarray([item[3] for item in rows])
+    if not np.isfinite(velocities).all() or not np.isfinite(accelerations).all():
+        raise ValueError('动态速度或加速度含非有限值')
+    varying = np.ptp(velocities, axis=0) > 1e-6
+    broken = np.flatnonzero(varying & np.all(accelerations == 0, axis=0))
+    if len(broken):
+        raise ValueError('运动速度变化但记录加速度全零，完整动力学数据不可信（轴索引 '
+                         + ', '.join(map(str, broken.tolist()))
+                         + '）；未重建或覆盖加速度，静态样本仍可用于重力辨识')
+
+
 def _extract_rows(csvpath, joints, limit=500):
     import numpy as np
     valid=[]
@@ -145,9 +173,12 @@ def _extract_rows(csvpath, joints, limit=500):
             phase=row.get('phase', '')
             if phase not in ('static_reverse','friction_forward_fast') or row.get('valid') != '1':
                 continue
-            if float(row.get('feedback_age_ms') or 999) > 30:
-                continue
             try:
+                age = float(row.get('feedback_age_ms') or 'nan')
+                if not np.isfinite(age) or age < 0 or age > 30:
+                    continue
+                if row.get('acceleration_source') == 'invalid_or_unknown_sample_timing':
+                    continue
                 q=np.array([float(row[f'q:{j}']) for j in joints]);
                 v=np.array([float(row[f'dq:{j}']) for j in joints]);
                 a=np.array([float(row[f'acc:{j}']) for j in joints]);
@@ -157,6 +188,7 @@ def _extract_rows(csvpath, joints, limit=500):
             if not all(np.isfinite(x).all() for x in (q,v,a,tau)) or np.max(np.abs(v)) < 0.06:
                 continue
             valid.append((phase,q,v,a,tau))
+    _validate_dynamic_acceleration(valid)
     if len(valid) < 120:
         raise ValueError(f'有效自动运动帧不足（{len(valid)}）；需要更多双向激励，不能从手动拖拽帧估计惯量')
     if set(item[0] for item in valid) != {'static_reverse','friction_forward_fast'}:
@@ -178,6 +210,9 @@ def _extract_rows(csvpath, joints, limit=500):
 
 def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, active_parameters=None, locked_links=None):
     import numpy as np
+    _validate_dynamic_acceleration(rows)
+    if not np.isfinite(regularization) or regularization < 0:
+        raise ValueError("动态回归正则系数必须有限且非负")
     data=model.createData()
     nj=len(moving_joints)
     nq, nv=int(model.nq), int(model.nv)
@@ -186,9 +221,15 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, acti
                                for j in range(1,model.njoints)])
     prior=full_prior[param_indices]
     nparam=len(prior)
+    locked = set(locked_links or ())
+    if not locked.issubset({name for _, name, _ in moving_joints}):
+        raise ValueError('锁定列表包含本次模型之外的 Link')
+    selected_parameters = tuple(active_parameters) if active_parameters is not None else tuple(range(10))
+    if (not selected_parameters or len(set(selected_parameters)) != len(selected_parameters)
+            or any(not isinstance(i, int) or i < 0 or i >= 10 for i in selected_parameters)):
+        raise ValueError('动态自由参数索引无效')
     active_indices = [10*k+i for k, (_, name, _) in enumerate(moving_joints)
-                      if name not in (locked_links or ())
-                      for i in (active_parameters if active_parameters is not None else range(10))]
+                      if name not in locked for i in selected_parameters]
     if not active_indices:
         raise ValueError('没有可辨识的未锁定惯性参数')
     # Neutral is used ONLY for unsampled joints; do not pretend their motion
@@ -234,46 +275,62 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, acti
     val_indices=np.concatenate([np.arange(i*nj,(i+1)*nj) for i in range(len(labels)) if i in hold])
     A=X[train_indices];b=y[train_indices]
     V=X[val_indices];t=y[val_indices]
-    colnorm=np.linalg.norm(A,axis=0)
-    scale=np.maximum(colnorm,1e-10)
     dynamic=A[:,:nparam][:,active_indices]
     friction=A[:,nparam:]
     cleaned=dynamic-friction@np.linalg.lstsq(friction,dynamic,rcond=1e-9)[0]
-    clean_scale=np.maximum(np.linalg.norm(cleaned,axis=0),1e-10)
-    rank=int(np.linalg.matrix_rank(cleaned/clean_scale,tol=1e-3))
-    # The fit may only change directions supported by the available motion
-    # after eliminating friction/bias columns, not arbitrary nullspace terms.
-    observable, singular_values, vt = np.linalg.svd(cleaned / clean_scale, full_matrices=False)
+    clean_scale=np.linalg.norm(cleaned,axis=0)
+    informative=clean_scale > np.maximum(1e-12,np.linalg.norm(dynamic,axis=0)*1e-10)
+    clean_scale=np.where(informative,clean_scale,1.0)
+    normalized=cleaned/clean_scale
+    normalized[:,~informative]=0
+    _, singular_values, vt = np.linalg.svd(normalized, full_matrices=False)
     singular_cutoff = max(1e-3 * (singular_values[0] if len(singular_values) else 0), 1e-9)
     rank = int(np.count_nonzero(singular_values > singular_cutoff))
-    nuisance=np.zeros(5*nj)
-    xprior=np.concatenate((prior,nuisance))
-    A2=A/scale
-    reg=np.ones(A.shape[1])*regularization
-    reg[nparam:]=regularization*0.1
-    rhs=b-A@xprior
+    basis=vt[:rank].T/clean_scale[:,None]
+    nuisance_scale=np.maximum(np.linalg.norm(friction,axis=0),1e-10)
+    reduced=np.column_stack((dynamic@basis,friction/nuisance_scale))
+    # Locked parameters enter fixed_torque above, and unsupported directions
+    # stay at the prior throughout IRLS, including while fitting nuisance terms
+    rhs=b-A[:,:nparam]@prior
+    reg=np.r_[np.full(rank,regularization),np.full(5*nj,regularization*0.1)]
     z=np.zeros(len(reg))
     for _ in range(5):
-        residual=rhs-A2@z
+        residual=rhs-reduced@z
         mad=float(np.median(np.abs(residual-np.median(residual))))
         threshold=max(0.05,1.345*1.4826*mad)
         weight=np.minimum(1.0,threshold/np.maximum(np.abs(residual),threshold))
         root=np.sqrt(weight)
-        z=np.linalg.lstsq(np.vstack((A2*root[:,None],np.diag(reg))),
-                          np.concatenate((rhs*root,np.zeros(len(reg)))),rcond=1e-9)[0]
-    delta=z/scale
-    if rank < len(active_indices):
-        standardized_delta = delta[active_indices] * clean_scale
-        supported = vt[:rank, :] if rank else np.zeros((0, len(active_indices)))
-        delta[active_indices] = ((supported.T @ (supported @ standardized_delta))
-                                 / clean_scale if rank else np.zeros(len(active_indices)))
+        z=np.linalg.lstsq(np.vstack((reduced*root[:,None],np.diag(reg))),
+                          np.r_[rhs*root,np.zeros(len(reg))],rcond=1e-9)[0]
+    delta=np.zeros(nparam+5*nj)
+    delta[active_indices]=basis@z[:rank]
+    delta[nparam:]=z[rank:]/nuisance_scale
+    xprior=np.r_[prior,np.zeros(5*nj)]
     return {
+        'solver':'dynamic_reduced_svd_irls',
+        'locked_links':sorted(locked), 'active_indices':active_indices,
         'prior':prior,'candidate':prior+delta[:nparam], 'nuisance':delta[nparam:],
         'singular_values':singular_values.tolist(),
         'nullspace_directions':len(active_indices)-rank,
         'rank':rank,'degrees':len(active_indices),'train':(A,b), 'validation':(V,t),
         'X':X,'full_prior':xprior,'full_model_prior':full_prior,'sampled_joints':[name for _,name,_ in moving_joints],
     }
+
+
+def _validate_dynamic_candidate(fit, candidate):
+    """Evaluate each model using its own training-only nuisance estimate."""
+    import numpy as np
+    a, b = fit['train']
+    v, measured = fit['validation']
+    count = len(fit['prior'])
+    nuisance = a[:, count:]
+    def score(parameters):
+        residual = b-a[:, :count]@parameters
+        ridge = max(1e-8, float(np.linalg.norm(nuisance, ord='fro'))*1e-5)
+        fitted = np.linalg.lstsq(np.vstack((nuisance,ridge*np.eye(nuisance.shape[1]))),
+                                np.r_[residual,np.zeros(nuisance.shape[1])], rcond=1e-9)[0]
+        return float(np.sqrt(np.mean((measured-v[:, :count]@parameters-v[:, count:]@fitted)**2)))
+    return score(fit['prior']), score(candidate)
 
 
 def _review_candidate(fit, model, pin, moving_joints=None):
@@ -283,10 +340,7 @@ def _review_candidate(fit, model, pin, moving_joints=None):
     target=np.asarray(fit['candidate'],dtype=float)
     if not np.isfinite(target).all():
         raise ValueError('惯量回归结果包含非有限数值，无法生成有意义的候选')
-    V,t=fit['validation']
-    nuisance=np.asarray(fit['nuisance'],dtype=float)
-    baseline=float(np.sqrt(np.mean((t-V@np.concatenate((prior,nuisance)))**2)))
-    candidate_rms=float(np.sqrt(np.mean((t-V@np.concatenate((target,nuisance)))**2)))
+    baseline, candidate_rms = _validate_dynamic_candidate(fit, target)
     warnings=[]
     if moving_joints is None:
         moving_joints = [(j,str(model.names[j]),None) for j in range(1,model.njoints)]
@@ -344,7 +398,7 @@ def export_full_inertial_candidate(directory, destination=None):
         raise ValueError('完整惯性辨识需要 Python Pinocchio；此功能可选，不会自动安装请在 Launcher 使用的 Python 环境安装 pinocchio 后重试') from exc
     directory,metadata,result,snapshot,source=_prepare_inputs(directory)
     tree=ET.parse(snapshot);root=tree.getroot()
-    model=pin.buildModelFromUrdf(str(snapshot))
+    model=_apply_recorded_gravity(pin.buildModelFromUrdf(str(snapshot)),metadata)
     joints=metadata.get('joint_names',[])
     if not isinstance(joints,list) or not joints or len(set(joints))!=len(joints):
         raise ValueError('任务记录中缺少有效的关节采样顺序')
@@ -406,6 +460,11 @@ def export_full_inertial_candidate(directory, destination=None):
         review_warnings.append(f'候选惯量未通过 Pinocchio 重新载入检查：{exc}')
     tmp.replace(dst)
     report={
+      'solver':'dynamic_reduced_svd_irls',
+      'acceleration_input':'recorded_acceleration_no_reconstruction',
+      'runtime_provenance':metadata.get('runtime_provenance'),
+      'frames_sha256':hashlib.sha256((directory/'frames.csv').read_bytes()).hexdigest(),
+      'solver_source_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
       'candidate_urdf':str(dst),'status':'unconstrained_candidate_requires_human_review',
       'verified_joint_inertials':[name for _,name,_ in mapped],
       'unchanged_inertials':unchanged,

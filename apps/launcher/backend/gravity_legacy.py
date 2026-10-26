@@ -1,8 +1,7 @@
-"""Exact historical dynamic fit for gravity mass/COM proposals
+"""Offline static mass/first-moment proposals from recorded pose groups.
 
-Preserve original fitted parameters without post-fit Link replacement.
-Physical bounds and independent static evaluation only annotate proposals
-and prevent unsafe URDF export, never alter the numerical solution.
+The online result remains untouched; full dynamic inertia fitting is a separate
+workflow requiring trustworthy motion acceleration measurements.
 """
 from __future__ import annotations
 
@@ -17,8 +16,8 @@ import xml.etree.ElementTree as ET
 
 from model_calibration_source import resolve_relative_mesh, verified_source_urdf
 from legacy_full_inertial import (_prepare_inputs, _articulated_mapping,
-                                  _extract_rows, _fit_regressor, _sampling_map, _assign_configuration)
-from gravity_mass_com import fit_global_mass_com
+                                  _extract_rows, _sampling_map, _assign_configuration)
+from gravity_mass_com import fit_static_mass_com
 
 
 def _digest(path):
@@ -27,13 +26,6 @@ def _digest(path):
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             h.update(block)
     return h.hexdigest()
-
-
-def _rms(fit, parameters):
-    import numpy as np
-    X, tau = fit['validation']
-    pred = X @ np.r_[parameters, fit['nuisance']]
-    return float(np.sqrt(np.mean((tau - pred)**2)))
 
 
 def _scope(mapped, mode, locked_links):
@@ -49,22 +41,17 @@ def _scope(mapped, mode, locked_links):
     return locked
 
 
-def _com_reason(prior, trial, max_shift, max_mass_fraction=0.30):
-    """Validate a mass and COM against the unchanged URDF prior"""
+def _com_reason(prior, trial, *_unused, **_ignored):
+    """Reject undefined physical parameters without imposing empirical bounds."""
     import numpy as np
     if len(trial) < 4 or not np.isfinite(trial[:4]).all():
-        return '非有限质量或质心'
-    m0, m = float(prior[0]), float(trial[0])
-    if m0 <= 1e-7 or m <= 1e-7:
-        return '质量必须为正'
-    if abs(m / m0 - 1) > max_mass_fraction:
-        return '质量变化超过允许范围'
-    if np.linalg.norm(trial[1:4] / m - prior[1:4] / m0) > max_shift + 1e-10:
-        return '质心偏移超过允许范围'
+        return '非有限质量或一阶矩'
+    if float(prior[0]) <= 1e-7 or float(trial[0]) <= 1e-7:
+        return '质量必须为正且可用于质心换算'
     return ''
 
 
-def _static_poses(folder, joints):
+def _static_poses(folder, joints, *, include_provenance=False):
     """Read recorded stationary poses, keeping validation groups independent"""
     import numpy as np
     groups = defaultdict(list)
@@ -94,7 +81,8 @@ def _static_poses(folder, joints):
             if not group or group == '0' or row.get('validation') not in ('0', '1'):
                 continue
             try:
-                if float(row.get('feedback_age_ms') or 999) > 30:
+                age = float(row.get('feedback_age_ms') or 'nan')
+                if not np.isfinite(age) or age < 0 or age > 30:
                     continue
                 q = np.array([float(row[f'q:{n}']) for n in joints])
                 v = np.array([float(row[f'dq:{n}']) for n in joints])
@@ -102,10 +90,15 @@ def _static_poses(folder, joints):
                 if not (np.isfinite(q).all() and np.isfinite(v).all()
                         and np.isfinite(torque).all() and np.max(np.abs(v)) < 0.04):
                     continue
-                groups[(group, row['validation'])].append((q, torque))
+                groups[(group, row['validation'])].append((q, torque, reader.line_num))
             except (KeyError, TypeError, ValueError):
                 continue
-    rows = []
+    flags = defaultdict(set)
+    for group, validation in groups:
+        flags[group].add(validation)
+    if any(len(values) != 1 for values in flags.values()):
+        raise ValueError('同一静态姿态组同时标记为训练和验证，拒绝泄漏的划分')
+    rows, provenance = [], []
     for (group, validation), samples in groups.items():
         if len(samples) < minimum_frames:
             continue
@@ -113,6 +106,9 @@ def _static_poses(folder, joints):
         stable = samples[-min(60, len(samples)):]
         rows.append((validation == '1', np.median([x[0] for x in stable], axis=0),
                      np.median([x[1] for x in stable], axis=0)))
+        provenance.append({'pose_group':group, 'validation':validation == '1',
+                           'accepted_frames':len(samples), 'aggregated_frames':len(stable),
+                           'csv_line_numbers':[x[2] for x in stable]})
     training_count = sum(not item[0] for item in rows)
     heldout_count = sum(item[0] for item in rows)
     # One genuinely separate holdout pose is sufficient to compute an offline
@@ -124,7 +120,7 @@ def _static_poses(folder, joints):
             '，离线重力辨识至少需要 3 组训练和 1 组独立验证'
             '，请检查 accepted_static.csv 的采样阶段和质量筛选'
         )
-    return rows
+    return (rows, provenance) if include_provenance else rows
 
 
 def _static_holdout(folder, model, pin, mapped, prior):
@@ -153,7 +149,7 @@ def _static_holdout(folder, model, pin, mapped, prior):
 def _gravity_metrics(rows, prior, candidate, bias, scale):
     """Prediction error for one group of held-out static poses"""
     import numpy as np
-    diff = np.asarray([tau - (X @ candidate + fixed + bias)
+    diff = np.asarray([(X @ candidate + fixed) - tau - bias
                        for X, fixed, tau in rows])
     rms = np.sqrt(np.mean(diff**2, axis=0))
     norm = np.maximum(scale, 0.02)
@@ -177,9 +173,9 @@ def _static_validation(training, heldout, prior, candidate):
         return X, tau
     X, tau = measurements(training)
     V, measured = measurements(heldout)
-    prior_bias = np.mean(tau - np.einsum('pji,i->pj', X, prior), axis=0)
-    candidate_bias = np.mean(tau - np.einsum('pji,i->pj', X, candidate), axis=0)
-    original_error = tau - np.einsum('pji,i->pj', X, prior) - prior_bias
+    prior_bias = np.mean(np.einsum('pji,i->pj', X, prior) - tau, axis=0)
+    candidate_bias = np.mean(np.einsum('pji,i->pj', X, candidate) - tau, axis=0)
+    original_error = np.einsum('pji,i->pj', X, prior) - tau - prior_bias
     scale = np.maximum(np.sqrt(np.mean(original_error**2, axis=0)), 0.02)
     before = _gravity_metrics(heldout, prior, prior, prior_bias, scale)
     after = _gravity_metrics(heldout, prior, candidate, candidate_bias, scale)
@@ -202,6 +198,8 @@ def _preserve_com_inertia(prior, selected):
         return m * ((c @ c) * np.eye(3) - np.outer(c, c))
     for pos in range(0, len(out), 10):
         old, new = prior[pos:pos+10], out[pos:pos+10]
+        if np.array_equal(old, new):
+            continue
         m0, m1 = float(old[0]), float(new[0])
         c0, c1 = old[1:4] / m0, new[1:4] / m1
         original = np.array([[old[4], old[5], old[7]],
@@ -214,18 +212,12 @@ def _preserve_com_inertia(prior, selected):
 
 
 def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
-    """Expose exactly the legacy mass/first-moment output for every Link
-
-    Never substitute online values and never clip a numerical result.
-    """
+    """Review the solved static parameters without replacing or clipping blocks."""
     import numpy as np
     prior = np.asarray(fit['prior'], dtype=float)
     raw = np.asarray(fit['candidate'], dtype=float)
     if not np.isfinite(raw).all():
-        raise ValueError('旧版动态回归产生非有限参数，已停止计算')
-    max_shift = float((metadata.get('calibration_options') or {}).get('max_com_offset_m', 0.05))
-    if not math.isfinite(max_shift) or not (0 < max_shift <= 0.2):
-        max_shift = 0.05
+        raise ValueError('静态重力回归产生非有限参数，已停止计算')
     masses, moments, offsets, shifts, invalid = {}, [], [], {}, {}
     for i, (_jid, name, _link) in enumerate(mapped):
         old, new = prior[10*i:10*i+10], raw[10*i:10*i+10]
@@ -233,7 +225,7 @@ def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
             raise ValueError(f'可信 Link 参数被修改: {name}')
         masses[name] = float(new[0])
         moments.append({'link_name': name, 'value': new[1:4].tolist()})
-        reason = _com_reason(old, new, max_shift)
+        reason = _com_reason(old, new)
         if reason:
             invalid[name] = reason
         if abs(float(new[0])) > 1e-7:
@@ -247,76 +239,43 @@ def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
 
 
 def recompute(directory, mode='global', locked_links=None):
-    """Recompute original dynamic regression, without merging the online fit
-
-    `result.json` always remains the online C++ result. The raw legacy fit is
-    persisted separately with static validation and export safety diagnostics.
-    """
+    """Fit static free m/h blocks, with trusted blocks fixed from the start."""
     folder, metadata, result, snapshot, _ = _prepare_inputs(directory)
     if result.get('workflow_kind') not in (None, 'gravity'):
         raise ValueError('当前记录是增益标定或其他任务，不是重力模型校正任务，请加载重力模型校正记录')
     try:
         import pinocchio as pin
     except ImportError as error:
-        raise ValueError('离线动力学回归需要 Python Pinocchio，请在 Launcher 的 Python 环境中安装') from error
+        raise ValueError('离线静态重力回归需要 Python Pinocchio，请在 Launcher 的 Python 环境中安装') from error
     import numpy as np
     joints = metadata.get('joint_names') or []
     if not isinstance(joints, list) or not joints or len(set(joints)) != len(joints):
         raise ValueError('任务采样关节顺序无效')
-    model = pin.buildModelFromUrdf(str(snapshot))
+    from full_inertial import _apply_recorded_gravity
+    model = _apply_recorded_gravity(pin.buildModelFromUrdf(str(snapshot)),metadata)
     mapped, _ = _articulated_mapping(ET.parse(snapshot).getroot(), model, joints)
     locked = _scope(mapped, mode, locked_links)
-    frames = _extract_rows(folder / 'frames.csv', joints)
-    old_fit = _fit_regressor(frames, model, pin, mapped)
-    selection = {}
-    rejected_raw = {}
-    selection_policy = None
-    model_fit = None
-    if mode == 'global':
-        # Solve the actual exported model: mass + first moment with the
-        # original COM inertia tensor held constant. Legacy full-inertia
-        # estimates are kept *only* to diagnose rank loss, not for selection.
-        static_training, static_heldout = _static_holdout(
-            folder, model, pin, mapped, np.asarray(old_fit['prior'], float))
-        options = metadata.get('calibration_options') or {}
-        max_shift = float(options.get('max_com_offset_m', 0.05))
-        if not math.isfinite(max_shift) or not (0 < max_shift <= 0.2):
-            max_shift = 0.05
-        model_fit = fit_global_mass_com(old_fit, static_training,
-                                         static_heldout, max_shift=max_shift)
-        fit = dict(old_fit)
-        fit['candidate'] = model_fit['candidate']
-        fit['nuisance'] = model_fit['nuisance']
-        selected = model_fit['candidate']
-        selection = {name: {'source': 'bounded_direct_mass_first_moment'}
-                     for _jid, name, _link in mapped}
-        selection_policy = {
-            'method': 'bounded_direct_mass_first_moment',
-            'inertia_about_com': 'original_urdf_unchanged',
-            'mass_fraction': model_fit['constraints']['mass_fraction'],
-            'max_com_offset_m': model_fit['constraints']['max_com_offset_m'],
-            'regularization': model_fit['regularization'],
-            'observable_gravity_rank': model_fit['static_gravity_rank'],
-            'unobservable_parameters': model_fit['static_gravity_nullity'],
-        }
-        # Raw ten-parameter dynamic regression is *diagnostic only*.
-        max_review = max_shift
-        for i, (_jid, name, _link) in enumerate(mapped):
-            old = np.asarray(old_fit['prior'][10*i:10*i+10])
-            new = np.asarray(old_fit['candidate'][10*i:10*i+10])
-            warning = _com_reason(old, new, max_review)
-            if warning:
-                rejected_raw[name] = warning
-    else:
-        # Preserve the working local workflow: legacy global fit, followed
-        # by explicit Link selection without a second least-squares fit.
-        fit = dict(old_fit)
-        selected = np.asarray(old_fit['candidate'], dtype=float).copy()
-        prior_parameters = np.asarray(old_fit['prior'], dtype=float)
-        for i, (_jid, name, _link) in enumerate(mapped):
-            if name in locked:
-                selected[10*i:10*i+10] = prior_parameters[10*i:10*i+10]
-        fit['candidate'] = selected
+    unmeasured = [str(model.names[j]) for j in range(1,model.njoints)
+                  if j not in {item[0] for item in mapped}]
+    source_files = {'frames_sha256': folder/'frames.csv', 'source_sha256': snapshot}
+    if (folder/'accepted_static.csv').is_file():
+        source_files['accepted_static_sha256'] = folder/'accepted_static.csv'
+    source_hashes = {name:_digest(path) for name,path in source_files.items()}
+    _, _, parameters = _sampling_map(model, mapped)
+    all_prior = np.concatenate([np.asarray(model.inertias[j].toDynamicParameters(), float)
+                                for j in range(1, model.njoints)])
+    prior = all_prior[parameters]
+    training, heldout = _static_holdout(folder, model, pin, mapped, prior)
+    _, static_provenance = _static_poses(folder,joints,include_provenance=True)
+    fit = fit_static_mass_com(prior, training, mapped, set(locked))
+    # Dynamic defects do not invalidate independently accepted stationary poses
+    try:
+        dynamic_rows = _extract_rows(folder / 'frames.csv', joints)
+        dynamic_diagnostic = {'usable': True, 'sampled_motion_frames': len(dynamic_rows),
+                              'used_for_static_fit': False}
+    except ValueError as error:
+        dynamic_diagnostic = {'usable': False, 'reason': str(error),
+                              'used_for_static_fit': False}
     prior, raw, masses, moments, offsets, shifts, invalid = _raw_gravity_candidate(
         fit, mapped, metadata, mode, set(locked))
     # The XML COM inertia tensor is never changed. Pinocchio dynamic inertia
@@ -363,41 +322,64 @@ def recompute(directory, mode='global', locked_links=None):
         static_reason = '静态验证不可用: ' + str(exc)
     constraints_ok = not invalid
     # Static predictive evidence and physical export admissibility are distinct
-    static_pass = static_status == 'passed' and constraints_ok
+    if fit['prior_preferred']:
+        static_reason = '训练姿态交叉验证优先保留原始模型，未证明参数更新优于先验；' + static_reason
+    static_pass = static_status == 'passed' and constraints_ok and fit['rank'] > 0
+    if fit['rank'] == 0:
+        static_status = 'unidentifiable'
+        static_reason = '静态自由参数没有可辨识方向，保持先验且拒绝作为已验证候选'
     if not constraints_ok:
         reason = '; '.join(f'{name}: {issue}' for name, issue in invalid.items())
     else:
         reason = static_reason
     report = {
-        'solver': (model_fit['solver'] if model_fit else 'legacy_full_inertial_exact'),
+        'solver': fit['solver'],
+        'parameter_scope': 'static_mass_first_moment',
+        'unmeasured_joints_assumed_neutral': unmeasured,
+        'candidate_applied': False,
+        'candidate_changed': not np.array_equal(prior,raw),
+        'validation_conclusion': 'prior_retained_no_parameter_improvement_claim' if fit['prior_preferred'] else 'candidate_requires_independent_evaluation',
+        'svd_relative_threshold': 1e-3,
+        'evidence_scope': 'same_session_pose_holdout_not_cross_session_validation',
+        'baseline': 'source_urdf_unscaled',
+        'feedback_age_provenance': (metadata.get('measurement_policy') or {}).get('feedback_age_source', 'historical_recorded_age_unverified'),
+        'torque_bias_convention': 'model_minus_measured',
+        'dynamic_data_diagnostic': dynamic_diagnostic,
+        'static_pose_sources': static_provenance,
+        'static_aggregation': 'per_pose_median_of_up_to_last_60_accepted_frames',
+        'fit_weighting': 'equal_pose_equal_joint_centered_column_standardization',
+        'static_data_source': 'accepted_static.csv' if (folder/'accepted_static.csv').is_file() else 'frames.csv',
+        'runtime_provenance': metadata.get('runtime_provenance'),
+        'offline_solver_sha256': {name: _digest(Path(__file__).with_name(name))
+                                  for name in ('gravity_legacy.py', 'gravity_mass_com.py', 'legacy_full_inertial.py', 'full_inertial.py', 'model_calibration_source.py')},
         'task_id': metadata['task_id'],
         'core_fingerprint': metadata.get('core_fingerprint'),
         'urdf_fingerprint': metadata.get('urdf_fingerprint'),
-        'frames_sha256': _digest(folder / 'frames.csv'),
-        'accepted_static_sha256': (_digest(folder / 'accepted_static.csv') if (folder / 'accepted_static.csv').exists() else None),
-        'source_sha256': _digest(snapshot),
+        'frames_sha256': source_hashes['frames_sha256'],
+        'accepted_static_sha256': source_hashes.get('accepted_static_sha256'),
+        'source_sha256': source_hashes['source_sha256'],
         'identification_mode': mode,
         'locked_links': locked,
         'fitted_links': [name for _jid, name, _link in mapped if name not in locked],
-        'local_scope_method': 'global_legacy_fit_then_mask_locked_links' if mode == 'local' else None,
-        'global_selection': selection if mode == 'global' else None,
-        'global_selection_policy': selection_policy,
-        'raw_link_review': rejected_raw,
+        'local_scope_method': 'fixed_locked_blocks_static_free_mass_moments' if mode == 'local' else None,
+        'global_selection': None,
+        'global_selection_policy': {'method': fit['solver'], 'empirical_mass_com_bounds': False},
         'first_moments': moments,
         'candidate_masses': masses,
         'com_offsets_m': offsets,
         'original_dynamic_parameters': prior.tolist(),
-        'raw_dynamic_parameters': np.asarray(old_fit['candidate'], dtype=float).tolist(),
+        'raw_dynamic_parameters': raw.tolist(),
         'scoped_dynamic_parameters': raw.tolist(),
         'selected_dynamic_parameters': exported.tolist() if exported is not None else None,
-        'numerical_rank': (model_fit['static_gravity_rank'] if model_fit else fit['rank']),
-        'regressor_columns': (model_fit['mass_moment_columns'] if model_fit else fit['degrees']),
-        'legacy_full_inertia_rank': fit['rank'],
-        'legacy_full_inertia_columns': fit['degrees'],
-        'global_model_fit': ({key:value for key,value in model_fit.items() if key not in ('prior','candidate','exported','nuisance')} if model_fit else None),
-        'original_holdout_rms_nm': _rms(fit, prior),
-        'raw_holdout_rms_nm': _rms(old_fit, old_fit['candidate']),
-        'candidate_holdout_rms_nm': _rms(fit, exported) if exported is not None else None,
+        'numerical_rank': fit['rank'], 'regressor_columns': fit['columns'],
+        'singular_values': fit['singular_values'],
+        'unidentifiable_directions': fit['columns']-fit['rank'],
+        'regularization': fit['regularization'], 'prior_preferred': fit['prior_preferred'],
+        'cross_validation_scores': fit['cross_validation_scores'],
+        'cross_validation_penalties': fit['cross_validation_penalties'],
+        'legacy_full_inertia_rank': None, 'legacy_full_inertia_columns': None,
+        'original_holdout_rms_nm': float(np.sqrt(np.mean(np.square(before['rms'])))) if before else None,
+        'candidate_holdout_rms_nm': float(np.sqrt(np.mean(np.square(after['rms'])))) if after else None,
         'static_holdout_score_before': before['score'] if before else None,
         'static_holdout_score_after': after['score'] if after else None,
         'validation_original': {k: before[k] for k in ('rms', 'p99', 'max')} if before else {},
@@ -407,9 +389,11 @@ def recompute(directory, mode='global', locked_links=None):
         'torque_bias': candidate_bias.tolist() if candidate_bias is not None else None,
         'com_shifts_m': shifts,
         'link_review': invalid,
-        'review_warnings': ([f'{name}: 完整惯量诊断存在异常参数，未用于重力候选: {issue}' for name, issue in rejected_raw.items()]
-                            if mode == 'global' else [])
-                           + [f'{name}: {issue}' for name, issue in invalid.items()]
+        'review_warnings': [f'{name}: {issue}' for name, issue in invalid.items()]
+                           + (['未采样关节按中立位置固定，若其在采集期间运动则必须补充测量'] if unmeasured else [])
+                           + ([f"静态回归仅秩 {fit['rank']}/{fit['columns']}，不可辨识方向保持先验"]
+                              if fit['rank'] < fit['columns'] else [])
+                           + ([dynamic_diagnostic['reason']] if not dynamic_diagnostic['usable'] else [])
                            + ([static_reason] if static_status in ('limited', 'unavailable') else []),
         'constraints_ok': constraints_ok,
         'static_validation_status': static_status,
@@ -424,13 +408,14 @@ def recompute(directory, mode='global', locked_links=None):
         'friction_status': 'not_evaluated',
         'friction_pass': None,
     }
+    if any(_digest(path) != source_hashes[name] for name,path in source_files.items()):
+        raise ValueError('求解期间原始数据或模型发生变化，拒绝保存不一致的候选')
     target = folder / 'recomputed-candidate.json'
     temp = target.with_suffix('.json.tmp')
     temp.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
     temp.replace(target)
     return {'path': str(target), 'candidate': report, 'static_pass': static_pass,
-            'output': ('全局质量与质心约束求解已完成，原完整惯量拟合仅保留用于诊断' if mode == 'global'
-                       else '旧版动态回归已完成，局部辨识保留原始数值解')}
+            'output': '静态质量与一阶矩求解已完成，可信连杆从求解开始固定，完整动态惯量未参与拟合'}
 
 
 def export_recomputed(directory, destination=None):
@@ -441,7 +426,7 @@ def export_recomputed(directory, destination=None):
     if not record.is_file():
         raise ValueError('该任务尚无离线候选，请先执行离线重算')
     candidate = json.loads(record.read_text(encoding='utf-8'))
-    if candidate.get('solver') not in ('legacy_full_inertial_exact', 'bounded_direct_mass_first_moment'):
+    if candidate.get('solver') not in ('static_centered_svd_ridge_pose_cv', 'bounded_direct_mass_first_moment'):
         raise ValueError('离线候选由旧计算器生成，请重新执行离线重算')
     if (candidate.get('task_id') != metadata.get('task_id')
             or candidate.get('urdf_fingerprint') != metadata.get('urdf_fingerprint')
@@ -458,10 +443,10 @@ def export_recomputed(directory, destination=None):
         raise ValueError('离线候选辨识模式无效')
     # Older records with the same solver label may contain unguarded whole-arm
     # inertias; force a new computation rather than silently exporting them
-    if candidate.get('identification_mode') == 'global' and (
-            candidate.get('solver') != 'bounded_direct_mass_first_moment' or
-            (candidate.get('global_selection_policy') or {}).get('method') != 'bounded_direct_mass_first_moment'):
-        raise ValueError('全局候选不是新的约束质量与质心求解结果，请重新执行离线重算')
+    if candidate.get('identification_mode') == 'local' and (
+            candidate.get('solver') != 'static_centered_svd_ridge_pose_cv' or
+            candidate.get('local_scope_method') != 'fixed_locked_blocks_static_free_mass_moments'):
+        raise ValueError('历史局部候选未从求解开始固定可信连杆，请重新执行静态重算')
     tree = ET.parse(snapshot)
     root = tree.getroot()
     link_map = {link.get('name'): link for link in root.findall('link')}
@@ -477,9 +462,6 @@ def export_recomputed(directory, destination=None):
     if not candidate.get('constraints_ok'):
         raise ValueError('原始旧版候选包含不合理质量或质心，拒绝整机导出，请使用局部辨识锁定可信 Link: ' + '; '.join(
             f'{name}: {message}' for name, message in candidate.get('link_review', {}).items()))
-    max_shift = float((metadata.get('calibration_options') or {}).get('max_com_offset_m', 0.05))
-    if not (math.isfinite(max_shift) and 0 < max_shift <= 0.2):
-        max_shift = 0.05
     for name in fitted:
         link = link_map[name]
         inertial = link.find('inertial')
@@ -493,7 +475,7 @@ def export_recomputed(directory, destination=None):
         h = np.asarray(moments[name], dtype=float)
         original = np.r_[old_mass, old_mass * old_com]
         proposed = np.r_[mass, h]
-        reason = _com_reason(original, proposed, max_shift)
+        reason = _com_reason(original, proposed)
         if reason:
             invalid.append(f'{name}: {reason}')
             continue

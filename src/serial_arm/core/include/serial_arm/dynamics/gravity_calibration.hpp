@@ -8,6 +8,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <limits>
 #include <string>
 #include <thread>
 #include <vector>
@@ -37,7 +38,7 @@ struct ModelCalibrationFrame {
     JointVector model_feedforward;
     std::string acceleration_source;
     std::string impedance_mode;
-    double feedback_age_ms{ 0.0 };
+    double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };
     bool valid{ false };
     std::string phase;
     std::string direction;
@@ -54,6 +55,8 @@ struct ModelCalibrationMetadata {
     std::string profile;
     std::string core_config_path;
     std::string core_fingerprint;
+    std::string hardware_plugin_path;
+    std::string hardware_plugin_file_fingerprint;
     std::string urdf_path;
     std::string urdf_fingerprint;
     std::vector<std::string> resource_paths;
@@ -194,7 +197,7 @@ struct GravityValidationMetrics {
 struct GravityCalibrationResult {
     std::vector<GravityFirstMoment> first_moments;
     std::vector<GravityFirstMoment> com_offsets_m; // Per-link ΔCOM relative to source URDF, for human review
-    JointVector torque_bias;
+    JointVector torque_bias; // Mean(model torque - measured torque), subtracted once by the observer
     std::vector<std::uint8_t> parameter_observable;
     std::vector<double> singular_values;
     std::size_t numerical_rank{ 0 };

@@ -1740,6 +1740,8 @@ private:
         ModelCalibrationMetadata metadata;
         metadata.task_id = model_calibration_task_id_;
         metadata.profile = robot_profile_;
+        metadata.hardware_plugin_path = hardware_plugin_;
+        metadata.hardware_plugin_file_fingerprint = model_calibration_file_fingerprint(hardware_plugin_);
         metadata.core_config_path = config_path_;
         metadata.core_fingerprint = model_calibration_core_fingerprint_.empty() ? model_calibration_file_fingerprint(config_path_) : model_calibration_core_fingerprint_;
         metadata.urdf_path = cfg_.dynamics.urdf_path;
@@ -2985,6 +2987,18 @@ private:
         return model_calibration_physical_gains(5.0);
     }
 
+    static double measured_feedback_age_ms(const RobotCycleOutput& output) {
+        const auto& stamps = output.actuator_state.feedback_received_ns;
+        if(stamps.empty() || stamps.size() != output.joint_state.pos.size())
+            return std::numeric_limits<double>::quiet_NaN();
+        const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count();
+        const auto oldest = *std::min_element(stamps.begin(), stamps.end());
+        const auto newest = *std::max_element(stamps.begin(), stamps.end());
+        if(oldest == 0 || newest > static_cast<std::uint64_t>(now_ns))
+            return std::numeric_limits<double>::quiet_NaN();
+        return static_cast<double>(now_ns-oldest)/1.0e6;
+    }
+
     // The background recorder keeps all cycles untagged. This snapshot is
     // copied ONLY into an in-memory candidate window, never accepted early.
     ModelCalibrationFrame model_calibration_static_frame(const RobotCycleOutput& output,
@@ -2998,9 +3012,9 @@ private:
         f.reference_velocity=output.joint_cmd.vel;
         f.command_kp=output.joint_cmd.kp;f.command_kd=output.joint_cmd.kd;
         f.model_feedforward=output.model_feedforward;
-        f.acceleration_source="robot_joint_acc_filter";
+        f.acceleration_source=output.joint_acc_valid ? "robot_feedback_velocity_filter" : "invalid_or_unknown_sample_timing";
         f.impedance_mode=to_string(robot_.get_impedance_mode());
-        f.feedback_age_ms=0.0;
+        f.feedback_age_ms=measured_feedback_age_ms(output);
         f.phase=to_string(model_calibration_phase_.load());
         f.direction=model_calibration_direction_.load()<0?"reverse":"forward";
         f.speed_tier="fast";f.pose_group=target.pose_group;
@@ -3011,7 +3025,7 @@ private:
         };
         f.valid=good(f.position)&&good(f.velocity)&&good(f.torque)&&good(f.acceleration)&&
             good(f.reference_position)&&good(f.reference_velocity)&&good(f.command_kp)&&good(f.command_kd)&&
-            good(f.model_feedforward);
+            good(f.model_feedforward) && std::isfinite(f.feedback_age_ms) && f.feedback_age_ms <= 30.0;
         return f;
     }
 
@@ -3396,6 +3410,8 @@ private:
         for(const auto& frame : frames) {
             if(!frame.valid || frame.speed_tier != (speed_tier == 1 ? "slow" : "fast") || frame.direction != direction ||
                 (frame.phase.find("friction_") != 0 && frame.phase != "static_reverse"))continue;
+            if(frame.acceleration_source != "robot_feedback_velocity_filter" ||
+                !std::isfinite(frame.feedback_age_ms) || frame.feedback_age_ms < 0 || frame.feedback_age_ms > 30.0)continue;
             if(frame.position.size() != cfg_.joint_names.size() || frame.velocity.size() != cfg_.joint_names.size() || frame.torque.size() != cfg_.joint_names.size() || frame.acceleration.size() != cfg_.joint_names.size())continue;
             JointVector coriolis;
             Eigen::MatrixXd mass;
@@ -4752,9 +4768,9 @@ private:
         frame.command_kp = output.joint_cmd.kp;
         frame.command_kd = output.joint_cmd.kd;
         frame.model_feedforward = output.model_feedforward;
-        frame.acceleration_source = "robot_joint_acc_filter";
+        frame.acceleration_source = output.joint_acc_valid ? "robot_feedback_velocity_filter" : "invalid_or_unknown_sample_timing";
         frame.impedance_mode = to_string(robot_.get_impedance_mode());
-        frame.feedback_age_ms = 0.0;
+        frame.feedback_age_ms = measured_feedback_age_ms(output);
         frame.phase = to_string(phase);
         const int direction = model_calibration_direction_.load();
         frame.direction = direction < 0 ? "reverse" : (direction > 0 ? "forward" : "none");
@@ -4767,7 +4783,8 @@ private:
             frame.torque.size() == cfg_.joint_names.size() && frame.acceleration.size() == cfg_.joint_names.size() &&
             frame.reference_position.size() == cfg_.joint_names.size() && frame.reference_velocity.size() == cfg_.joint_names.size() &&
             finite(frame.position) && finite(frame.velocity) && finite(frame.torque) && finite(frame.acceleration) &&
-            finite(frame.reference_position) && finite(frame.reference_velocity);
+            finite(frame.reference_position) && finite(frame.reference_velocity) &&
+            std::isfinite(frame.feedback_age_ms) && frame.feedback_age_ms <= 30.0;
         model_calibration_recorder_.push(std::move(frame));
     }
 
@@ -4786,8 +4803,9 @@ private:
             return;
         }
         last_output_ = cycle_result.value();
-        feedback_time_ns_ = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-            now.time_since_epoch()).count());
+        const auto& stamps = last_output_->actuator_state.feedback_received_ns;
+        feedback_time_ns_ = std::isfinite(measured_feedback_age_ms(*last_output_)) ?
+            *std::min_element(stamps.begin(), stamps.end()) : 0;
         ++cycle_counter_;
         record_model_calibration_cycle(*last_output_, now);
         cycle_cv_.notify_all();

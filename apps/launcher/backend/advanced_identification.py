@@ -37,7 +37,6 @@ def assess_record(directory):
     if not (path / 'frames.csv').is_file():
         raise ValueError('标定任务缺少 frames.csv')
     phases = {}
-    groups = set()
     valid_dynamic = 0
     peak_vel = 0.0
     peak_acc = 0.0
@@ -49,8 +48,6 @@ def assess_record(directory):
             if row.get('valid') != '1':
                 continue
             phases[phase] = phases.get(phase, 0) + 1
-            if phase.startswith('static_') and row.get('pose_group', '0') not in ('0', ''):
-                groups.add((row['pose_group'], row.get('validation', '0')))
             if phase in ('static_reverse', 'friction_forward_fast'):
                 try:
                     velocities = [abs(float(row['dq:' + name])) for name in names]
@@ -61,16 +58,30 @@ def assess_record(directory):
                         valid_dynamic += 1
                 except (KeyError, ValueError):
                     continue
-    training = sum(validation == '0' for _, validation in groups)
-    holdout = sum(validation == '1' for _, validation in groups)
-    has_two_phases = bool(phases.get('static_reverse')) and bool(phases.get('friction_forward_fast'))
+    try:
+        static_poses = _pose_groups(path, names)
+        training = sum(not pose[1] for pose in static_poses)
+        holdout = sum(pose[1] for pose in static_poses)
+        static_error = None
+    except (ValueError, KeyError, TypeError) as error:
+        static_poses = []
+        training = holdout = 0
+        static_error = str(error)
+    try:
+        checked_rows = _extract_rows(path/'frames.csv', names)
+        dynamic_error = None
+    except (ValueError, KeyError, TypeError) as error:
+        checked_rows = []
+        dynamic_error = str(error)
     return {
         'directory': str(path), 'task_id': metadata.get('task_id', ''),
-        'static_groups': len(groups), 'training_groups': training, 'holdout_groups': holdout,
-        'valid_dynamic_samples': valid_dynamic, 'peak_joint_speed_rad_s': peak_vel,
+        'static_groups': len(static_poses), 'static_rejection_reason': static_error, 'training_groups': training, 'holdout_groups': holdout,
+        'valid_dynamic_samples': len(checked_rows), 'raw_motion_sample_count': valid_dynamic, 'peak_joint_speed_rad_s': peak_vel,
         'peak_joint_acceleration_rad_s2': peak_acc, 'phase_samples': phases,
         'gravity_ready': training >= 4 and holdout >= 1,
-        'dynamic_precheck': valid_dynamic >= 120 and has_two_phases,
+        'dynamic_precheck': bool(checked_rows),
+        'dynamic_rejection_reason': dynamic_error,
+        'validated_dynamic_sample_count': len(checked_rows),
         'limitations': [
             '有效动态帧数和速度幅度仅供预筛，不能替代动力学回归矩阵可辨识性检查',
             '电机反馈力矩不是独立的关节力矩真值，加速度由现有数据源估计',
@@ -80,36 +91,11 @@ def assess_record(directory):
 
 
 def _pose_groups(directory, joint_names):
-    """Retain only stable tail samples of recorded holds, grouped by complete pose"""
-    groups = {}
-    with (Path(directory) / 'frames.csv').open(newline='') as stream:
-        for row in csv.DictReader(stream):
-            if row.get('phase') not in ('static_reverse', 'static_forward'):
-                continue
-            if row.get('pose_group') in (None, '', '0') or row.get('valid') != '1':
-                continue
-            try:
-                if float(row.get('feedback_age_ms') or 999) > 30:
-                    continue
-                q = np.array([float(row[f'q:{name}']) for name in joint_names])
-                dq = np.array([float(row[f'dq:{name}']) for name in joint_names])
-                tau = np.array([float(row[f'tau:{name}']) for name in joint_names])
-                time = int(row['monotonic_ns'])
-                if not all(np.isfinite(a).all() for a in (q, dq, tau)) or np.max(np.abs(dq)) > 0.035:
-                    continue
-            except (ValueError, KeyError, TypeError):
-                continue
-            groups.setdefault((int(row['pose_group']), row.get('validation') == '1'), []).append((time, q, tau))
-    poses = []
-    for (group, holdout), samples in sorted(groups.items()):
-        newest = max(item[0] for item in samples)
-        stable = [item for item in samples if item[0] >= newest - 900_000_000]
-        if len(stable) < 8:
-            continue
-        q = np.median([item[1] for item in stable], axis=0)
-        tau = np.median([item[2] for item in stable], axis=0)
-        poses.append((group, holdout, q, tau, len(stable)))
-    return poses
+    # New tasks must use accepted_static.csv; do not promote rejected raw frames
+    from gravity_legacy import _static_poses
+    poses = _static_poses(directory, joint_names)
+    return [(index+1, heldout, q, tau, None)
+            for index, (heldout, q, tau) in enumerate(poses)]
 
 
 def _fit_static(directory, model, pin, mapped, mode, locked_links):
@@ -122,10 +108,8 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
     q_idx, v_idx, all_ids = _sampling_map(model, mapped)
     all_prior = np.concatenate([np.asarray(model.inertias[j].toDynamicParameters(), dtype=float) for j in range(1, model.njoints)])
     selected = []
-    per_link = []
     for k, (jid, name, _) in enumerate(mapped):
         enabled = name not in locked_links
-        per_link.append(enabled)
         if enabled:
             selected.extend(all_ids[10*k+i] for i in PARAMETERS[mode])
     if not selected:
@@ -152,74 +136,20 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
         values.append((holdout, design, torque - prediction, group))
     train = [v for v in values if not v[0]]
     hold = [v for v in values if v[0]]
-    n = len(joints)
-    # Estimate a shared per-joint bias only from training groups
-    Y = np.vstack([v[1] for v in train])
-    r = np.concatenate([v[2] for v in train])
-    bias_design = np.tile(np.eye(n), (len(train), 1))
-    # Centering prevents torque bias from being absorbed by mass / first moments
-    centered = Y - bias_design @ np.linalg.lstsq(bias_design, Y, rcond=None)[0]
-    scale = np.maximum(np.linalg.norm(centered, axis=0), 1e-9)
-    spectrum = np.linalg.svd(centered / scale, compute_uv=False)
-    rank = int(np.sum(spectrum > max(1e-3 * (spectrum[0] if len(spectrum) else 0), 1e-9)))
-    if rank < 1:
-        raise ValueError('当前静态姿态不包含足够的可观测信息，保留原 URDF')
-    # Standardized ridge and group-wise CV; all choices use training poses only
-    lambdas = (0.1, 1, 10, 100, 1000)
-    def solve(blocks, regularization):
-        yy = np.vstack([v[1] for v in blocks]); rr = np.concatenate([v[2] for v in blocks]);
-        bb = np.tile(np.eye(n), (len(blocks), 1))
-        a = (yy - bb @ np.linalg.lstsq(bb, yy, rcond=None)[0]) / scale
-        rhs = rr - bb @ np.linalg.lstsq(bb, rr, rcond=None)[0]
-        standardized = np.linalg.lstsq(np.vstack((a, np.sqrt(regularization) * np.eye(len(selected)))),
-                                         np.concatenate((rhs, np.zeros(len(selected)))), rcond=1e-8)[0]
-        delta = standardized / scale
-        bias = np.mean([v[2] - v[1] @ delta for v in blocks], axis=0)
-        return delta, bias
-    def error(blocks, delta, bias):
-        residual = np.concatenate([v[2] - v[1] @ delta - bias for v in blocks])
-        return float(np.sqrt(np.mean(residual ** 2)))
-    scores=[]
-    for lam in lambdas:
-        errors=[]
-        for i in range(len(train)):
-            subset=train[:i]+train[i+1:]
-            delta, b = solve(subset, lam)
-            errors.append(error([train[i]], delta, b))
-        scores.append(float(np.mean(errors)))
-    regularization = lambdas[int(np.argmin(scores))]
-    delta, bias = solve(train, regularization)
-    # Reconstruct and preserve center inertia as prior, while mass / COM is updated
-    target = all_prior.copy()
-    target[selected] += delta
-    if mode == 'mass':
-        for column,pindex in enumerate(selected):
-            com = all_prior[pindex+1:pindex+4]/all_prior[pindex]
-            target[pindex+1:pindex+4] += com*delta[column]
+    from gravity_mass_com import solve_static_updates
+    solved = solve_static_updates([v[1] for v in train], [v[2] for v in train])
+    delta, bias = solved['delta'], solved['torque_bias']
+    rank, regularization = solved['rank'], solved['regularization']
+    def error(blocks, update, offset):
+        residual = np.concatenate([v[2]-v[1]@update+offset for v in blocks])
+        return float(np.sqrt(np.mean(residual**2)))
     warnings=[]
-    alpha=1.0
-    for _ in range(24):
-        valid=True
-        for jid, name, _ in mapped:
-            if name in locked_links:
-                continue
-            p = target[10*(jid-1):10*jid] if alpha == 1 else all_prior[10*(jid-1):10*jid] + alpha*(target[10*(jid-1):10*jid]-all_prior[10*(jid-1):10*jid])
-            if p[0] <= 1e-7 or not np.isfinite(p).all():
-                valid=False
-        if valid:
-            break
-        alpha*=0.5
-    else:
-        alpha=0
-    if alpha < 1:
-        warnings.append('拟合结果包含非正质量，已沿原始模型方向收缩至物理可行范围')
-    delta *= alpha
     full_delta = np.zeros_like(all_prior)
     full_delta[selected] = delta
     if mode == 'mass':
         for column,pindex in enumerate(selected):
             full_delta[pindex+1:pindex+4] += (all_prior[pindex+1:pindex+4]/all_prior[pindex])*delta[column]
-    original_bias = np.mean([v[2] for v in train], axis=0)
+    original_bias = -np.mean([v[2] for v in train], axis=0)
     baseline = error(hold, np.zeros_like(delta), original_bias)
     candidate = error(hold, delta, bias)
     # Favor original in absence of independent improvement
@@ -232,7 +162,11 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
             'rank': rank, 'columns': len(selected), 'regularization': regularization,
             'baseline': baseline, 'candidate_rms': candidate, 'passed': passed,
             'warnings': warnings, 'train_groups': len(train), 'holdout_groups': len(hold),
-            'locked_links': sorted(locked_links), 'bias': bias.tolist()}
+            'locked_links': sorted(locked_links), 'bias': bias.tolist(),
+            'solver': 'static_centered_svd_ridge_pose_cv',
+            'torque_bias_convention': 'model_minus_measured',
+            'prior_preferred': solved['prior_preferred'],
+            'singular_values': solved['singular_values']}
 
 
 def _write_static_candidate(root, mapped, fit):
@@ -244,7 +178,10 @@ def _write_static_candidate(root, mapped, fit):
         if name in fit['locked_links']:
             continue
         p = updated[10*(jid-1):10*jid]
-        m=float(p[0]); c=p[1:4]/m
+        m=float(p[0])
+        if not np.isfinite(p).all() or m <= 1e-7:
+            raise ValueError(f'{name}: 静态候选质量无效，拒绝导出且不收缩或截断数值解')
+        c=p[1:4]/m
         inertial=link.find('inertial')
         if inertial is None:
             raise ValueError(f'{name} 缺少 inertial')
@@ -288,115 +225,27 @@ def _physical_urdf_links(root):
 
 
 def _physical_dynamic_candidate(prior, target, mapped, locked, active_parameters):
-    """Constrain dynamic inertias while preserving every fixed source field
-
-    The 4x4 pseudo-inertia is positive definite exactly when rigid-body
-    mass, center inertia and principal-moment inequalities are physical
-    SLSQP runs per movable link only; a failed fit falls back to the
-    original physical prior, never a guessed nonphysical URDF
-    """
-    from full_inertial import _dynamic_parameters_to_urdf_fields
-    candidate = prior.copy()
+    """Review the solved subspace without per-link projection or post-fit masking."""
+    candidate = np.asarray(target, dtype=float).copy()
     details = []
-    try:
-        from scipy.optimize import minimize
-    except ImportError:
-        minimize = None
-    for k, (_jid, name, _link) in enumerate(mapped):
-        if name in locked:
-            continue
-        offset = 10 * k
-        old = prior[offset:offset+10]
-        proposed = target[offset:offset+10]
-        active = np.array(active_parameters, dtype=int)
-        if np.array_equal(proposed[active], old[active]):
-            continue
-
-        def is_physical(p):
-            try:
-                m, c, I = _dynamic_parameters_to_urdf_fields(p)
-                return physical_inertia(m, c, I)
-            except (ValueError, ZeroDivisionError, FloatingPointError):
-                return False
-
-        def pseudo_eigenvalues(values):
-            p = old.copy()
-            p[active] = values
-            I = np.array([[p[4], p[5], p[7]],
-                          [p[5], p[6], p[8]],
-                          [p[7], p[8], p[9]]])
-            sigma = 0.5 * np.trace(I) * np.eye(3) - I
-            pseudo = np.zeros((4, 4))
-            pseudo[:3, :3] = sigma
-            pseudo[:3, 3] = p[1:4]
-            pseudo[3, :3] = p[1:4]
-            pseudo[3, 3] = p[0]
-            return np.linalg.eigvalsh(pseudo)
-
-        # Prior-centered scaling avoids treating mass and small inertial
-        # cross-terms as if they had the same numeric magnitude
-        weights = np.maximum(np.abs(old[active]), np.array(
-            [0.02 if i == 0 else 0.003 if i < 4 else 0.0003
-             for i in active]))
-        trial = old.copy()
-        solved = False
-        if minimize is not None and is_physical(old):
-            def objective(x):
-                target_error = (x - proposed[active]) / weights
-                prior_error = (x - old[active]) / weights
-                return float(target_error @ target_error + 0.12 * (prior_error @ prior_error))
-            bounds = [(1e-7, None) if i == 0 else (None, None) for i in active]
-            try:
-                result = minimize(
-                    objective, old[active], method='SLSQP', bounds=bounds,
-                    constraints=[{'type': 'ineq',
-                                  'fun': lambda x: pseudo_eigenvalues(x) - 1e-9}],
-                    options={'maxiter': 160, 'ftol': 1e-9, 'disp': False},
-                )
-                trial[active] = result.x
-                solved = is_physical(trial) and np.isfinite(trial).all()
-            except (ValueError, FloatingPointError):
-                solved = False
-        if not solved:
-            # Conservative numerical fallback works without scipy or when
-            # optimization is inconclusive, and keeps the prior as a valid exit
-            for power in range(0, 25):
-                alpha = 2.0 ** (-power)
-                trial = old.copy()
-                trial[active] += alpha * (proposed[active] - old[active])
-                if is_physical(trial):
-                    solved = True
-                    break
-        if not solved:
-            trial = old.copy()
-        candidate[offset:offset+10] = trial
-        if not np.allclose(trial[active], proposed[active], rtol=1e-6, atol=1e-9):
-            details.append(f'{name} 的惯性候选已受物理约束调整，需结合留出误差审核')
-        if np.array_equal(trial, old):
-            details.append(f'{name} 的拟合无法生成物理可行候选，已保持原始参数')
+    active = set(active_parameters)
+    for k, (_, name, _) in enumerate(mapped):
+        before, after = prior[10*k:10*k+10], candidate[10*k:10*k+10]
+        fixed = [i for i in range(10) if name in locked or i not in active]
+        if not np.array_equal(before[fixed], after[fixed]):
+            raise ValueError(f'{name}: 锁定参数在求解期间发生变化')
+        try:
+            m, c, tensor = _dynamic_parameters_to_urdf_fields(after)
+            if not physical_inertia(m, c, tensor):
+                details.append(f'{name}: 原始数值解未通过物理惯量检查，保留失败诊断且不投影或收缩参数')
+        except ValueError as error:
+            details.append(f'{name}: {error}')
     return candidate, details
 
 
 def _validate_dynamic_candidate(fit, candidate):
-    """Compare source and candidate after fitting their own training-only friction"""
-    A, b = fit['train']
-    V, holdout = fit['validation']
-    n = len(fit['prior'])
-    F = A[:, n:]
-    FV = V[:, n:]
-    def score(parameters):
-        train_residual = b - A[:, :n] @ parameters
-        # Same fitting procedure for source and candidate, never reuse the
-        # candidate's friction estimate as the baseline
-        if F.shape[1]:
-            ridge = max(1e-8, float(np.linalg.norm(F, ord='fro')) * 1e-5)
-            augmented = np.vstack((F, ridge * np.eye(F.shape[1])))
-            friction = np.linalg.lstsq(augmented, np.r_[train_residual, np.zeros(F.shape[1])], rcond=1e-9)[0]
-        else:
-            friction = np.zeros(0)
-        residual = holdout - V[:, :n] @ parameters - FV @ friction
-        return float(np.sqrt(np.mean(residual ** 2)))
-    return score(fit['prior']), score(candidate)
+    from full_inertial import _validate_dynamic_candidate as validation
+    return validation(fit, candidate)
 
 
 def run_advanced(directory, mode, destination=None, locked_links=None):
@@ -409,7 +258,8 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     import shutil
     folder, metadata, result, snapshot, _source = _prepare_inputs(directory)
     root=ET.parse(snapshot).getroot()
-    model=pin.buildModelFromUrdf(str(snapshot))
+    from full_inertial import _apply_recorded_gravity
+    model=_apply_recorded_gravity(pin.buildModelFromUrdf(str(snapshot)),metadata)
     joints=metadata.get('joint_names',[])
     if not isinstance(joints, list) or not joints:
         raise ValueError('缺少采样关节名称')
@@ -427,7 +277,9 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
         rank=fit['rank']; columns=fit['columns']; original=fit['baseline']; candidate=fit['candidate_rms'];passed=fit['passed'] and rank==columns
         _write_static_candidate(root,mapped,fit)
         extra={'training_groups':fit['train_groups'],'holdout_groups':fit['holdout_groups'],
-               'cross_validation_lambda':fit['regularization']}
+               'cross_validation_lambda':fit['regularization'],
+               'solver':fit['solver'], 'torque_bias_convention':fit['torque_bias_convention'],
+               'prior_preferred':fit['prior_preferred'], 'singular_values':fit['singular_values']}
     else:
         rows=_extract_rows(folder/'frames.csv', joints)
         # Explicitly solve only the chosen subspace; locked parameters stay as priors
@@ -463,7 +315,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
             T=iner.find('inertia')
             for key,val in [('ixx',tensor[0,0]),('ixy',tensor[0,1]),('ixz',tensor[0,2]),('iyy',tensor[1,1]),('iyz',tensor[1,2]),('izz',tensor[2,2])]:
                 T.set(key,f'{val:.12g}')
-        extra={'dynamic_frames':len(rows),'observable_directions':rank,'unobservable_directions':columns-rank,'friction_validation':'independent_training_fit'}
+        extra={'solver':'dynamic_reduced_svd_irls','acceleration_input':'recorded_acceleration_no_reconstruction','dynamic_frames':len(rows),'observable_directions':rank,'unobservable_directions':columns-rank,'friction_validation':'independent_training_fit'}
     tree=ET.ElementTree(root)
     # No source replacement, always write to an isolated review directory
     from uuid import uuid4
@@ -490,7 +342,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     report={
         'schema':'serial_arm_advanced_identification', 'task_id':metadata.get('task_id'),
         'identification_mode':mode,'source_urdf_fingerprint':metadata.get('urdf_fingerprint'),
-        'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
+        'runtime_provenance':metadata.get('runtime_provenance'), 'frames_sha256':hashlib.sha256((folder/'frames.csv').read_bytes()).hexdigest(), 'solver_source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('advanced_identification.py','full_inertial.py','gravity_mass_com.py')}, 'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
         'status':'review_passed_offline' if passed else 'requires_review',
         'automatic_application_allowed':False, 'validated_on_hardware':False,
         'friction_validation_reusable':False, 'friction_status':'requires_revalidation_with_selected_model',

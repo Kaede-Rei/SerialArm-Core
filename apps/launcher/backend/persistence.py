@@ -315,10 +315,22 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
     if not allow_unvalidated and (result.get('phase') != 'complete' or not gravity.get('static_pass')):
         raise ValueError('model calibration task has no validated static candidate')
     recomputed_used = gravity is not result.get('gravity_result')
+    if recomputed_used and gravity.get('identification_mode') == 'local' and gravity.get('local_scope_method') != 'fixed_locked_blocks_static_free_mass_moments':
+        raise ValueError('历史局部候选未从求解开始固定可信连杆，请先重新执行静态辨识')
     friction_matches = not recomputed_used or _same_gravity_candidate(gravity, result.get('gravity_result') or {})
     friction_pass = bool(result.get('friction_pass')) and friction_matches
     torque_bias = gravity.get('torque_bias')
     bias_source = 'fitted_candidate'
+    convention = gravity.get('torque_bias_convention')
+    if torque_bias is not None:
+        if convention == 'measured_minus_model' or (convention is None and recomputed_used
+                and gravity.get('solver') in ('legacy_full_inertial_exact', 'bounded_direct_mass_first_moment')):
+            torque_bias = [-float(value) for value in torque_bias]
+            bias_source = 'historical_offline_converted_to_model_minus_measured'
+        elif convention not in (None, 'model_minus_measured'):
+            raise ValueError('候选力矩偏置符号契约未知，请重新辨识')
+        elif convention is None and recomputed_used:
+            raise ValueError('离线候选未声明力矩偏置符号契约，请重新计算')
     if recomputed_used and torque_bias is None:
         # Historical offline fits do not save the per-joint residual bias
         # Reuse the verified original configuration without inventing a fit
@@ -402,6 +414,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             'noise_rms': gravity.get('noise_rms'),
         },
         'residual': {
+            'convention': 'model_minus_measured',
             'torque_bias': torque_bias,
             'torque_threshold': _candidate_threshold(gravity, joints),
             'friction': {

@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 
@@ -100,6 +101,8 @@ struct RobotCycleOutput {
     JointVector model_feedforward;    ///< 本周期模型前馈力矩
     JointCtrlCmd joint_cmd;           ///< Safety 检查后的关节命令
     ActuatorCtrlCmd actuator_cmd;      ///< 实际发送的执行器命令
+    bool joint_acc_valid{ false };
+    double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
@@ -340,7 +343,7 @@ private:
      * @param dt 当前周期时间步长
      * @return 关节加速度估计
      */
-    JointVector estimate_joint_acc(const JointState& state, double dt) const;
+    JointVector estimate_joint_acc(const JointState& state, const ActuatorState& observed, double dt, bool& valid) const;
     /**
      * @brief 由当前 final reference 与上一周期 final reference 估计关节参考加速度
      * @param cmd 已包含外层导纳修正的当前关节参考命令
