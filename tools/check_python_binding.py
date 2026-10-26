@@ -2,7 +2,7 @@
 """Hardware-free installed Python binding check"""
 
 import numpy as np
-from serial_arm import ActuatorState, DynamicsState, JointCtrlCmd, JointState
+from serial_arm import ActuatorState, DynamicsState, JointCtrlCmd, JointState, RobotCycleOutput
 
 
 def check_vector(owner, field, values):
@@ -21,6 +21,13 @@ def check_vector(owner, field, values):
 
 
 def main():
+    feedback=ActuatorState()
+    feedback.feedback_received_ns=[12345678901234567]
+    feedback.feedback_timing_valid=[1]
+    assert feedback.feedback_received_ns==[12345678901234567]
+    assert feedback.feedback_timing_valid==[1]
+    cycle=RobotCycleOutput()
+    assert hasattr(cycle,'joint_acc_valid') and hasattr(cycle,'feedback_age_ms')
     state = JointState()
     for field, begin in (('pos', 1), ('vel', 11), ('tor', 21)):
         check_vector(state, field, np.arange(begin, begin + 6, dtype=np.float64))

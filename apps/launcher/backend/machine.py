@@ -142,6 +142,13 @@ class NativeSession:
         with self.mutex:
             return list(self.telemetry_history)
 
+    def note_disconnect_failure(self, error):
+        with self.mutex:
+            if self.state.get('state') not in ('running','stopping'):
+                return
+            self.state.update(disconnect_blocked=True, disconnect_error=str(error))
+            self.emit({'event':'session', **self.state})
+
     def stop(self, force=False):
         with self.mutex:
             if not self.proc or self.state.get('state') not in ('running', 'stopping'): return self.status()
@@ -150,7 +157,11 @@ class NativeSession:
             if self.state.get('state') == 'running':
                 # A native rejection must preserve the connection and its leases
                 # Only an explicit force request may terminate the process
-                self.request('shutdown', timeout=120)
+                try:
+                    self.request('shutdown', timeout=120)
+                except Exception as error:
+                    self.note_disconnect_failure(error)
+                    raise
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired as error:

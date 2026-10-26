@@ -171,6 +171,15 @@ tl::expected<CanFrame, CanErr> CanChannel::receive(std::chrono::milliseconds tim
     auto pending = pop_pending();
     if(pending) return pending;
 
+    // A zero timeout still polls the physical receiver once, so callers can
+    // drain already-received frames without adding a blocking control delay
+    if(timeout.count() == 0) {
+        std::unique_lock<std::mutex> lock(bus_->rx_mutex_, std::try_to_lock);
+        if(!lock.owns_lock()) return tl::make_unexpected(CanErr::TIMEOUT);
+        auto dispatched = bus_->dispatch_once_locked(timeout);
+        if(!dispatched) return tl::make_unexpected(dispatched.error());
+        return pop_pending();
+    }
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     while(true) {
         const auto now = std::chrono::steady_clock::now();

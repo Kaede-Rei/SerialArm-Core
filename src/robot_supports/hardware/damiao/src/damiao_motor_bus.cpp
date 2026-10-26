@@ -300,6 +300,7 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
             for(std::size_t i = 0; i < motors_.size(); ++i) motor_ctrl_->receive();
         }
 
+        motor_ctrl_->drain_feedback();
         update_feedback_state();
         if(!finite_vector(last_state_.pos) || !finite_vector(last_state_.vel) || !finite_vector(last_state_.tor)) {
             return tl::make_unexpected(MotorBusErr::INVALID_STATE);
@@ -314,10 +315,12 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
 void DamiaoMotorBus::update_feedback_state() {
     const TimePoint now = Clock::now();
     last_state_.feedback_received_ns.resize(motors_.size());
+    last_state_.feedback_timing_valid.resize(motors_.size());
     for(std::size_t i = 0; i < motors_.size(); ++i) {
         const auto& motor = *motors_[i];
         has_feedback_[i] = motor.get_state_seq() != 0;
         last_feedback_time_[i] = motor.get_state_received_at();
+        last_state_.feedback_timing_valid[i] = motor.timing_valid();
         last_state_.feedback_received_ns[i] = has_feedback_[i] ?
             std::chrono::duration_cast<std::chrono::nanoseconds>(last_feedback_time_[i].time_since_epoch()).count() : 0;
         const double age = has_feedback_[i] ?
@@ -337,11 +340,15 @@ void DamiaoMotorBus::update_feedback_state() {
 
 bool DamiaoMotorBus::confirm_motor_status(std::size_t index, std::uint8_t status, std::uint64_t previous_seq) {
     const auto& motor = *motors_[index];
-    if(motor.get_state_seq() == previous_seq || motor.get_status() != status) {
-        // A successfully sent command is not an acknowledgement from the motor
-        (void)motor_ctrl_->refresh_motor_status(motor);
-    }
     update_feedback_state();
+    if(motor.get_state_seq() == previous_seq || motor.get_status() != status || !online_[index]) {
+        // Enable/disable keep the device's settling delay. A reply received
+        // before that delay may already exceed the freshness limit, even if
+        // decoded just now. Ask for a new target-specific observation instead
+        // of treating an old acknowledgement as a disconnected actuator
+        (void)motor_ctrl_->refresh_motor_status(motor);
+        update_feedback_state();
+    }
     return motor.get_state_seq() != previous_seq && online_[index] && motor.get_status() == status;
 }
 

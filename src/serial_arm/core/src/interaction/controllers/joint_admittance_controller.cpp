@@ -152,6 +152,24 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
     };
 }
 
+tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr>
+JointAdmittanceController::hold(const JointVector& lower, const JointVector& upper) {
+    if(!is_configured_) return tl::make_unexpected(JointAdmittanceControllerErr::NOT_CONFIGURED);
+    const auto n=cfg_.joints_count;
+    if(lower.size()!=n || upper.size()!=n) return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DYNAMIC_LIMITS);
+    std::vector<std::uint8_t> limited(n,0);
+    for(std::size_t i=0;i<n;++i) {
+        const double lo=std::max(lower[i],-cfg_.max_delta_q[i]);
+        const double hi=std::min(upper[i],cfg_.max_delta_q[i]);
+        if(!std::isfinite(lo)||!std::isfinite(hi)||lo>hi) return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DYNAMIC_LIMITS);
+        const double previous=delta_q_[i];
+        delta_q_[i]=std::clamp(previous,lo,hi);
+        limited[i]=delta_q_[i]!=previous;
+        delta_q_dot_[i]=0.0;
+    }
+    return JointAdmittanceOutput{delta_q_,delta_q_dot_,std::move(limited),std::vector<std::uint8_t>(n,0)};
+}
+
 void JointAdmittanceController::reset() {
     std::fill(delta_q_.begin(), delta_q_.end(), 0.0);
     std::fill(delta_q_dot_.begin(), delta_q_dot_.end(), 0.0);

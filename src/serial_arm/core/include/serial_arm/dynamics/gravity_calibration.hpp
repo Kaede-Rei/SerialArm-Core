@@ -30,6 +30,8 @@ struct ModelCalibrationFrame {
     JointVector velocity;
     JointVector torque;
     JointVector acceleration;
+    std::vector<std::uint64_t> feedback_received_ns;
+    std::vector<std::uint8_t> feedback_timing_valid;
     JointVector reference_position;
     JointVector reference_velocity;
     // Observed controller commands; logged for gain-dependence diagnosis.

@@ -54,6 +54,10 @@ public:
         auto& state=*result;
         if(state.pos.size()!=size()||state.vel.size()!=size()||state.tor.size()!=size()||state.online.size()!=size()||state.enabled.size()!=size()||state.err_code.size()!=size())
             return tl::make_unexpected(MotorBusErr::READ_FAILED);
+        if(!state.feedback_timing_valid.empty()) {
+            if(state.feedback_timing_valid.size()!=size()) return tl::make_unexpected(MotorBusErr::READ_FAILED);
+            reorder(state.feedback_timing_valid);
+        }
         if(!state.feedback_received_ns.empty()) {
             if(state.feedback_received_ns.size()!=size()) return tl::make_unexpected(MotorBusErr::READ_FAILED);
             reorder(state.feedback_received_ns);

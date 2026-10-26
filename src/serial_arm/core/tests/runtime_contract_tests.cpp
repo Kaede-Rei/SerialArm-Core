@@ -19,7 +19,7 @@ void require(bool result, const char* message) { if(!result) throw std::runtime_
 struct FakeBus final : MotorBus {
     HardwareCapabilities caps;
     ActuatorState state;
-    bool fail_read{false}, fail_write{false};
+    bool fail_read{false}, fail_write{false}, fail_activate{false}, fail_disable{false};
     int disables{0}, stops{0}, writes{0};
     double peak_torque{0};
     ActuatorCtrlCmd last_command;
@@ -41,7 +41,10 @@ struct FakeBus final : MotorBus {
     }
     tl::expected<void,MotorBusErr> configure(const std::string&) override { return {}; }
     tl::expected<void,MotorBusErr> connect() override { return {}; }
-    tl::expected<void,MotorBusErr> activate() override { return {}; }
+    tl::expected<void,MotorBusErr> activate() override {
+        if(fail_activate) return tl::make_unexpected(MotorBusErr::ENABLE_FAILED);
+        return {};
+    }
     tl::expected<ActuatorState,MotorBusErr> read() override {
         if(fail_read) { fail_read=false;return tl::make_unexpected(MotorBusErr::READ_FAILED); }
         return state;
@@ -54,7 +57,11 @@ struct FakeBus final : MotorBus {
         return {};
     }
     tl::expected<void,MotorBusErr> stop() override { ++stops; return {}; }
-    tl::expected<void,MotorBusErr> deactivate() override { ++disables; return {}; }
+    tl::expected<void,MotorBusErr> deactivate() override {
+        ++disables;
+        if(fail_disable) return tl::make_unexpected(MotorBusErr::DISABLE_FAILED);
+        return {};
+    }
     tl::expected<void,MotorBusErr> recover() override { return {}; }
     void cleanup() noexcept override {}
     const HardwareCapabilities& capabilities() const noexcept override { return caps; }
@@ -109,6 +116,18 @@ void fault_shutdown() {
     require(raw->disables>0,"hold failure requests disable");
     require(!robot.is_fault_holding(),"failed hold cannot remain active");
 }
+void failed_startup_disable_retry() {
+    auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
+    require(bool(robot.configure(cfg,std::move(bus))),"startup retry configure");
+    raw->fail_activate=true;raw->fail_disable=true;
+    require(!robot.activate()&&robot.get_state()==RobotState::FAULT,"activation failure stays faulted");
+    require(!robot.force_deactivate()&&robot.get_state()==RobotState::FAULT,"unacknowledged disable must not report INACTIVE");
+    raw->fail_disable=false;
+    require(bool(robot.force_deactivate())&&robot.get_state()==RobotState::INACTIVE,"disable can be retried after startup fault");
+    raw->fail_activate=false;
+    require(bool(robot.activate()),"enable after confirmed disable recovers");
+}
+
 void first_hold_limits() {
     auto cfg=fixture();cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::GRAVITY;
     cfg.safety.limits.max_effort.assign(cfg.joint_names.size(),1);
@@ -168,10 +187,69 @@ void serial_exclusion() {
     require(WIFEXITED(status)&&WEXITSTATUS(status)==0,"second process must not open owned serial port");
     first.close();transport::SerialPort reopened(device);reopened.close();::close(master);
 }
+
+void recording_roundtrip(const fs::path& temp) {
+    ModelCalibrationMetadata metadata;metadata.task_id="timing-test";metadata.joint_names={"axis"};
+    ModelCalibrationRecorder recorder;const auto folder=temp/"recording";
+    require(bool(recorder.start(folder,metadata)),"start timing recorder");
+    ModelCalibrationFrame frame;frame.position={0};frame.velocity={.1};frame.torque={0};frame.acceleration={2};
+    frame.reference_position={0};frame.reference_velocity={0};frame.feedback_age_ms=20;frame.valid=true;
+    frame.phase="static_reverse";frame.acceleration_source="robot_feedback_velocity_filter";
+    frame.feedback_received_ns={12345678901234567ULL};frame.feedback_timing_valid={1};
+    recorder.push(frame);recorder.stop();
+    const auto loaded=load_model_calibration_frames(folder.string(),1);
+    require(bool(loaded)&&loaded->size()==1,"read extended timestamp CSV");
+    require(loaded->front().feedback_received_ns==frame.feedback_received_ns,"nanosecond timestamp roundtrip is exact");
+    require(loaded->front().feedback_timing_valid==frame.feedback_timing_valid,"timing validity roundtrip");
+}
+void sampled_acceleration() {
+    auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
+    const auto n=cfg.joint_names.size();
+    auto stamp=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()-30000000;
+    raw->state.feedback_received_ns.assign(n,stamp);
+    raw->state.feedback_timing_valid.assign(n,1);
+    require(bool(robot.configure(cfg,std::move(bus))),"timestamped configure");
+    require(bool(robot.activate()),"timestamped activate");
+    auto first=robot.cycle();require(bool(first)&&!first->joint_acc_valid,"first acceleration invalid");
+    for(auto& value:raw->state.feedback_received_ns)value+=10000000;
+    raw->state.vel.assign(n,.1);
+    auto second=robot.cycle();require(bool(second)&&second->joint_acc_valid,"new receive timestamps are valid");
+    require(std::abs(second->joint_acc[0]-2)<1e-6,"differentiate reception interval not decode interval");
+    auto repeated=robot.cycle();require(bool(repeated)&&!repeated->joint_acc_valid,"repeated feedback invalid");
+    require(std::abs(repeated->joint_acc[0]-2)<1e-6,"repeated feedback keeps filter memory");
+    for(auto& value:raw->state.feedback_received_ns)value+=1000000;
+    raw->state.feedback_timing_valid.assign(n,0);
+    raw->state.vel.assign(n,.2);
+    auto burst=robot.cycle();require(bool(burst)&&!burst->joint_acc_valid,"transport burst cannot produce trusted qdd");
+    raw->state.feedback_received_ns.assign(n,stamp-40000000);
+    require(!robot.cycle(),"old receive timestamp must fail freshness after delayed decode");
+}
+void full_id_validity() {
+    InteractionControllerCfg cfg;cfg.enabled=true;cfg.residual.joints_count=1;
+    cfg.external_torque.joints_count=1;
+    cfg.admittance={1,{1},{1},{1},{1},{1},{1}};
+    InteractionController observer;require(bool(observer.configure(cfg)),"FULL_ID observer configure");
+    JointVector measured{0},model{2};JointCtrlCmd nominal{{0},{0},{0},{1},{1}};
+    InteractionInput input{measured,model,nominal,.01,{-1},{1},{-1},{1},{0},{},true};
+    auto valid=observer.update(input);require(bool(valid)&&valid->state.valid,"valid FULL_ID observation");
+    const double held=valid->delta_q[0];require(held>0,"FULL_ID initial displacement");
+    input.full_id_acceleration_valid=false;model[0]=std::numeric_limits<double>::quiet_NaN();
+    auto skipped=observer.update(input);require(bool(skipped)&&!skipped->state.valid,"invalid acceleration skips FULL_ID residual");
+    require(skipped->full_id_residual_raw.empty()&&skipped->tau_ext_hat.empty(),"invalid residual is not published as observed force");
+    require(skipped->delta_q[0]==held&&skipped->delta_q_dot[0]==0,"invalid sample holds displacement without integrating");
+    input.full_id_acceleration_valid=true;model[0]=0;
+    auto resumed=observer.update(input);require(bool(resumed)&&resumed->state.valid,"FULL_ID resumes with a fresh sample");
+    require(resumed->tau_ext_hat[0]==0,"FULL_ID recovery has no stale force");
+    cfg.observer_mode=AdmittanceObserverMode::MOMENTUM;cfg.momentum.joints_count=1;cfg.momentum.gain={10};
+    InteractionController momentum;require(bool(momentum.configure(cfg)),"momentum configure");
+    input.full_id_acceleration_valid=false;model.clear();
+    input.momentum_input={{0},{0},{0},{{1}},{0},.01};
+    auto independent=momentum.update(input);require(bool(independent)&&independent->state.valid,"MOMENTUM does not require qdd validity");
+}
 int main() {
     const auto temp=fs::temp_directory_path()/("serialarm-contract-"+std::to_string(::getpid()));fs::create_directories(temp);
     try {
-        limits_and_identity();named_permutation();fault_shutdown();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
+        recording_roundtrip(temp);sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
         fs::remove_all(temp);std::cout<<"runtime contracts passed\n";return 0;
     } catch(const std::exception& error) {fs::remove_all(temp);std::cerr<<error.what()<<'\n';return 1;}
 }

@@ -3008,6 +3008,8 @@ private:
         f.monotonic_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
         f.cycle=cycle_counter_;
         f.position=output.joint_state.pos;f.velocity=output.joint_state.vel;f.torque=output.joint_state.tor;
+        f.feedback_received_ns=output.actuator_state.feedback_received_ns;
+        f.feedback_timing_valid=output.actuator_state.feedback_timing_valid;
         f.acceleration=output.joint_acc;f.reference_position=output.joint_cmd.pos;
         f.reference_velocity=output.joint_cmd.vel;
         f.command_kp=output.joint_cmd.kp;f.command_kd=output.joint_cmd.kd;
@@ -4762,6 +4764,8 @@ private:
         frame.position = output.joint_state.pos;
         frame.velocity = output.joint_state.vel;
         frame.torque = output.joint_state.tor;
+        frame.feedback_received_ns=output.actuator_state.feedback_received_ns;
+        frame.feedback_timing_valid=output.actuator_state.feedback_timing_valid;
         frame.acceleration = output.joint_acc;
         frame.reference_position = output.joint_cmd.pos;
         frame.reference_velocity = output.joint_cmd.vel;

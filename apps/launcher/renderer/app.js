@@ -1741,6 +1741,10 @@ function calibrationComOverlayHtml() {
     return `<div class="calibration-com-overlay" aria-label="${title}"><div class="calibration-com-heading">${title}</div><div class="calibration-com-legend"><span><i class="com-swatch original"></i>${original}</span><span><i class="com-swatch candidate"></i>${candidate}</span><span class="com-connector">─</span>${state.language === 'en' ? 'Offset' : '质心偏移'}</div>${hasComparison ? `<div class="calibration-com-scale"><span>${state.language === 'en' ? 'Display' : '显示比例'}</span>${[1, 12, 25].map(value => `<button type="button" class="${scale === value ? 'active' : ''}" data-calibration-com-scale="${value}" aria-pressed="${scale === value}">×${value}</button>`).join('')}</div><label class="calibration-com-unchanged"><input type="checkbox" id="calibration-com-unchanged" ${state.modelCalibrationShowUnchanged ? 'checked' : ''}>${state.language === 'en' ? 'Show unchanged links' : '显示未变化的 Link'}</label><div class="calibration-com-hint">${scale === 1 ? (state.language === 'en' ? 'True 3D locations' : '真实三维位置') : zoom}</div>` : `<div class="calibration-com-hint">${binding.comparable ? pending : esc(binding.reason)}</div>`}</div>`;
 }
 function workbenchRecoveryRequired() { return workbenchConnected() && state.session?.recovery_required === true; }
+function workbenchForceDisconnectAvailable() {
+    return workbenchConnected() && (workbenchRecoveryRequired() ||
+        state.session?.disconnect_blocked === true || state.telemetry?.robot_state === 'FAULT');
+}
 function workbenchRecoveryNotice() {
     if (!workbenchRecoveryRequired()) return '';
     const en = state.language === 'en';
@@ -1751,7 +1755,9 @@ function workspaceSessionActionHtml() {
     if (!connected) return `<button id="start-workbench" class="button primary">${t('startWorkbench')}</button>`;
     const safePark = (state.readiness?.control_available === true && ['RIGID_TRACKING', 'COMPLIANT_TRACKING'].every(mode => ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.[mode])));
     const label = state.telemetry?.robot_state === 'INACTIVE' ? (state.language === 'en' ? 'Disconnect workspace' : '断开工作台') : !safePark ? (state.language === 'en' ? 'Support, disable, then disconnect' : '先支撑失能再断连') : t('stopWorkbench');
-    return workbenchRecoveryRequired() ? `<button id="workbench-force-disconnect" class="button danger">${state.language === 'en' ? 'Recover connection' : '恢复连接'}</button>` : `<button id="stop-workbench" class="button danger">${label}</button>`;
+    const normal = workbenchRecoveryRequired() ? '' : `<button id="stop-workbench" class="button danger">${label}</button>`;
+    const force = workbenchForceDisconnectAvailable() ? `<button id="workbench-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button>` : '';
+    return normal + force;
 }
 function workbenchPage() {
     return pageHead('workbenchTitle', 'workbenchDesc', workspaceSessionActionHtml()) + workbenchStatusBar() + workbenchTabs() + workbenchRecoveryNotice() + `<div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div><div class="workbench-model-note">${t(workbenchConnected() ? 'actualTelemetry' : 'offlineWaiting')}${state.page === 'calibration' || state.workbenchTab === 'replay' ? '<span class="teach-ghost-legend">起始位姿 · 青绿色半透明</span>' : ''}</div></section><section class="workbench-task">${workbenchPanelHtml()}</section></div>`;
@@ -2992,11 +2998,11 @@ function activeTemporaryOverrides() {
     return ['gain', 'gravity', 'dynamics'].filter(kind => status[kind + '_applied']);
 }
 function confirmUnresponsiveDisconnect() {
-    if (!workbenchRecoveryRequired()) return;
+    if (!workbenchForceDisconnectAvailable()) return;
     const dialog = $('confirm-dialog');
     if (!dialog || dialog.open) return;
     const en = state.language === 'en';
-    dialog.innerHTML = `<h3>${en ? 'Disconnect unresponsive control process' : '确认强制断开无响应的控制进程'}</h3><p>${en ? 'The prior hardware command may still be running. This action stops the control process but cannot verify motor disable, safe parking, or temporary candidate restoration' : '上一条硬件操作可能仍在执行，强制断连只能终止控制进程，无法确认电机已失能、机械臂已停放或临时参数已正常撤销'}</p><p>${en ? 'First physically secure the robot and cut actuator power if necessary. Do not rely on software controls. Reconnect only after hardware power and wiring are verified' : '请先确认机械臂获得可靠支撑，必要时通过硬件急停或断电确保安全，不要依赖失去响应的软件控制，检查供电和线缆后再重新连接'}</p><div class="actions"><button class="button" id="cancel-unresponsive-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-unresponsive-disconnect">${en ? 'I secured hardware, disconnect' : '已确认硬件安全，强制断连'}</button></div>`;
+    dialog.innerHTML = `<h3>${en ? 'Force disconnect control session' : '确认强制断开控制会话'}</h3><p>${en ? 'Hardware communication failed or shutdown could not be confirmed. This action stops the control process but cannot verify motor disable, safe parking, or temporary candidate restoration' : '硬件通信故障或正常退出未能确认完成，强制断连只能终止控制进程，无法确认电机已失能、机械臂已停放或临时参数已正常撤销'}</p><p>${en ? 'First physically secure the robot and cut actuator power if necessary. Do not rely on software controls. Reconnect only after hardware power and wiring are verified' : '请先确认机械臂获得可靠支撑，必要时通过硬件急停或断电确保安全，不要依赖失去响应的软件控制，检查供电和线缆后再重新连接'}</p><div class="actions"><button class="button" id="cancel-unresponsive-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-unresponsive-disconnect">${en ? 'I secured hardware, disconnect' : '已确认硬件安全，强制断连'}</button></div>`;
     dialog.showModal();
     $('cancel-unresponsive-disconnect').onclick = () => dialog.close();
     $('confirm-unresponsive-disconnect').onclick = () => {

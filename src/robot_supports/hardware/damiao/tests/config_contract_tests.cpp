@@ -1,5 +1,6 @@
 #include "serial_arm_hardware_damiao/damiao_motor_bus.hpp"
 #include <yaml-cpp/yaml.h>
+#include "dm_hw/damiao.hpp"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -8,6 +9,13 @@ using namespace serial_arm;
 int main(){
     const auto file=std::filesystem::temp_directory_path()/("serialarm-damiao-"+std::to_string(::getpid())+".yaml");
     try {
+        damiao::Motor motor(damiao::DM4310,1,0);
+        const auto old=std::chrono::duration_cast<std::chrono::nanoseconds>((std::chrono::steady_clock::now()-std::chrono::milliseconds(40)).time_since_epoch()).count();
+        motor.receive_data(1,2,3,1,old,true);
+        if(std::chrono::duration_cast<std::chrono::nanoseconds>(motor.get_state_received_at().time_since_epoch()).count()!=old)
+            throw std::runtime_error("motor decode replaced transport timestamp");
+        motor.receive_data(9,9,9,1,old-1000,true);
+        if(motor.get_position()!=1)throw std::runtime_error("time-reversed feedback overwrote newer state");
         const auto source=YAML::LoadFile(std::string(SERIAL_ARM_REPO)+"/src/robot_supports/robots/dm_arm/description/config/hardware.yaml");
         const auto first=source["damiao"]["actuators"].begin()->first.as<std::string>();
         for(const auto& ids:std::vector<std::pair<int,int>>{{17,0},{0x800,1},{1,0x800}}){

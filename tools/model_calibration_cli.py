@@ -15,6 +15,8 @@ BACKEND = ROOT / 'apps' / 'launcher' / 'backend'
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from calibration_jobs import recompute_gravity_isolated, run_full_inertial_isolated
+
 from persistence import (  # noqa: E402
     export_candidate_urdf,
     load_model_calibration_summary,
@@ -45,46 +47,27 @@ def require_directory(value: str) -> Path:
 
 
 def find_calibrator() -> str:
-    candidates = [
-        os.environ.get('SERIAL_ARM_MODEL_CALIBRATOR', ''),
-        shutil.which('serial_arm_model_calibrator') or '',
-        str(ROOT / '.install' / 'standalone' / 'bin' / 'serial_arm_model_calibrator'),
-        str(ROOT / 'install' / 'standalone' / 'bin' / 'serial_arm_model_calibrator'),
-    ]
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
-            return str(Path(candidate).resolve())
-    for candidate in (ROOT / 'install').glob('unified/*/bin/serial_arm_model_calibrator'):
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate.resolve())
-    raise ValueError('未找到 serial_arm_model_calibrator，请先安装包含 Terminal 的组件')
+    from profiles import Inspector
+    result=Inspector(ROOT).model_calibrator()
+    if not result:
+        raise ValueError('未找到 serial_arm_model_calibrator，请先安装包含 Terminal 的组件')
+    return result
 
 
-def recompute(config: Path, directory: Path) -> dict:
-    calibrator = find_calibrator()
-    output = directory / 'recomputed-candidate.json'
-    completed = subprocess.run(
-        [calibrator, '--config', str(config), '--dataset', str(directory), '--output', str(output)],
-        text=True, capture_output=True, timeout=120,
-    )
-    if completed.returncode not in (0, 3):
-        raise ValueError((completed.stderr or completed.stdout or '离线重算失败').strip())
-    try:
-        candidate = json.loads(output.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f'离线重算结果不可读取: {error}') from error
-    return {
-        'candidate_path': str(output),
-        'static_validation_passed': completed.returncode == 0,
-        'candidate': candidate,
-    }
+def recompute(config: Path, directory: Path, mode='global', locked_links=None) -> dict:
+    # The archived model/config are the fit inputs, exactly as in the GUI
+    result=recompute_gravity_isolated(directory,mode,locked_links)
+    candidate=result['candidate']
+    return {**result, 'candidate_path': result['path'],
+            'static_validation_passed': candidate.get('static_pass') is True}
 
 
-def export_verified(config: Path, directory: Path, destination: str | None) -> dict:
-    exported = export_candidate_urdf(directory, destination)
+def export_verified(config: Path, directory: Path, destination: str | None, source='online') -> dict:
+    exported = (run_full_inertial_isolated(directory,destination,mode='legacy_gravity_export')
+                if source=='offline' else export_candidate_urdf(directory, destination))
     calibrator = find_calibrator()
     completed = subprocess.run(
-        [calibrator, '--config', str(config), '--dataset', str(directory), '--verify-urdf', exported['candidate_urdf']],
+        [calibrator, '--config', str(config), '--dataset', str(directory), '--verify-urdf', exported['candidate_urdf'], '--candidate-source', source],
         text=True, capture_output=True, timeout=120,
     )
     if completed.returncode != 0:
@@ -109,6 +92,8 @@ def parser() -> argparse.ArgumentParser:
 
     recalc = commands.add_parser('recompute', help='离线重算候选模型')
     recalc.add_argument('--config', required=True, help='Core YAML 路径')
+    recalc.add_argument('--mode', choices=('global','local'), default='global')
+    recalc.add_argument('--locked-link', action='append', default=[], help='局部辨识固定的可信 Link，可重复指定')
     recalc.add_argument('--directory', required=True, help='模型校正任务目录')
 
     preview = commands.add_parser('preview-save', help='预览持久化配置差异')
@@ -127,6 +112,7 @@ def parser() -> argparse.ArgumentParser:
 
     export = commands.add_parser('export-urdf', help='导出并校验候选 URDF')
     export.add_argument('--config', required=True, help='Core YAML 路径')
+    export.add_argument('--source', choices=('online','offline'), default='online')
     export.add_argument('--directory', required=True, help='模型校正任务目录')
     export.add_argument('--destination', help='候选 URDF 输出目录，默认写入任务目录 candidate')
     return value
@@ -142,7 +128,7 @@ def main() -> int:
 
         config = require_file(args.config, 'Core YAML')
         if args.command == 'recompute':
-            emit(recompute(config, directory))
+            emit(recompute(config, directory, args.mode, args.locked_link))
         elif args.command == 'preview-save':
             emit(preview_gravity_correction(config, directory))
         elif args.command == 'save':
@@ -154,7 +140,7 @@ def main() -> int:
                 raise ValueError('恢复会替换当前 Core YAML，请使用 --confirm 明确确认')
             emit(restore_gravity_correction(config, directory))
         elif args.command == 'export-urdf':
-            emit(export_verified(config, directory, args.destination))
+            emit(export_verified(config, directory, args.destination, args.source))
         else:
             raise ValueError('未知命令')
         return 0

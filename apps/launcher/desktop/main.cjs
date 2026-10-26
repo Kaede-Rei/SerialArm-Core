@@ -56,13 +56,18 @@ async function closeWindow() {
       const choice = await dialog.showMessageBox(win, {type: 'question', buttons: ['停止并退出 / Stop and exit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
         message: '运行会话仍在执行 / A session is still running', detail: '关闭窗口前先停止运行进程 / Stop the session before closing'});
       if (choice.response !== 0) return;
-      await bridge.request(bridge.session.mode === 'workbench' ? 'workbench_stop' : 'stop');
-      await waitForSessionExit();
+      const stopMethod = bridge.session.mode === 'workbench' ? 'workbench_stop' : 'stop';
+      let stopError;
+      try { await bridge.request(stopMethod); }
+      catch (error) { stopError = error; }
+      if (!stopError) await waitForSessionExit();
       if (bridge.session.state !== 'exited') {
-        const force = await dialog.showMessageBox(win, {type: 'warning', buttons: ['强制结束并退出 / Force quit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
-          message: '进程尚未退出 / The session has not exited', detail: '强制结束会中断进程清理；请确认机器人状态 / Force quit interrupts process cleanup; check the robot state'});
+        const force = await dialog.showMessageBox(win, {type: 'warning', buttons: ['已确认硬件安全，强制退出 / Hardware secured, force quit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
+          message: '正常退出未完成 / Normal shutdown did not complete',
+          detail: '无法确认电机已失能，请先可靠支撑机械臂，必要时急停或断电；强制退出仅终止进程 / Motor disable is unverified; physically secure the robot before terminating the process' +
+            (stopError ? '\n\n' + String(stopError.message || stopError).slice(0, 1200) : '')});
         if (force.response !== 0) return;
-        await bridge.request('stop', {force: true});
+        await bridge.request(stopMethod, {force: true});
         await waitForSessionExit();
         if (bridge.session.state !== 'exited') throw new Error('控制进程尚未退出，请检查机器人状态后重试 / Control process has not exited, check the robot before retrying');
       }

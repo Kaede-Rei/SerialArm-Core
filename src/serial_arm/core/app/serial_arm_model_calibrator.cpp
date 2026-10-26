@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
         std::string dataset_path;
         std::string output_path;
         std::string verify_urdf_path;
+        std::string candidate_source="online";
         std::string requested_mode;
         std::vector<std::string> requested_locked_links;
         bool locked_override=false;
@@ -30,13 +31,17 @@ int main(int argc, char** argv) {
             else if(arg=="--dataset"&&i+1<argc) dataset_path=argv[++i];
             else if(arg=="--output"&&i+1<argc) output_path=argv[++i];
             else if(arg=="--verify-urdf"&&i+1<argc) verify_urdf_path=argv[++i];
+            else if(arg=="--candidate-source"&&i+1<argc) candidate_source=argv[++i];
             else if(arg=="--mode"&&i+1<argc) requested_mode=argv[++i];
             else if(arg=="--lock-link"&&i+1<argc) {requested_locked_links.push_back(argv[++i]);locked_override=true;}
             else if(arg=="--help"||arg=="-h") {
-                std::cout << "Usage: serial_arm_model_calibrator --config <core.yaml> --dataset <task-dir> [--output candidate.json] [--verify-urdf candidate.urdf]\n";
+                std::cout << "Usage: serial_arm_model_calibrator --config <core.yaml> --dataset <task-dir> --verify-urdf candidate.urdf [--candidate-source online|offline]\n";
                 return EXIT_SUCCESS;
             } else throw std::runtime_error("unknown or incomplete argument: "+arg);
         }
+        if(verify_urdf_path.empty()) throw std::runtime_error("Offline fitting uses tools/model_calibration_cli.py recompute, shared with the GUI; this tool only verifies a stored candidate");
+        if(!output_path.empty()||!requested_mode.empty()||locked_override) throw std::runtime_error("Verification cannot refit or override a stored candidate");
+        if(candidate_source!="online"&&candidate_source!="offline") throw std::runtime_error("invalid candidate source");
         if(config_path.empty()||dataset_path.empty()) throw std::runtime_error("--config and --dataset are required");
         const std::filesystem::path task_directory=std::filesystem::absolute(dataset_path);
         const std::filesystem::path metadata_path=task_directory/"metadata.json";
@@ -74,24 +79,28 @@ int main(int argc, char** argv) {
         if(!configured) throw std::runtime_error("Dynamics configure failed");
         const auto frames=serial_arm::load_model_calibration_frames(dataset_path,cfg_result->joint_names.size());
         if(!frames) throw std::runtime_error(frames.error());
-        const auto groups=serial_arm::group_static_calibration_frames(frames.value());
-        serial_arm::GravityCalibrationOptions options;
-        if(metadata["calibration_options"]&&metadata["calibration_options"].IsMap()) {
-            const YAML::Node saved=metadata["calibration_options"];
-            if(saved["regularization"])options.regularization=saved["regularization"].as<double>();
-            if(saved["svd_relative_threshold"])options.svd_relative_threshold=saved["svd_relative_threshold"].as<double>();
-            if(saved["mode"])options.identification_mode=saved["mode"].as<std::string>();
-            if(saved["locked_links"])options.locked_links=saved["locked_links"].as<std::vector<std::string>>();
+        // Verify the selected saved candidate without running any solver
+        const auto record_path=task_directory/(candidate_source=="offline"?"recomputed-candidate.json":"result.json");
+        const auto record=YAML::LoadFile(record_path.string());
+        if(!record["task_id"] || record["task_id"].as<std::string>()!=metadata["task_id"].as<std::string>())
+            throw std::runtime_error("candidate task does not match dataset");
+        const auto candidate_record=candidate_source=="offline"?record:record["gravity_result"];
+        if(!candidate_record || !candidate_record["first_moments"] || !candidate_record["first_moments"].IsSequence())
+            throw std::runtime_error("saved gravity candidate is missing");
+        std::vector<serial_arm::GravityFirstMoment> first_moments;
+        for(const auto& item:candidate_record["first_moments"]) {
+            serial_arm::GravityFirstMoment moment;
+            moment.link_name=item["link_name"].as<std::string>();
+            const auto values=item["value"].as<std::vector<double>>();
+            if(values.size()!=3) throw std::runtime_error("invalid stored first moment");
+            moment.value=Eigen::Vector3d(values[0],values[1],values[2]);
+            if(candidate_source=="offline") moment.candidate_mass=candidate_record["candidate_masses"][moment.link_name].as<double>();
+            first_moments.push_back(moment);
         }
-        if(!requested_mode.empty()) {
-            options.identification_mode=requested_mode;
-            options.locked_links=locked_override?requested_locked_links:std::vector<std::string>{};
-        } else if(locked_override) throw std::runtime_error("--lock-link requires --mode local");
-        const auto result=serial_arm::fit_gravity_calibration(dynamics,groups,cfg_result->gravity_scale,options);
-        if(!result) throw std::runtime_error(result.error());
         if(!verify_urdf_path.empty()) {
             serial_arm::DynamicsCfg candidate_cfg=cfg_result.value();
             candidate_cfg.urdf_path=std::filesystem::absolute(verify_urdf_path).string();
+            candidate_cfg.gravity_correction_path.clear();
             candidate_cfg.gravity_scale.assign(candidate_cfg.joint_names.size(),1.0);
             serial_arm::Dynamics candidate;
             const auto candidate_configured=candidate.configure(candidate_cfg);
@@ -111,7 +120,7 @@ int main(int argc, char** argv) {
             if(poses.empty())poses.push_back(serial_arm::JointVector(candidate_cfg.joint_names.size(),0.0));
             double gravity_sq=0.0;std::size_t gravity_count=0;double max_position_error=0.0;double max_rotation_error=0.0;
             for(const auto& q:poses) {
-                const auto expected=dynamics.compute_gravity_with_first_moments(q,result->first_moments);
+                const auto expected=dynamics.compute_gravity_with_first_moments(q,first_moments);
                 if(!expected)throw std::runtime_error("candidate gravity prediction failed");
                 serial_arm::JointState state;state.pos=q;state.vel.assign(q.size(),0.0);state.tor.assign(q.size(),0.0);
                 serial_arm::JointVector zeros(q.size(),0.0);
@@ -130,17 +139,10 @@ int main(int argc, char** argv) {
             }
             const double gravity_rms=gravity_count?std::sqrt(gravity_sq/static_cast<double>(gravity_count)):0.0;
             const bool ok=std::isfinite(gravity_rms)&&gravity_rms<1.0e-7&&max_position_error<1.0e-10&&max_rotation_error<1.0e-10;
-            std::cout<<std::setprecision(17)<<"{\"ok\":"<<(ok?"true":"false")<<",\"samples\":"<<poses.size()<<",\"gravity_rms_nm\":"<<gravity_rms<<",\"fk_max_position_error_m\":"<<max_position_error<<",\"fk_max_rotation_error_rad\":"<<max_rotation_error<<",\"mass_and_com_inertia_prior_preserved\":true,\"scope\":\"static gravity correction only\"}\n";
+            std::cout<<std::setprecision(17)<<"{\"ok\":"<<(ok?"true":"false")<<",\"samples\":"<<poses.size()<<",\"gravity_rms_nm\":"<<gravity_rms<<",\"fk_max_position_error_m\":"<<max_position_error<<",\"fk_max_rotation_error_rad\":"<<max_rotation_error<<",\"quality_validation_performed\":false,\"candidate_source\":\""<<candidate_source<<"\",\"scope\":\"stored candidate export consistency only\"}\n";
             return ok?EXIT_SUCCESS:4;
         }
-        const std::string json=serial_arm::gravity_calibration_result_json(result.value());
-        if(output_path.empty()) output_path=(std::filesystem::path(dataset_path)/"candidate.json").string();
-        std::ofstream out(output_path);
-        if(!out) throw std::runtime_error("cannot open output candidate file");
-        out << json << '\n';
-        if(!out) throw std::runtime_error("failed to write candidate file");
-        std::cout << json << '\n';
-        return EXIT_SUCCESS; // Numerical candidate is exportable even if quality diagnostics need review.
+        return EXIT_FAILURE;
     } catch(const std::exception& error) {
         std::cerr << error.what() << '\n';
         return EXIT_FAILURE;

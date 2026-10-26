@@ -474,6 +474,7 @@ void bind_state_types(py::module_& module) {
     py::class_<ActuatorState>(module, "ActuatorState")
         .def(py::init<>())
         .def_readwrite("feedback_received_ns", &ActuatorState::feedback_received_ns)
+        .def_readwrite("feedback_timing_valid", &ActuatorState::feedback_timing_valid)
         .def_property("pos", &get_double_member<ActuatorState, &ActuatorState::pos>, &set_double_member<ActuatorState, &ActuatorState::pos>)
         .def_property("vel", &get_double_member<ActuatorState, &ActuatorState::vel>, &set_double_member<ActuatorState, &ActuatorState::vel>)
         .def_property("tor", &get_double_member<ActuatorState, &ActuatorState::tor>, &set_double_member<ActuatorState, &ActuatorState::tor>)

@@ -47,11 +47,29 @@ InteractionController::update(const InteractionInput& input) {
     output.state.valid = false;
     if(!cfg_.enabled) return output;
 
-    if(input.measured_torque.size() != input.full_id_model_torque.size()) {
+    if(cfg_.observer_mode==AdmittanceObserverMode::FULL_ID && !input.full_id_acceleration_valid) {
+        // No new valid acceleration: freeze the displacement, stop its velocity,
+        // and reset estimator memory before the next trusted observation
+        residual_observer_.reset();
+        external_torque_observer_.reset();
+        auto held=admittance_controller_.hold(input.min_delta_q,input.max_delta_q);
+        if(!held) return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
+        output.delta_q=held->delta_q;
+        output.delta_q_dot=held->delta_q_dot;
+        output.delta_q_limited=held->delta_q_limited;
+        output.delta_q_dot_limited=held->delta_q_dot_limited;
+        output.state.delta_q=output.delta_q;
+        output.state.delta_q_dot=output.delta_q_dot;
+        if(output.corrected_cmd.pos.size()!=output.delta_q.size() || output.corrected_cmd.vel.size()!=output.delta_q.size())
+            return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
+        for(std::size_t i=0;i<output.delta_q.size();++i) output.corrected_cmd.pos[i]+=output.delta_q[i];
+        return output;
+    }
+    if(input.full_id_acceleration_valid && input.measured_torque.size() != input.full_id_model_torque.size()) {
         return tl::make_unexpected(InteractionControllerErr::OBSERVER_FAILED);
     }
-    output.full_id_residual_raw.resize(input.measured_torque.size());
-    for(std::size_t i = 0; i < input.measured_torque.size(); ++i) {
+    if(input.full_id_acceleration_valid) output.full_id_residual_raw.resize(input.measured_torque.size());
+    for(std::size_t i = 0; i < output.full_id_residual_raw.size(); ++i) {
         output.full_id_residual_raw[i] = input.full_id_model_torque[i] - input.measured_torque[i];
     }
 

@@ -4,6 +4,10 @@
 #include "serial_arm/transport/serial_port.hpp"
 
 #include <array>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <chrono>
 #include <cstdint>
 #include <deque>
@@ -103,12 +107,19 @@ private:
      * @param frame 解析成功时写入的 CAN 帧
      * @return 成功解析时返回 true
      */
-    bool receive_wire_frame(transport::CanFrame& frame, std::chrono::milliseconds timeout);
+    void receive_loop() noexcept;
 
 private:
     Config config_;                                     ///< 达妙官方 USB2CAN 模块配置
     transport::SerialPort serial_;                      ///< 底层串口
-    std::deque<std::uint8_t> rx_queue_;                 ///< 串口接收拼帧缓存
+    struct ReceivedByte { std::uint8_t value; std::uint64_t received_ns; bool timing_valid; };
+    std::deque<ReceivedByte> rx_queue_;                 ///< 字节及主机接收时间
+    std::deque<transport::CanFrame> frames_;
+    std::mutex wire_mutex_, queue_mutex_;
+    std::condition_variable available_;
+    std::thread receiver_;
+    std::atomic<bool> running_{false}, read_failed_{false};
+    std::chrono::steady_clock::time_point last_read_{};
     std::array<std::uint8_t, 1024> rx_buf_{};            ///< 串口临时读取缓冲区
 };
 

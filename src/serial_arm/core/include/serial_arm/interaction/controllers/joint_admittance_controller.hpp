@@ -66,6 +66,8 @@ class JointAdmittanceController {
 public:
     tl::expected<void, JointAdmittanceControllerErr> configure(const JointAdmittanceControllerCfg& cfg);
     tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> update(const JointAdmittanceInput& input);
+    tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> hold(
+        const JointVector& min_delta_q, const JointVector& max_delta_q);
     void reset();
     bool is_configured() const noexcept;
 

@@ -85,7 +85,7 @@ class Inspector:
         return {'installed': m.get('status') == 'verified',
                 'components': m.get('installed_components', []), 'gui': bool(m.get('gui')),
                 'prefix': m.get('install_prefix', ''), 'ros_distro': m.get('ros_distro') if m.get('ros2') else '',
-                'terminal': shutil.which('serial_arm_terminal') or '', 'ros2': shutil.which('ros2') or '',
+                'terminal': self.machine_terminal(), 'ros2': shutil.which('ros2') or '',
                 'last_attempt': json.loads(attempt.read_text()) if attempt.exists() else {},
                 'devices': sorted(set(glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*') + glob.glob('/dev/serial/by-id/*')))}
 
@@ -132,43 +132,29 @@ class Inspector:
                     except (OSError, ET.ParseError): pass
         raise ValueError(f'resource package not found: {package}')
 
-    def machine_terminal(self):
-        candidates = [
-            os.environ.get('SERIAL_ARM_TERMINAL', ''),
-            # Use the local checked-out project's binary before an older
-            # global PATH installation. The explicit env override still wins.
-            str(self.root / '.install/standalone/bin/serial_arm_terminal'),
-            str(self.root / 'install/standalone/bin/serial_arm_terminal'),
-            str(self.root / 'build/serial_arm_core/serial_arm_terminal'),
-            shutil.which('serial_arm_terminal') or '',
-        ]
+    def _native_tool(self, name, override):
+        manifest=self.manifest()
+        prefix=os.environ.get('SERIAL_ARM_BUNDLE_PREFIX') or manifest.get('install_prefix')
+        candidates=[os.environ.get(override, '')]
+        if prefix:
+            candidates.append(str(Path(prefix)/'bin'/name))
+        candidates += [str(self.root/'.install/standalone/bin'/name),
+                       str(self.root/'install/standalone/bin'/name),
+                       str(self.root/'build/serial_arm_core'/name),
+                       shutil.which(name) or '']
         for value in candidates:
-            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
+            if value and Path(value).is_file() and os.access(value,os.X_OK):
+                return str(Path(value).resolve())
         return ''
+
+    def machine_terminal(self):
+        return self._native_tool('serial_arm_terminal','SERIAL_ARM_TERMINAL')
 
     def model_calibrator(self):
-        candidates = [
-            os.environ.get('SERIAL_ARM_MODEL_CALIBRATOR', ''),
-            shutil.which('serial_arm_model_calibrator') or '',
-            str(self.root / '.install/standalone/bin/serial_arm_model_calibrator'),
-            str(self.root / 'install/standalone/bin/serial_arm_model_calibrator'),
-            str(self.root / 'build/serial_arm_core/serial_arm_model_calibrator'),
-        ]
-        for value in candidates:
-            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
-        return ''
+        return self._native_tool('serial_arm_model_calibrator','SERIAL_ARM_MODEL_CALIBRATOR')
 
     def model_probe(self):
-        candidates = [
-            os.environ.get('SERIAL_ARM_MODEL_PROBE', ''),
-            shutil.which('serial_arm_model_probe') or '',
-            str(self.root / '.install/standalone/bin/serial_arm_model_probe'),
-            str(self.root / 'install/standalone/bin/serial_arm_model_probe'),
-            str(self.root / 'build/serial_arm_core/serial_arm_model_probe'),
-        ]
-        for value in candidates:
-            if value and Path(value).is_file() and os.access(value, os.X_OK): return str(Path(value).resolve())
-        return ''
+        return self._native_tool('serial_arm_model_probe','SERIAL_ARM_MODEL_PROBE')
 
     @staticmethod
     def _numbers(value, count, default):

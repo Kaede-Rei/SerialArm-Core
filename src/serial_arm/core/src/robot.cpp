@@ -681,8 +681,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     std::vector<std::uint8_t> safety_position_margin_active;
     std::vector<std::uint8_t> safety_velocity_margin_active;
     if(admittance_active) {
-        const auto interaction_model_torque = compute_interaction_model_torque(
-            joint_state.value(), joint_acc, controller_dt);
+        const auto interaction_model_torque = joint_acc_valid ? compute_interaction_model_torque(
+            joint_state.value(), joint_acc, controller_dt) : tl::expected<JointVector,RobotFault>(JointVector{});
         if(!interaction_model_torque) {
             enter_fault(interaction_model_torque.error(), SafetyAction::STOP_HOLD);
             return tl::make_unexpected(interaction_model_torque.error());
@@ -766,6 +766,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             std::move(max_delta_q_dot),
             joint_state->vel,
             std::move(momentum_input),
+            joint_acc_valid,
             });
         if(!interaction) {
             const RobotFault fault = make_interaction_fault(interaction.error());
@@ -1162,6 +1163,10 @@ JointVector Robot::estimate_joint_acc(const JointState& state, const ActuatorSta
     const auto& previous = actuator_state_.feedback_received_ns;
     const bool timestamped = current.size() == result.size() && previous.size() == result.size();
     const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+    const auto timing_ok = [&](const ActuatorState& value, std::size_t i) {
+        return value.feedback_timing_valid.empty() ||
+            (value.feedback_timing_valid.size()==result.size() && value.feedback_timing_valid[i]!=0);
+    };
     bool all_valid = timestamped && cfg_.runtime.joint_acc_filter_alpha > 0.0;
     for(std::size_t i = 0; i < result.size(); ++i) {
         double sample_dt = dt;
@@ -1177,6 +1182,10 @@ JointVector Robot::estimate_joint_acc(const JointState& state, const ActuatorSta
             if(previous[i] == 0 || current[i] <= previous[i] || current[i] > static_cast<std::uint64_t>(now_ns) ||
                static_cast<double>(now_ns-current[i])/1.0e9 > cfg_.safety.state_timeout_s) {
                 all_valid = false;
+                continue;
+            }
+            if(!timing_ok(observed,i) || !timing_ok(actuator_state_,i)) {
+                all_valid=false;
                 continue;
             }
             sample_dt = static_cast<double>(current[i]-previous[i])/1.0e9;

@@ -52,39 +52,7 @@ def offline_task_home(directory, fallback_root):
     return Path(fallback_root).resolve()
 
 
-def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode=None, locked_links=None):
-    """Never load optional native Pinocchio extensions in the live IPC process"""
-    argv = [sys.executable, str(Path(__file__).with_name('full_inertial_worker.py')),
-            str(Path(directory).expanduser().resolve()), str(destination or '')]
-    argv.extend([mode or 'full', json.dumps(locked_links or [])])
-    env = dict(os.environ)
-    # Avoid a user-site NumPy 2 overriding the ROS Humble NumPy 1 ABI
-    env['PYTHONNOUSERSITE'] = '1'
-    operation = {
-        'legacy_gravity_recompute': '离线重力模型辨识',
-        'legacy_gravity_export': '离线重力模型导出',
-    }.get(mode, '高级动力学辨识')
-    try:
-        completed = subprocess.run(argv, capture_output=True, text=True,
-                                   timeout=timeout, env=env)
-    except subprocess.TimeoutExpired as error:
-        raise ValueError(f'{operation}计算超时，独立计算进程已终止，工作台仍可正常使用') from error
-    if completed.returncode != 0:
-        details = (completed.stderr or completed.stdout).strip()
-        numpy_abi = ('_ARRAY_API not found' in details or
-                     'A module that was compiled using NumPy 1.x' in details or
-                     'numpy.core.multiarray failed to import' in details)
-        if numpy_abi:
-            raise ValueError('Pinocchio 与 NumPy ABI 不兼容，当前候选计算已隔离终止，不影响机器人控制界面，请重新运行 ./install.sh 更新 GUI Python 环境中的 numpy<2')
-        if completed.returncode < 0:
-            raise ValueError(f'{operation}进程被信号 {-completed.returncode} 终止，工作台未受影响，请检查 Python 原生依赖')
-        if details.startswith(('ValueError: ', 'RuntimeError: ', 'KeyError: ')):
-            details = details.split(': ', 1)[1]
-        raise ValueError(f'{operation}失败: ' + (details[-2000:] or f'退出码 {completed.returncode}'))
-    try:
-        return json.loads(completed.stdout)
-    except json.JSONDecodeError as error:
-        raise ValueError(f'{operation}进程没有返回有效 JSON') from error
+from calibration_jobs import run_full_inertial_isolated, recompute_gravity_isolated
 
 
 def restore_temporary_candidates_for_disconnect(native, allow_park=False):
@@ -525,18 +493,22 @@ def main():
                     # before disconnect so the outcome is observable and auditable
                     # When safe parking or restoration fails keep the session alive
                     force = params.get('force') is True
-                    if not force and native.status().get('state') == 'running':
-                        admission = profile_library._readiness(active_workbench_config) if active_workbench_config else {}
-                        safe_park = (admission.get('control_available') is True and
-                            all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
-                                for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
-                        state_before = native.request('status', {}, timeout=8)
-                        if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
-                            raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
-                        if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
-                            raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
-                        restore_temporary_candidates_for_disconnect(native)
-                    result = native.stop(force)
+                    try:
+                        if not force and native.status().get('state') == 'running':
+                            admission = profile_library._readiness(active_workbench_config) if active_workbench_config else {}
+                            safe_park = (admission.get('control_available') is True and
+                                all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
+                                    for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
+                            state_before = native.request('status', {}, timeout=8)
+                            if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
+                                raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
+                            if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
+                                raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
+                            restore_temporary_candidates_for_disconnect(native)
+                        result = native.stop(force)
+                    except Exception as error:
+                        native.note_disconnect_failure(error)
+                        raise
                     active_workbench_config = None
                     active_workbench_fingerprint = None
                     repeat_source = None
@@ -666,7 +638,7 @@ def main():
                         verification = subprocess.run(
                             [calibrator, '--config', info['resources']['core'],
                              '--dataset', str(Path(directory).resolve()),
-                             '--verify-urdf', result['candidate_urdf']],
+                             '--verify-urdf', result['candidate_urdf'], '--candidate-source', source],
                             text=True, capture_output=True, timeout=60)
                         if verification.returncode != 0:
                             raise ValueError((verification.stderr or verification.stdout or
@@ -699,15 +671,8 @@ def main():
                     directory = params.get('directory', '')
                     if not directory or not Path(directory).expanduser().is_dir():
                         raise ValueError('请选择完整的标定任务目录')
-                    mode = params.get('mode', 'global')
-                    if mode not in ('global', 'local'):
-                        raise ValueError('未知的辨识模式')
-                    locked = params.get('locked_links', []) if mode == 'local' else []
-                    if (not isinstance(locked, list) or len(set(locked)) != len(locked)
-                            or any(not isinstance(x, str) or not x for x in locked)):
-                        raise ValueError('可信 Link 列表无效')
-                    result = run_full_inertial_isolated(directory, mode='legacy_gravity_recompute',
-                        locked_links={'mode': mode, 'locked_links': locked})
+                    result = recompute_gravity_isolated(directory, params.get('mode', 'global'),
+                        params.get('locked_links', []))
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')

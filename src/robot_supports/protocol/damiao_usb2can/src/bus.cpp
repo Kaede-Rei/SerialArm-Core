@@ -112,9 +112,13 @@ tl::expected<void, transport::CanErr> DamiaoUsbCanBus::open() {
         config.read_timeout = std::chrono::milliseconds(2);
         config.write_timeout = std::chrono::milliseconds(100);
         serial_.open(config_.serial_port, config);
+        read_failed_ = false;
+        running_ = true;
+        receiver_ = std::thread(&DamiaoUsbCanBus::receive_loop, this);
         return {};
     }
     catch(...) {
+        close();
         return tl::make_unexpected(transport::CanErr::OPEN_FAILED);
     }
 }
@@ -123,8 +127,14 @@ tl::expected<void, transport::CanErr> DamiaoUsbCanBus::open() {
  * @brief 关闭底层串口并清空缓存
  */
 void DamiaoUsbCanBus::close() noexcept {
+    running_ = false;
+    available_.notify_all();
+    if(receiver_.joinable()) receiver_.join();
     serial_.close();
     rx_queue_.clear();
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    frames_.clear();
+    last_read_ = {};
 }
 
 /**
@@ -161,26 +171,24 @@ tl::expected<void, transport::CanErr> DamiaoUsbCanBus::send(const transport::Can
 tl::expected<transport::CanFrame, transport::CanErr> DamiaoUsbCanBus::receive(std::chrono::milliseconds timeout) {
     if(!serial_.is_open()) return tl::make_unexpected(transport::CanErr::NOT_OPEN);
 
-    transport::CanFrame frame;
-    try {
-        if(try_parse_frame(frame)) return frame;
-
-        const auto deadline = std::chrono::steady_clock::now() + timeout;
-        while(std::chrono::steady_clock::now() < deadline) {
-            if(receive_wire_frame(frame, remaining_time(deadline))) return frame;
-        }
-        return tl::make_unexpected(transport::CanErr::TIMEOUT);
-    }
-    catch(...) {
-        return tl::make_unexpected(transport::CanErr::READ_FAILED);
-    }
+    std::unique_lock<std::mutex> lock(queue_mutex_);
+    available_.wait_for(lock, timeout, [this] { return !frames_.empty() || !running_; });
+    if(read_failed_) return tl::make_unexpected(transport::CanErr::READ_FAILED);
+    if(frames_.empty()) return tl::make_unexpected(transport::CanErr::TIMEOUT);
+    auto frame = frames_.front();
+    frames_.pop_front();
+    return frame;
 }
 
 /**
  * @brief 清空协议缓存和串口缓冲区
  */
 void DamiaoUsbCanBus::flush() noexcept {
+    std::lock_guard<std::mutex> wire_lock(wire_mutex_);
+    std::lock_guard<std::mutex> queue_lock(queue_mutex_);
     rx_queue_.clear();
+    frames_.clear();
+    last_read_ = {};
     if(!serial_.is_open()) return;
     try {
         serial_.flush();
@@ -220,13 +228,53 @@ tl::expected<std::shared_ptr<transport::CanChannel>, Err> acquire_channel(
 /**
  * @brief 从串口补充字节并尝试解析完整帧
  */
-bool DamiaoUsbCanBus::receive_wire_frame(transport::CanFrame& frame, std::chrono::milliseconds timeout) {
-    if(try_parse_frame(frame)) return true;
-
-    serial_.set_read_timeout(timeout);
-    const auto n = serial_.read(rx_buf_.data(), rx_buf_.size());
-    for(std::size_t i = 0; i < n; ++i) rx_queue_.push_back(rx_buf_[i]);
-    return try_parse_frame(frame);
+void DamiaoUsbCanBus::receive_loop() noexcept {
+    try {
+        while(running_) {
+            // Only this thread reads the tty, independently of control/decode
+            // scheduling; queued frames retain this host read timestamp
+            std::lock_guard<std::mutex> wire_lock(wire_mutex_);
+            const auto n = serial_.read(rx_buf_.data(), rx_buf_.size(), std::chrono::milliseconds(2));
+            if(n == 0) continue;
+            const auto received = std::chrono::steady_clock::now();
+            const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(received.time_since_epoch()).count();
+            const bool continuous = last_read_ != std::chrono::steady_clock::time_point{} &&
+                received-last_read_ <= std::chrono::milliseconds(20) &&
+                received-last_read_ >= std::chrono::microseconds(250);
+            last_read_ = received;
+            for(std::size_t i=0;i<n;++i) rx_queue_.push_back({rx_buf_[i], static_cast<std::uint64_t>(stamp), continuous});
+            std::vector<transport::CanFrame> batch;
+            transport::CanFrame frame;
+            while(try_parse_frame(frame)) batch.push_back(frame);
+            // Multiple feedbacks for one endpoint in a read are a burst, not
+            // independently timed observations; retain their age but no qdd
+            for(std::size_t i=0;i<batch.size();++i) {
+                for(std::size_t j=i+1;j<batch.size();++j) {
+                    if(batch[i].id==batch[j].id && (batch[i].id!=0 ||
+                       (batch[i].data[0]&0x0f)==(batch[j].data[0]&0x0f))) {
+                        batch[i].receive_timing_valid=false;
+                        batch[j].receive_timing_valid=false;
+                    }
+                }
+            }
+            {
+                std::lock_guard<std::mutex> queue_lock(queue_mutex_);
+                for(auto& item:batch) {
+                    if(frames_.size()>=transport::DEFAULT_CAN_CHANNEL_MAX_PENDING_FRAMES) {
+                        frames_.pop_front();
+                        for(auto& pending:frames_) pending.receive_timing_valid=false;
+                        item.receive_timing_valid=false;
+                    }
+                    frames_.push_back(item);
+                }
+            }
+            if(!batch.empty()) available_.notify_all();
+        }
+    } catch(...) {
+        read_failed_ = true;
+        running_ = false;
+        available_.notify_all();
+    }
 }
 
 /**
@@ -234,24 +282,29 @@ bool DamiaoUsbCanBus::receive_wire_frame(transport::CanFrame& frame, std::chrono
  */
 bool DamiaoUsbCanBus::try_parse_frame(transport::CanFrame& frame) {
     while(rx_queue_.size() >= sizeof(RxPacket)) {
-        if(rx_queue_.front() != 0xAA) {
+        if(rx_queue_.front().value != 0xAA) {
             rx_queue_.pop_front();
             continue;
         }
 
         std::array<std::uint8_t, sizeof(RxPacket)> raw{};
+        std::array<ReceivedByte, sizeof(RxPacket)> timed{};
         for(std::size_t i = 0; i < sizeof(RxPacket); ++i) {
-            raw[i] = rx_queue_.front();
+            timed[i] = rx_queue_.front();
+            raw[i] = timed[i].value;
             rx_queue_.pop_front();
         }
         RxPacket wire{};
         std::memcpy(&wire, raw.data(), raw.size());
         if(wire.cmd != 0x11 || wire.frame_end != 0x55 || wire.can_data_len > 8 ||
             wire.can_ide != 0 || wire.can_rtr != 0 || wire.can_id > 0x7FF) {
-            for(std::size_t i = raw.size() - 1; i > 0; --i) rx_queue_.push_front(raw[i]);
+            for(std::size_t i = raw.size() - 1; i > 0; --i) rx_queue_.push_front(timed[i]);
             continue;
         }
 
+        // Earliest byte gives a conservative age for fragmented wire packets
+        frame.received_ns = timed.front().received_ns;
+        frame.receive_timing_valid = std::all_of(timed.begin(), timed.end(), [](const ReceivedByte& b) { return b.timing_valid; });
         frame.id = wire.can_id;
         frame.size = wire.can_data_len;
         std::copy(std::begin(wire.can_data), std::end(wire.can_data), frame.data.begin());

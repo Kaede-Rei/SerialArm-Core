@@ -42,6 +42,7 @@ struct InteractionInput {
     JointVector max_delta_q_dot;
     JointVector measured_velocity;
     GeneralizedMomentumInput momentum_input;
+    bool full_id_acceleration_valid{ false };
 };
 
 struct InteractionOutput {

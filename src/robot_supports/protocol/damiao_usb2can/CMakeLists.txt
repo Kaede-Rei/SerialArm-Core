@@ -67,7 +67,6 @@ install(FILES
 )
 
 if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-    find_package(GTest REQUIRED)
 
     add_executable(serial_arm_protocol_damiao_usb2can_tests
         tests/bus_tests.cpp
@@ -75,7 +74,6 @@ if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     target_link_libraries(serial_arm_protocol_damiao_usb2can_tests
         PRIVATE
             serial_arm_protocol_damiao_usb2can
-            GTest::gtest_main
     )
     target_compile_features(serial_arm_protocol_damiao_usb2can_tests PRIVATE cxx_std_17)
 

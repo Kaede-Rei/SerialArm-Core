@@ -163,6 +163,7 @@ private:
     uint64_t state_seq = 0;
     uint8_t state_status = 0xFF;
     std::chrono::steady_clock::time_point state_received_at{};
+    bool state_timing_valid = false;
     LimitParam limit_param{};
     DmMotorType motor_type;
 
@@ -196,14 +197,21 @@ public:
         this->limit_param = damiao::limit_param[DM4310];
     }
 
-    void receive_data(float q, float dq, float tau, uint8_t status = 0xFF) {
+    void receive_data(float q, float dq, float tau, uint8_t status = 0xFF,
+                      std::uint64_t received_ns = 0, bool timing_valid = false) {
+        // Ignore time-reversed observations rather than overwrite fresh state
+        const auto received_at = std::chrono::steady_clock::time_point(std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(received_ns)));
+        if(state_seq && received_at < state_received_at) return;
         this->state_q = q;
         this->state_dq = dq;
         this->state_tau = tau;
         this->state_status = status;
-        this->state_received_at = std::chrono::steady_clock::now();
+        this->state_received_at = received_at;
+        this->state_timing_valid = timing_valid && received_ns != 0;
         ++this->state_seq;
     }
+
+    bool timing_valid() const { return state_timing_valid; }
 
     DmMotorType get_motor_type() const { return this->motor_type; }
 
@@ -370,8 +378,9 @@ public:
         uint8_t can_low = motor.get_slave_id() & 0xff;
         uint8_t can_high = (motor.get_slave_id() >> 8) & 0xff;
         std::array<uint8_t, 8> data_buf = { can_low, can_high, 0xCC, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        const auto requested_at=std::chrono::steady_clock::now();
         if(!send_frame(id, data_buf)) return false;
-        return receive_feedback_for(motor, timeout);
+        return receive_feedback_for(motor, timeout, requested_at);
     }
     /**
      * @brief 失能电机
@@ -575,9 +584,19 @@ public:
      * @note 该调用会同步阻塞至目标帧到达或 timeout；共享 master ID 为 0 时根据 payload 中的 slave ID 匹配
      * @note 当前 MotorControl 拥有并消费自己的 CanChannel，调用方不应对同一 MotorControl 并发执行事务
      */
+    void drain_feedback() {
+        for(std::size_t i=0;i<serial_arm::transport::DEFAULT_CAN_CHANNEL_MAX_PENDING_FRAMES;++i) {
+            auto frame=channel_->receive(std::chrono::milliseconds(0));
+            if(!frame) break;
+            Motor* motor=nullptr;
+            decode_feedback_frame(*frame,motor);
+        }
+    }
+
     bool receive_feedback_for(
         const Motor& motor,
-        std::chrono::milliseconds timeout = DEFAULT_FEEDBACK_TIMEOUT) {
+        std::chrono::milliseconds timeout = DEFAULT_FEEDBACK_TIMEOUT,
+        std::chrono::steady_clock::time_point not_before = {}) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while(std::chrono::steady_clock::now() < deadline) {
             auto maybe_frame = channel_->receive(remaining_timeout(deadline, RECEIVE_SLICE));
@@ -588,7 +607,8 @@ public:
 
             Motor* decoded_motor = nullptr;
             if(!decode_feedback_frame(*maybe_frame, decoded_motor)) continue;
-            if(decoded_motor != nullptr && decoded_motor->get_slave_id() == motor.get_slave_id()) return true;
+            if(decoded_motor != nullptr && decoded_motor->get_slave_id() == motor.get_slave_id() &&
+               decoded_motor->get_state_received_at() >= not_before) return true;
         }
         return false;
     }
@@ -851,7 +871,7 @@ private:
         const float q = uint_to_float(q_uint, -limit.q_max, limit.q_max, 16);
         const float dq = uint_to_float(dq_uint, -limit.dq_max, limit.dq_max, 12);
         const float tau = uint_to_float(tau_uint, -limit.tau_max, limit.tau_max, 12);
-        decoded_motor->receive_data(q, dq, tau, data[0] >> 4);
+        decoded_motor->receive_data(q, dq, tau, data[0] >> 4, frame.received_ns, frame.receive_timing_valid);
         return true;
     }
 

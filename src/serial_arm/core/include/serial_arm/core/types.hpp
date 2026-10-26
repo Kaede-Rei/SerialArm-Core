@@ -64,6 +64,8 @@ struct ActuatorState {
     std::vector<int> err_code;          ///< 执行器错误码
     // Optional per-axis steady_clock receive timestamps in nanoseconds; empty means unknown
     std::vector<std::uint64_t> feedback_received_ns;
+    // Optional per-axis timing continuity; false excludes velocity differentiation
+    std::vector<std::uint8_t> feedback_timing_valid;
 };
 
 /**

@@ -14,6 +14,10 @@ struct CanFrame {
     std::uint32_t id{ 0 };                  ///< CAN ID
     std::array<std::uint8_t, 8> data{};     ///< CAN 数据
     std::uint8_t size{ 0 };                 ///< CAN 数据长度
+    // Host steady_clock timestamp at transport read, never at consumer decode
+    // This is not a device sampling timestamp; zero means unavailable
+    std::uint64_t received_ns{ 0 };
+    bool receive_timing_valid{ false };    ///< false after a receive gap, burst or queue loss
 };
 
 /**
