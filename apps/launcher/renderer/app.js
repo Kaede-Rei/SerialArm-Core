@@ -46,10 +46,12 @@ const words = {
     expertTools: ['专业工具', 'Expert tools'], backHome: ['返回开始页', 'Back to start'], profileSetup: ['参数配置', 'Parameter configuration'], editProfile: ['编辑 Profile', 'Edit Profile'], continueAction: ['继续配置', 'Continue configuration'], saveProfile: ['保存 Profile', 'Save Profile'], profileManagedHint: ['Profile Library 只管理引用，从 Library 移除不会删除磁盘文件', 'Profile Library manages references only; removing an entry does not delete files'],
 };
 const paths = { workbench: '<path d="M4 5h16v14H4zM8 9h8M8 13h5M6 3v4M18 3v4"/>', robot: '<path d="M5 21v-4h14v4M8 17l-3-5 4-3 4 3-2 5M9 9l3-5 6 3-5 5M18 7l2-3M2 21h20"/>', run: '<path d="m8 5 11 7-11 7Z"/>', diagnostics: '<path d="M10 3h4v4h-4zM5 8h14v12H5zM9 12h6M9 16h3"/>', settings: '<path d="M4 7h16M4 17h16M8 4v6M16 14v6"/>', plug: '<path d="M8 3v4M16 3v4M6 7h12v4a6 6 0 0 1-12 0zM12 17v4"/>', folder: '<path d="M3 6h7l2 2h9v12H3z"/>', model: '<path d="m12 3 9 5v9l-9 5-9-5V8zM3 8l9 5 9-5M12 13v9"/>', terminal: '<path d="m5 7 5 5-5 5M13 17h6"/>', hardware: '<path d="M7 7h10v10H7zM4 9h3M4 15h3M17 9h3M17 15h3M9 4v3M15 4v3M9 17v3M15 17v3"/>', moveit: '<path d="M4 19V5h16M4 19h16M8 15l4-7 6 5M7 15h2M17 13h2"/>', refresh: '<path d="M20 7v5h-5M4 17v-5h5M5 8a8 8 0 0 1 13-3l2 2M4 17l2 2a8 8 0 0 0 13-3"/>', check: '<path d="m5 12 4 4L19 6"/>', close: '<path d="m6 6 12 12M18 6 6 18"/>', minus: '<path d="M5 12h14"/>', max: '<rect x="5" y="5" width="14" height="14" rx="1"/>', sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1 1M18 18l1 1M5 19l1-1M18 6l1-1"/>', stop: '<rect x="6" y="6" width="12" height="12" rx="1"/>' };
+Object.assign(paths, { plus: '<path d="M12 5v14M5 12h14"/>', search: '<circle cx="10.5" cy="10.5" r="7.5"/><path d="m16 16 5 5"/>', more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>', chevron: '<path d="m5 9 7 7 7-7"/>', arrow: '<path d="m9 5 7 7-7 7"/>', trash: '<path d="M3 6h18M9 6V3h6v3M6 6l1 15h10l1-15M10 10v7M14 10v7"/>' });
+const robotArtwork = () => '<img class="association-icon" src="brand/arm.png" alt="" aria-hidden="true">';
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayMode: 'RIGID_TRACKING', teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryMode: 'RIGID_TRACKING', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', compact: false, mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], workbenchDelta: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'identification', advancedTarget: 'inertia', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayMode: 'RIGID_TRACKING', teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryMode: 'RIGID_TRACKING', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
 function commandStateText(value) {
@@ -221,48 +223,75 @@ const card = (title, sub, ico, body) => `<section class="card"><div class="card-
 function pageHead(title, desc, action = '') { return `<header class="page-head"><div><div class="eyebrow">SERIALARM · WORKSPACE</div><h2>${t(title)}</h2><p>${t(desc)}</p></div>${action}</header>`; }
 function configField(key, label, placeholder = '') { return `<div class="field"><label for="${key}">${t(label)}</label><input id="${key}" value="${esc(state.config[key])}" placeholder="${esc(placeholder)}" autocomplete="off"></div>`; }
 function active() { return ['running', 'stopping'].includes(state.session.state); }
-async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language }); }
+async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language, compact: state.compact }); }
 function themeIsLight(theme = state.theme) { return theme === 'light' || (theme === 'system' && matchMedia('(prefers-color-scheme: light)').matches); }
-function applyTheme(theme = state.theme) { document.documentElement.className = themeIsLight(theme) ? 'light' : 'dark'; }
-async function switchTheme(nextTheme, event = null, rerender = false) {
+function applyTheme() {
+    const theme = themeIsLight() ? 'light' : 'dark';
+    document.documentElement.className = theme;
+    document.documentElement.dataset.theme = theme;
+    if (term) term.options.theme = theme === 'light'
+        ? { background: '#fbfbfc', foreground: '#1a1a2e', cursor: '#d97706' }
+        : { background: '#0c0c12', foreground: '#c9c9d0', cursor: '#f59e0b' };
+}
+async function switchTheme(nextTheme, _event = null, rerender = false) {
     if (!['system', 'dark', 'light'].includes(nextTheme) || nextTheme === state.theme) return;
-    const previousLight = themeIsLight(state.theme), nextLight = themeIsLight(nextTheme);
-    const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const canTransition = typeof document.startViewTransition === 'function' && !reduceMotion && previousLight !== nextLight;
-    if (!canTransition) { state.theme = nextTheme; applyTheme(); if (rerender) render(); await save(); return; }
-    const source = event?.currentTarget || event?.target;
-    const rect = source?.getBoundingClientRect?.();
-    const x = Number.isFinite(event?.clientX) && event.clientX > 0 ? event.clientX : (rect ? rect.left + rect.width / 2 : innerWidth / 2);
-    const y = Number.isFinite(event?.clientY) && event.clientY > 0 ? event.clientY : (rect ? rect.top + rect.height / 2 : innerHeight / 2);
-    const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
-    const root = document.documentElement;
-    root.style.setProperty('--theme-ripple-x', `${x}px`);
-    root.style.setProperty('--theme-ripple-y', `${y}px`);
-    root.style.setProperty('--theme-ripple-radius', `${Math.ceil(radius)}px`);
-    root.style.setProperty('--theme-ripple-overshoot', `${Math.ceil(radius * 1.018)}px`);
-    const transition = document.startViewTransition(() => { state.theme = nextTheme; applyTheme(); if (rerender) render(); });
-    try { await transition.finished; } finally { root.style.removeProperty('--theme-ripple-x'); root.style.removeProperty('--theme-ripple-y'); root.style.removeProperty('--theme-ripple-radius'); root.style.removeProperty('--theme-ripple-overshoot'); }
+    state.theme = nextTheme; applyTheme();
+    if (rerender) render();
     await save();
+}
+function pageLabel(page = state.page) {
+    const keys = { start: 'manageProfiles', library: state.entryIntent === 'use' ? 'readyLibrary' : 'continueLibrary', description: 'newDescription', lifecycle: 'readiness', profile_setup: 'profileSetup', workbench: 'workbenchNav', geometry: 'geometryNav', calibration: 'calibrationNav', run: 'adapterNav', diagnostics: 'connectionDiagNav', model: 'model', settings: 'settings' };
+    return t(keys[page] || page);
+}
+async function openSettings() {
+    if (state.page === 'settings') { await navigate(state.previousPage || 'start'); return; }
+    const previous = state.page;
+    await navigate('settings');
+    if (state.page === 'settings') state.previousPage = previous;
+}
+async function startIntent(intent) {
+    if (active()) { toast(busyText('请先停止当前运行会话', 'Stop the active session first'), true); return; }
+    if (state.config.profile) { await resetToStart(); if (state.page !== 'start') return; }
+    if (intent === 'description') {
+        await pageExit(); state.entryIntent = intent; state.descriptionStep = 1; state.createdProfileWizard = false;
+        state.descriptionAnalysis = null;
+        state.descriptionDraft = { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [] };
+        state.page = 'description'; render(); return;
+    }
+    state.entryIntent = intent; state.libraryQuery = ''; await refreshLibrary(); await pageExit(); state.page = 'library'; render();
+}
+async function showProfilePicker() {
+    if ($('profile-picker')?.open) return;
+    await refreshLibrary();
+    const dialog = $('profile-picker');
+    if (dialog.open) return;
+    dialog.innerHTML = profileManager(true);
+    bindProfileManager(dialog);
+    dialog.showModal();
+    $('picker-search')?.focus();
 }
 function shell() {
     // A new Shell intentionally preserves the pending fault alert, if any.
     const onboarding = ['start', 'library', 'description'].includes(state.page) || (state.page === 'settings' && !state.config.profile);
-    const quickTheme = onboarding ? '' : `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
-    const titlebar = `<header class="titlebar"><div class="brand-mini">${icon('robot')}SerialArm Launcher</div><div class="title-center">${onboarding ? 'SerialArm' : esc(state.config.profile || t('workspace'))}</div><div class="title-actions"><button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button>${quickTheme}<button id="win-min" class="title-button" aria-label="Minimize">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="Maximize">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="Close">${icon('close')}</button></div></header>`;
+    const quickTheme = `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
+    const titlebar = `<header class="titlebar"><div class="brand-mini">${robotArtwork()}<strong>SerialArm Studio</strong></div><div class="title-center">${esc(state.config.profile || t('workspace'))}<span class="title-connection" id="title-connection"></span></div><div class="title-actions">${quickTheme}<button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button><div class="window-controls"><button id="win-min" class="title-button" aria-label="${busyText('最小化', 'Minimize')}">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="${busyText('最大化或还原', 'Maximize or restore')}">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="${busyText('关闭窗口', 'Close window')}">${icon('close')}</button></div></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
-    if (onboarding) {
-        $('app').innerHTML = `<div class="shell onboarding-shell">${titlebar}<div class="onboarding-body"><main class="onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div></div>${overlays}`;
-    } else {
-        const lifecycle = [['lifecycle', 'readiness', 'check'], ['profile_setup', 'profileSetup', 'robot']];
-        const expert = [['model', 'model', 'model'], ['geometry', 'geometryNav', 'check'], ['calibration', 'calibrationNav', 'hardware'], ['workbench', 'workbenchNav', 'workbench'], ['run', 'adapterNav', 'run'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
-        $('app').innerHTML = `<div class="shell">${titlebar}<div class="body"><aside class="sidebar"><div class="hero compact"><div class="eyebrow">SERIALARM</div><h1>${esc(state.config.profile || '—')}</h1><p>${readinessStateText(state.readiness?.state)}</p></div><div class="nav-caption">${state.language === 'en' ? 'ROBOT LIFECYCLE' : '机械臂生命周期'}</div><nav>${lifecycle.map(([name, key, ico]) => `<button class="nav-item ${state.page === name ? 'active' : ''}" data-page="${name}">${icon(ico)}<span>${t(key)}</span></button>`).join('')}</nav><div class="nav-caption">${t('expertTools')}</div><nav>${expert.map(([name, key, ico]) => `<button class="nav-item ${state.page === name ? 'active' : ''}" data-page="${name}">${icon(ico)}<span>${t(key)}</span></button>`).join('')}</nav><div class="sidebar-spacer"></div><button id="back-home" class="nav-item subtle">${icon('folder')}<span>${t('backHome')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></aside><section class="content-wrap"><div class="top-status"><span class="breadcrumb" id="breadcrumb"></span><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div><main class="content"><div class="page" id="page"></div>${runtimePanel}</main></section></div></div>${overlays}`;
-    }
-    document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => navigate(b.dataset.page));
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const lifecycle = [['lifecycle', 'readiness', 'check'], ['profile_setup', 'profileSetup', 'robot']];
+    const expert = [['model', 'model', 'model'], ['geometry', 'geometryNav', 'check'], ['calibration', 'calibrationNav', 'hardware'], ['workbench', 'workbenchNav', 'workbench'], ['run', 'adapterNav', 'run'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
+    const nav = ([name, key, ico]) => `<button class="nav-item" data-page="${name}" title="${t(key)}" aria-label="${t(key)}" ${!state.config.profile ? 'disabled' : ''}>${icon(ico)}<span>${state.language === 'en' ? ({ lifecycle: 'Readiness', profile_setup: 'Parameters', model: 'Model viewer', workbench: 'Control', geometry: 'Geometry', calibration: 'Dynamics', run: 'Adapters', diagnostics: 'Diagnostics' }[name] || t(key)) : t(key)}</span></button>`;
+    const lifecycleLabel = busyText('机械臂生命周期', 'ROBOT LIFECYCLE');
+    const navigation = `<section class="sidebar-nav-group" aria-labelledby="lifecycle-caption"><div class="nav-caption" id="lifecycle-caption">${lifecycleLabel}</div><nav aria-label="${lifecycleLabel}">${lifecycle.map(nav).join('')}</nav></section><section class="sidebar-nav-group" aria-labelledby="expert-caption"><div class="nav-caption" id="expert-caption">${t('expertTools')}</div><nav aria-label="${t('expertTools')}">${expert.map(nav).join('')}</nav></section>`;
+    const body = onboarding
+        ? `<div class="onboarding-body"><main class="content onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div>`
+        : `<div class="body"><aside class="sidebar"><button id="profile-picker-open" class="sidebar-project project-picker-trigger" aria-label="${t('manageProfiles')}" aria-haspopup="dialog">${robotArtwork()}<span>${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}</span>${icon('chevron')}</button>${navigation}<div class="sidebar-spacer"></div><button id="back-home" class="nav-item" title="${t('backHome')}" aria-label="${t('backHome')}">${icon('folder')}<span>${t('backHome')}</span></button><button id="settings-nav" class="nav-item" data-page="settings" title="${t('settings')}" aria-label="${t('settings')}">${icon('settings')}<span>${t('settings')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></aside><section class="content-wrap"><div class="studio-location top-status"><span class="studio-route breadcrumb" id="breadcrumb"></span><div class="studio-location-end"><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div></div><main class="content"><div class="page" id="page"></div>${runtimePanel}</main></section></div>`;
+    $('app').innerHTML = `<div class="shell app atil-shell ${state.compact ? 'compact' : ''} ${onboarding ? 'onboarding-shell' : ''}">${titlebar}${body}</div>${overlays}`;
+    document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => b.dataset.page === 'settings' ? openSettings() : navigate(b.dataset.page));
     ['min', 'max', 'close'].forEach((n, i) => { const node = $('win-' + n); if (node) node.onclick = () => api.window(['minimize', 'maximize', 'close'][i]); });
-    if ($('settings-quick')) $('settings-quick').onclick = async () => { await pageExit(); if (state.page === 'settings') { state.page = state.previousPage && state.previousPage !== 'settings' ? state.previousPage : 'start'; renderedPage = ''; shell(); return; } state.previousPage = state.page; state.page = 'settings'; renderedPage = ''; shell(); };
-    if ($('back-home')) $('back-home').onclick = () => { resetToStart(); };
-    if ($('theme-quick')) $('theme-quick').onclick = event => switchTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light', event);
+    $('settings-quick').onclick = openSettings;
+    if ($('back-home')) $('back-home').onclick = () => operation(resetToStart);
+    if ($('profile-picker-open')) $('profile-picker-open').onclick = () => operation(showProfilePicker);
+    $('theme-quick').onclick = event => operation(() => switchTheme(document.documentElement.classList.contains('light') ? 'dark' : 'light', event));
     if ($('copy-log')) $('copy-log').onclick = () => operation(() => copyTerminal(true));
     if ($('paste-log')) $('paste-log').onclick = () => operation(pasteTerminal);
     if ($('clear-log')) $('clear-log').onclick = () => { outputBuffer = ''; term?.clear(); };
@@ -274,7 +303,7 @@ function shell() {
     if ($('model-calibration-task-hold')) $('model-calibration-task-hold').onclick = () => modelCalibrationQuick('hold');
     if ($('model-calibration-task-cancel')) $('model-calibration-task-cancel').onclick = () => modelCalibrationQuick('model_calibration_cancel');
     if ($('model-calibration-task-disable')) $('model-calibration-task-disable').onclick = () => modelCalibrationQuick('deactivate');
-    mountTerminal(); render();
+    mountTerminal(); applyTheme(); render();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('confirm-dialog')) $('confirm-dialog').addEventListener('close', refreshCalibrationAfterDialog);
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
@@ -341,7 +370,8 @@ function statusUI() {
     const sidebar = $('sidebar-runtime'); if (sidebar) sidebar.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>${t(ready ? 'connected' : 'notInstalled')}<small>${esc(state.info?.profile || state.config.profile || '—')}</small><small>${state.backendError ? esc(localizedError(state.backendError)) : 'ROS2 ' + esc(state.status.ros_distro || '—')}</small>`;
     const env = $('env-pill'); if (env) env.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>Core ${t(ready ? 'ready' : 'unavailable')}`;
     const session = $('session-pill'); if (session) session.innerHTML = `<span class="dot ${active() ? 'ready' : ''}"></span>${t(state.session.state || 'idle')}`;
-    const breadcrumb = $('breadcrumb'); if (breadcrumb) breadcrumb.textContent = t('workspace') + ' / ' + (words[state.page] ? t(state.page) : state.page);
+    const breadcrumb = $('breadcrumb'); if (breadcrumb) breadcrumb.innerHTML = `<span>${esc(state.config.profile || t('workspace'))}</span>${icon('arrow')}<strong>${pageLabel()}</strong>`;
+    const connection = $('title-connection'); if (connection) { connection.innerHTML = `<span class="dot ${active() ? 'ready' : ''}"></span>`; connection.title = t(active() ? 'running' : 'idle'); }
     const terminalState = $('terminal-state'); if (terminalState) terminalState.textContent = active() ? `${t(state.session.state)} · PID ${state.session.pid}` : state.session.state === 'exited' ? `${t('exited')} · ${state.session.exit_code}` : t('noSession');
     const stop = $('stop-runtime'); if (stop) stop.disabled = !active() || state.session.state === 'stopping'; const force = $('force-runtime'); if (force) force.classList.toggle('is-hidden', state.session.state !== 'stopping');
 }
@@ -352,19 +382,78 @@ async function resetToStart() {
     await pageExit();
     state.page = 'start'; state.entryIntent = ''; state.descriptionStep = 1; state.createdProfileWizard = false; state.activeLibraryId = ''; state.readiness = null; state.info = null; state.modelData = null; state.profileEditor = null; state.capabilityProfile = null; state.capabilityProfileError = ''; state.admittance = null; state.tuneDraft = null; state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; renderedPage = ''; shell();
 }
+function profileManager(picker = false) {
+    const prefix = picker ? 'picker' : 'library';
+    const filter = picker ? 'all' : state.page === 'library' ? (state.entryIntent === 'use' ? 'ready' : 'configuring') : state.libraryFilter;
+    const title = picker || state.page === 'start' ? t('manageProfiles') : pageLabel();
+    const rows = state.library.map(item => {
+        const ready = item.readiness?.state === 'ready';
+        const current = state.activeLibraryId === item.id;
+        const source = item.source === 'builtin' ? t('builtin') : item.profile_file;
+        return `<li class="robot-manager-row ${current ? 'is-current' : ''}" data-library-row data-ready="${ready}" data-search="${esc((item.profile + ' ' + (source || '')).toLowerCase())}"><button class="robot-row-open" data-library-open="${esc(item.id)}" ${active() && !current ? 'disabled' : ''}><span class="robot-row-avatar">${robotArtwork()}</span><span class="robot-row-description"><strong>${esc(item.profile)}</strong><small title="${esc(source)}">${esc(source)}</small></span><span class="readiness-chip ${libraryStateClass(item.readiness?.state)}">${readinessStateText(item.readiness?.state)}</span><span class="robot-switch-label">${current ? busyText('使用中', 'Current') : ready ? t('useProfile') : t('continueAction')}${icon('arrow')}</span></button><button class="robot-row-more" data-library-menu="${esc(item.id)}" title="${busyText('更多操作', 'More actions')}" aria-label="${esc(item.profile)} · ${busyText('更多操作', 'More actions')}" aria-haspopup="menu" aria-expanded="false">${icon('more')}</button></li>`;
+    }).join('');
+    return `<section class="robot-manager" data-manager-filter="${filter}"><header class="robot-manager-heading"><div><h2>${title}</h2><span class="robot-manager-count">${state.library.length}</span></div>${picker ? `<button class="robot-manager-close" data-picker-close aria-label="${busyText('关闭 Profile 管理', 'Close Profile manager')}">${icon('close')}</button>` : `<button id="library-home" class="button">${icon('folder')}${t('backHome')}</button>`}</header><div class="robot-manager-toolbar"><label class="robot-manager-search">${icon('search')}<input id="${prefix}-search" type="search" aria-label="${busyText('搜索机械臂', 'Search manipulators')}" placeholder="${busyText('搜索机械臂', 'Search manipulators')}" value="${esc(picker ? '' : state.libraryQuery)}"></label>${!picker ? `<button id="library-import-dir" class="button">${icon('folder')}${busyText('打开 Profile', 'Open Profile')}</button><button class="button primary" data-start-intent="description">${icon('plus')}${t('newDescription')}</button>` : ''}</div>${picker || state.page === 'start' ? `<div class="manager-filters" role="group" aria-label="${busyText('Profile 状态', 'Profile status')}">${[['all', busyText('全部', 'All')], ['configuring', t('continueLibrary')], ['ready', t('readyLibrary')]].map(([key, label]) => `<button data-library-filter="${key}" aria-pressed="${filter === key}">${label}</button>`).join('')}</div>` : ''}<ul class="robot-manager-list" aria-label="${t('profileLibrary')}">${rows}<li class="robot-manager-empty" data-library-empty hidden>${robotArtwork()}<strong>${busyText('没有找到机械臂', 'No manipulators found')}</strong><p>${busyText('试试其他名称，或打开已有 Profile', 'Try another name, or open an existing Profile')}</p></li></ul>${!picker ? `<footer class="robot-manager-footer"><button id="library-import-file" class="button">${t('browse')} · YAML</button><span>${t('profileManagedHint')}</span></footer>` : `<p class="robot-switch-note">${active() ? busyText('当前会话运行中，停止后可以切换机械臂', 'Stop the active session before switching manipulators') : t('profileManagedHint')}</p>`}<div id="${prefix}-menu" class="studio-popover robot-row-menu" popover="auto" role="menu"><button data-library-remove="" role="menuitem" class="robot-menu-delete">${icon('trash')}${t('removeFromLibrary')}</button></div></section>`;
+}
 function startPage() {
     const option = (intent, title, desc, ico) => `<button class="start-choice" data-start-intent="${intent}"><span class="start-choice-icon">${icon(ico)}</span><span><b>${t(title)}</b><small>${t(desc)}</small></span><span class="choice-arrow">›</span></button>`;
     return `<section class="start-hero"><div class="eyebrow">SERIALARM · WORKSPACE</div><h1>${t('startQuestion')}</h1><p>${t('startDesc')}</p></section><div class="start-choice-grid">${option('description', 'newDescription', 'newDescriptionDesc', 'model')}${option('continue', 'continueProfile', 'continueProfileDesc', 'robot')}${option('use', 'useProfile', 'useProfileDesc', 'run')}</div>`;
 }
 function libraryStateClass(value) { return value === 'ready' ? 'ready' : value === 'needs_revalidation' ? 'warning' : value === 'configuring' ? 'muted' : 'pending'; }
-function libraryPage() {
-    const intent = state.entryIntent || 'continue';
-    // The two entrances are filtered views of one Library, not duplicate stores
-    const items = state.library.filter(item => intent === 'use' ? item.readiness?.state === 'ready' : item.readiness?.state !== 'ready');
-    const cards = items.map(item => `<article class="library-card"><div class="library-card-main"><div><span class="readiness-chip ${libraryStateClass(item.readiness?.state)}">${readinessStateText(item.readiness?.state)}</span><h3>${esc(item.profile)}</h3><p>${item.source === 'builtin' ? (state.language === 'en' ? 'Built-in Profile' : '内置 Profile') : esc(item.profile_file)}</p><small>${state.language === 'en' ? 'Next: ' : '下一步'}${readinessStageText(item.readiness?.next_stage)}</small></div><div class="library-actions"><button class="button primary" data-library-open="${esc(item.id)}">${intent === 'use' ? t('useProfile') : t('continueAction')}</button><button class="button" data-library-remove="${esc(item.id)}">${t('removeFromLibrary')}</button></div></div></article>`).join('');
-    const empty = `<div class="empty-state">${intent === 'use' ? (state.language === 'en' ? 'No ready Profiles in the Library' : '暂无可使用的 Profile') : (state.language === 'en' ? 'No Profiles waiting for configuration' : '暂无需要继续配置的 Profile')}</div>`;
-    const importTools = intent === 'use' ? '' : `<div class="library-toolbar"><button id="library-import-dir" class="button primary">${t('importExternalProfile')}</button><button id="library-import-file" class="button">${state.language === 'en' ? 'Choose robot_profiles.yaml' : '选择 robot_profiles.yaml'}</button><span class="hint">${esc(state.libraryPath || '')}</span></div>`;
-    return pageHead(intent === 'use' ? 'readyLibrary' : 'continueLibrary', intent === 'use' ? 'useProfileDesc' : 'continueProfileDesc', `<button id="library-home" class="button">${t('backHome')}</button>`) + importTools + `<div class="library-list">${cards || empty}</div>`;
+function libraryPage() { return profileManager(); }
+function bindProfileManager(root) {
+    const manager = root.querySelector('.robot-manager');
+    if (!manager) return;
+    const search = manager.querySelector('input[type="search"]');
+    const picker = root.id === 'profile-picker';
+    const update = () => {
+        const query = search.value.trim().toLowerCase();
+        if (!picker) state.libraryQuery = search.value;
+        let count = 0;
+        manager.querySelectorAll('[data-library-row]').forEach(row => {
+            const match = row.dataset.search.includes(query) && (manager.dataset.managerFilter === 'all' || (row.dataset.ready === 'true') === (manager.dataset.managerFilter === 'ready'));
+            row.hidden = !match; if (match) count++;
+        });
+        manager.querySelector('[data-library-empty]').hidden = count > 0;
+    };
+    search.oninput = update;
+    manager.querySelectorAll('[data-library-filter]').forEach(button => button.onclick = () => {
+        manager.dataset.managerFilter = button.dataset.libraryFilter;
+        if (!picker) state.libraryFilter = button.dataset.libraryFilter;
+        manager.querySelectorAll('[data-library-filter]').forEach(item => item.setAttribute('aria-pressed', String(item === button)));
+        update();
+    });
+    manager.querySelector('[data-picker-close]')?.addEventListener('click', () => root.close());
+    manager.querySelectorAll('[data-library-open]').forEach(button => button.onclick = () => operation(async () => {
+        if (picker && button.dataset.libraryOpen === state.activeLibraryId) { root.close(); return; }
+        if (active()) { toast(busyText('请先停止当前运行会话', 'Stop the active session first'), true); return; }
+        if (state.profileDirty && !await safetyConfirmation(busyText('放弃未保存的参数', 'Discard unsaved changes'), busyText('切换机械臂将放弃未保存的参数修改', 'Switching manipulators discards unsaved parameter changes'), '', [], 'general')) return;
+        if (picker) root.close();
+        await blockingOperation(busyText('正在打开 Profile...', 'Opening Profile...'), () => openLibraryEntry(button.dataset.libraryOpen));
+    }));
+    const menu = manager.querySelector('[popover]');
+    manager.querySelectorAll('[data-library-menu]').forEach(button => button.onclick = () => {
+        const rect = button.getBoundingClientRect();
+        menu.querySelector('[data-library-remove]').dataset.libraryRemove = button.dataset.libraryMenu;
+        menu.querySelector('[data-library-remove]').disabled = active();
+        menu.style.left = `${Math.max(8, Math.min(innerWidth - 200, rect.right - 184))}px`;
+        menu.style.top = `${Math.min(innerHeight - 64, rect.bottom + 5)}px`;
+        menu.showPopover(); button.setAttribute('aria-expanded', 'true');
+        const closed = event => { if (event.newState === 'closed') { button.setAttribute('aria-expanded', 'false'); menu.removeEventListener('toggle', closed); } };
+        menu.addEventListener('toggle', closed);
+    });
+    menu.querySelector('[data-library-remove]').onclick = () => {
+        const id = menu.querySelector('[data-library-remove]').dataset.libraryRemove;
+        menu.hidePopover(); if (picker) root.close();
+        confirmLibraryRemoval(id);
+    };
+    update();
+}
+function confirmLibraryRemoval(id) {
+    const entry = state.library.find(item => item.id === id);
+    const dialog = $('confirm-dialog');
+    dialog.innerHTML = `<h3>${t('removeFromLibrary')}</h3><p>${t('profileManagedHint')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(entry?.profile || id)}</dd></dl><div class="actions"><button id="remove-cancel" class="button">${t('cancel')}</button><button id="remove-confirm" class="button danger">${t('removeFromLibrary')}</button></div>`;
+    dialog.showModal(); $('remove-cancel').onclick = () => dialog.close();
+    $('remove-confirm').onclick = () => { dialog.close(); blockingOperation(busyText('正在从 Profile Library 移除...', 'Removing from Profile Library...'), async () => { await api.request('profile_library_remove', { id }); await refreshLibrary(); render(); }); };
 }
 function readinessStageText(value) { const keys = { description: 'descriptionStage', profile_setup: 'profileSetupStage', model_check: 'modelCheckStage', bringup: 'bringupStage', mapping_calibration: 'mappingStage', geometry_calibration: 'geometryStage', gravity_verification: 'gravityStage', dynamics_calibration: 'dynamicsStage', validation: 'validationStage', ready: 'readyStage' }; return t(keys[value] || 'unknown'); }
 function computeChain(base, tool, joints) { const byChild = new Map(joints.map(j => [j.child, j])); const reverse = []; let node = tool; const seen = new Set(); while (node && node !== base && !seen.has(node)) { seen.add(node); const j = byChild.get(node); if (!j) return []; reverse.push(j); node = j.parent; } if (node !== base) return []; return reverse.reverse(); }
@@ -2160,7 +2249,8 @@ function diagnosticsPage() {
 
 }
 function settingsPage() {
-    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${state.language === 'en' ? 'Back' : '返回'}</button>`) + `<div class="grid">${card('appearance', 'appearanceSub', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div>`)}${card('language', 'languageSub', 'settings', `<div class="segmented"><button data-language="zh-CN" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}</div><div class="callout">${t('prefsNote')}</div>`;
+    const layout = `<section class="card"><div class="card-head">${icon('workbench')}<h3>${busyText('布局', 'Layout')}</h3></div><div class="card-body"><label class="toggle"><input id="compact-layout" type="checkbox" ${state.compact ? 'checked' : ''}>${busyText('紧凑布局', 'Compact layout')}</label></div></section>`;
+    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid">${card('appearance', 'appearanceSub', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div>`)}${card('language', 'languageSub', 'settings', `<div class="segmented"><button data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}${layout}</div><div class="callout">${t('prefsNote')}</div>`;
 }
 
 async function mountDescriptionView() {
@@ -2325,7 +2415,7 @@ async function pageExit() {
     if (!page || reducedMotion()) return;
     page.classList.remove('page-transition-in');
     page.classList.add('page-transition-out');
-    await new Promise(resolve => setTimeout(resolve, 80));
+    await new Promise(resolve => setTimeout(resolve, 70));
 }
 function pageEnter(pageChanged = true) {
     const page = $('page');
@@ -2339,12 +2429,32 @@ function render() {
     const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, geometry: geometryPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
     const factory = pages[state.page] || startPage;
     const pageChanged = renderedPage !== state.page;
-    $('page').innerHTML = factory();
+    const page = $('page');
+    page.innerHTML = factory();
+    const studio = !!state.config.profile && state.page !== 'settings';
+    page.classList.toggle('studio-page', studio);
+    const head = page.querySelector(':scope > .page-head');
+    if (studio && head) {
+        const body = document.createElement('div'); body.className = 'studio-page-body';
+        for (const node of [...page.childNodes]) if (node !== head) body.append(node);
+        page.replaceChildren(head, body);
+    }
+    const main = page.closest('.content');
+    main.classList.toggle('studio-content', studio);
+    document.querySelector('.shell').dataset.page = state.page;
     pageEnter(pageChanged);
     renderedPage = state.page;
     const runtime = $('runtime-panel'); if (runtime) runtime.classList.toggle('is-hidden', !['run', 'diagnostics'].includes(state.page) && !active());
-    document.querySelectorAll('[data-page]').forEach(b => b.classList.toggle('active', b.dataset.page === state.page));
+    document.querySelectorAll('[data-page]').forEach(b => {
+        const selected = b.dataset.page === state.page;
+        b.classList.toggle('active', selected);
+        if (selected) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+    });
+    $('back-home')?.classList.toggle('active', ['start', 'library', 'description'].includes(state.page));
+    if (['start', 'library', 'description'].includes(state.page)) $('back-home')?.setAttribute('aria-current', 'page');
+    else $('back-home')?.removeAttribute('aria-current');
     statusUI(); bindPage();
+    window.serialArmStudio?.enhanceSelects();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
     if (state.page === 'run') setTimeout(() => { try { fit?.fit(); } catch { } }, 50);
@@ -2409,12 +2519,11 @@ async function navigate(page) {
     }
 }
 function bindPage() {
-    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(async () => { const intent = button.dataset.startIntent; if (intent === 'description') { await pageExit(); state.entryIntent = 'description'; state.descriptionStep = 1; state.createdProfileWizard = false; state.descriptionAnalysis = null; state.descriptionDraft = { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [] }; state.page = 'description'; render(); return; } state.entryIntent = intent; await refreshLibrary(); await pageExit(); state.page = 'library'; render(); }));
-    if ($('library-home')) $('library-home').onclick = resetToStart;
+    document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(() => startIntent(button.dataset.startIntent)));
+    bindProfileManager($('page'));
+    if ($('library-home')) $('library-home').onclick = () => operation(resetToStart);
     if ($('library-import-dir')) $('library-import-dir').onclick = () => operation(async () => { const source = await api.selectProfilePackage(); if (source) await importProfileSource(source); });
     if ($('library-import-file')) $('library-import-file').onclick = () => operation(async () => { const source = await api.selectProfile(); if (source) await importProfileSource(source); });
-    document.querySelectorAll('[data-library-open]').forEach(button => button.onclick = () => blockingOperation(busyText('正在打开 Profile...', 'Opening Profile...'), () => openLibraryEntry(button.dataset.libraryOpen)));
-    document.querySelectorAll('[data-library-remove]').forEach(button => button.onclick = () => { const id = button.dataset.libraryRemove; const entry = state.library.find(x => x.id === id); const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('removeFromLibrary')}</h3><p>${state.language === 'en' ? 'Only the Library reference will be removed. Files on disk will not be deleted' : '只会移除 Profile Library 中的引用，不会删除磁盘上的 Profile 文件'}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(entry?.profile || id)}</dd></dl><div class="actions"><button id="remove-cancel" class="button">${t('cancel')}</button><button id="remove-confirm" class="button danger">${t('removeFromLibrary')}</button></div>`; dialog.showModal(); $('remove-cancel').onclick = () => dialog.close(); $('remove-confirm').onclick = () => { dialog.close(); blockingOperation(busyText('正在从 Profile Library 移除...', 'Removing from Profile Library...'), async () => { await api.request('profile_library_remove', { id }); await refreshLibrary(); render(); }); }; });
     if ($('description-home')) $('description-home').onclick = resetToStart;
     if ($('description-browse')) $('description-browse').onclick = () => operation(async () => { const file = await api.selectDescription(); if (file) { state.descriptionDraft.source = file; const node = $('description-source'); if (node) node.value = file; } });
     if ($('description-browse-dir')) $('description-browse-dir').onclick = () => operation(async () => { const dir = await api.selectProfilePackage(); if (dir) { state.descriptionDraft.source = dir; const node = $('description-source'); if (node) node.value = dir; } });
@@ -2824,6 +2933,7 @@ function bindPage() {
     if (['robot', 'diagnostics'].includes(state.page) && active()) document.querySelectorAll('#page input,#page select,#source-builtin,#source-external,#browse-profile,#refresh-profiles,#add-root').forEach(e => e.disabled = true);
     if ($('launch-session')) { $('launch-session').disabled = state.busy || active() || !state.info?.available?.[state.mode]; $('launch-session').onclick = () => blockingOperation(busyText('正在检查启动条件...', 'Checking launch conditions...'), async () => { await inspect(); if (!state.info?.available?.[state.mode]) throw new Error(t('modeMissing')); hardwareConfirm(); }); }
     if ($('check-now')) $('check-now').onclick = () => blockingOperation(busyText('正在检查环境与资源...', 'Checking environment and resources...'), async () => { await inspect(); render(); });
+    if ($('compact-layout')) $('compact-layout').onchange = () => operation(async () => { state.compact = $('compact-layout').checked; document.querySelector('.app').classList.toggle('compact', state.compact); await save(); });
     document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
 }
@@ -3076,7 +3186,7 @@ function onEvent(event) {
 async function boot() {
     if (!api) { $('app').innerHTML = '<div class="empty-state">请通过 ./launch.sh 启动桌面应用 / Start the desktop application using ./launch.sh</div>'; return; }
     try {
-        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
+        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.compact = prefs.compact === true; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
         state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; state.source = 'builtin'; state.page = 'start';
         applyTheme(); document.documentElement.lang = state.language; shell();
         $('priority-error-ack').onclick = acknowledgePriorityError;
@@ -3086,5 +3196,5 @@ async function boot() {
     } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(error, true); } }
 }
 window.addEventListener('resize', () => { if (state.page === 'run') { try { fit?.fit(); } catch { } } if (['model', 'workbench', 'calibration'].includes(state.page)) modelView?.resize(); });
-matchMedia('(prefers-color-scheme: light)').addEventListener('change', applyTheme);
+matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme());
 boot();

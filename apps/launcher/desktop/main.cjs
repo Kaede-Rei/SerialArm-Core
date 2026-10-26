@@ -8,7 +8,7 @@ const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : p
 const entry = path.resolve(__dirname, '../renderer/index.html');
 let win, bridge, closing = false;
 let allowedModelResources = new Set();
-app.setName('SerialArm Launcher');
+app.setName('SerialArm Studio');
 app.setPath('userData', path.join(app.getPath('appData'), 'serial-arm'));
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
@@ -25,6 +25,7 @@ function savePrefs(values) {
   }
   if (['system', 'dark', 'light'].includes(values.theme)) next.theme = values.theme;
   if (['zh-CN', 'en'].includes(values.language)) next.language = values.language;
+  if (typeof values.compact === 'boolean') next.compact = values.compact;
   if (values.bounds && Number.isInteger(values.bounds.width) && Number.isInteger(values.bounds.height)) {
     next.bounds = {width: Math.max(1000, Math.min(2400, values.bounds.width)), height: Math.max(720, Math.min(1800, values.bounds.height))};
   }

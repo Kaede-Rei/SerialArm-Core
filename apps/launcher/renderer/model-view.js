@@ -2,6 +2,8 @@ import * as THREE from './vendor/three/build/three.module.js';
 import {OrbitControls} from './vendor/three/jsm/controls/OrbitControls.js';
 import {STLLoader} from './vendor/three/jsm/loaders/STLLoader.js';
 import {GLTFLoader} from './vendor/three/jsm/loaders/GLTFLoader.js';
+import {SmoothModelZoom} from './model-camera-zoom.mjs';
+import {ModelCameraTransition} from './model-camera-transition.mjs';
 import {gravityComMarkers} from './gravity-com-geometry.mjs';
 
 const decode = value => {
@@ -107,6 +109,8 @@ export class SerialArmModelView {
     this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
     this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
     this.controls.target.set(0,0,0.2);
+    this.smoothZoom = new SmoothModelZoom(this.controls);
+    this.cameraTransition = new ModelCameraTransition(this.controls);
     this.installCameraTools();
     this.root = new THREE.Group();
     this.scene.add(this.root);
@@ -155,7 +159,8 @@ export class SerialArmModelView {
     for (const joint of payload.model?.joints || []) this.addJointAxis(joint, frames);
     this.addEffectiveInertias(payload, frames);
     this.updateCenterOfMass(payload.native);
-    this.setLayers(this.layers); this.refreshVisibility(); this.resetView();
+    this.setLayers(this.layers); this.refreshVisibility();
+    this.resetView({immediate: !this.hasFramedModel}); this.hasFramedModel = true;
   }
 
   async addGeometry(group, item, collision) {
@@ -470,7 +475,7 @@ export class SerialArmModelView {
     this.container.appendChild(hint);
   }
 
-  setCameraView(view, distance = null) {
+  setCameraView(view, distance = null, {target = this.controls.target, immediate = false} = {}) {
     const directions = {
       isometric: [1.25, -1.35, 0.95],
       front: [0, -1, 0], back: [0, 1, 0],
@@ -480,14 +485,13 @@ export class SerialArmModelView {
     };
     const direction = directions[view];
     if (!direction) return;
-    const target = this.controls.target;
+    this.smoothZoom.cancel();
     const current = this.camera.position.distanceTo(target);
     const length = Number.isFinite(distance) && distance > 0 ? distance : Math.max(current, 0.05);
-    this.camera.position.copy(target).add(new THREE.Vector3(...direction).normalize().multiplyScalar(length));
-    this.controls.update();
+    this.cameraTransition.move(new THREE.Vector3(...direction), length, target, immediate);
   }
 
-  resetView() {
+  resetView({immediate = false} = {}) {
     this.root.updateMatrixWorld(true);
     const box = new THREE.Box3();
     this.root.traverse(node => {
@@ -503,20 +507,29 @@ export class SerialArmModelView {
     const vfov = THREE.MathUtils.degToRad(this.camera.fov);
     const hfov = 2 * Math.atan(Math.tan(vfov / 2) * Math.max(this.camera.aspect, 0.1));
     const distance = radius / Math.sin(Math.min(vfov, hfov) / 2) * 1.18;
-    this.controls.target.copy(center);
     this.controls.minDistance = Math.max(radius * 0.04, 0.005);
     this.controls.maxDistance = Math.max(distance * 35, 15);
     this.camera.near = Math.max(radius / 2000, 0.0005);
     this.camera.far = Math.max(this.controls.maxDistance * 1.5, 40);
     this.camera.updateProjectionMatrix();
-    this.setCameraView('isometric', distance);
+    this.setCameraView('isometric', distance, {target: center, immediate});
   }
 
   resize() {
+    this.smoothZoom.cancel();
     const width=Math.max(this.container.clientWidth,1), height=Math.max(this.container.clientHeight,1); this.renderer.setSize(width,height,false); this.camera.aspect=width/height; this.camera.updateProjectionMatrix();
   }
 
-  animate() { if (!this.running) return; requestAnimationFrame(()=>this.animate()); this.controls.update(); this.renderer.render(this.scene,this.camera); }
+  animate(time = performance.now()) {
+    if (!this.running) return;
+    const seconds = this.lastFrameTime === undefined ? 0 : Math.max(0, (time - this.lastFrameTime) / 1000);
+    this.lastFrameTime = time;
+    this.animationFrame = requestAnimationFrame(next => this.animate(next));
+    this.controls.update(seconds);
+    this.cameraTransition.update(seconds);
+    this.smoothZoom.update(seconds);
+    this.renderer.render(this.scene, this.camera);
+  }
 
   disposeRoot() {
     this.clearGhostPose();
@@ -524,5 +537,5 @@ export class SerialArmModelView {
     this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
 
-  dispose() { this.running=false; this.resizeObserver.disconnect(); this.cameraTools?.remove(); this.cameraHint?.remove(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }
+  dispose() { this.running=false; cancelAnimationFrame(this.animationFrame); this.smoothZoom.dispose(); this.cameraTransition.dispose(); this.resizeObserver.disconnect(); this.cameraTools?.remove(); this.cameraHint?.remove(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }
 }
