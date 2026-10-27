@@ -1292,8 +1292,10 @@ private:
         machine_require_no_calibration("activate");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
+        if(robot_.get_state() != RobotState::ACTIVE) actuator_info_after_connect_ = false;
         const auto result = robot_.activate();
         if(!result) throw machine_robot_error("activate", result.error());
+        refresh_actuator_info_locked();
         last_output_.reset();
         feedback_time_ns_ = 0;
         background_fault_reported_ = false;
@@ -1753,6 +1755,11 @@ private:
         metadata.urdf_fingerprint = model_calibration_urdf_fingerprint_.empty() ? model_calibration_file_fingerprint(cfg_.dynamics.urdf_path) : model_calibration_urdf_fingerprint_;
         metadata.resource_paths = machine_resource_paths();
         metadata.joint_names = cfg_.joint_names;
+        if(actuator_info_after_connect_) {
+            metadata.actuator_capabilities = actuator_info_;
+            metadata.actuator_capabilities_source = cfg_.runtime.write_enabled ?
+                "hardware_backend_after_successful_activate" : "mock_backend_after_successful_activate";
+        }
         metadata.base_frame = cfg_.dynamics.base_frame;
         metadata.tool_frame = cfg_.dynamics.tool_frame;
         metadata.gravity = cfg_.dynamics.gravity;
@@ -4606,6 +4613,10 @@ private:
                 << ",\"max_kd\":" << item.max_kd << '}';
         }
         out << ']';
+        out << ",\"actuator_info_source\":";
+        machine_json_string(out, actuator_info_after_connect_ ?
+            (cfg_.runtime.write_enabled ? "hardware_backend_after_successful_activate" : "mock_backend_after_successful_activate") :
+            "unconfirmed_for_current_connection");
         if(const auto fault = robot_.get_last_fault()) {
             out << ",\"last_fault\":";
             machine_json_string(out, to_string(fault->code));
@@ -5095,15 +5106,26 @@ private:
         }
     }
 
+    void refresh_actuator_info_locked() {
+        const auto snapshot = robot_.hardware_capabilities();
+        const auto ordered = capabilities_for_joint_order(snapshot, cfg_.joint_names);
+        if(ordered) {
+            actuator_info_ = *ordered;
+            actuator_info_after_connect_ = true;
+        }
+    }
+
     void activate() {
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
+        if(robot_.get_state() != RobotState::ACTIVE) actuator_info_after_connect_ = false;
         const auto result = robot_.activate();
         if(!result) {
             std::cout << "activate() 失败：\n";
             print_fault(result.error());
             return;
         }
+        refresh_actuator_info_locked();
         last_output_.reset();
         background_fault_reported_ = false;
         std::cout << "activate() 成功，后台 cycle() 自动运行\n";
@@ -5655,6 +5677,9 @@ private:
 
     void show_actuator_info() {
         std::lock_guard<std::mutex> lock(mutex_);
+        std::cout << (actuator_info_after_connect_ ?
+            "Backend limits after successful activation (actuator/protocol units; not joint safety limits)\n" :
+            "Configured defaults or last known limits; not confirmed for the current connection\n");
         std::cout << std::left
             << std::setw(12) << "actuator"
             << std::setw(12) << "min_pos"
@@ -7251,6 +7276,7 @@ private:
     HardwareLoader hardware_loader_;
     Robot robot_;
     HardwareCapabilities actuator_info_;
+    bool actuator_info_after_connect_{ false };
 
     mutable std::mutex mutex_;
     std::condition_variable cycle_cv_;

@@ -247,10 +247,36 @@ def _insert_or_replace_model_scalar(text, key, value):
 
 
 def _candidate_threshold(candidate, joints):
-    p99 = candidate.get('validation_candidate', {}).get('p99', [])
+    # The observer subtracts torque_bias once. Its dead zone must describe
+    # the residual *after* that subtraction, independently of the raw-URDF
+    # metric that decides whether a model update has improved prediction.
+    evaluation = candidate.get('gravity_validation')
+    if evaluation is not None:
+        if (not isinstance(evaluation, dict) or
+                evaluation.get('schema') != 'serial_arm_gravity_validation'):
+            raise ValueError('candidate gravity validation schema is invalid')
+        corrected = evaluation.get('bias_corrected')
+        if not isinstance(corrected, dict):
+            raise ValueError('candidate lacks bias-corrected observer validation metrics')
+        validation = corrected.get('validation')
+        metrics = validation.get('candidate') if isinstance(validation, dict) else None
+        if not isinstance(metrics, dict):
+            raise ValueError('candidate lacks bias-corrected observer validation metrics')
+        p99 = metrics.get('p99', [])
+    else:
+        # Existing online and archived reports already use this field for
+        # bias-corrected errors; do not reinterpret historical records.
+        p99 = candidate.get('validation_candidate', {}).get('p99', [])
     noise = candidate.get('noise_rms', [])
-    if len(p99) != len(joints) or len(noise) != len(joints):
+    if (not isinstance(p99, (list, tuple)) or not isinstance(noise, (list, tuple))
+            or len(p99) != len(joints) or len(noise) != len(joints)):
         raise ValueError('candidate validation metrics do not match joint count')
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool)
+           or not math.isfinite(value) or value < 0 for value in (*p99, *noise)):
+        raise ValueError('candidate observer threshold metrics must be finite and nonnegative')
+    # Keep the pre-existing scale/floor policy. For offline records noise_rms
+    # is the bias-corrected baseline training residual scale with a floor,
+    # not a new estimate of sensor noise or the candidate's raw mean error.
     return [max(0.02, 1.2 * float(p99[i]), 3.0 * float(noise[i])) for i in range(len(joints))]
 
 
@@ -288,11 +314,17 @@ def _recorded_joint_bias(directory, metadata, joints):
 def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
+    candidate_report_sha256 = None
     if prefer_recomputed:
         recomputed = directory / 'recomputed-candidate.json'
         if not recomputed.is_file():
             raise ValueError('此任务尚未生成离线重力候选，请先执行离线重算')
-        gravity = json.loads(recomputed.read_text(encoding='utf-8'))
+        # Bind the payload to the exact bytes parsed, not a later read of the
+        # mutable latest-candidate pointer. Exporters compare this receipt to
+        # the report actually exported before assembling deployment artifacts.
+        report_bytes = recomputed.read_bytes()
+        gravity = json.loads(report_bytes)
+        candidate_report_sha256 = hashlib.sha256(report_bytes).hexdigest()
         if (gravity.get('task_id') != metadata.get('task_id')
                 or gravity.get('core_fingerprint') != metadata.get('core_fingerprint')
                 or gravity.get('urdf_fingerprint') != metadata.get('urdf_fingerprint')):
@@ -395,7 +427,16 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
         'friction_matches_gravity': friction_matches,
         'friction_status': 'validated' if friction_pass else 'requires_refit_or_review',
         'candidate_source': source_id,
+        'candidate_run_id': gravity.get('candidate_run_id'),
+        'candidate_report_sha256': candidate_report_sha256,
+        'fit_objective': gravity.get('fit_objective'),
+        'deployment_objective': gravity.get('deployment_objective'),
         'torque_bias_source': bias_source,
+        'torque_bias_role': 'observer_residual_offset_not_gravity_feedforward',
+        'torque_threshold_source': (
+            'bias_corrected_validation_p99_and_existing_training_residual_scale'
+            if gravity.get('gravity_validation') is not None
+            else 'legacy_validation_p99_and_recorded_noise_rms'),
         'identification_mode': gravity.get('identification_mode', 'global'),
         'locked_links': lock_names,
         'fitted_links': fitted_names,

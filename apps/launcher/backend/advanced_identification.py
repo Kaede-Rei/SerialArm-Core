@@ -23,6 +23,34 @@ def _native_file_fingerprint(contents):
     return f'{value:016x}'
 
 
+def _source_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _identification_source_hashes(folder, snapshot):
+    """Bind static scores to accepted samples as well as the original model."""
+    folder = Path(folder)
+    accepted = folder / 'accepted_static.csv'
+    return {
+        'frames_sha256': _source_sha256(folder / 'frames.csv'),
+        'accepted_static_sha256': _source_sha256(accepted) if accepted.is_file() else None,
+        'source_sha256': _source_sha256(snapshot),
+    }
+
+
+def _verify_identification_sources(folder, snapshot, expected):
+    try:
+        actual = _identification_source_hashes(folder, snapshot)
+    except OSError as exc:
+        raise ValueError('辨识期间原始数据或模型不可读取，拒绝保存不一致的候选') from exc
+    if actual != expected:
+        raise ValueError('辨识期间原始数据或模型发生变化，拒绝保存不一致的候选')
+
+
 MODES = ('mass', 'com', 'mass_com', 'inertia', 'full')
 PARAMETERS = {
     'mass': (0,), 'com': (1, 2, 3), 'mass_com': (0, 1, 2, 3),
@@ -133,37 +161,45 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
                     raise ValueError('质量先验无效，无法固定该 Link 的质心')
                 com = all_prior[10*link_index+1:10*link_index+4]/mass
                 design[:,column] += full_y[np.ix_(v_idx, list(range(pindex+1,pindex+4)))] @ com
-        values.append((holdout, design, torque - prediction, group))
+        values.append((holdout, design, torque - prediction, group, prediction, torque))
     train = [v for v in values if not v[0]]
     hold = [v for v in values if v[0]]
     from gravity_mass_com import solve_static_updates
-    solved = solve_static_updates([v[1] for v in train], [v[2] for v in train])
+    # Keep this supplementary entrypoint's existing bias-separated objective
+    # explicit; raw URDF deployment evidence is evaluated independently below.
+    objective = 'bias_separated'
+    solved = solve_static_updates([v[1] for v in train], [v[2] for v in train],
+                                  objective=objective)
     delta, bias = solved['delta'], solved['torque_bias']
     rank, regularization = solved['rank'], solved['regularization']
-    def error(blocks, update, offset):
-        residual = np.concatenate([v[2]-v[1]@update+offset for v in blocks])
-        return float(np.sqrt(np.mean(residual**2)))
     warnings=[]
     full_delta = np.zeros_like(all_prior)
     full_delta[selected] = delta
     if mode == 'mass':
         for column,pindex in enumerate(selected):
             full_delta[pindex+1:pindex+4] += (all_prior[pindex+1:pindex+4]/all_prior[pindex])*delta[column]
-    original_bias = -np.mean([v[2] for v in train], axis=0)
-    baseline = error(hold, np.zeros_like(delta), original_bias)
-    candidate = error(hold, delta, bias)
-    # Favor original in absence of independent improvement
-    passed = candidate < baseline - max(0.001, baseline*0.01)
+    from gravity_validation import evaluate_gravity_candidate
+    validation = evaluate_gravity_candidate(
+        [v[4] for v in train], [v[4]+v[1]@delta for v in train], [v[5] for v in train],
+        [v[4] for v in hold], [v[4]+v[1]@delta for v in hold], [v[5] for v in hold],
+        candidate_changed=bool(np.any(full_delta != 0)),
+        prior_preferred=bool(solved['prior_preferred']), rank=rank)
+    baseline = validation['raw_urdf']['validation']['baseline']['aggregate_rms_nm']
+    candidate = validation['raw_urdf']['validation']['candidate']['aggregate_rms_nm']
+    passed = validation['static_pass']
     if rank < len(selected):
         warnings.append(f'静态回归仅辨识出 {rank}/{len(selected)} 个独立方向，其他参数依赖 CAD 先验')
     if not passed:
-        warnings.append('留出姿态未证明质量或质心候选优于原始模型')
+        warnings.append('URDF 直接预测未通过离线改进判据: ' + validation['status'])
+    warnings.append('评价仅为有限的同会话姿态留出证据，未验证跨会话泛化或真机补偿效果')
     return {'mode': mode, 'prior': all_prior, 'indices': selected, 'delta': delta, 'full_delta': full_delta,
             'rank': rank, 'columns': len(selected), 'regularization': regularization,
             'baseline': baseline, 'candidate_rms': candidate, 'passed': passed,
             'warnings': warnings, 'train_groups': len(train), 'holdout_groups': len(hold),
             'locked_links': sorted(locked_links), 'bias': bias.tolist(),
-            'solver': 'static_centered_svd_ridge_pose_cv',
+            'solver': solved.get('solver', 'static_centered_svd_ridge_pose_cv'),
+            'fit_objective': objective, 'deployment_objective': 'raw_urdf',
+            'gravity_validation': validation,
             'torque_bias_convention': 'model_minus_measured',
             'prior_preferred': solved['prior_preferred'],
             'singular_values': solved['singular_values']}
@@ -257,6 +293,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     from model_calibration_source import resolve_relative_mesh
     import shutil
     folder, metadata, result, snapshot, _source = _prepare_inputs(directory)
+    source_hashes = _identification_source_hashes(folder, snapshot)
     root=ET.parse(snapshot).getroot()
     from full_inertial import _apply_recorded_gravity
     model=_apply_recorded_gravity(pin.buildModelFromUrdf(str(snapshot)),metadata)
@@ -274,12 +311,16 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     if mode in ('mass','com','mass_com'):
         fit=_fit_static(folder,model,pin,mapped,mode,locked)
         warnings.extend(fit['warnings'])
-        rank=fit['rank']; columns=fit['columns']; original=fit['baseline']; candidate=fit['candidate_rms'];passed=fit['passed'] and rank==columns
+        rank=fit['rank']; columns=fit['columns']; original=fit['baseline']; candidate=fit['candidate_rms'];passed=fit['passed']
         _write_static_candidate(root,mapped,fit)
         extra={'training_groups':fit['train_groups'],'holdout_groups':fit['holdout_groups'],
                'cross_validation_lambda':fit['regularization'],
                'solver':fit['solver'], 'torque_bias_convention':fit['torque_bias_convention'],
-               'prior_preferred':fit['prior_preferred'], 'singular_values':fit['singular_values']}
+               'prior_preferred':fit['prior_preferred'], 'singular_values':fit['singular_values'],
+               'fit_objective':fit['fit_objective'], 'deployment_objective':fit['deployment_objective'],
+               'gravity_validation':fit['gravity_validation'],
+               'validation_conclusion':fit['gravity_validation']['status'],
+               'holdout_metric':'raw_urdf_aggregate_rms_nm'}
     else:
         rows=_extract_rows(folder/'frames.csv', joints)
         # Explicitly solve only the chosen subspace; locked parameters stay as priors
@@ -316,6 +357,9 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
             for key,val in [('ixx',tensor[0,0]),('ixy',tensor[0,1]),('ixz',tensor[0,2]),('iyy',tensor[1,1]),('iyz',tensor[1,2]),('izz',tensor[2,2])]:
                 T.set(key,f'{val:.12g}')
         extra={'solver':'dynamic_reduced_svd_irls','acceleration_input':'recorded_acceleration_no_reconstruction','dynamic_frames':len(rows),'observable_directions':rank,'unobservable_directions':columns-rank,'friction_validation':'independent_training_fit'}
+    # Check the exact files used for fitting before creating export artifacts.
+    # Presence/absence changes of accepted_static.csv are included in the check.
+    _verify_identification_sources(folder, snapshot, source_hashes)
     tree=ET.ElementTree(root)
     # No source replacement, always write to an isolated review directory
     from uuid import uuid4
@@ -342,7 +386,9 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     report={
         'schema':'serial_arm_advanced_identification', 'task_id':metadata.get('task_id'),
         'identification_mode':mode,'source_urdf_fingerprint':metadata.get('urdf_fingerprint'),
-        'runtime_provenance':metadata.get('runtime_provenance'), 'frames_sha256':hashlib.sha256((folder/'frames.csv').read_bytes()).hexdigest(), 'solver_source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('advanced_identification.py','full_inertial.py','gravity_mass_com.py')}, 'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
+        'runtime_provenance':metadata.get('runtime_provenance'), **source_hashes,
+        'source_files_verified_unchanged':True,
+        'solver_source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('advanced_identification.py','full_inertial.py','gravity_mass_com.py','gravity_validation.py')}, 'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
         'status':'review_passed_offline' if passed else 'requires_review',
         'automatic_application_allowed':False, 'validated_on_hardware':False,
         'friction_validation_reusable':False, 'friction_status':'requires_revalidation_with_selected_model',
@@ -354,5 +400,8 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
         'warnings':warnings,'unmodified_links':unchanged,**extra,
         'limitations':['只读候选，不修改原始模型或控制器','没有独立关节力矩真值和加速度测量，真机使用必须另行验收'],
     }
-    (dest/'identification-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+    # Asset copying and report preparation can take time; do not publish a
+    # validated report if input files changed after the numerical solve.
+    _verify_identification_sources(folder, snapshot, source_hashes)
+    (dest/'identification-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
     return report

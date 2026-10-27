@@ -253,7 +253,27 @@ public:
      * @brief get limit param 获取电机限制参数
      * @return limit_param 电机限制参数
      */
-    LimitParam get_limit_param() { return limit_param; }
+    LimitParam get_limit_param() const { return limit_param; }
+
+    static bool valid_limit_param(const LimitParam& limit) noexcept {
+        const auto valid = [](float value) {
+            // The wire encoder/decoder also computes the float span 2 * max.
+            return std::isfinite(value) && value > 0.0f && std::isfinite(2.0f * value);
+        };
+        return valid(limit.q_max) && valid(limit.dq_max) && valid(limit.tau_max);
+    }
+
+    void set_limit_param(const LimitParam& limit) {
+        if(!valid_limit_param(limit)) throw std::invalid_argument("Invalid Damiao encoding limits");
+        limit_param = limit;
+        // Parameter reads can drain feedback decoded with the previous limits.
+        // Do not expose that cached observation under the newly confirmed scale.
+        state_q = state_dq = state_tau = 0.0f;
+        state_seq = 0;
+        state_status = 0xFF;
+        state_received_at = {};
+        state_timing_valid = false;
+    }
 
     void set_param(int key, float value) {
         ValueType v{};
@@ -790,11 +810,13 @@ public:
      * @brief 修改电机限制参数（非寄存器参数）
      * @param motor 电机对象
      * @param p_max 位置上限
-     * @param q_max 速度上限
+     * @param v_max 速度上限
      * @param t_max 扭矩上限
      */
-    static void change_motor_limit(Motor& motor, float p_max, float q_max, float t_max) {
-        limit_param[motor.get_motor_type()] = { p_max, q_max, t_max };
+    static void change_motor_limit(Motor& motor, float p_max, float v_max, float t_max) {
+        // Each device can have different registers even when its type is equal.
+        // Never mutate the type defaults or another already-created instance.
+        motor.set_limit_param({ p_max, v_max, t_max });
     }
 
 private:

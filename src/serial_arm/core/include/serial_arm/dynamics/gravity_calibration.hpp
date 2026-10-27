@@ -17,6 +17,7 @@
 
 #include "serial_arm/core/types.hpp"
 #include "serial_arm/dynamics/dynamics.hpp"
+#include "serial_arm/hardware/hardware_capability.hpp"
 
 namespace serial_arm {
 
@@ -63,6 +64,8 @@ struct ModelCalibrationMetadata {
     std::string urdf_fingerprint;
     std::vector<std::string> resource_paths;
     std::vector<std::string> joint_names;
+    HardwareCapabilities actuator_capabilities;
+    std::string actuator_capabilities_source{ "unavailable" };
     std::string base_frame;
     std::string tool_frame;
     std::string locked_joint_reference{ "pinocchio_neutral" };

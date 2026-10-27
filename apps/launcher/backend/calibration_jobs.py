@@ -41,7 +41,9 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
 
 
 
-def recompute_gravity_isolated(directory, mode='global', locked_links=None):
+def recompute_gravity_isolated(directory, mode='global', locked_links=None, *, objective='bias_separated'):
+    if objective not in ('urdf', 'bias_separated'):
+        raise ValueError('未知的离线拟合目标')
     if mode not in ('global','local'):
         raise ValueError('未知的辨识模式')
     locked = locked_links if locked_links is not None else []
@@ -54,4 +56,4 @@ def recompute_gravity_isolated(directory, mode='global', locked_links=None):
     if not folder.is_dir():
         raise ValueError('请选择完整的标定任务目录')
     return run_full_inertial_isolated(folder,mode='legacy_gravity_recompute',
-        locked_links={'mode':mode,'locked_links':locked})
+        locked_links={'mode':mode,'locked_links':locked,'objective':objective})

@@ -672,7 +672,7 @@ def main():
                     if not directory or not Path(directory).expanduser().is_dir():
                         raise ValueError('请选择完整的标定任务目录')
                     result = recompute_gravity_isolated(directory, params.get('mode', 'global'),
-                        params.get('locked_links', []))
+                        params.get('locked_links', []), objective=params.get('objective', 'bias_separated'))
                 elif method == 'start':
                     if native.status().get('state') in ('running', 'stopping'): raise ValueError('another Launcher session is already running')
                     mode = params.get('mode')

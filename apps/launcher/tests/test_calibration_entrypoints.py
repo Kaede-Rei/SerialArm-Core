@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import os
+import subprocess
+import shutil
 from pathlib import Path
 import sys
 import tempfile
@@ -19,7 +21,7 @@ class CalibrationEntrypoints(unittest.TestCase):
         result={'path':'candidate.json','candidate':{'static_pass':False,'prior_preferred':True},'static_pass':False}
         with mock.patch.object(cli,'recompute_gravity_isolated',return_value=result) as job:
             value=cli.recompute(Path('core.yaml'),Path('task'),'local',['link2'])
-        job.assert_called_once_with(Path('task'),'local',['link2'])
+        job.assert_called_once_with(Path('task'),'local',['link2'],objective='bias_separated')
         self.assertFalse(value['static_validation_passed'])
         self.assertTrue(value['candidate']['prior_preferred'])
     def test_shared_worker_preserves_local_scope(self):
@@ -27,9 +29,31 @@ class CalibrationEntrypoints(unittest.TestCase):
             with mock.patch.object(calibration_jobs,'run_full_inertial_isolated',return_value={'static_pass':False}) as job:
                 calibration_jobs.recompute_gravity_isolated(temporary,'local',['link2'])
             self.assertEqual(job.call_args.kwargs['mode'],'legacy_gravity_recompute')
-            self.assertEqual(job.call_args.kwargs['locked_links'],{'mode':'local','locked_links':['link2']})
+            self.assertEqual(job.call_args.kwargs['locked_links'],{'mode':'local','locked_links':['link2'],'objective':'bias_separated'})
             with self.assertRaises(ValueError):calibration_jobs.recompute_gravity_isolated(temporary,'global',['link2'])
             with self.assertRaises(ValueError):calibration_jobs.recompute_gravity_isolated(temporary,'local',[{}])
+    def test_explicit_raw_objective_reaches_worker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch.object(calibration_jobs,'run_full_inertial_isolated',return_value={}) as job:
+                calibration_jobs.recompute_gravity_isolated(temporary,objective='urdf')
+            self.assertEqual(job.call_args.kwargs['locked_links']['objective'],'urdf')
+        result={'candidate':{'static_pass':False},'path':'candidate.json'}
+        with mock.patch.object(cli,'recompute_gravity_isolated',return_value=result) as job:
+            cli.recompute(Path('core.yaml'),Path('task'),objective='urdf')
+        self.assertEqual(job.call_args.kwargs['objective'],'urdf')
+    def test_cli_uses_compatible_default_and_allows_explicit_raw(self):
+        args=['recompute','--config','core.yaml','--directory','task']
+        self.assertEqual(cli.parser().parse_args(args).objective,'bias_separated')
+        self.assertEqual(cli.parser().parse_args(args+['--objective','urdf']).objective,'urdf')
+    @unittest.skipUnless(shutil.which('node'),'Node is required for renderer checks')
+    def test_loading_report_preserves_next_fitting_choice(self):
+        subprocess.run(['node',str(ROOT/'apps/launcher/scripts/test-gravity-objective.cjs')],
+                       capture_output=True,text=True,check=True,timeout=10)
+    def test_invalid_objective_never_starts_worker(self):
+        with mock.patch.object(calibration_jobs,'run_full_inertial_isolated') as job:
+            with self.assertRaises(ValueError):
+                calibration_jobs.recompute_gravity_isolated('task',objective='unknown')
+        job.assert_not_called()
     def test_native_tools_prefer_selected_installation(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);prefix=root/'active';old=root/'.install/standalone/bin'

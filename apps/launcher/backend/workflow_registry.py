@@ -94,7 +94,7 @@ def export_record(root, directory, kind):
     allowed={
         'teaching':{'metadata.json','trajectory.csv','trajectory.checkpoint.csv','source/model.urdf','source/core.yaml'},
         'gain':{'metadata.json','trajectory.csv','gain-candidate.json','frames.csv','result.json','source/model.urdf','source/core.yaml'},
-        'gravity':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','candidate-offline.urdf','source/model.urdf','source/core.yaml'},
+        'gravity':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','recomputed-candidate.json','result.json','candidate-offline.urdf','source/model.urdf','source/core.yaml'},
         'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','source/model.urdf','source/core.yaml'}
     }[kind]
     included=[]
@@ -104,8 +104,9 @@ def export_record(root, directory, kind):
             if path.is_file() and not path.is_symlink():
                 archive.write(path,arcname=name)
                 included.append(name)
-        if kind=='dynamics':
-            for path in sorted(folder.glob('advanced_candidates/**/**')):
+        if kind in ('dynamics', 'gravity'):
+            pattern = 'advanced_candidates/**/**' if kind == 'dynamics' else 'offline_candidates/*/*.json'
+            for path in sorted(folder.glob(pattern)):
                 if not path.is_file() or path.is_symlink() or not path.resolve().is_relative_to(folder):
                     continue
                 if path.stat().st_size > 200_000_000:

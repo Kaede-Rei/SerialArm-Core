@@ -33,7 +33,11 @@ struct Adapter {
    unsigned id=q[13]|(q[14]<<8);const auto* data=q.data()+21;
    if(id==0x7ff){unsigned motor=data[0]|(data[1]<<8);if(motor<status.size()){
     if(data[2]==0xcc)feedback(motor);
-    else if(data[2]==0x55||data[2]==0x33)reply(motor,data);
+    else if(data[2]==0x33&&data[3]>=damiao::PMAX&&data[3]<=damiao::TMAX){
+     std::array<unsigned char,8> response;std::copy(data,data+8,response.begin());
+     const float value=data[3]==damiao::PMAX?12.5f:(data[3]==damiao::VMAX?(motor<=3?8.0f:30.0f):(motor<=3?28.0f:10.0f));
+     std::memcpy(response.data()+4,&value,sizeof(value));reply(motor,response.data());
+    }else if(data[2]==0x55||data[2]==0x33)reply(motor,data);
    }}else if(id>0&&id<status.size()){
     bool management=true;for(unsigned j=0;j<7;++j)management&=data[j]==0xff;
     if(management&&data[7]==0xfc)status[id]=1;

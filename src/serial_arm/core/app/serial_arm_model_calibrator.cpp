@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <yaml-cpp/yaml.h>
+#include <Eigen/Geometry>
 
 int main(int argc, char** argv) {
     try {
@@ -134,8 +135,10 @@ int main(int argc, char** argv) {
                 const Eigen::Isometry3d candidate_tool=candidate.get_tool_pose();
                 max_position_error=std::max(max_position_error,(original_tool.translation()-candidate_tool.translation()).norm());
                 const Eigen::Matrix3d delta=original_tool.rotation().transpose()*candidate_tool.rotation();
-                const double cosine=std::clamp((delta.trace()-1.0)*0.5,-1.0,1.0);
-                max_rotation_error=std::max(max_rotation_error,std::abs(std::acos(cosine)));
+                // acos(trace) amplifies roundoff near identity to sqrt(epsilon),
+                // falsely rejecting unchanged geometry at the 1e-10 threshold.
+                // AngleAxis uses a quaternion/atan2 conversion stable near zero.
+                max_rotation_error=std::max(max_rotation_error,Eigen::AngleAxisd(delta).angle());
             }
             const double gravity_rms=gravity_count?std::sqrt(gravity_sq/static_cast<double>(gravity_count)):0.0;
             const bool ok=std::isfinite(gravity_rms)&&gravity_rms<1.0e-7&&max_position_error<1.0e-10&&max_rotation_error<1.0e-10;

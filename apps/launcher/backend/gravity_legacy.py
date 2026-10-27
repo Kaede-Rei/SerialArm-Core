@@ -12,12 +12,14 @@ import json
 import math
 from pathlib import Path
 import shutil
+import uuid
 import xml.etree.ElementTree as ET
 
 from model_calibration_source import resolve_relative_mesh, verified_source_urdf
 from legacy_full_inertial import (_prepare_inputs, _articulated_mapping,
                                   _extract_rows, _sampling_map, _assign_configuration)
 from gravity_mass_com import fit_static_mass_com
+from gravity_validation import evaluate_gravity_candidate
 
 
 def _digest(path):
@@ -238,8 +240,10 @@ def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
 
 
 
-def recompute(directory, mode='global', locked_links=None):
+def recompute(directory, mode='global', locked_links=None, *, objective='bias_separated'):
     """Fit static free m/h blocks, with trusted blocks fixed from the start."""
+    if objective not in ('urdf', 'bias_separated'):
+        raise ValueError('未知的离线拟合目标')
     folder, metadata, result, snapshot, _ = _prepare_inputs(directory)
     if result.get('workflow_kind') not in (None, 'gravity'):
         raise ValueError('当前记录是增益标定或其他任务，不是重力模型校正任务，请加载重力模型校正记录')
@@ -267,7 +271,7 @@ def recompute(directory, mode='global', locked_links=None):
     prior = all_prior[parameters]
     training, heldout = _static_holdout(folder, model, pin, mapped, prior)
     _, static_provenance = _static_poses(folder,joints,include_provenance=True)
-    fit = fit_static_mass_com(prior, training, mapped, set(locked))
+    fit = fit_static_mass_com(prior, training, mapped, set(locked), objective=objective)
     # Dynamic defects do not invalidate independently accepted stationary poses
     try:
         dynamic_rows = _extract_rows(folder / 'frames.csv', joints)
@@ -283,6 +287,7 @@ def recompute(directory, mode='global', locked_links=None):
     # the *exported* URDF, not the original (possibly nonphysical) 60D fit.
     exported = None
     before = after = noise = candidate_bias = None
+    evaluation = None
     static_status = 'not_evaluated'
     static_reason = '独立静态验证尚未执行'
     static_training_count = 0
@@ -294,29 +299,31 @@ def recompute(directory, mode='global', locked_links=None):
         training, heldout = _static_holdout(folder, model, pin, mapped, prior)
         static_training_count, static_heldout_count = len(training), len(heldout)
         before, after, noise, candidate_bias = _static_validation(training, heldout, prior, exported)
-        original_rms = np.asarray(before['rms'], dtype=float)
-        candidate_rms = np.asarray(after['rms'], dtype=float)
-        noise_floor = np.asarray(noise, dtype=float)
-        permitted = np.maximum(0.02, np.maximum(0.10 * original_rms,
-            np.minimum(2.0 * noise_floor, 0.05 + 0.5 * original_rms)))
-        comparable = (np.isfinite(candidate_rms).all() and
-            np.isfinite(original_rms).all() and
-            np.all(candidate_rms <= original_rms + permitted))
-        # One held-out pose can guide model selection but cannot demonstrate
-        # reliable generalization across the manipulator workspace.
-        if static_heldout_count < 2:
-            static_status = 'limited' if comparable else 'failed'
-            static_reason = (
-                f'静态姿态包含 {static_training_count} 组训练和 {static_heldout_count} 组独立验证'
-                '，候选已计算但验证覆盖不足，只能导出人工审核，不能自动应用'
-                if comparable else
-                f'静态姿态包含 {static_training_count} 组训练和 {static_heldout_count} 组独立验证'
-                '，候选留出误差超出容差，只能导出人工审核'
-            )
-        else:
-            static_status = 'passed' if comparable else 'failed'
-            static_reason = ('独立静态留出误差在测量容差内，可继续评估实际参数'
-                             if comparable else '留出姿态存在超过测量容差的预测误差，需人工审核')
+        def predictions(rows, parameters):
+            return np.asarray([x @ parameters + fixed for x, fixed, _ in rows])
+        evaluation = evaluate_gravity_candidate(
+            predictions(training, prior), predictions(training, exported),
+            np.asarray([tau for _, _, tau in training]),
+            predictions(heldout, prior), predictions(heldout, exported),
+            np.asarray([tau for _, _, tau in heldout]),
+            candidate_changed=not np.array_equal(prior, raw),
+            prior_preferred=fit['prior_preferred'], rank=fit['rank'])
+        before = dict(evaluation['raw_urdf']['validation']['baseline'])
+        after = dict(evaluation['raw_urdf']['validation']['candidate'])
+        # Retain the legacy normalized display score, explicitly using the
+        # training-residual scale; it is not a measured sensor-noise estimate.
+        for metric in (before, after):
+            metric['score'] = float(np.mean((np.asarray(metric['rms']) / noise)**2))
+        candidate_bias = np.asarray(evaluation['training_bias']['candidate'])
+        static_status = 'passed' if evaluation['static_pass'] else evaluation['status']
+        explanations = {
+            'improved': '原始 URDF 留出预测达到最小改善要求；仍需独立实机对照',
+            'equivalent': '原始 URDF 留出改善小于工程阈值，未证明有效更新',
+            'degraded': '原始 URDF 留出误差退化，不作为改善候选',
+            'prior_retained': '保留输入模型，没有新的参数改善',
+            'insufficient_evidence': '有效姿态或可辨识信息不足，不能判定改善',
+        }
+        static_reason = explanations[evaluation['status']]
     except (ValueError, KeyError, TypeError, ArithmeticError) as exc:
         static_status = 'unavailable'
         static_reason = '静态验证不可用: ' + str(exc)
@@ -338,7 +345,13 @@ def recompute(directory, mode='global', locked_links=None):
         'unmeasured_joints_assumed_neutral': unmeasured,
         'candidate_applied': False,
         'candidate_changed': not np.array_equal(prior,raw),
-        'validation_conclusion': 'prior_retained_no_parameter_improvement_claim' if fit['prior_preferred'] else 'candidate_requires_independent_evaluation',
+        'fit_objective': fit['fit_objective'],
+        'selection_metric': fit['selection_metric'],
+        'deployment_objective': 'raw_urdf',
+        'gravity_validation': evaluation,
+        'validation_conclusion': evaluation['status'] if evaluation else 'unavailable',
+        'fitted_torque_bias': np.asarray(fit['torque_bias']).tolist(),
+        'torque_bias_role': 'training_residual_for_observer_only_not_gravity_feedforward',
         'svd_relative_threshold': 1e-3,
         'evidence_scope': 'same_session_pose_holdout_not_cross_session_validation',
         'baseline': 'source_urdf_unscaled',
@@ -347,11 +360,11 @@ def recompute(directory, mode='global', locked_links=None):
         'dynamic_data_diagnostic': dynamic_diagnostic,
         'static_pose_sources': static_provenance,
         'static_aggregation': 'per_pose_median_of_up_to_last_60_accepted_frames',
-        'fit_weighting': 'equal_pose_equal_joint_centered_column_standardization',
+        'fit_weighting': 'equal_pose_equal_joint_train_column_standardization',
         'static_data_source': 'accepted_static.csv' if (folder/'accepted_static.csv').is_file() else 'frames.csv',
         'runtime_provenance': metadata.get('runtime_provenance'),
         'offline_solver_sha256': {name: _digest(Path(__file__).with_name(name))
-                                  for name in ('gravity_legacy.py', 'gravity_mass_com.py', 'legacy_full_inertial.py', 'full_inertial.py', 'model_calibration_source.py')},
+                                  for name in ('gravity_legacy.py', 'gravity_mass_com.py', 'gravity_validation.py', 'legacy_full_inertial.py', 'full_inertial.py', 'model_calibration_source.py')},
         'task_id': metadata['task_id'],
         'core_fingerprint': metadata.get('core_fingerprint'),
         'urdf_fingerprint': metadata.get('urdf_fingerprint'),
@@ -386,7 +399,11 @@ def recompute(directory, mode='global', locked_links=None):
         'validation_candidate': {k: after[k] for k in ('rms', 'p99', 'max')} if after else {},
         'validation_scaled': {k: before[k] for k in ('rms', 'p99', 'max')} if before else {},
         'noise_rms': noise.tolist() if noise is not None else [],
+        'noise_rms_meaning': 'legacy_training_residual_scale_with_floor_not_measured_sensor_noise',
+        # Compatibility: runtime payload uses this residual for the observer,
+        # never as an extra gravity feedforward term or a raw-score correction.
         'torque_bias': candidate_bias.tolist() if candidate_bias is not None else None,
+        'diagnostic_training_residual_mean': candidate_bias.tolist() if candidate_bias is not None else None,
         'com_shifts_m': shifts,
         'link_review': invalid,
         'review_warnings': [f'{name}: {issue}' for name, issue in invalid.items()]
@@ -400,7 +417,7 @@ def recompute(directory, mode='global', locked_links=None):
         'static_training_pose_count': static_training_count,
         'static_validation_pose_count': static_heldout_count,
         'static_validation_coverage': ('unavailable' if static_status == 'unavailable' else
-                                       'limited' if static_heldout_count < 2 else 'independent'),
+                                       'limited' if static_heldout_count < 2 else 'same_session_pose_holdout'),
         'rejected_static_pose_groups': result.get('rejected_static_groups', 0),
         'static_pass': static_pass,
         'status': 'needs_review',
@@ -410,12 +427,19 @@ def recompute(directory, mode='global', locked_links=None):
     }
     if any(_digest(path) != source_hashes[name] for name,path in source_files.items()):
         raise ValueError('求解期间原始数据或模型发生变化，拒绝保存不一致的候选')
+    # Preserve every mode/objective run before updating the latest-candidate pointer.
+    report['candidate_run_id'] = uuid.uuid4().hex
+    archive = folder / 'offline_candidates' / report['candidate_run_id']
+    archive.mkdir(parents=True, exist_ok=False)
+    report['archived_report'] = str((archive / 'recomputed-candidate.json').relative_to(folder))
+    serialized = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+    (archive / 'recomputed-candidate.json').write_text(serialized, encoding='utf-8')
     target = folder / 'recomputed-candidate.json'
     temp = target.with_suffix('.json.tmp')
-    temp.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding='utf-8')
+    temp.write_text(serialized, encoding='utf-8')
     temp.replace(target)
     return {'path': str(target), 'candidate': report, 'static_pass': static_pass,
-            'output': '静态质量与一阶矩求解已完成，可信连杆从求解开始固定，完整动态惯量未参与拟合'}
+            'output': '静态质量与一阶矩求解已完成；原始 URDF 与去偏置误差分别报告，每次候选已归档'}
 
 
 def export_recomputed(directory, destination=None):
@@ -425,8 +449,9 @@ def export_recomputed(directory, destination=None):
     record = folder / 'recomputed-candidate.json'
     if not record.is_file():
         raise ValueError('该任务尚无离线候选，请先执行离线重算')
-    candidate = json.loads(record.read_text(encoding='utf-8'))
-    if candidate.get('solver') not in ('static_centered_svd_ridge_pose_cv', 'bounded_direct_mass_first_moment'):
+    record_bytes = record.read_bytes()
+    candidate = json.loads(record_bytes)
+    if candidate.get('solver') not in ('static_centered_svd_ridge_pose_cv', 'static_raw_svd_ridge_pose_cv', 'bounded_direct_mass_first_moment'):
         raise ValueError('离线候选由旧计算器生成，请重新执行离线重算')
     if (candidate.get('task_id') != metadata.get('task_id')
             or candidate.get('urdf_fingerprint') != metadata.get('urdf_fingerprint')
@@ -444,7 +469,7 @@ def export_recomputed(directory, destination=None):
     # Older records with the same solver label may contain unguarded whole-arm
     # inertias; force a new computation rather than silently exporting them
     if candidate.get('identification_mode') == 'local' and (
-            candidate.get('solver') != 'static_centered_svd_ridge_pose_cv' or
+            candidate.get('solver') not in ('static_centered_svd_ridge_pose_cv', 'static_raw_svd_ridge_pose_cv') or
             candidate.get('local_scope_method') != 'fixed_locked_blocks_static_free_mass_moments'):
         raise ValueError('历史局部候选未从求解开始固定可信连杆，请重新执行静态重算')
     tree = ET.parse(snapshot)
@@ -526,7 +551,12 @@ def export_recomputed(directory, destination=None):
     tree.write(temp, encoding='utf-8', xml_declaration=True)
     ET.parse(temp)
     temp.replace(outfile)
+    (output / 'recomputed-candidate.json').write_bytes(record_bytes)
     verification = {'candidate_urdf': str(outfile),
+                    'candidate_run_id': candidate.get('candidate_run_id'),
+                    'fit_objective': candidate.get('fit_objective', 'bias_separated'),
+                    'candidate_urdf_sha256': _digest(outfile),
+                    'candidate_report_sha256': _digest(output / 'recomputed-candidate.json'),
                     'candidate_source': 'recomputed-candidate.json',
                     'changed_links': changed, 'locked_links_preserved': sorted(locked),
                     'inertia_values_preserved': True,

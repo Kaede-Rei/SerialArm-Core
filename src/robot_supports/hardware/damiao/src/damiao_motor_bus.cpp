@@ -236,26 +236,51 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::connect() {
             }
             return tl::make_unexpected(MotorBusErr::OPEN_FAILED);
         }
-        can_channel_ = *channel;
-        motor_ctrl_ = std::make_shared<damiao::MotorControl>(can_channel_);
-        motors_.clear();
-        motors_.reserve(cfg_.actuators.size());
+        auto next_control = std::make_shared<damiao::MotorControl>(*channel);
+        std::vector<std::shared_ptr<damiao::Motor>> next_motors;
+        next_motors.reserve(cfg_.actuators.size());
 
         for(const auto& actuator : cfg_.actuators) {
             auto type = parse_motor_type(actuator.motor_type);
             if(!type) {
-                motors_.clear();
-                motor_ctrl_.reset();
-                can_channel_.reset();
-                connected_ = false;
                 return tl::make_unexpected(type.error());
             }
             auto motor = std::make_shared<damiao::Motor>(*type, actuator.motor_id, actuator.master_id);
-            motor_ctrl_->add_motor(motor.get());
-            motors_.push_back(std::move(motor));
+            next_control->add_motor(motor.get());
+            next_motors.push_back(std::move(motor));
         }
 
-        const std::size_t n = motors_.size();
+        // Model names are only configuration-time defaults. Read actual encoding
+        // ranges without enabling or writing any register; fail closed if any
+        // axis does not confirm all three values. Nothing is committed halfway.
+        std::vector<damiao::LimitParam> confirmed_limits;
+        confirmed_limits.reserve(next_motors.size());
+        for(const auto& motor : next_motors) {
+            const damiao::LimitParam limit{
+                next_control->read_motor_param(*motor, damiao::PMAX),
+                next_control->read_motor_param(*motor, damiao::VMAX),
+                next_control->read_motor_param(*motor, damiao::TMAX),
+            };
+            if(!damiao::Motor::valid_limit_param(limit)) {
+                return tl::make_unexpected(MotorBusErr::READ_FAILED);
+            }
+            confirmed_limits.push_back(limit);
+        }
+        auto next_info = actuator_info_;
+        auto next_capabilities = capabilities_;
+        for(std::size_t i = 0; i < next_motors.size(); ++i) {
+            const auto& limit = confirmed_limits[i];
+            next_motors[i]->set_limit_param(limit);
+            next_info[i].q_max = limit.q_max;
+            next_info[i].dq_max = limit.dq_max;
+            next_info[i].tau_max = limit.tau_max;
+            next_capabilities[i].min_pos = -static_cast<double>(limit.q_max);
+            next_capabilities[i].max_pos = limit.q_max;
+            next_capabilities[i].max_vel = limit.dq_max;
+            next_capabilities[i].max_effort = limit.tau_max;
+        }
+
+        const std::size_t n = next_motors.size();
         online_.assign(n, 0);
         enabled_.assign(n, 0);
         has_feedback_.assign(n, 0);
@@ -266,6 +291,11 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::connect() {
         last_state_.online.assign(n, 0);
         last_state_.enabled.assign(n, 0);
         last_state_.err_code.assign(n, 0);
+        can_channel_ = *channel;
+        motor_ctrl_ = std::move(next_control);
+        motors_ = std::move(next_motors);
+        actuator_info_ = std::move(next_info);
+        capabilities_ = std::move(next_capabilities);
         connected_ = true;
         return {};
     }

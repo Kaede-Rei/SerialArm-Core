@@ -35,13 +35,23 @@ def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=
     return right[:rank, :].T, singular, rank
 
 
-def solve_static_updates(designs, residuals, *, relative_threshold=1e-3):
+def solve_static_updates(designs, residuals, *, relative_threshold=1e-3,
+                         objective='bias_separated'):
     """Fit tau-model updates in observable coordinates using training poses only.
 
-    Each pose and joint has equal weight; joint-wise centering removes offsets.
-    Scaling and SVD are recomputed within each leave-one-pose-out fold.
-    Returned bias always means model-minus-measured, as in the runtime observer.
+    Each pose and joint has equal weight. ``bias_separated`` projects out a
+    constant offset per joint and scores held-out poses with that training-only
+    offset. ``urdf`` fits and scores the raw gravity prediction without an
+    offset, matching deployment of an inertial-parameter-only URDF.
+
+    Scaling and SVD are recomputed within each leave-one-pose-out fold. The
+    returned torque_bias is the fitted model-minus-measured nuisance offset;
+    it is exactly zero for ``urdf``. A diagnostic residual mean must be reported
+    separately by the evaluator, not silently subtracted in the raw objective.
     """
+    if objective not in ('bias_separated', 'urdf'):
+        raise ValueError('静态拟合目标必须为 bias_separated 或 urdf')
+    separate_bias = objective == 'bias_separated'
     designs = np.asarray(designs, dtype=float)
     residuals = np.asarray(residuals, dtype=float)
     if (designs.ndim != 3 or residuals.shape != designs.shape[:2]
@@ -50,8 +60,8 @@ def solve_static_updates(designs, residuals, *, relative_threshold=1e-3):
         raise ValueError('静态求解需要至少三个有效姿态及有限的自由参数回归矩阵')
     def solve(indices, penalty):
         a, b = designs[indices], residuals[indices]
-        centered = (a-a.mean(axis=0)).reshape(-1, a.shape[-1])
-        target = (b-b.mean(axis=0)).reshape(-1)
+        centered = (a-a.mean(axis=0) if separate_bias else a).reshape(-1, a.shape[-1])
+        target = (b-b.mean(axis=0) if separate_bias else b).reshape(-1)
         energy = np.linalg.norm(a.reshape(-1, a.shape[-1]), axis=0)
         scale = np.linalg.norm(centered, axis=0)
         informative = scale > np.maximum(1e-12, energy*1e-10)
@@ -67,10 +77,14 @@ def solve_static_updates(designs, residuals, *, relative_threshold=1e-3):
             # projecting an unconstrained optimum after fitting its nuisance terms
             latent = singular[:rank]*(u[:, :rank].T@target)/(singular[:rank]**2+penalty)
             delta = (vt[:rank].T@latent)/scale
-        bias = -np.mean(b-np.einsum('pji,i->pj', a, delta), axis=0)
+        bias = (-np.mean(b-np.einsum('pji,i->pj', a, delta), axis=0)
+                if separate_bias else np.zeros(b.shape[1]))
         return delta, bias, rank, singular
     indices = np.arange(len(designs))
-    penalties = (None, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
+    # None is a genuine no-update candidate and wins exact ties. The zero and
+    # weak penalties allow training-only CV to select an unshrunk supported
+    # update when evidence warrants it; no held-out validation data enter here.
+    penalties = (None, 0.0, 1e-6, 1e-4, 1e-3, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
     scores = []
     for penalty in penalties:
         errors = []
@@ -85,10 +99,14 @@ def solve_static_updates(designs, residuals, *, relative_threshold=1e-3):
             'columns': designs.shape[-1], 'singular_values': singular.tolist(),
             'regularization': penalties[choice], 'prior_preferred': choice == 0,
             'cross_validation_scores': scores,
-            'cross_validation_penalties': list(penalties)}
+            'cross_validation_penalties': list(penalties),
+            'fit_objective': objective,
+            'selection_metric': ('leave_one_pose_out_bias_separated_mse'
+                                 if separate_bias else 'leave_one_pose_out_raw_urdf_mse')}
 
 
-def fit_static_mass_com(prior, training, mapped, locked_links):
+def fit_static_mass_com(prior, training, mapped, locked_links, *,
+                        objective='bias_separated'):
     """Keep locked blocks in the full model baseline and fit free m/h only."""
     prior = np.asarray(prior, dtype=float)
     active = [10*k+i for k, (_, name, _) in enumerate(mapped)
@@ -97,8 +115,9 @@ def fit_static_mass_com(prior, training, mapped, locked_links):
         raise ValueError('所有可辨识质量与一阶矩参数均已锁定')
     designs = [x[:, active] for x, fixed, tau in training]
     residuals = [tau-(x@prior+fixed) for x, fixed, tau in training]
-    fit = solve_static_updates(designs, residuals)
+    fit = solve_static_updates(designs, residuals, objective=objective)
     candidate = prior.copy()
     candidate[active] += fit['delta']
     return dict(fit, prior=prior, candidate=candidate, active_indices=active,
-                solver='static_centered_svd_ridge_pose_cv')
+                solver=('static_centered_svd_ridge_pose_cv' if objective == 'bias_separated'
+                        else 'static_raw_svd_ridge_pose_cv'))

@@ -54,9 +54,9 @@ def find_calibrator() -> str:
     return result
 
 
-def recompute(config: Path, directory: Path, mode='global', locked_links=None) -> dict:
+def recompute(config: Path, directory: Path, mode='global', locked_links=None, *, objective='bias_separated') -> dict:
     # The archived model/config are the fit inputs, exactly as in the GUI
-    result=recompute_gravity_isolated(directory,mode,locked_links)
+    result=recompute_gravity_isolated(directory,mode,locked_links,objective=objective)
     candidate=result['candidate']
     return {**result, 'candidate_path': result['path'],
             'static_validation_passed': candidate.get('static_pass') is True}
@@ -92,6 +92,8 @@ def parser() -> argparse.ArgumentParser:
 
     recalc = commands.add_parser('recompute', help='离线重算候选模型')
     recalc.add_argument('--config', required=True, help='Core YAML 路径')
+    recalc.add_argument('--objective', choices=('urdf','bias_separated'), default='bias_separated',
+                        help='bias_separated: 分离反馈常值偏置（兼容默认）；urdf: 直接重力预测（实验对照，未验证实机改善）')
     recalc.add_argument('--mode', choices=('global','local'), default='global')
     recalc.add_argument('--locked-link', action='append', default=[], help='局部辨识固定的可信 Link，可重复指定')
     recalc.add_argument('--directory', required=True, help='模型校正任务目录')
@@ -128,7 +130,7 @@ def main() -> int:
 
         config = require_file(args.config, 'Core YAML')
         if args.command == 'recompute':
-            emit(recompute(config, directory, args.mode, args.locked_link))
+            emit(recompute(config, directory, args.mode, args.locked_link, objective=args.objective))
         elif args.command == 'preview-save':
             emit(preview_gravity_correction(config, directory))
         elif args.command == 'save':

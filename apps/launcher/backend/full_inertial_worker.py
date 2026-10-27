@@ -15,7 +15,7 @@ def main():
     if sys.argv[3] == 'legacy_gravity_recompute':
         from gravity_legacy import recompute
         settings = locked
-        result = recompute(sys.argv[1], settings.get('mode', 'global'), settings.get('locked_links', []))
+        result = recompute(sys.argv[1], settings.get('mode', 'global'), settings.get('locked_links', []), objective=settings.get('objective', 'bias_separated'))
     elif sys.argv[3] == 'legacy_gravity_export':
         from gravity_legacy import export_recomputed
         result = export_recomputed(sys.argv[1], sys.argv[2] or None)

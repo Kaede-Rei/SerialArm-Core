@@ -334,6 +334,18 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << "],\n  \"resource_paths\":[";
     for(std::size_t i=0;i<metadata_.resource_paths.size();++i){if(i)out<<',';out<<'\"'<<json_escape(metadata_.resource_paths[i])<<'\"';}
     out << "],\n  \"units\":{\"position\":\"" << json_escape(metadata_.position_unit) << "\",\"velocity\":\"" << json_escape(metadata_.velocity_unit) << "\",\"torque\":\"" << json_escape(metadata_.torque_unit) << "\"},\n";
+    out << "  \"actuator_capabilities\":{\"source\":\"" << json_escape(metadata_.actuator_capabilities_source)
+        << "\",\"scope\":\"backend_protocol_limits_not_joint_safety_limits_or_independent_torque_calibration\","
+        << "\"units\":{\"position\":\"actuator_rad\",\"velocity\":\"actuator_rad_per_s\",\"effort\":\"actuator_protocol_Nm\"},\"axes\":[";
+    for(std::size_t i=0;i<metadata_.actuator_capabilities.size();++i) {
+        if(i)out<<',';
+        const auto& cap=metadata_.actuator_capabilities[i];
+        out << "{\"actuator_name\":\"" << json_escape(cap.actuator_name)
+            << "\",\"joint_name\":\"" << json_escape(cap.joint_name)
+            << "\",\"min_pos\":" << cap.min_pos << ",\"max_pos\":" << cap.max_pos
+            << ",\"max_vel\":" << cap.max_vel << ",\"max_effort\":" << cap.max_effort << '}';
+    }
+    out << "]},\n";
     out << "  \"mapping\":{\"pos_ratio\":"; json_vector(out, metadata_.mapping_pos_ratio);
     out << ",\"tor_ratio\":"; json_vector(out, metadata_.mapping_tor_ratio);
     out << ",\"direction\":["; for(std::size_t i=0;i<metadata_.mapping_direction.size();++i){if(i)out<<',';out<<metadata_.mapping_direction[i];} out << ']';

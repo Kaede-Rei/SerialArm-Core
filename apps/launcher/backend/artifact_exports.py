@@ -205,6 +205,58 @@ def _gravity_merge_source(folder, metadata, source_core):
     return current, 'current_core'
 
 
+def _same_dynamics_model(source, candidate):
+    """Compare model parameters, not XML layout or packaged visual resources.
+
+    Exporters serialize floating point values with 12 significant digits.  That
+    roundoff must not revoke an unchanged model's operator validation, whereas
+    changed inertial parameters or joint definitions must revoke it.
+    """
+    numeric_attributes = {'value', 'xyz', 'rpy', 'ixx', 'ixy', 'ixz', 'iyy',
+                          'iyz', 'izz', 'lower', 'upper', 'effort', 'velocity',
+                          'damping', 'friction', 'multiplier', 'offset'}
+
+    def same_attribute(name, left, right):
+        if name not in numeric_attributes:
+            return left == right
+        try:
+            a, b = [float(v) for v in left.split()], [float(v) for v in right.split()]
+        except ValueError:
+            return False
+        return (len(a) == len(b) and bool(a) and
+                all(math.isfinite(x) and math.isfinite(y) and
+                    math.isclose(x, y, rel_tol=1e-11, abs_tol=1e-14)
+                    for x, y in zip(a, b)))
+
+    def same_element(left, right):
+        if left is None or right is None:
+            return left is right
+        if left.tag != right.tag or left.attrib.keys() != right.attrib.keys():
+            return False
+        if any(not same_attribute(key, value, right.attrib[key])
+               for key, value in left.attrib.items()):
+            return False
+        if (left.text or '').strip() != (right.text or '').strip():
+            return False
+        key = lambda element: (element.tag, element.get('name', ''))
+        a, b = sorted(left, key=key), sorted(right, key=key)
+        return len(a) == len(b) and all(same_element(x, y) for x, y in zip(a, b))
+
+    source_root, candidate_root = ET.parse(source).getroot(), ET.parse(candidate).getroot()
+    for tag in ('link', 'joint'):
+        left = sorted(source_root.findall(tag), key=lambda element: element.get('name', ''))
+        right = sorted(candidate_root.findall(tag), key=lambda element: element.get('name', ''))
+        if len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            if a.get('name') != b.get('name'):
+                return False
+            if not same_element(a.find('inertial') if tag == 'link' else a,
+                                b.find('inertial') if tag == 'link' else b):
+                return False
+    return True
+
+
 def _gravity_export(record,dest,candidate_source="online"):
     folder,metadata,model,core,cfg=_snapshot(record)
     core,core_source=_gravity_merge_source(folder,metadata,core)
@@ -243,6 +295,20 @@ def _gravity_export(record,dest,candidate_source="online"):
         resources=source.parent/'resources'
         if resources.is_dir():shutil.copytree(resources,dest/'resources')
         ET.parse(target)
+        if offline:
+            # Carry the exact exported candidate alongside the deployment files.
+            report_source = source.parent / 'recomputed-candidate.json'
+            report_digest = hashlib.sha256(report_source.read_bytes()).hexdigest()
+            if report_digest != payload.get('candidate_report_sha256'):
+                raise ValueError('导出过程中离线候选发生变化，请重新导出')
+            shutil.copy2(report_source, dest / 'identification-report.json')
+            verification = _read_json(source.parent / 'candidate-urdf-verification.json')
+            if (verification.get('candidate_report_sha256') != report_digest or
+                    verification.get('candidate_urdf_sha256') != hashlib.sha256(target.read_bytes()).hexdigest()):
+                raise ValueError('候选模型或报告与导出校验记录不一致')
+            verification.update(candidate_urdf='robot.urdf', candidate_source='identification-report.json')
+            (dest / 'candidate-verification.json').write_text(
+                json.dumps(verification, ensure_ascii=False, indent=2), encoding='utf-8')
     joints=metadata['joint_names']
     friction=payload['residual']['friction']
     residual=payload['residual']
@@ -254,7 +320,17 @@ def _gravity_export(record,dest,candidate_source="online"):
              ('capability','admittance','calibration','friction','velocity_transition'):str(float(friction['velocity_transition']))}
     for name in ('positive_coulomb','positive_viscous','negative_coulomb','negative_viscous'):
         targets[('capability','admittance','calibration','friction',name)]=_gain_map_signed(joints,friction[name])
-    result_core=_replace_core(core.read_text(encoding='utf-8'),targets)
+    core_text=core.read_text(encoding='utf-8')
+    export_cfg=yaml.safe_load(core_text)
+    recovery=(export_cfg.get('safety_policy') or {}).get('fault_recovery') or {}
+    scale_changed=any(export_cfg['model']['gravity_scale'].get(joint) != 1.0 for joint in joints)
+    if (recovery.get('gravity_model_validated') is True and
+            (scale_changed or not _same_dynamics_model(model,target))):
+        # Static holdout scores do not validate native compliant recovery on a
+        # changed URDF or gravity scale. Keep the user's allow_compliant_recovery
+        # preference; only revoke inherited model-specific hardware validation.
+        targets[('safety_policy','fault_recovery','gravity_model_validated')]='false'
+    result_core=_replace_core(core_text,targets)
     (dest/'core.yaml').write_text(result_core,encoding='utf-8')
     return {'target':'gravity_and_friction','validated':verified and friction_verified,
             'core_merge_source':core_source,

@@ -321,6 +321,13 @@ public:
      */
     const ActuatorState& get_actuator_state() const noexcept;
     /**
+     * @brief 当前后端能力的只读快照；连接前可能是型号默认值
+     * @note 非实时诊断用途；不修改用户配置的 Safety 限制
+     */
+    HardwareCapabilities hardware_capabilities() const {
+        return motor_bus_ ? motor_bus_->capabilities() : HardwareCapabilities{};
+    }
+    /**
      * @brief 获取最近一次锁存的故障信息
      * @return 最近一次故障信息，若无故障则为空
      */

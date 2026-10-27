@@ -27,6 +27,21 @@ class OrderedMotorBus final:public MotorBus {
     std::vector<std::size_t> order_;
     std::vector<std::vector<std::size_t>> cycles_;
     ActuatorCtrlCmd command_;
+    tl::expected<void,MotorBusErr> refresh_capabilities() {
+        const auto& current=bus_->capabilities();
+        if(current.size()!=order_.size())return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+        HardwareCapabilities next;next.reserve(order_.size());
+        for(std::size_t i=0;i<order_.size();++i){
+            const auto& capability=current[order_[i]];
+            // The command/feedback permutation was fixed at configure time.
+            // A capability refresh must not silently change joint identity.
+            if(capability.joint_name!=caps_[i].joint_name)
+                return tl::make_unexpected(MotorBusErr::INVALID_CFG);
+            next.push_back(capability);
+        }
+        caps_=std::move(next);
+        return {};
+    }
     template<typename T> void reorder(std::vector<T>& values) const {
         for(const auto& cycle:cycles_){
             const T saved=values[cycle.front()];
@@ -47,7 +62,10 @@ public:
         command_.pos.resize(size());command_.vel.resize(size());command_.tor.resize(size());command_.kp.resize(size());command_.kd.resize(size());
     }
     tl::expected<void,MotorBusErr> configure(const std::string&) override {return tl::make_unexpected(MotorBusErr::INVALID_CFG);}
-    tl::expected<void,MotorBusErr> connect() override {return bus_->connect();}
+    tl::expected<void,MotorBusErr> connect() override {
+        const auto result=bus_->connect();if(!result)return result;
+        return refresh_capabilities();
+    }
     tl::expected<void,MotorBusErr> activate() override {return bus_->activate();}
     tl::expected<ActuatorState,MotorBusErr> read() override {
         auto result=bus_->read();if(!result)return result;
@@ -73,7 +91,10 @@ public:
     }
     tl::expected<void,MotorBusErr> stop() override {return bus_->stop();}
     tl::expected<void,MotorBusErr> deactivate() override {return bus_->deactivate();}
-    tl::expected<void,MotorBusErr> recover() override {return bus_->recover();}
+    tl::expected<void,MotorBusErr> recover() override {
+        const auto result=bus_->recover();if(!result)return result;
+        return refresh_capabilities();
+    }
     void cleanup() noexcept override {bus_->cleanup();}
     const HardwareCapabilities& capabilities() const noexcept override {return caps_;}
     std::size_t size() const noexcept override {return order_.size();}
