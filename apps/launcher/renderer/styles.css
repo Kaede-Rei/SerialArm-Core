@@ -193,6 +193,22 @@
 .calibration-entry-title{font-weight:700;font-size:15px}
 .calibration-entry>span:last-child{font-size:12px;opacity:.74;line-height:1.6}
 .calibration-advanced-card{display:flex;flex-direction:column;gap:12px}
+.calibration-step{display:flex;flex-direction:column;gap:12px;min-width:0;padding:14px;border:1px solid var(--line);border-radius:11px;background:var(--subtle)}
+.calibration-step>h4{margin:0;font-size:12px;font-weight:700}
+.calibration-step>.hint{margin:0;line-height:1.65}
+.calibration-step .task-directory,.calibration-step .callout{min-width:0;overflow-wrap:anywhere}
+#idim-results{display:flex;flex-direction:column;gap:12px;min-width:0}
+#idim-workflow .calibration-capability-grid b{font-size:13px;line-height:1.6;font-variant-numeric:tabular-nums}
+.idim-locks{display:flex;flex-wrap:wrap;gap:8px;min-width:0;margin:0;padding:12px;border:1px solid var(--line);border-radius:9px;background:var(--card)}
+.idim-locks legend{font-size:12px;padding:0 5px}
+.idim-locks small{flex-basis:100%;color:var(--muted);font-size:11px;line-height:1.6}
+.idim-preview-toggle{display:flex;align-items:center;gap:7px;font-size:12px;line-height:1.6}
+.idim-advanced>label{display:flex;flex-direction:column;gap:6px;margin-top:12px;color:var(--muted);font-size:11px}
+.idim-advanced>label>input{width:100%;min-width:0;min-height:36px;padding:7px 9px;border:1px solid var(--line);border-radius:7px;background:var(--subtle);color:var(--text)}
+.idim-advanced>.model-calibration-options{margin-top:12px}
+.idim-reasons{margin:8px 0 0;padding-left:20px;font-size:12px;line-height:1.7}
+.idim-recommendation{display:grid;gap:7px;padding:12px;border-left:3px solid var(--accent);background:var(--subtle);margin:12px 0;font-size:12px}
+.idim-supplement>summary{cursor:pointer;font-size:13px}
 .calibration-capability-grid,.calibration-result-stages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .calibration-capability-grid>div,.calibration-result-stages>div{padding:12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}
 .calibration-capability-grid b{font-size:21px}
@@ -492,12 +508,14 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .teach-trajectory-item .teach-file-path{color:var(--text-muted,#6b7280)}
 
 /* Geometry calibration uses the same card language as the control workspace */
-.geometry-tabs{display:flex;flex-wrap:wrap;gap:9px;margin:14px 0 16px}
-.geometry-two-col{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:15px;align-items:start}
+.geometry-task-flow{display:flex;flex-direction:column;gap:14px;min-width:0}
 .geometry-card{min-width:0;display:flex;flex-direction:column;gap:13px}
 .geometry-card h3{font-size:15px;margin:0}
 .geometry-card h4{font-size:12px;margin:9px 0 0}
 .geometry-card>.hint{margin:0;line-height:1.65}
+.geometry-card .workspace-section-head{margin:0}
+.geometry-card .workspace-section-head .hint{margin:0;line-height:1.65}
+.geometry-card .workspace-section-head .result-badge{flex:none}
 .geometry-card>label,.geometry-step>label,.geometry-fields>label{display:flex;flex-direction:column;gap:6px;min-width:0;color:var(--muted);font-size:11px}
 .geometry-card select,.geometry-card input{width:100%;min-width:0;color:var(--text);border:1px solid var(--line);border-radius:8px;background:var(--subtle);padding:9px 11px;font-size:12px}
 .geometry-card .workspace-actions{display:flex;flex-wrap:wrap;gap:8px}
@@ -516,8 +534,7 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .geometry-result.is-pass{border-color:color-mix(in srgb,#16a34a 43%,var(--line))}
 .geometry-result.is-warning{border-color:color-mix(in srgb,var(--accent) 48%,var(--line))}
 .geometry-note{padding:11px 12px;border-left:3px solid var(--accent);background:var(--subtle);border-radius:5px;font-size:11px;line-height:1.65;color:var(--muted)}
-@media(max-width:1100px){.geometry-two-col{grid-template-columns:minmax(0,1fr)}}
-@media(max-width:620px){.geometry-fields,.geometry-stats{grid-template-columns:minmax(0,1fr)}.geometry-tabs>.button{flex:1}}
+@media(max-width:620px){.geometry-fields,.geometry-stats{grid-template-columns:minmax(0,1fr)}}
 
 /* Non-safety failures: contextual, dismissible, and not a motor-fault dialog */
 

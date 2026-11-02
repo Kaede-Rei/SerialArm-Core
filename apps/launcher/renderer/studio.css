@@ -307,29 +307,3 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
   .onboarding-shell .onboarding-content { padding: 24px 14px 50px; }
   .app.atil-shell .sidebar .nav-caption { font-size: 0; padding: 0; margin: 10px 4px; border-top: 1px solid var(--line); }
 }
-
-/* Identification workflow: independent controls, persistent model viewport. */
-.idim-workflow { display:grid; gap:14px; min-width:0; }
-.idim-title { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; }
-.idim-title h3 { margin:0; }
-.idim-step { padding:18px; border:1px solid var(--border, #8884); border-radius:14px; background:var(--surface, #ffffff06); min-width:0; }
-.idim-step h4 { display:flex; align-items:center; gap:10px; margin:0 0 14px; font-size:15px; }
-.idim-step h4>span { display:grid; place-items:center; width:25px; height:25px; border-radius:50%; background:#8271d522; color:var(--text); font-size:12px; }
-.idim-path { display:block; overflow-wrap:anywhere; margin:10px 0; font-size:11px; opacity:.7; }
-.idim-locks { display:flex; flex-wrap:wrap; gap:12px; margin:12px 0; padding:12px; border:1px solid #8883; border-radius:10px; }
-.idim-locks label,.idim-preview-toggle { display:flex; align-items:center; gap:7px; }
-.idim-locks small { flex-basis:100%; opacity:.65; }
-.idim-advanced { padding:10px 0; }.idim-advanced>label { display:grid; gap:6px; margin:12px 0; }
-.idim-metrics { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:14px 0; }
-.idim-metrics>div { display:grid; gap:8px; padding:14px; border-radius:10px; background:#8271d50c; }
-.idim-metrics span,.idim-metrics small { opacity:.7; }.idim-metrics b { font-size:14px; overflow-wrap:anywhere; }
-.idim-recommendation { display:grid; gap:7px; padding:12px; border-left:3px solid #a98c54; background:#a98c540d; margin:12px 0; }
-.idim-recommendation span { font-size:12px; opacity:.75; }.idim-checks { display:flex; flex-wrap:wrap; gap:6px; margin:10px 0; }
-.idim-reasons { padding-left:20px; font-size:12px; line-height:1.7; }.idim-parameters { margin:16px 0; }
-.idim-table-scroll { overflow:auto; margin-top:10px; }.idim-table-scroll table { border-collapse:collapse; width:100%; font-size:11px; white-space:nowrap; }
-.idim-table-scroll td,.idim-table-scroll th { padding:10px 8px; border-bottom:1px solid #8883; text-align:left; font-weight:normal; }
-.idim-supplement { opacity:.9; }.idim-supplement>summary { cursor:pointer; font-size:13px; }
-.idim-workflow details>summary { cursor:pointer; }.idim-step input:not([type=checkbox]) { width:100%; min-width:0; }
-@media(max-width:1100px) { .idim-metrics { grid-template-columns:1fr; } .idim-step {padding:14px;} }
-
-.idim-tool-nav {display:flex;flex-wrap:wrap;gap:6px;padding:8px 0 12px;}.idim-tool-nav .button {padding:7px 10px;min-height:32px;font-size:12px;}.idim-offline-note {font-size:12px;opacity:.65;margin-bottom:4px;}
