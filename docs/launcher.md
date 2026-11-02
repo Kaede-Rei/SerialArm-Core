@@ -262,3 +262,8 @@ Model 显示原生只读入口不可用时，先确认当前安装包含 Termina
 如果只有 joint1 到 joint6，没有 gripper_left，先补齐夹爪状态接口
 
 `/recognize_objects not available` 是物体识别 action 服务未启动，不是末端电机通信错误
+
+
+### 完整动力学辨识与六阶段采集
+
+动力学页新增统一位置导数与滤波的 IDIM 全局/局部入口，支持独立验证会话、OLS/WLS/IRLS、采集审计与严格候选导出；自动采集包括双向静态和双向双速度六次遍历，预计耗时已同步；见 [操作与实验步骤](reference/dynamic-identification.md)

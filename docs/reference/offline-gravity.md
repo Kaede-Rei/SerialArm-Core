@@ -89,3 +89,8 @@ python3 tools/audit_calibration_kinematics.py /path/to/task/frames.csv \
 工具不修改 CSV、参数或 URDF，不会覆盖现有输出文件；无 `--output` 时将 JSON 写到标准输出；换算异常未查清前，不应靠动态回归参数吸收传感器尺度错误
 
 候选 URDF 的动力学参数或导出的重力缩放改变时，导出 Core 将撤销原模型的 `gravity_model_validated=true`；离线静态通过不继承实机故障恢复的模型验证状态，`allow_compliant_recovery` 偏好保持原值
+
+
+## 完整动力学辨识
+
+运动惯量辨识现在使用独立的全局/局部 IDIM 流程，见 [完整动力学辨识与实验流程](dynamic-identification.md)；静态重力重算不作为完整惯性辨识的替代

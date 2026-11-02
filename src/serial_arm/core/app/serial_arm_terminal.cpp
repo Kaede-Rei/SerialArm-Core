@@ -3,6 +3,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/dynamics/gravity_correction.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
+#include "serial_arm/dynamics/calibration_acquisition_plan.hpp"
 #include "serial_arm/dynamics/calibration_retime.hpp"
 #include "serial_arm/dynamics/calibration_measurement_quality.hpp"
 #include "serial_arm/dynamics/calibration_auto_gain.hpp"
@@ -122,6 +123,7 @@ struct ModelCalibrationPoseTarget {
 
 
 struct ModelCalibrationTaskOptions {
+    std::string load_description{ "unspecified" };
     std::size_t pose_budget{ 12 };
     std::size_t minimum_training_groups{ 4 };
     double validation_fraction{ 0.30 };
@@ -1769,7 +1771,7 @@ private:
         metadata.mapping_direction = cfg_.mapper.direction;
         metadata.mapping_joint_zero_offset = cfg_.mapper.joint_zero_offset;
         metadata.mapping_actuator_zero_offset = cfg_.mapper.actuator_zero_offset;
-        metadata.load_description = "unspecified";
+        metadata.load_description = model_calibration_options_.load_description;
         metadata.pose_budget = model_calibration_options_.pose_budget;
         metadata.validation_fraction = model_calibration_options_.validation_fraction;
         metadata.max_com_offset_m = model_calibration_options_.max_com_offset_m;
@@ -1811,6 +1813,7 @@ private:
         model_calibration_speed_tier_.store(0);
         model_calibration_resume_requires_confirmation_ = false;
         model_calibration_error_.clear();
+        model_calibration_preview_error_.clear();
         model_calibration_trajectory_.reset();
         model_calibration_alignment_active_.store(false);
         model_calibration_source_reversed_.store(false);
@@ -2128,6 +2131,7 @@ private:
         if(params && params["svd_relative_threshold"]) model_calibration_options_.svd_relative_threshold = std::clamp(params["svd_relative_threshold"].as<double>(), 1.0e-8, 0.2);
         if(params && params["minimum_information_score"]) model_calibration_options_.minimum_information_score = std::clamp(params["minimum_information_score"].as<double>(), 1.0e-8, 1.0e3);
         if(params && params["mode"]) model_calibration_options_.identification_mode = params["mode"].as<std::string>();
+        if(params && params["load_description"]) model_calibration_options_.load_description = params["load_description"].as<std::string>();
         if(params && params["locked_links"]) model_calibration_options_.locked_links = params["locked_links"].as<std::vector<std::string>>();
         if(model_calibration_options_.identification_mode != "global" && model_calibration_options_.identification_mode != "local") throw std::runtime_error("invalid identification mode");
         if(model_calibration_options_.identification_mode == "global") model_calibration_options_.locked_links.clear();
@@ -2401,6 +2405,7 @@ private:
         if(params["svd_relative_threshold"]) model_calibration_options_.svd_relative_threshold = std::clamp(params["svd_relative_threshold"].as<double>(), 1.0e-8, 0.2);
         if(params["minimum_information_score"]) model_calibration_options_.minimum_information_score = std::clamp(params["minimum_information_score"].as<double>(), 1.0e-8, 1.0e3);
         if(params["mode"]) model_calibration_options_.identification_mode = params["mode"].as<std::string>();
+        if(params["load_description"]) model_calibration_options_.load_description = params["load_description"].as<std::string>();
         if(params["locked_links"]) model_calibration_options_.locked_links = params["locked_links"].as<std::vector<std::string>>();
         if(model_calibration_options_.identification_mode != "global" && model_calibration_options_.identification_mode != "local") throw std::runtime_error("invalid identification mode");
         if(model_calibration_options_.identification_mode == "global") model_calibration_options_.locked_links.clear();
@@ -2557,10 +2562,10 @@ private:
         model_calibration_path_length_rad_ = planned.joint_path_length_rad;
         model_calibration_geometric_waypoints_ = planned.geometric_waypoints;
         model_calibration_original_samples_ = planned.original_samples;
-        const double static_seconds = targets.size() * (model_calibration_options_.static_hold_s + model_calibration_options_.static_sample_s + 0.5);
-        model_calibration_estimated_duration_s_ = 2.0 *
-            model_calibration_trajectory_->sample_dt * (model_calibration_trajectory_->positions.size() - 1) + static_seconds + 2.0;
-        model_calibration_update_progress(0, targets.size() + 3);
+        model_calibration_estimated_duration_s_ = serial_arm::calibration_acquisition::estimated_seconds(
+            model_calibration_trajectory_->sample_dt * (model_calibration_trajectory_->positions.size() - 1),
+            targets.size(), model_calibration_options_.static_hold_s + model_calibration_options_.static_sample_s + 0.5);
+        model_calibration_update_progress(0, serial_arm::calibration_acquisition::progress_units(targets.size()));
         model_calibration_set_phase(ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION);
     }
 
@@ -2701,8 +2706,8 @@ private:
         const double static_collection_s = static_cast<double>(model_calibration_pose_targets_.size()) *
             (model_calibration_options_.static_hold_s + model_calibration_options_.static_sample_s + 0.5);
         model_calibration_estimated_duration_s_ =
-            2.0 * planned_pass_s +
-            static_collection_s + 2.0;
+            serial_arm::calibration_acquisition::traversal_factor * planned_pass_s +
+            2.0 * static_collection_s + 2.0;
         if(!std::isfinite(model_calibration_estimated_duration_s_)) {
             model_calibration_set_phase(ModelCalibrationPhase::FAILED);
             model_calibration_error_ = "invalid planned calibration duration";
@@ -2726,7 +2731,7 @@ private:
         }
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD)) throw std::runtime_error("failed to enter RIGID_HOLD");
         model_calibration_set_phase(ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION);
-        model_calibration_update_progress(0, model_calibration_pose_targets_.size() + 3);
+        model_calibration_update_progress(0, serial_arm::calibration_acquisition::progress_units(model_calibration_pose_targets_.size()));
     }
 
     bool model_calibration_within_time_limit() {
@@ -3416,36 +3421,6 @@ private:
         return true;
     }
 
-    std::vector<AdmittanceFrictionSample> model_calibration_friction_samples(
-        const std::vector<ModelCalibrationFrame>& frames,
-        const std::string& direction,
-        int speed_tier,
-        const GravityCalibrationResult& gravity_result) {
-        std::vector<AdmittanceFrictionSample> result;
-        for(const auto& frame : frames) {
-            if(!frame.valid || frame.speed_tier != (speed_tier == 1 ? "slow" : "fast") || frame.direction != direction ||
-                (frame.phase.find("friction_") != 0 && frame.phase != "static_reverse"))continue;
-            if(frame.acceleration_source != "robot_feedback_velocity_filter" ||
-                !std::isfinite(frame.feedback_age_ms) || frame.feedback_age_ms < 0 || frame.feedback_age_ms > 30.0)continue;
-            if(frame.position.size() != cfg_.joint_names.size() || frame.velocity.size() != cfg_.joint_names.size() || frame.torque.size() != cfg_.joint_names.size() || frame.acceleration.size() != cfg_.joint_names.size())continue;
-            JointVector coriolis;
-            Eigen::MatrixXd mass;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                JointState state; state.pos = frame.position; state.vel = frame.velocity; state.tor = frame.torque;
-                const auto updated = dynamics_.update(state, frame.acceleration, frame.acceleration);
-                if(!updated)continue;
-                coriolis = dynamics_.get_coriolis(); mass = dynamics_.get_mass_matrix();
-            }
-            const auto candidate_gravity = dynamics_.compute_gravity_with_first_moments(frame.position, gravity_result.first_moments);
-            if(!candidate_gravity)continue;
-            JointVector residual(cfg_.joint_names.size(), 0.0);
-            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) { double torque = (*candidate_gravity)[i] + coriolis[i]; for(std::size_t j = 0; j < cfg_.joint_names.size(); ++j)torque += mass(static_cast<Eigen::Index>(i), static_cast<Eigen::Index>(j)) * frame.acceleration[j]; residual[i] = torque - frame.torque[i] - gravity_result.torque_bias[i]; }
-            result.push_back(AdmittanceFrictionSample{ frame.velocity,frame.acceleration,std::move(residual) });
-        }
-        return result;
-    }
-
     bool model_calibration_validate_friction_holdout(
         const AdmittanceFrictionCalibrationResult& fit,
         const std::vector<AdmittanceFrictionSample>& validation) const {
@@ -3651,21 +3626,27 @@ private:
                 if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
                     throw std::runtime_error("failed to switch to RIGID_HOLD after gain adaptation");
                 model_calibration_restore_runtime_hold();
-                model_calibration_set_phase(ModelCalibrationPhase::COMPLETE);
                 model_calibration_recorder_.stop();
+                const auto final_recording=model_calibration_recorder_.status();
+                if(final_recording.write_failed || final_recording.data_gap ||
+                   final_recording.accepted_frames!=final_recording.written_frames)
+                    throw std::runtime_error(final_recording.error.empty() ? "gain recording did not finish writing" : final_recording.error);
+                model_calibration_set_phase(ModelCalibrationPhase::COMPLETE);
                 model_calibration_write_result_file();
                 return;
             }
-            // Gravity only: no lengthy gain search or artificial convergence
-            // prerequisite.  Acquisition still enforces real motor safety and
-            // rejects unstable static samples.
-            // Keep the original demonstrated path and its retimed safety limits.
-            // Reuse the reverse traversal for gravity holds AND friction data.
+            // Formal identification: both static approach directions followed by
+            // two independently tagged dynamic speed pairs on the checked path.
             model_calibration_set_phase(ModelCalibrationPhase::STATIC_REVERSE);
             if(!model_calibration_static_pass(true))
                 throw std::runtime_error(model_calibration_error_.empty() ? "reverse static replay failed or cancelled" : model_calibration_error_);
             if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
                 throw std::runtime_error("failed to return to RIGID_HOLD");
+            model_calibration_set_phase(ModelCalibrationPhase::STATIC_FORWARD);
+            if(!model_calibration_static_pass(false))
+                throw std::runtime_error(model_calibration_error_.empty() ? "forward static replay failed or cancelled" : model_calibration_error_);
+            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
+                throw std::runtime_error("failed to hold after forward static replay");
             model_calibration_set_phase(ModelCalibrationPhase::GRAVITY_FITTING);
             const auto recorder_status = model_calibration_recorder_.status();
             if(recorder_status.data_gap || recorder_status.write_failed)
@@ -3677,9 +3658,19 @@ private:
             options.svd_relative_threshold = model_calibration_options_.svd_relative_threshold;
             options.identification_mode = model_calibration_options_.identification_mode;
             options.locked_links = model_calibration_options_.locked_links;
-            const auto gravity = fit_gravity_calibration(dynamics_, groups, model_calibration_original_gravity_scale_, options);
-            if(!gravity) throw std::runtime_error(gravity.error());
-            model_calibration_result_ = gravity.value();
+            Dynamics preview_dynamics;
+            const auto preview_configured=preview_dynamics.configure(cfg_.dynamics);
+            const auto gravity = preview_configured ?
+                fit_gravity_calibration(preview_dynamics, groups, model_calibration_original_gravity_scale_, options) :
+                tl::expected<GravityCalibrationResult,std::string>(tl::make_unexpected(std::string("offline preview model configuration failed")));
+            if(gravity)model_calibration_result_=gravity.value();
+            else {
+                // A failed quick static preview must not discard the remaining
+                // formal dynamics observations. Hardware failures still abort.
+                model_calibration_result_.reset();
+                std::lock_guard<std::mutex> preview_lock(model_calibration_mutex_);
+                model_calibration_preview_error_=gravity.error();
+            }
             // Holdout validation is advisory for exported candidates. Never
             // abort data acquisition or suppress the candidate because of
             // an inaccurate initial URDF. Applying it to hardware is separate.
@@ -3689,50 +3680,37 @@ private:
                 ++model_calibration_completed_units_;
                 model_calibration_progress_ = static_cast<double>(model_calibration_completed_units_) / static_cast<double>(model_calibration_total_units_);
             }
-            // Forward at the planner-approved rate. The reverse traversal was
-            // logged already, avoiding four redundant full-path traversals.
-            model_calibration_set_phase(ModelCalibrationPhase::FRICTION_FORWARD_FAST);
-            if(!model_calibration_dynamic_pass(false,model_calibration_replay_rate_,2, ModelCalibrationPhase::FRICTION_FORWARD_FAST))
-                throw std::runtime_error(model_calibration_error_.empty() ? "forward dynamic replay failed or cancelled" : model_calibration_error_);
+            for(const auto& pass : serial_arm::calibration_acquisition::dynamic_passes) {
+                const auto phase = pass.speed_tier==1 ?
+                    (pass.reverse ? ModelCalibrationPhase::FRICTION_REVERSE_SLOW : ModelCalibrationPhase::FRICTION_FORWARD_SLOW) :
+                    (pass.reverse ? ModelCalibrationPhase::FRICTION_REVERSE_FAST : ModelCalibrationPhase::FRICTION_FORWARD_FAST);
+                model_calibration_set_phase(phase);
+                if(!model_calibration_dynamic_pass(pass.reverse,model_calibration_replay_rate_*pass.rate,pass.speed_tier,phase))
+                    throw std::runtime_error(model_calibration_error_.empty() ? "dynamic direction/speed replay failed or cancelled" : model_calibration_error_);
+            }
             if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
                 throw std::runtime_error("failed to hold after replay");
-            model_calibration_set_phase(ModelCalibrationPhase::FRICTION_FITTING);
-            const auto all_frames = model_calibration_recorder_.frames();
-            const auto reverse_samples = model_calibration_friction_samples(all_frames, "reverse", 2, *model_calibration_result_);
-            const auto forward_samples = model_calibration_friction_samples(all_frames, "forward", 2, *model_calibration_result_);
-            AdmittanceFrictionCalibrationCfg friction_cfg;
-            friction_cfg.joints_count = cfg_.joint_names.size();
-            friction_cfg.min_fit_velocity = 0.05;
-            friction_cfg.max_fit_acceleration = 1.5;
-            friction_cfg.min_speed_span = 0.03;
-            friction_cfg.min_samples_per_direction = 30;
-            friction_cfg.cross_validation_max_rms_ratio = 0.8;
-            const auto fit = calibrate_admittance_friction_cross_validated(reverse_samples, forward_samples, friction_cfg);
-            model_calibration_friction_pass_ = false;
-            if(fit) {
-                model_calibration_friction_result_ = fit.value();
-                // Reduced-pass data need positive observability AND held-out
-                // direction agreement; otherwise do not enable compensation.
-                const auto& r = *model_calibration_friction_result_;
-                model_calibration_friction_pass_ = r.observable.size()==cfg_.joint_names.size() &&
-                    r.validation_pass.size()==cfg_.joint_names.size() &&
-                    std::all_of(r.observable.begin(), r.observable.end(), [](auto x) {return x != 0; }) &&
-                    std::all_of(r.validation_pass.begin(), r.validation_pass.end(), [](auto x) {return x != 0; });
-            }
+            // Acquisition ends in the confirmed hold above. No full-history copy
+            // or archived-state update of the LIVE dynamics object while ACTIVE.
+            // Friction and full IDIM belong to isolated offline identification.
+            model_calibration_friction_result_.reset();
+            model_calibration_friction_pass_=false;
             {
                 std::lock_guard<std::mutex> lock(model_calibration_mutex_);
                 ++model_calibration_completed_units_;
-                model_calibration_progress_ = 1.0;
+                model_calibration_progress_=1.0;
             }
             model_calibration_pose_group_.store(0);
             model_calibration_validation_.store(false);
             model_calibration_direction_.store(0);
             model_calibration_speed_tier_.store(0);
-            if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
-                throw std::runtime_error("failed to return to RIGID_HOLD after calibration");
             model_calibration_restore_runtime_hold();
-            model_calibration_set_phase(ModelCalibrationPhase::COMPLETE);
             model_calibration_recorder_.stop();
+            const auto final_recording=model_calibration_recorder_.status();
+            if(final_recording.write_failed || final_recording.data_gap ||
+               final_recording.accepted_frames!=final_recording.written_frames)
+                throw std::runtime_error(final_recording.error.empty() ? "calibration recording did not finish writing" : final_recording.error);
+            model_calibration_set_phase(ModelCalibrationPhase::COMPLETE);
             model_calibration_write_result_file();
         }
         catch(const std::exception& error) {
@@ -3871,11 +3849,11 @@ private:
                 2.0/serial_arm::calibration_gain_adaptation::compliant_validation_rate;
             const double factor=model_calibration_workflow_kind_=="gain" ?
                 model_calibration_gain_mode_=="all" ? (2.0*rigid_factor+soft_factor) :
-                model_calibration_gain_mode_=="compliant" ? soft_factor : rigid_factor : 2.0;
+                model_calibration_gain_mode_=="compliant" ? soft_factor : rigid_factor : serial_arm::calibration_acquisition::traversal_factor;
             const double dwell=model_calibration_workflow_kind_=="gain" ?
                 (model_calibration_gain_mode_=="all" ? 2.0 :
                  model_calibration_gain_mode_=="identification" ? 0.0 : 1.5) :
-                static_cast<double>(model_calibration_pose_targets_.size()) *
+                2.0 * static_cast<double>(model_calibration_pose_targets_.size()) *
                 (model_calibration_options_.static_hold_s + model_calibration_options_.static_sample_s + 0.5);
             model_calibration_estimated_duration_s_=factor*one_way+dwell+2.0;
         }
@@ -4271,6 +4249,10 @@ private:
         for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) { if(i)out << ','; out << '\"' << machine_json_escape(cfg_.joint_names[i]) << '\"'; }
         out << "],\"original_gravity_scale\":"; machine_json_joint_vector(out, model_calibration_original_gravity_scale_);
         out << ",\"recorder\":{\"accepted\":" << recorder.accepted_frames << ",\"written\":" << recorder.written_frames << ",\"dropped\":" << recorder.dropped_frames << ",\"data_gap\":" << (recorder.data_gap ? "true" : "false") << ",\"write_failed\":" << (recorder.write_failed ? "true" : "false") << "}";
+        out << ",\"static_pair_quality\":{\"bidirectional_groups\":" << recorder.bidirectional_static_groups
+            << ",\"position_warnings\":" << recorder.static_pair_position_warnings
+            << ",\"max_position_delta_rad\":" << recorder.max_static_pair_position_delta_rad << '}';
+        if(!model_calibration_preview_error_.empty())out << ",\"preview_error\":\"" << machine_json_escape(model_calibration_preview_error_) << "\"";
         if(!model_calibration_error_.empty())out << ",\"error\":\"" << machine_json_escape(model_calibration_error_) << "\"";
         if(model_calibration_trajectory_)out << ",\"trajectory_samples\":" << model_calibration_trajectory_->positions.size() << ",\"replay_rate\":" << model_calibration_replay_rate_;
         out << ",\"identification_mode\":\"" << machine_json_escape(model_calibration_options_.identification_mode) << "\",\"locked_links\":[";
@@ -4282,7 +4264,7 @@ private:
             out << "{\"name\":\"" << machine_json_escape(info.link_name) << "\",\"joint\":\"" << machine_json_escape(info.joint_name) << "\",\"mass\":" << info.mass << ",\"com\":[" << info.center_of_mass.x() << "," << info.center_of_mass.y() << "," << info.center_of_mass.z() << "]}";
         }
         out << ']';
-        out << ",\"planner_id\":\"local_hermite\",\"calibration_strategy\":\"two_pass_combined\"";
+        out << ",\"planner_id\":\"local_hermite\",\"calibration_strategy\":\"bidirectional_two_speed_v1\"";
         out << ",\"alignment_active\":" << (model_calibration_alignment_active_.load() ? "true" : "false");
         if(!model_calibration_source_task_id_.empty()) out << ",\"original_start_selected\":" << (model_calibration_source_reversed_.load() ? "true" : "false");
         if(!model_calibration_source_task_id_.empty()) out << ",\"source_task_id\":\"" << machine_json_escape(model_calibration_source_task_id_) << "\"";
@@ -7350,6 +7332,7 @@ private:
     std::atomic<bool> model_calibration_source_reversed_{ false };
     std::string model_calibration_source_task_id_;
     std::string model_calibration_error_;
+    std::string model_calibration_preview_error_;
     std::string model_calibration_directory_;
     std::string model_calibration_core_fingerprint_;
     std::string model_calibration_urdf_fingerprint_;

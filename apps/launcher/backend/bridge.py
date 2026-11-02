@@ -11,6 +11,12 @@ import threading
 import time
 import traceback
 
+# Keep optional optimization dependencies in the dedicated GUI environment;
+# ROS setup may otherwise prepend an incompatible system SciPy.
+if sys.prefix != sys.base_prefix:
+    _gui_site=Path(sys.prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'site-packages'
+    if _gui_site.is_dir():sys.path.insert(0,str(_gui_site))
+
 from user_errors import describe
 
 from profiles import Inspector, command_for, config_values
@@ -29,6 +35,7 @@ OFFLINE_CALIBRATION_METHODS = frozenset((
     'calibration_tool_export', 'calibration_tool_export_record',
     'model_calibration_export_friction', 'model_calibration_export_urdf',
     'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute',
+    'model_calibration_idim', 'model_calibration_idim_audit', 'model_calibration_idim_export',
 ))
 
 
@@ -667,6 +674,19 @@ def main():
                         mode=mode, locked_links=locked)
                 elif method == 'model_calibration_export_full_inertial':
                     raise ValueError('完整惯量候选已归入高级动力学辨识，请选择目标参数与可信 Link 后再执行离线辨识')
+                elif method == 'model_calibration_idim_audit':
+                    from calibration_jobs import audit_dynamics_isolated
+                    result = audit_dynamics_isolated(params.get('directory', ''))
+                elif method == 'model_calibration_idim':
+                    from calibration_jobs import identify_dynamics_isolated
+                    result = identify_dynamics_isolated(params.get('directory', ''),
+                        mode=params.get('mode', 'global'), locked_links=params.get('locked_links', []),
+                        validation_directory=params.get('validation_directory') or None,
+                        estimator=params.get('estimator', 'WLS'), cutoff_hz=params.get('cutoff_hz', 5.),
+                        fixed_joint_positions=params.get('fixed_joint_positions') or {},load_description=params.get('load_description')or None)
+                elif method == 'model_calibration_idim_export':
+                    from calibration_jobs import export_dynamics_isolated
+                    result = export_dynamics_isolated(params.get('report_path', ''), params.get('destination') or None,review_only=params.get('review_only')is True,report_only=params.get('report_only')is True)
                 elif method == 'model_calibration_recompute':
                     directory = params.get('directory', '')
                     if not directory or not Path(directory).expanduser().is_dir():

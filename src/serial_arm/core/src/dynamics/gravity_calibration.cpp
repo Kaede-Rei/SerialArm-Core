@@ -9,6 +9,9 @@
 #include <numeric>
 #include <set>
 #include <limits>
+#include <map>
+#include <optional>
+#include <stdexcept>
 #include <sstream>
 #include <unordered_map>
 
@@ -214,12 +217,16 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
         metadata_ = metadata;
         directory_ = std::filesystem::absolute(directory);
         queue_.clear();
-        frames_.clear();
-        approved_static_frames_.clear();
+
         status_ = {};
         status_.directory = directory_.string();
         stop_requested_.store(false);
         running_.store(true);
+    }
+    {
+        std::lock_guard<std::mutex> archive_lock(archive_mutex_);
+        frames_.clear();
+        approved_static_frames_.clear();
     }
     const auto meta = write_metadata();
     if(!meta) {
@@ -249,6 +256,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
 void ModelCalibrationRecorder::push(ModelCalibrationFrame frame) {
     if(!running_.load()) return;
     std::lock_guard<std::mutex> lock(mutex_);
+    if(!running_.load() || stop_requested_.load()) return;
     ++status_.accepted_frames;
     if(queue_.size() >= capacity_) {
         ++status_.dropped_frames;
@@ -263,26 +271,44 @@ bool ModelCalibrationRecorder::approve_static_group(const std::vector<ModelCalib
     if(group.size()<30)return false;
     const auto id=group.front().pose_group;
     if(id==0 || std::any_of(group.begin(),group.end(),[&](const auto& f){
-        return !f.valid || f.pose_group!=id || f.validation!=group.front().validation;
+        return !f.valid || f.pose_group!=id || f.validation!=group.front().validation ||
+            f.direction!=group.front().direction || f.phase!=group.front().phase ||
+            f.position.size()!=group.front().position.size() || !finite_vector(f.position) || !finite_vector(f.velocity) || !finite_vector(f.torque);
     }))return false;
     for(std::size_t i=1;i<group.size();++i)
         if(group[i].cycle<=group[i-1].cycle || group[i].monotonic_ns<=group[i-1].monotonic_ns ||
            group[i].monotonic_ns-group[i-1].monotonic_ns>30000000ULL)return false;
-    std::lock_guard<std::mutex> lock(mutex_);
-    if(!running_.load() || status_.write_failed || status_.data_gap)return false;
+    std::lock_guard<std::mutex> archive_lock(archive_mutex_);
+    const auto recorder_status=status();
+    if(!running_.load() || recorder_status.write_failed || recorder_status.data_gap)return false;
     if(std::any_of(approved_static_frames_.begin(),approved_static_frames_.end(),
-                   [&](const auto& f){return f.pose_group==id;}))return false;
+                   [&](const auto& f){return f.pose_group==id && (f.direction==group.front().direction || f.validation!=group.front().validation);}))return false;
     std::ofstream out(directory_/"accepted_static.csv",std::ios::app);
-    if(!out){status_.write_failed=true;status_.error="accepted static file open failed";return false;}
+    if(!out){std::lock_guard<std::mutex> status_lock(mutex_);status_.write_failed=true;status_.error="accepted static file open failed";return false;}
     for(const auto& f:group)out<<frame_line(f)<<'\n';
     out.flush();
-    if(!out){status_.write_failed=true;status_.error="accepted static group write failed";return false;}
+    if(!out){std::lock_guard<std::mutex> status_lock(mutex_);status_.write_failed=true;status_.error="accepted static group write failed";return false;}
+    JointVector previous_mean(group.front().position.size(),0.0),current_mean(previous_mean.size(),0.0);
+    std::size_t other_count=0;
+    for(const auto& row:approved_static_frames_)if(row.pose_group==id && row.direction!=group.front().direction && row.position.size()==previous_mean.size()){
+        for(std::size_t j=0;j<previous_mean.size();++j)previous_mean[j]+=row.position[j];
+        ++other_count;
+    }
+    if(other_count){
+        for(const auto& row:group)for(std::size_t j=0;j<current_mean.size();++j)current_mean[j]+=row.position[j];
+        double maximum=0.0;
+        for(std::size_t j=0;j<current_mean.size();++j)maximum=std::max(maximum,std::abs(current_mean[j]/group.size()-previous_mean[j]/other_count));
+        std::lock_guard<std::mutex> status_lock(mutex_);
+        ++status_.bidirectional_static_groups;
+        if(maximum>0.01)++status_.static_pair_position_warnings;
+        status_.max_static_pair_position_delta_rad=std::max(status_.max_static_pair_position_delta_rad,maximum);
+    }
     approved_static_frames_.insert(approved_static_frames_.end(),group.begin(),group.end());
     return true;
 }
 
 std::vector<ModelCalibrationFrame> ModelCalibrationRecorder::approved_static_frames() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(archive_mutex_);
     return approved_static_frames_;
 }
 
@@ -299,11 +325,9 @@ ModelCalibrationRecorderStatus ModelCalibrationRecorder::status() const {
 }
 
 std::vector<ModelCalibrationFrame> ModelCalibrationRecorder::frames() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<ModelCalibrationFrame> result = frames_;
-    result.reserve(frames_.size() + queue_.size());
-    for(const auto& frame : queue_) result.push_back(frame);
-    return result;
+    if(running_.load())throw std::logic_error("stop recorder before taking a full history snapshot");
+    std::lock_guard<std::mutex> lock(archive_mutex_);
+    return frames_;
 }
 
 tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const {
@@ -311,6 +335,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     if(!out) return tl::make_unexpected(std::string("failed to open metadata.json"));
     out << std::setprecision(17) << "{\n";
     out << "  \"task_id\":\"" << json_escape(metadata_.task_id) << "\",\n";
+    out << "  \"planned_dynamics_protocol\":\"bidirectional_two_speed_v1\",\n";
     out << "  \"profile\":\"" << json_escape(metadata_.profile) << "\",\n";
     std::error_code executable_error;
     const auto executable = std::filesystem::read_symlink("/proc/self/exe", executable_error);
@@ -417,6 +442,11 @@ void ModelCalibrationRecorder::writer_loop() {
             // Pre-adaptation remains in the raw CSV for diagnostics, but
             // must NEVER enter the online friction/identification buffer.
             // Long warm-up runs would otherwise pollute or bloat that buffer.
+
+        }
+        {
+            // This mutex is never taken by push() or the control cycle.
+            std::lock_guard<std::mutex> archive_lock(archive_mutex_);
             if(frame.phase != "gain_adaptation")frames_.push_back(frame);
         }
         out << frame_line(frame) << '\n';
@@ -431,6 +461,12 @@ void ModelCalibrationRecorder::writer_loop() {
         ++status_.written_frames;
     }
     out.flush();
+    if(!out) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        status_.write_failed=true;
+        status_.data_gap=true;
+        status_.error="frames.csv final flush failed";
+    }
     running_.store(false);
 }
 
@@ -545,42 +581,43 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
 }
 
 std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const std::vector<ModelCalibrationFrame>& frames, std::size_t minimum_valid_frames) {
-    std::unordered_map<std::size_t, GravityCalibrationPoseGroup> grouped;
-    for(const auto& frame : frames) {
-        if(frame.pose_group == 0 || frame.phase.find("static") == std::string::npos) continue;
-        auto& group = grouped[frame.pose_group];
-        group.pose_group = frame.pose_group;
-        group.validation = frame.validation;
+    std::map<std::size_t,std::map<std::string,GravityCalibrationPoseGroup>> grouped;
+    for(const auto& frame:frames) {
+        if(frame.pose_group==0 || frame.phase.find("static")!=0)continue;
+        auto& group=grouped[frame.pose_group][frame.direction];
+        group.pose_group=frame.pose_group;
+        group.validation=frame.validation;
         group.samples.push_back(frame);
     }
-    // Earlier task records tagged the group before waiting for the robot to settle
-    // Select the final 0.70 s of each group, matching the historic sample window
-    // Fresh task records tag only the sample window and need no tail truncation
-    for(auto& pair : grouped) {
-        auto& samples = pair.second.samples;
-        if(samples.empty()) continue;
-        const auto last_ns = samples.back().monotonic_ns;
-        constexpr std::uint64_t sample_window_ns = 700000000ULL;
-        auto begin = std::lower_bound(samples.begin(), samples.end(),
-            last_ns > sample_window_ns ? last_ns - sample_window_ns : 0ULL,
-            [](const ModelCalibrationFrame& frame, std::uint64_t time) { return frame.monotonic_ns < time; });
-        if(begin != samples.begin()) samples.erase(samples.begin(), begin);
-        samples.erase(std::remove_if(samples.begin(), samples.end(), [](const ModelCalibrationFrame& frame) {
-            if(!frame.valid || !finite_vector(frame.position) || !finite_vector(frame.velocity) || !finite_vector(frame.torque)) return true;
-            // Quantized motor feedback can briefly exceed the settle velocity
-            // Exclude genuine moving frames; never fit them as static gravity
-            return std::any_of(frame.velocity.begin(), frame.velocity.end(), [](double speed) { return std::abs(speed) > 0.05; });
-        }), samples.end());
-    }
     std::vector<GravityCalibrationPoseGroup> result;
-    result.reserve(grouped.size());
-    // A brief lucky still frame must never qualify as a gravity pose.
-    // A full settled measurement normally yields about 90 cycles at 200 Hz.
-    for(auto& item : grouped) {
-        if(item.second.samples.size() < minimum_valid_frames) continue;
-        result.push_back(std::move(item.second));
+    for(auto& [id,directions]:grouped) {
+        std::size_t count=std::numeric_limits<std::size_t>::max();
+        bool valid=true;std::optional<bool> validation;
+        for(auto& [direction,group]:directions) {
+            auto& samples=group.samples;
+            if(samples.empty()){valid=false;break;}
+            const auto last=samples.back().monotonic_ns;
+            const auto begin=std::lower_bound(samples.begin(),samples.end(),
+                last>700000000ULL ? last-700000000ULL : 0ULL,
+                [](const auto& f,std::uint64_t stamp){return f.monotonic_ns<stamp;});
+            samples.erase(samples.begin(),begin);
+            samples.erase(std::remove_if(samples.begin(),samples.end(),[](const auto& f){
+                return !f.valid || !finite_vector(f.position) || !finite_vector(f.velocity) ||
+                    !finite_vector(f.torque) || std::any_of(f.velocity.begin(),f.velocity.end(),
+                        [](double v){return std::abs(v)>.05;});
+            }),samples.end());
+            if(samples.size()<minimum_valid_frames){valid=false;break;}
+            if(validation && *validation!=group.validation){valid=false;break;}
+            validation=group.validation;count=std::min(count,samples.size());
+        }
+        if(!valid || !validation)continue;
+        GravityCalibrationPoseGroup combined;combined.pose_group=id;combined.validation=*validation;
+        // Equal direction weight; trim each approach separately before merging.
+        // Never apply one global tail window, which would discard reverse data.
+        for(const auto& [direction,group]:directions)
+            combined.samples.insert(combined.samples.end(),group.samples.end()-count,group.samples.end());
+        result.push_back(std::move(combined));
     }
-    std::sort(result.begin(), result.end(), [](const auto& left, const auto& right) { return left.pose_group < right.pose_group; });
     return result;
 }
 
@@ -908,9 +945,9 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     if(candidate_squared>original_squared+tolerance_squared+1.0e-12)acceptable=false;
     // The URDF prior winning cross-validation is informative but not by itself
     // a blocker when the measured holdout differences are below noise resolution
-    result.static_pass=acceptable;
+    result.static_pass=acceptable && !result.prior_preferred;
     if(result.numerical_rank==0) {result.status="failed";result.failure_reason="gravity_parameters_unobservable";}
-    else if(result.prior_preferred && result.static_pass) {result.status="passed";result.failure_reason="prior_preferred_within_measurement_tolerance";}
+    else if(result.prior_preferred) {result.status="prior_retained";result.failure_reason="prior_retained_no_parameter_update";}
     else if(!result.static_pass) {result.status="needs_review";result.failure_reason="holdout_validation_not_improved";}
     else {result.status="passed";}
     return result;

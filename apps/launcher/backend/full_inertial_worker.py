@@ -12,7 +12,16 @@ def main():
     if len(sys.argv) != 5:
         raise ValueError('请选择高级动力学辨识目标与可信 Link 后生成候选模型')
     locked = json.loads(sys.argv[4])
-    if sys.argv[3] == 'legacy_gravity_recompute':
+    if sys.argv[3] == 'idim_audit':
+        from dynamic_identification import audit_record
+        result = audit_record(sys.argv[1])
+    elif sys.argv[3] == 'idim_identify':
+        from dynamic_identification import identify
+        result = identify(sys.argv[1], destination=sys.argv[2] or None, **locked)
+    elif sys.argv[3] == 'idim_export':
+        from dynamic_identification import export_candidate
+        result = export_candidate(sys.argv[1], sys.argv[2] or None, **(locked if isinstance(locked,dict)else{}))
+    elif sys.argv[3] == 'legacy_gravity_recompute':
         from gravity_legacy import recompute
         settings = locked
         result = recompute(sys.argv[1], settings.get('mode', 'global'), settings.get('locked_links', []), objective=settings.get('objective', 'bias_separated'))

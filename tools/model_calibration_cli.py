@@ -87,6 +87,25 @@ def parser() -> argparse.ArgumentParser:
     )
     commands = value.add_subparsers(dest='command', required=True)
 
+    idim = commands.add_parser('identify-dynamics', help='滤波完整动力学辨识；可信 Link 从求解开始固定')
+    idim.add_argument('--directory', required=True)
+    idim.add_argument('--mode', choices=('global','local'), default='global')
+    idim.add_argument('--locked-link', action='append', default=[])
+    idim.add_argument('--validation-directory', help='同装机、同模型的独立采集会话')
+    idim.add_argument('--estimator', choices=('OLS','WLS','IRLS'), default='WLS')
+    idim.add_argument('--cutoff-hz', type=float, choices=(2.,5.,10.), default=5.)
+    idim.add_argument('--destination', help='新的报告目录；默认按 run_id 归档')
+    idim.add_argument('--load-description',help='补充实际已知且全程不变的装机条件，单列为操作者声明，不修改原始元数据')
+    idim.add_argument('--fixed-joint', action='append', default=[], help='未采样关节的已知固定位置，例如 joint7=0；不覆盖采样轴')
+    audit = commands.add_parser('audit-dynamics', help='辨识采集质量与阶段覆盖审计，不需要硬件')
+    audit.add_argument('--directory', required=True)
+    dexp = commands.add_parser('export-dynamics', help='导出已经通过独立检查的完整惯性模型，不重新拟合')
+    dexp.add_argument('--report', required=True)
+    dexp.add_argument('--destination')
+    export_kind=dexp.add_mutually_exclusive_group()
+    export_kind.add_argument('--review-only',action='store_true',help='导出物理有效但尚未通过完整验证的待审核模型，不授权上机')
+    export_kind.add_argument('--report-only',action='store_true',help='导出诊断与参数报告，非物理解也可，不含 URDF')
+
     inspect = commands.add_parser('inspect', help='查看任务记录')
     inspect.add_argument('--directory', required=True, help='模型校正任务目录')
 
@@ -123,7 +142,26 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = parser().parse_args()
     try:
+        if args.command == 'export-dynamics':
+            from calibration_jobs import export_dynamics_isolated
+            emit(export_dynamics_isolated(args.report,args.destination,review_only=args.review_only,report_only=args.report_only))
+            return 0
         directory = require_directory(args.directory)
+        if args.command == 'audit-dynamics':
+            from calibration_jobs import audit_dynamics_isolated
+            emit(audit_dynamics_isolated(directory))
+            return 0
+        if args.command == 'identify-dynamics':
+            from calibration_jobs import identify_dynamics_isolated
+            fixed={}
+            for item in args.fixed_joint:
+                name,value=item.split('=',1)
+                if not name or name in fixed:raise ValueError('固定关节名称为空或重复')
+                fixed[name]=float(value)
+            emit(identify_dynamics_isolated(directory,mode=args.mode,locked_links=args.locked_link,
+                validation_directory=args.validation_directory,estimator=args.estimator,
+                cutoff_hz=args.cutoff_hz,destination=args.destination,fixed_joint_positions=fixed,load_description=args.load_description))
+            return 0
         if args.command == 'inspect':
             emit(load_model_calibration_summary(directory))
             return 0

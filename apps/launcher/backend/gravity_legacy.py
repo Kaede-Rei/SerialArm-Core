@@ -77,7 +77,7 @@ def _static_poses(folder, joints, *, include_provenance=False):
     with static_source.open(newline='', encoding='utf-8') as stream:
         reader = csv.DictReader(stream)
         for row in reader:
-            if row.get('phase') != 'static_reverse' or row.get('valid') != '1':
+            if row.get('phase') not in ('static_reverse','static_forward') or row.get('valid') != '1':
                 continue
             group = row.get('pose_group', '')
             if not group or group == '0' or row.get('validation') not in ('0', '1'):
@@ -92,16 +92,16 @@ def _static_poses(folder, joints, *, include_provenance=False):
                 if not (np.isfinite(q).all() and np.isfinite(v).all()
                         and np.isfinite(torque).all() and np.max(np.abs(v)) < 0.04):
                     continue
-                groups[(group, row['validation'])].append((q, torque, reader.line_num))
+                groups[(group, row['validation'], row['phase'])].append((q, torque, reader.line_num))
             except (KeyError, TypeError, ValueError):
                 continue
     flags = defaultdict(set)
-    for group, validation in groups:
+    for group, validation, _direction in groups:
         flags[group].add(validation)
     if any(len(values) != 1 for values in flags.values()):
         raise ValueError('同一静态姿态组同时标记为训练和验证，拒绝泄漏的划分')
     rows, provenance = [], []
-    for (group, validation), samples in groups.items():
+    for (group, validation, direction), samples in groups.items():
         if len(samples) < minimum_frames:
             continue
         # End-of-hold frames suppress any transient before the pose settles
@@ -109,7 +109,7 @@ def _static_poses(folder, joints, *, include_provenance=False):
         rows.append((validation == '1', np.median([x[0] for x in stable], axis=0),
                      np.median([x[1] for x in stable], axis=0)))
         provenance.append({'pose_group':group, 'validation':validation == '1',
-                           'accepted_frames':len(samples), 'aggregated_frames':len(stable),
+                           'direction':direction,'accepted_frames':len(samples), 'aggregated_frames':len(stable),
                            'csv_line_numbers':[x[2] for x in stable]})
     training_count = sum(not item[0] for item in rows)
     heldout_count = sum(item[0] for item in rows)
@@ -130,21 +130,19 @@ def _static_holdout(folder, model, pin, mapped, prior):
     import numpy as np
     # mapped entries are (model joint id, child Link name, XML Link)
     joint_names = [str(model.names[jid]) for jid, _link_name, _link in mapped]
-    poses = _static_poses(folder, joint_names)
-    q_indices, v_indices, param_indices = _sampling_map(model, mapped)
-    full_prior = np.concatenate([np.asarray(model.inertias[j].toDynamicParameters(), dtype=float)
-                                 for j in range(1, model.njoints)])
-    q_neutral = np.asarray(pin.neutral(model), dtype=float)
-    data = model.createData()
-    training, heldout = [], []
-    for is_val, q, tau in poses:
-        state = q_neutral.copy()
-        _assign_configuration(model, state, q_indices, q)
-        Y = np.asarray(pin.computeJointTorqueRegressor(
-            model, data, state, np.zeros(model.nv), np.zeros(model.nv)), dtype=float)[v_indices, :]
-        moving = Y[:, param_indices]
-        fixed = Y @ full_prior - moving @ prior
-        (heldout if is_val else training).append((moving, fixed, tau))
+    from static_observations import load_static_groups
+    poses=load_static_groups(folder,joint_names)
+    q_indices,v_indices,param_indices=_sampling_map(model,mapped)
+    full_prior=np.concatenate([np.asarray(model.inertias[j].toDynamicParameters(),dtype=float)for j in range(1,model.njoints)])
+    neutral=np.asarray(pin.neutral(model),dtype=float);data=model.createData();training,heldout=[],[]
+    for pose in poses:
+        regressors=[];torques=[]
+        for member in pose['members']:
+            q=neutral.copy();_assign_configuration(model,q,q_indices,member['q'])
+            Y=np.asarray(pin.computeJointTorqueRegressor(model,data,q,np.zeros(model.nv),np.zeros(model.nv))).reshape(model.nv,-1)[v_indices,:]
+            regressors.append(Y);torques.append(member['tau'])
+        Y=np.mean(regressors,axis=0);tau=np.mean(torques,axis=0);moving=Y[:,param_indices];fixed=Y@full_prior-moving@prior
+        (heldout if pose['validation']else training).append((moving,fixed,tau))
     return training, heldout
 
 
@@ -273,13 +271,13 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
     _, static_provenance = _static_poses(folder,joints,include_provenance=True)
     fit = fit_static_mass_com(prior, training, mapped, set(locked), objective=objective)
     # Dynamic defects do not invalidate independently accepted stationary poses
+    from dynamic_identification import audit_record
     try:
-        dynamic_rows = _extract_rows(folder / 'frames.csv', joints)
-        dynamic_diagnostic = {'usable': True, 'sampled_motion_frames': len(dynamic_rows),
-                              'used_for_static_fit': False}
-    except ValueError as error:
-        dynamic_diagnostic = {'usable': False, 'reason': str(error),
-                              'used_for_static_fit': False}
+        motion_audit=audit_record(folder)
+        dynamic_diagnostic=dict(usable=motion_audit['acquisition_complete'],derivative_source='offline_filtered_actual_position',
+                                measurement_ready=motion_audit['measurement_ready'],used_for_static_fit=False,
+                                reason=''if motion_audit['acquisition_complete']else'运动阶段不完整；本次静态结果仅使用已验收静态姿态')
+    except ValueError as error:dynamic_diagnostic=dict(usable=False,reason=str(error),used_for_static_fit=False)
     prior, raw, masses, moments, offsets, shifts, invalid = _raw_gravity_candidate(
         fit, mapped, metadata, mode, set(locked))
     # The XML COM inertia tensor is never changed. Pinocchio dynamic inertia
@@ -359,12 +357,12 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
         'torque_bias_convention': 'model_minus_measured',
         'dynamic_data_diagnostic': dynamic_diagnostic,
         'static_pose_sources': static_provenance,
-        'static_aggregation': 'per_pose_median_of_up_to_last_60_accepted_frames',
+        'static_aggregation': 'per_direction_actual_q_regressor_then_equal_pose_group_mean',
         'fit_weighting': 'equal_pose_equal_joint_train_column_standardization',
         'static_data_source': 'accepted_static.csv' if (folder/'accepted_static.csv').is_file() else 'frames.csv',
         'runtime_provenance': metadata.get('runtime_provenance'),
         'offline_solver_sha256': {name: _digest(Path(__file__).with_name(name))
-                                  for name in ('gravity_legacy.py', 'gravity_mass_com.py', 'gravity_validation.py', 'legacy_full_inertial.py', 'full_inertial.py', 'model_calibration_source.py')},
+                                  for name in ('gravity_legacy.py', 'gravity_mass_com.py', 'gravity_validation.py', 'static_observations.py', 'legacy_full_inertial.py', 'full_inertial.py', 'model_calibration_source.py')},
         'task_id': metadata['task_id'],
         'core_fingerprint': metadata.get('core_fingerprint'),
         'urdf_fingerprint': metadata.get('urdf_fingerprint'),

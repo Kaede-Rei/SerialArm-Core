@@ -201,11 +201,47 @@ void recording_roundtrip(const fs::path& temp) {
     frame.reference_position={0};frame.reference_velocity={0};frame.feedback_age_ms=20;frame.valid=true;
     frame.phase="static_reverse";frame.acceleration_source="robot_feedback_velocity_filter";
     frame.feedback_received_ns={12345678901234567ULL};frame.feedback_timing_valid={1};
+    recorder.push(frame);
+    bool active_snapshot_rejected=false;
+    try{(void)recorder.frames();}catch(const std::logic_error&){active_snapshot_rejected=true;}
+    require(active_snapshot_rejected,"active full-history snapshot must be rejected before blocking the producer");
     recorder.push(frame);recorder.stop();
+    recorder.push(frame);
+    const auto finished=recorder.status();
+    require(finished.accepted_frames==2 && finished.written_frames==2 && !finished.write_failed,"stop drains accepted frames and rejects later producer writes");
     const auto loaded=load_model_calibration_frames(folder.string(),1);
-    require(bool(loaded)&&loaded->size()==1,"read extended timestamp CSV");
+    require(bool(loaded)&&loaded->size()==2,"read extended timestamp CSV");
     require(loaded->front().feedback_received_ns==frame.feedback_received_ns,"nanosecond timestamp roundtrip is exact");
     require(loaded->front().feedback_timing_valid==frame.feedback_timing_valid,"timing validity roundtrip");
+}
+void paired_static_recording(const fs::path& temp) {
+    ModelCalibrationMetadata metadata;metadata.task_id="paired";metadata.joint_names={"axis"};
+    ModelCalibrationRecorder recorder;
+    require(bool(recorder.start(temp/"paired",metadata)),"start paired recorder");
+    std::vector<ModelCalibrationFrame> rows;
+    for(std::size_t i=0;i<35;++i) {
+        ModelCalibrationFrame f;f.position={.2};f.velocity={0};f.torque={1};f.acceleration={0};
+        f.reference_position={.2};f.reference_velocity={0};f.valid=true;f.feedback_age_ms=1;
+        f.pose_group=1;f.validation=false;f.direction="reverse";f.phase="static_reverse";
+        f.cycle=i+1;f.monotonic_ns=(i+1)*5000000ULL;rows.push_back(f);
+    }
+    require(recorder.approve_static_group(rows),"reverse static group accepted");
+    require(!recorder.approve_static_group(rows),"duplicate reverse group rejected");
+    for(auto& f:rows){f.direction="forward";f.phase="static_forward";f.cycle+=100;f.monotonic_ns+=500000000ULL;}
+    require(recorder.approve_static_group(rows),"same pose forward group accepted");
+    require(recorder.approved_static_frames().size()==70,"both directions retained");
+    const auto grouped=group_static_calibration_frames(recorder.approved_static_frames(),30);
+    require(grouped.size()==1 && grouped.front().samples.size()==70,"tail trimming must preserve both directions");
+    rows[0].pose_group=2;
+    require(!recorder.approve_static_group(rows),"mixed pose window rejected");
+    for(auto& f:rows){f.pose_group=2;f.direction="reverse";f.phase="static_reverse";f.position={.2};f.cycle+=100;f.monotonic_ns+=500000000ULL;}
+    require(recorder.approve_static_group(rows),"second reverse pose accepted");
+    for(auto& f:rows){f.direction="forward";f.phase="static_forward";f.position={.23};f.cycle+=100;f.monotonic_ns+=500000000ULL;}
+    require(recorder.approve_static_group(rows),"mismatched actual pose remains an observation");
+    const auto quality=recorder.status();
+    require(quality.bidirectional_static_groups==2 && quality.static_pair_position_warnings==1,"pose repeatability warning recorded during acquisition");
+    require(std::abs(quality.max_static_pair_position_delta_rad-.03)<1e-10,"actual pairing position delta");
+    recorder.stop();
 }
 void feedback_age_is_not_control_gap() {
     auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
@@ -279,7 +315,7 @@ void full_id_validity() {
 int main() {
     const auto temp=fs::temp_directory_path()/("serialarm-contract-"+std::to_string(::getpid()));fs::create_directories(temp);
     try {
-        recording_roundtrip(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
+        recording_roundtrip(temp);paired_static_recording(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
         fs::remove_all(temp);std::cout<<"runtime contracts passed\n";return 0;
     } catch(const std::exception& error) {fs::remove_all(temp);std::cerr<<error.what()<<'\n';return 1;}
 }

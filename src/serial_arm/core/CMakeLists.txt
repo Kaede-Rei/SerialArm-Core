@@ -402,7 +402,7 @@ if(BUILD_TESTING)
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdk_consumer.py ${CMAKE_CURRENT_BINARY_DIR})
     add_test(NAME serial_arm_launcher_contracts COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
         -s ${CMAKE_CURRENT_SOURCE_DIR}/../../../apps/launcher/tests)
-    set_tests_properties(serial_arm_launcher_contracts PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
+    set_tests_properties(serial_arm_launcher_contracts PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
     if(SERIAL_ARM_BUILD_PYTHON)
         add_test(NAME serial_arm_python_runtime COMMAND ${Python_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_runtime_tests.py
@@ -499,3 +499,9 @@ message(STATUS "  SERIAL_ARM_ENABLE_ROS2    = ${SERIAL_ARM_ENABLE_ROS2}")
 message(STATUS "  SERIAL_ARM_BUILD_TERMINAL = ${SERIAL_ARM_BUILD_TERMINAL}")
 message(STATUS "  Dynamics / Pinocchio    = REQUIRED")
 message(STATUS "  SERIAL_ARM_BUILD_PYTHON   = ${SERIAL_ARM_BUILD_PYTHON}")
+
+if(BUILD_TESTING)
+  add_executable(calibration_acquisition_plan_tests tests/calibration_acquisition_plan_tests.cpp)
+  target_include_directories(calibration_acquisition_plan_tests PRIVATE include)
+  add_test(NAME serial_arm_calibration_acquisition_plan_tests COMMAND calibration_acquisition_plan_tests)
+endif()

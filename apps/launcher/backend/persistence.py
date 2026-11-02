@@ -643,7 +643,19 @@ def load_model_calibration_summary(directory):
                 and isinstance(candidate.get('first_moments'), list)
                 and isinstance(candidate.get('candidate_masses'), dict)):
             offline_candidate = candidate
+    idim_candidate = None
+    if (folder/'idim-candidate.json').is_file():
+        try:
+            item=json.loads((folder/'idim-candidate.json').read_text(encoding='utf-8'))
+            if item.get('task_id') == task_id and item.get('solver') in ('filtered_idim_v1','joint_physical_idim_v2'):
+                from dynamic_identification import _receipt
+                idim_candidate=dict(item)
+                if item.get('input_sha256')!=_receipt(folder):
+                    idim_candidate.update(exportable=False,review_exportable=False,source_stale=True,blocking_reasons=[*(item.get('blocking_reasons')or[]),'源记录已变化，请重算'])
+        except (OSError,ValueError,TypeError):
+            pass
     return {'directory': str(folder), 'metadata': metadata, 'result': display_result,
+            'idim_candidate':idim_candidate,
             'recomputed_candidate': offline_candidate,
             'identifiable_links': selectable_links,
             'has_result': bool(result), 'record_kind': record_kind, 'can_resume': can_resume,

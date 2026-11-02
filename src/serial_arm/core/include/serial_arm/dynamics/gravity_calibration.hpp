@@ -103,6 +103,9 @@ struct ModelCalibrationRecorderStatus {
     std::size_t accepted_frames{ 0 };
     std::size_t written_frames{ 0 };
     std::size_t dropped_frames{ 0 };
+    std::size_t bidirectional_static_groups{ 0 };
+    std::size_t static_pair_position_warnings{ 0 };
+    double max_static_pair_position_delta_rad{ 0.0 };
     bool data_gap{ false };
     bool write_failed{ false };
     std::string error;
@@ -129,6 +132,7 @@ public:
     std::vector<ModelCalibrationFrame> approved_static_frames() const;
     void stop();
     ModelCalibrationRecorderStatus status() const;
+    // Full snapshots are offline-only; cannot block the control producer.
     std::vector<ModelCalibrationFrame> frames() const;
     tl::expected<void, std::string> write_trajectory(const std::vector<JointVector>& trajectory, double sample_dt);
     tl::expected<void, std::string> write_trajectory_checkpoint(const std::vector<JointVector>& trajectory, double sample_dt);
@@ -141,7 +145,8 @@ private:
     std::size_t capacity_{ 8192 };
     ModelCalibrationMetadata metadata_;
     std::filesystem::path directory_;
-    mutable std::mutex mutex_;
+    mutable std::mutex mutex_; // bounded producer queue / counters only
+    mutable std::mutex archive_mutex_; // history, static publication, file I/O
     std::condition_variable cv_;
     std::deque<ModelCalibrationFrame> queue_;
     std::vector<ModelCalibrationFrame> frames_;

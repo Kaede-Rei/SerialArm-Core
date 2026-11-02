@@ -95,7 +95,7 @@ def export_record(root, directory, kind):
         'teaching':{'metadata.json','trajectory.csv','trajectory.checkpoint.csv','source/model.urdf','source/core.yaml'},
         'gain':{'metadata.json','trajectory.csv','gain-candidate.json','frames.csv','result.json','source/model.urdf','source/core.yaml'},
         'gravity':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','recomputed-candidate.json','result.json','candidate-offline.urdf','source/model.urdf','source/core.yaml'},
-        'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','source/model.urdf','source/core.yaml'}
+        'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','idim-candidate.json','source/model.urdf','source/core.yaml'}
     }[kind]
     included=[]
     with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as archive:

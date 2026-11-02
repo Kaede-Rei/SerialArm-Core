@@ -66,7 +66,7 @@ class Bridge extends EventEmitter {
     }
     return new Promise((resolve, reject) => {
       const id = ++this.seq;
-      const timeout = (method === 'model_calibration_export_full_inertial' || method === 'model_calibration_advanced') ? 190000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' || method === 'calibration_tool_export' ? 190000 : method === 'stop' || method === 'workbench_stop' || method === 'close' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 60000 : (method === 'workbench_request' && params?.method === 'model_calibration_import_trajectory' ? 60000 : 30000));
+      const timeout = ['model_calibration_idim','model_calibration_idim_audit','model_calibration_idim_export','model_calibration_advanced'].includes(method) ? 340000 : (method === 'model_calibration_export_full_inertial' || method === 'model_calibration_advanced') ? 190000 : method === 'model_calibration_recompute' || method === 'model_calibration_export_urdf' || method === 'calibration_tool_export' ? 190000 : method === 'stop' || method === 'workbench_stop' || method === 'close' || (method === 'workbench_request' && params?.method === 'park') ? 125000 : (method === 'workbench_request' && params?.method === 'model_calibration_teach_stop' ? 60000 : (method === 'workbench_request' && params?.method === 'model_calibration_import_trajectory' ? 60000 : 30000));
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Backend request timed out')); }, timeout);
       this.pending.set(id, {resolve, reject, timer});
       this.child.stdin.write(JSON.stringify({id, method, params}) + '\n');

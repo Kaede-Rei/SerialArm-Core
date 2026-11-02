@@ -13,6 +13,12 @@ def run_full_inertial_isolated(directory, destination=None, *, timeout=120, mode
     env = dict(os.environ)
     # Avoid a user-site NumPy 2 overriding the ROS Humble NumPy 1 ABI
     env['PYTHONNOUSERSITE'] = '1'
+    venv_site=Path(sys.prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'site-packages'
+    if venv_site.is_dir():env['PYTHONPATH']=str(venv_site)+os.pathsep+env.get('PYTHONPATH','')
+    env['OPENBLAS_NUM_THREADS'] = '1'
+    env['OMP_NUM_THREADS'] = '1'
+    if mode in ('full','inertia','idim_identify'):
+        timeout = max(timeout,300)
     operation = {
         'legacy_gravity_recompute': '离线重力模型辨识',
         'legacy_gravity_export': '离线重力模型导出',
@@ -57,3 +63,17 @@ def recompute_gravity_isolated(directory, mode='global', locked_links=None, *, o
         raise ValueError('请选择完整的标定任务目录')
     return run_full_inertial_isolated(folder,mode='legacy_gravity_recompute',
         locked_links={'mode':mode,'locked_links':locked,'objective':objective})
+
+
+def identify_dynamics_isolated(directory, *, mode='global', locked_links=None,
+                               validation_directory=None, estimator='WLS', cutoff_hz=5., destination=None,fixed_joint_positions=None,load_description=None):
+    return run_full_inertial_isolated(directory, destination, timeout=300, mode='idim_identify',
+        locked_links=dict(mode=mode,locked_links=locked_links or [],
+                          validation_directory=validation_directory,estimator=estimator,cutoff_hz=cutoff_hz,
+                          fixed_joint_positions=fixed_joint_positions or {},load_description=load_description))
+
+def audit_dynamics_isolated(directory):
+    return run_full_inertial_isolated(directory,mode='idim_audit',timeout=120)
+
+def export_dynamics_isolated(report_path,destination=None, *, review_only=False,report_only=False):
+    return run_full_inertial_isolated(report_path,destination,mode='idim_export',locked_links=dict(review_only=review_only,report_only=report_only))

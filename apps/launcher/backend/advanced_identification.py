@@ -96,7 +96,11 @@ def assess_record(directory):
         training = holdout = 0
         static_error = str(error)
     try:
-        checked_rows = _extract_rows(path/'frames.csv', names)
+        from dynamic_identification import load_observations
+        observed = load_observations(path)
+        checked_rows = [s for s in observed['segments'] if observed['t'][s['hi']-1]-observed['t'][s['lo']] >= 3.5]
+        if not checked_rows:
+            raise ValueError('连续有效运动段不足 3.5 秒')
         dynamic_error = None
     except (ValueError, KeyError, TypeError) as error:
         checked_rows = []
@@ -104,12 +108,13 @@ def assess_record(directory):
     return {
         'directory': str(path), 'task_id': metadata.get('task_id', ''),
         'static_groups': len(static_poses), 'static_rejection_reason': static_error, 'training_groups': training, 'holdout_groups': holdout,
-        'valid_dynamic_samples': len(checked_rows), 'raw_motion_sample_count': valid_dynamic, 'peak_joint_speed_rad_s': peak_vel,
+        'valid_dynamic_samples': sum(x['hi']-x['lo'] for x in checked_rows),
+        'position_derived_motion_blocks': len(checked_rows), 'raw_motion_sample_count': valid_dynamic, 'peak_joint_speed_rad_s': peak_vel,
         'peak_joint_acceleration_rad_s2': peak_acc, 'phase_samples': phases,
         'gravity_ready': training >= 4 and holdout >= 1,
         'dynamic_precheck': bool(checked_rows),
         'dynamic_rejection_reason': dynamic_error,
-        'validated_dynamic_sample_count': len(checked_rows),
+        'validated_dynamic_sample_count': sum(x['hi']-x['lo'] for x in checked_rows),
         'limitations': [
             '有效动态帧数和速度幅度仅供预筛，不能替代动力学回归矩阵可辨识性检查',
             '电机反馈力矩不是独立的关节力矩真值，加速度由现有数据源估计',
@@ -285,6 +290,20 @@ def _validate_dynamic_candidate(fit, candidate):
 
 
 def run_advanced(directory, mode, destination=None, locked_links=None):
+    if mode in ('full','inertia'):
+        from dynamic_identification import identify
+        report = identify(directory,mode='local' if locked_links else 'global',
+                          locked_links=locked_links or [],destination=destination,parameter_target=mode)
+        # Legacy clients may display a review report, but never activate an
+        # unexported raw representative through the old temporary-apply path.
+        report.update(candidate_urdf=None,validation_scope='dynamic_diagnostic',
+                      full_dynamics_physical_pass=report['physical_pass'],
+                      regressor_rank=report['structural_rank'],
+                      regressor_columns=len(report['free_parameter_indices']),
+                      original_holdout_rms_nm=report['validation_motion']['baseline']['rms_nm'],
+                      candidate_holdout_rms_nm=report['validation_motion']['candidate']['rms_nm'],
+                      warnings=report['blocking_reasons'])
+        return report
     if mode not in MODES:
         raise ValueError('unknown advanced identification target')
     import pinocchio as pin
