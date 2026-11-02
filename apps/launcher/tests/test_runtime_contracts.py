@@ -1,4 +1,5 @@
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -12,6 +13,12 @@ sys.path.insert(0, str(ROOT / 'apps/launcher/backend'))
 from profiles import Inspector
 from profile_library import ProfileLibrary, _safe_extract
 from gravity_mass_com import observable_gravity_basis
+sys.path.insert(0, str(ROOT / 'tools/install'))
+from provenance import environment_problem
+from plan import parse_plan
+from runner import Runner
+sys.path.insert(0, str(ROOT / 'packaging/linux'))
+from stage import python_gui_modules, validate_python_payload
 
 URDF = '<robot name="test"><link name="base"/><link name="tip"/><joint name="axis" type="revolute"><parent link="base"/><child link="tip"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" velocity="1" effort="1"/></joint></robot>'
 
@@ -65,5 +72,48 @@ class RuntimeContracts(unittest.TestCase):
         basis, singular, rank=observable_gravity_basis(matrix,1,np.ones(1))
         self.assertEqual(rank,1)
         self.assertTrue(np.allclose(basis@basis.T,np.diag([1,0,0])))
+    def test_moved_checkout_reports_complete_rebuild_command(self):
+        state = self.path / '.install'; state.mkdir()
+        (state / 'manifest.json').write_text(json.dumps({
+            'root': str(self.path / 'previous-location'), 'preset': 'ros2',
+            'robot': 'dm_arm', 'ros_distro': 'humble', 'terminal': True,
+            'python': True, 'ros2': True, 'moveit': True, 'gui': True, 'tests': True}))
+        problem = environment_problem(self.path)
+        self.assertIn('源码目录已迁移', problem)
+        self.assertIn(str(self.path / 'install.sh'), problem)
+        self.assertIn('--clean-rebuild', problem)
+        self.assertIn('--with-python', problem)
+        self.assertIn('--with-tests', problem)
+    def test_environment_detects_broken_native_install_link(self):
+        state = self.path / '.install'; state.mkdir()
+        setup = state / 'environment.bash'; setup.write_text(':\n')
+        prefix = self.path / 'install'; prefix.mkdir()
+        (prefix / 'terminal').symlink_to(self.path / 'deleted-build/terminal')
+        (state / 'manifest.json').write_text(json.dumps({
+            'root': str(self.path), 'workspace_setup': str(setup), 'install_prefix': str(prefix)}))
+        self.assertIn('安装链接已失效', environment_problem(self.path))
+    def test_clean_rebuild_only_removes_selected_native_configuration(self):
+        plan = parse_plan(['--preset', 'core', '--clean-rebuild'], self.path)
+        runner = Runner(plan)
+        for directory in (runner.build, runner.prefix, self.path / 'install/unified/other'):
+            directory.mkdir(parents=True)
+            (directory / 'marker').write_text('generated')
+        state = self.path / '.install'; state.mkdir()
+        (state / 'manifest.json').write_text('{}')
+        runner.clean_configuration()
+        self.assertFalse(runner.build.exists())
+        self.assertFalse(runner.prefix.exists())
+        self.assertTrue((self.path / 'install/unified/other/marker').is_file())
+        self.assertTrue((state / 'manifest.json').is_file())
+    def test_payload_cannot_borrow_solver_from_host_pythonpath(self):
+        with mock.patch.dict(os.environ, {'PYTHONPATH': str(ROOT / '.install/gui-venv/lib/python3.10/site-packages')}):
+            with self.assertRaisesRegex(ValueError, 'Isolated packaged Python solver check failed'):
+                validate_python_payload(self.path)
+    @unittest.skipUnless((ROOT / '.install/gui-venv/bin/python').is_file(), 'GUI environment not provisioned')
+    def test_packaged_dependency_closure_solves_without_host_packages(self):
+        python_gui_modules(ROOT, self.path)
+        self.assertTrue((self.path / 'python/cvxpy').is_dir())
+        self.assertTrue((self.path / 'python/clarabel').is_dir())
+        self.assertTrue(any((self.path / 'python').glob('_cffi_backend*.so')))
 
 if __name__ == '__main__': unittest.main()

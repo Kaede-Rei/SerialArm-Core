@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cerrno>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,8 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <poll.h>
+#include <unistd.h>
 
 #ifndef SERIAL_ARM_DEFAULT_CONFIG_PATH
 #define SERIAL_ARM_DEFAULT_CONFIG_PATH "config/arm.yaml"
@@ -636,15 +639,14 @@ bool is_zero_vector(const JointVector& values) {
 
 class MockMotorBus final : public MotorBus {
 public:
-    explicit MockMotorBus(std::size_t size) {
+    explicit MockMotorBus(HardwareCapabilities capabilities) : capabilities_(std::move(capabilities)) {
+        const auto size = capabilities_.size();
         state_.pos.assign(size, 0.0);
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
         state_.enabled.assign(size, 1);
         state_.err_code.assign(size, 0);
-        capabilities_.resize(size);
-        for(std::size_t i = 0; i < size; ++i) capabilities_[i].actuator_name = "mock" + std::to_string(i + 1);
     }
 
     tl::expected<void, MotorBusErr> configure(const std::string& config_path) override {
@@ -771,7 +773,7 @@ public:
         }
         else {
             robot_cfg.runtime.write_enabled = true;
-            motor_bus = std::make_unique<MockMotorBus>(cfg_.joint_names.size());
+            motor_bus = std::make_unique<MockMotorBus>(*ordered_capabilities);
         }
         ModelFeedforwardFn model_feedforward = [this](ModelFeedforwardMode mode, const JointState& state, const JointVector& acc, const JointVector& ref_acc, double) {
             const auto update_result = dynamics_.update(state, acc, ref_acc);
@@ -857,6 +859,10 @@ public:
         std::ostream protocol(protocol_buffer);
         std::mutex protocol_mutex;
         std::atomic<bool> telemetry_running{ true };
+        std::atomic<bool> parking_running{ false };
+        std::atomic<bool> parking_cancelled{ false };
+        std::atomic<bool> shutdown_complete{ false };
+        std::thread parking;
 
         auto emit_reply = [&](long long id, const std::string& result, const std::string& error = std::string{ }) {
             std::lock_guard<std::mutex> output_lock(protocol_mutex);
@@ -886,9 +892,74 @@ public:
             if(telemetry.joinable()) telemetry.join();
             };
 
+        auto cancel_parking = [&]() {
+            parking_cancelled.store(true);
+            cycle_cv_.notify_all();
+            if(parking.joinable()) parking.join();
+            };
+        auto start_parking = [&](long long id, bool shutdown) {
+            if(parking.joinable()) parking.join();
+            parking_cancelled.store(false);
+            parking_running.store(true);
+            try { parking = std::thread([&, id, shutdown]() {
+                try {
+                    park_and_deactivate(&parking_cancelled);
+                    if(parking_cancelled.load()) throw std::runtime_error("park interrupted by operator");
+                    if(shutdown && machine_robot_state() == RobotState::FAULT) machine_deactivate();
+                    if(machine_robot_state() != RobotState::INACTIVE) {
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        throw std::runtime_error(park_last_error_.empty() ? "park did not reach INACTIVE" : park_last_error_);
+                    }
+                    emit_reply(id, "true");
+                    if(shutdown) shutdown_complete.store(true);
+                }
+                catch(const std::exception& error) { emit_reply(id, "null", error.what()); }
+                parking_running.store(false);
+                }); }
+            catch(...) { parking_running.store(false); throw; }
+            };
+
+        // Poll the pipe so successful asynchronous shutdown can end this loop
+        // without waiting for another command or for the peer to close stdin.
+        std::string buffered_input;
+        bool input_eof = false;
+        auto next_request = [&](std::string& line) {
+            while(!shutdown_complete.load()) {
+                const auto newline = buffered_input.find('\n');
+                if(newline != std::string::npos) {
+                    line = buffered_input.substr(0, newline);
+                    buffered_input.erase(0, newline + 1);
+                    return true;
+                }
+                if(input_eof) {
+                    if(buffered_input.empty()) return false;
+                    line.swap(buffered_input);
+                    return true;
+                }
+                pollfd input{ STDIN_FILENO, POLLIN, 0 };
+                const int ready = ::poll(&input, 1, 20);
+                if(ready < 0) {
+                    if(errno == EINTR) continue;
+                    throw std::runtime_error("native request pipe polling failed");
+                }
+                if(!ready) continue;
+                char chunk[8192];
+                const auto count = ::read(STDIN_FILENO, chunk, sizeof(chunk));
+                if(count < 0) {
+                    if(errno == EINTR) continue;
+                    throw std::runtime_error("native request pipe read failed");
+                }
+                if(count == 0) input_eof = true;
+                else buffered_input.append(chunk, static_cast<std::size_t>(count));
+                if(buffered_input.size() > 1024 * 1024 && buffered_input.find('\n') == std::string::npos)
+                    throw std::runtime_error("request exceeds 1 MiB");
+            }
+            return false;
+            };
+
         try {
             std::string line;
-            while(std::getline(std::cin, line)) {
+            while(next_request(line)) {
                 if(line.empty()) continue;
                 long long id = 0;
                 try {
@@ -899,6 +970,11 @@ public:
                     if(!request["method"] || !request["method"].IsScalar()) throw std::runtime_error("method is required");
                     const std::string method = request["method"].as<std::string>();
                     const YAML::Node params = request["params"];
+                    if(parking_running.load() && method != "status" && method != "get_admittance" &&
+                       method != "candidate_overrides" && method != "model_calibration_status" &&
+                       method != "calibration_status" && method != "teach_replay_status" &&
+                       method != "deactivate" && method != "hold")
+                        throw std::runtime_error("stop the active park operation before other commands");
                     if((teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3) &&
                        method != "status" && method != "teach_replay_status" &&
                        method != "teach_replay_record_stop" && method != "teach_replay_stop" &&
@@ -913,6 +989,7 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "deactivate") {
+                        cancel_parking();
                         machine_deactivate();
                         emit_reply(id, "true");
                     }
@@ -926,12 +1003,7 @@ public:
                         if(model_calibration_phase_.load() == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION)
                             machine_model_calibration_cancel();
                         machine_require_no_calibration("park");
-                        park_and_deactivate();
-                        if(machine_robot_state() != RobotState::INACTIVE) {
-                            const std::string detail = park_last_error_.empty() ? "park did not reach INACTIVE" : park_last_error_;
-                            throw std::runtime_error(detail);
-                        }
-                        emit_reply(id, "true");
+                        start_parking(id, false);
                     }
                     else if(method == "clear_fault") {
                         machine_clear_fault();
@@ -1121,6 +1193,7 @@ public:
                         emit_reply(id, machine_candidate_overrides_json());
                     }
                     else if(method == "hold") {
+                        cancel_parking();
                         machine_hold();
                         emit_reply(id, "true");
                     }
@@ -1132,11 +1205,7 @@ public:
                         if(gravity_verify_active_) machine_gravity_verify_cancel();
                         if(machine_calibration_kind_ != "none") machine_calibration_cancel();
                         if(model_calibration_task_active()) { machine_model_calibration_cancel(); if(model_calibration_worker_.joinable()) model_calibration_worker_.join(); }
-                        park_and_deactivate();
-                        if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
-                        if(machine_robot_state() != RobotState::INACTIVE) throw std::runtime_error("shutdown could not deactivate Robot");
-                        emit_reply(id, "true");
-                        break;
+                        start_parking(id, true);
                     }
                     else {
                         throw std::runtime_error("unknown request method");
@@ -1148,6 +1217,7 @@ public:
             }
         }
         catch(...) {
+            cancel_parking();
             teach_replay_record_stop_.store(true);teach_replay_stop_.store(true);model_calibration_cancel_.store(true);cycle_cv_.notify_all();
             if(teach_replay_worker_.joinable())teach_replay_worker_.join();
             if(machine_friction_thread_.joinable()) {
@@ -1157,6 +1227,7 @@ public:
             throw;
         }
 
+        cancel_parking();
         teach_replay_record_stop_.store(true);teach_replay_stop_.store(true);model_calibration_cancel_.store(true);cycle_cv_.notify_all();
         if(teach_replay_worker_.joinable())teach_replay_worker_.join();
         if(machine_calibration_kind_ != "none") machine_calibration_cancel();
@@ -1296,6 +1367,7 @@ private:
         clear_command_sources();
         if(robot_.get_state() != RobotState::ACTIVE) actuator_info_after_connect_ = false;
         const auto result = robot_.activate();
+        cfg_.safety = robot_.get_config().safety;
         if(!result) throw machine_robot_error("activate", result.error());
         refresh_actuator_info_locked();
         last_output_.reset();
@@ -5102,6 +5174,7 @@ private:
         clear_command_sources();
         if(robot_.get_state() != RobotState::ACTIVE) actuator_info_after_connect_ = false;
         const auto result = robot_.activate();
+        cfg_.safety = robot_.get_config().safety;
         if(!result) {
             std::cout << "activate() 失败：\n";
             print_fault(result.error());
@@ -5116,9 +5189,10 @@ private:
         }
     }
 
-    void park_and_deactivate() {
+    void park_and_deactivate(const std::atomic<bool>* cancelled = nullptr) {
         std::unique_lock<std::mutex> lock(mutex_);
         park_last_error_.clear();
+        if(cancelled && cancelled->load()) { park_last_error_ = "park interrupted by operator"; return; }
         clear_command_sources();
         if(robot_.get_state() == RobotState::INACTIVE) {
             std::cout << "Robot 已经处于 INACTIVE\n";
@@ -5143,6 +5217,15 @@ private:
         robot_.set_admittance_suspended(true);
         const auto resume_admittance = [this]() {
             robot_.set_admittance_suspended(false);
+            };
+        const auto interrupted = [&]() {
+            if(!cancelled || !cancelled->load()) return false;
+            clear_command_sources();
+            if(robot_.get_state() == RobotState::ACTIVE)
+                (void)robot_.set_impedance_mode(JointImpedanceMode::RIGID_HOLD, Robot::Clock::now());
+            park_last_error_ = "park interrupted by operator";
+            resume_admittance();
+            return true;
             };
 
         const auto mode_result = robot_.set_impedance_mode(JointImpedanceMode::COMPLIANT_TRACKING, Robot::Clock::now());
@@ -5177,10 +5260,12 @@ private:
         std::optional<Robot::TimePoint> settled_at;
         bool rigid_finish_mode = false;
         while(robot_.get_state() == RobotState::ACTIVE) {
+            if(interrupted()) return;
             const std::uint64_t previous_cycle = cycle_counter_;
-            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20), [this, previous_cycle]() {
-                return cycle_counter_ != previous_cycle || robot_.get_state() != RobotState::ACTIVE;
+            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20), [this, previous_cycle, cancelled]() {
+                return cycle_counter_ != previous_cycle || robot_.get_state() != RobotState::ACTIVE || (cancelled && cancelled->load());
                 });
+            if(interrupted()) return;
             const Robot::TimePoint now = Robot::Clock::now();
             // Do not validate or deactivate based on an old frozen feedback frame.
             if(cycle_counter_ == previous_cycle || !last_output_) {
@@ -5298,6 +5383,7 @@ private:
             }
         }
 
+        if(interrupted()) return;
         if(robot_.get_state() != RobotState::ACTIVE) {
             park_last_error_ = "park interrupted: robot left ACTIVE during approach (" + to_string(robot_.get_state()) + ")";
             std::cout << "停放过程中 Robot 离开 ACTIVE：" << to_string(robot_.get_state()) << '\n';
@@ -5318,8 +5404,10 @@ private:
         const Robot::TimePoint hold_until = Robot::Clock::now() + std::chrono::milliseconds(200);
         while(robot_.get_state() == RobotState::ACTIVE && Robot::Clock::now() < hold_until) {
             cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
+            if(interrupted()) return;
         }
 
+        if(interrupted()) return;
         const auto result = robot_.deactivate();
         if(!result) {
             park_last_error_ = "park reached the configured pose but deactivate() failed; inspect hardware state";

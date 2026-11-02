@@ -327,6 +327,8 @@ public:
     HardwareCapabilities hardware_capabilities() const {
         return motor_bus_ ? motor_bus_->capabilities() : HardwareCapabilities{};
     }
+    /** @brief 当前有效配置；连接成功后包含真实硬件能力与请求策略的交集 */
+    const RobotCfg& get_config() const noexcept { return cfg_; }
     /**
      * @brief 获取最近一次锁存的故障信息
      * @return 最近一次故障信息，若无故障则为空
@@ -490,6 +492,7 @@ private:
 
 private:
     RobotCfg cfg_;                                  ///< 完整 Robot 配置
+    SafetyCfg requested_safety_;                     ///< 保留连接前请求，避免多次连接累计收窄
     JointCtrller ctrller_;                          ///< Joint 控制器
     JointActuatorMapper mapper_;                    ///< Joint/Actuator 映射
     Safety safety_;                                 ///< 安全检查器

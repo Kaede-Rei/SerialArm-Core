@@ -9,11 +9,13 @@
 #include "serial_arm/interaction/friction_residual_model.hpp"
 #include "serial_arm/interaction/admittance_observer_mode.hpp"
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
+#include "serial_arm/config/limit_resolver.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace serial_arm {
@@ -112,9 +114,15 @@ struct DynamicsCfg {
     std::string gravity_correction_path;                ///< 可选重力校正包路径，为空时仅使用原模型与 gravity_scale
 };
 
-/**
- * @brief SerialArm 机器人完整静态配置
- */
+/** @brief 硬件能力重新解析所需的原模型、策略与初始解析结果 */
+struct SafetyLimitSource {
+    RobotModelInfo model;
+    SafetyPolicyCfg policy;
+    JointLimitCfg initial_limits;
+    double initial_state_vel_fault_ratio{ 1.0 };
+};
+
+/** @brief SerialArm 机器人完整静态配置 */
 struct RobotCfg {
     std::vector<std::string> joint_names;  ///< 固定的 Joint 顺序
     RuntimeCfg runtime;                    ///< Robot 运行参数
@@ -124,6 +132,7 @@ struct RobotCfg {
     JointActuatorMapCfg mapper;            ///< Joint/Actuator 映射
     SafetyCfg safety;                      ///< Joint/Actuator 安全配置
     DynamicsCfg dynamics;                  ///< 动力学参数
+    std::optional<SafetyLimitSource> safety_limit_source; ///< 保留策略来源，以实际硬件能力重新解析
 };
 
 /**
@@ -176,6 +185,10 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg);
  * @brief 验证完整配置
  */
 tl::expected<void, ConfigErrInfo> validate_robot_cfg(const RobotCfg& cfg);
+
+/** @brief 连接后重新解析硬件限制，保留策略与显式修改的安全上限 */
+tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
+    const RobotCfg& requested, const HardwareCapabilities& capabilities);
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //
 

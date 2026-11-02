@@ -79,6 +79,12 @@ def main():
         return 2
     signal.signal(signal.SIGTERM, interrupted)
     argv = sys.argv[1:]
+    if argv == ['--check-environment']:
+        from provenance import environment_problem
+        problem = environment_problem(ROOT)
+        if problem:
+            print(problem, file=sys.stderr)
+        return int(bool(problem))
     if '--gui-only' in argv and not any(a == '--preset' or a.startswith('--preset=') for a in argv):
         argv = ['--preset', 'custom', *argv]
     if not any(a == '--preset' or a.startswith('--preset=') for a in argv):

@@ -289,7 +289,7 @@ function shell() {
     const quickTheme = `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${robotArtwork()}<strong>SerialArm Studio</strong></div><div class="title-center">${esc(state.config.profile || t('workspace'))}<span class="title-connection" id="title-connection"></span></div><div class="title-actions">${quickTheme}<button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button><div class="window-controls"><button id="win-min" class="title-button" aria-label="${busyText('最小化', 'Minimize')}">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="${busyText('最大化或还原', 'Maximize or restore')}">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="${busyText('关闭窗口', 'Close window')}">${icon('close')}</button></div></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">${t('modelCalibration')}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
     const lifecycle = [['lifecycle', 'readiness', 'check'], ['profile_setup', 'profileSetup', 'robot']];
     const expert = [['model', 'model', 'model'], ['geometry', 'geometryNav', 'check'], ['calibration', 'calibrationNav', 'hardware'], ['workbench', 'workbenchNav', 'workbench'], ['run', 'adapterNav', 'run'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
     const nav = ([name, key, ico]) => `<button class="nav-item" data-page="${name}" title="${t(key)}" aria-label="${t(key)}" ${!state.config.profile ? 'disabled' : ''}>${icon(ico)}<span>${state.language === 'en' ? ({ lifecycle: 'Readiness', profile_setup: 'Parameters', model: 'Model viewer', workbench: 'Control', geometry: 'Geometry', calibration: 'Dynamics', run: 'Adapters', diagnostics: 'Diagnostics' }[name] || t(key)) : t(key)}</span></button>`;
@@ -308,7 +308,7 @@ function shell() {
     if ($('copy-log')) $('copy-log').onclick = () => operation(() => copyTerminal(true));
     if ($('paste-log')) $('paste-log').onclick = () => operation(pasteTerminal);
     if ($('clear-log')) $('clear-log').onclick = () => { outputBuffer = ''; term?.clear(); };
-    if ($('stop-runtime')) $('stop-runtime').onclick = () => blockingOperation(busyText('正在停止运行...', 'Stopping runtime...'), () => api.request('stop'));
+    if ($('stop-runtime')) $('stop-runtime').onclick = () => workbenchConnected() ? confirmWorkbenchDisconnect() : blockingOperation(busyText('正在停止运行...', 'Stopping runtime...'), () => api.request('stop'));
     if ($('force-runtime')) $('force-runtime').onclick = () => forceConfirm();
     if ($('model-calibration-task-stop-teach')) $('model-calibration-task-stop-teach').onclick = () => modelCalibrationQuick('model_calibration_teach_stop');
     if ($('model-calibration-task-pause')) $('model-calibration-task-pause').onclick = () => modelCalibrationQuick('model_calibration_pause');
@@ -316,6 +316,9 @@ function shell() {
     if ($('model-calibration-task-hold')) $('model-calibration-task-hold').onclick = () => modelCalibrationQuick('hold');
     if ($('model-calibration-task-cancel')) $('model-calibration-task-cancel').onclick = () => modelCalibrationQuick('model_calibration_cancel');
     if ($('model-calibration-task-disable')) $('model-calibration-task-disable').onclick = () => modelCalibrationQuick('deactivate');
+    if ($('operation-hold')) $('operation-hold').onclick = () => interruptParking('hold');
+    if ($('operation-disable')) $('operation-disable').onclick = () => interruptParking('deactivate');
+    if ($('operation-force-disconnect')) $('operation-force-disconnect').onclick = confirmUnresponsiveDisconnect;
     mountTerminal(); applyTheme(); render();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('confirm-dialog')) $('confirm-dialog').addEventListener('close', refreshCalibrationAfterDialog);
@@ -1427,9 +1430,9 @@ async function temporaryCandidateAction(action, kind) {
 function calibrationStandalonePanelHtml(kind) {
     const en = state.language === 'en';
     const isTeach = kind === 'teaching';
-    const status = (isTeach ? (workbenchConnected()?state.telemetry?.model_calibration:null) : currentModelCalibration()) || {};
+    const status = (workbenchConnected() ? state.telemetry?.model_calibration : null) || {};
     const phase = status.phase || 'idle';
-    const live = workbenchConnected() && (isTeach || !state.modelCalibrationOffline);
+    const live = workbenchConnected();
     const robotActive = state.telemetry?.robot_state === 'ACTIVE';
     const selected = state.calibrationToolSelected[kind];
     const waiting = live && phase === 'waiting_replay_confirmation';
@@ -1561,7 +1564,7 @@ function refreshCalibrationActionControls() {
     const robotState = connected ? state.telemetry?.robot_state : 'OFFLINE';
     const active = robotState === 'ACTIVE';
     const inactive = robotState === 'INACTIVE';
-    const live = state.calibrationEntry === 'teaching' || !state.modelCalibrationOffline;
+    const live = ['teaching', 'gain'].includes(state.calibrationEntry) || !state.modelCalibrationOffline;
     const phase = state.telemetry?.model_calibration?.phase || 'idle';
     const ready = ['idle', 'complete', 'cancelled', 'failed'].includes(phase);
     const en = state.language === 'en';
@@ -1869,7 +1872,7 @@ function synchronizeWorkbenchSession(session) {
 function workbenchRecoveryRequired() { return workbenchConnected() && state.session?.recovery_required === true; }
 function workbenchForceDisconnectAvailable() {
     return workbenchConnected() && (workbenchRecoveryRequired() ||
-        state.session?.disconnect_blocked === true || state.telemetry?.robot_state === 'FAULT');
+        state.session?.disconnect_blocked === true || state.telemetry?.robot_state === 'FAULT' || state.parkingBusy === true);
 }
 function workbenchRecoveryNotice() {
     if (!workbenchRecoveryRequired()) return '';
@@ -2628,8 +2631,35 @@ function render() {
 function capture() { for (const key of Object.keys(state.config)) { const element = $(key); if (element) state.config[key] = element.value; } if ($('profile-select')) state.config.profile = $('profile-select').value; }
 async function operation(fn) { try { return await fn(); } catch (error) { toast(error, true); return null; } }
 function busyText(zh, en) { return state.language === 'en' ? en : zh; }
-function setOperationOverlay(message = '') { const overlay = $('operation-overlay'); if (!overlay) return; const show = !!message && !priorityErrorOpen; overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true'); const text = $('operation-message'); if (text && show) text.textContent = message; }
-async function blockingOperation(message, fn, minimumMs = 320) { if (state.blockingBusy) return null; state.blockingBusy = true; setOperationOverlay(message || busyText('正在处理...', 'Working...')); const started = performance.now(); try { return await fn(); } catch (error) { toast(error, true); return null; } finally { const remaining = minimumMs - (performance.now() - started); if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining)); state.blockingBusy = false; setOperationOverlay(''); } }
+function setOperationOverlay(message = '') { const overlay = $('operation-overlay'); if (!overlay) return; const show = !!message && !priorityErrorOpen; overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true'); const text = $('operation-message'); if (text && show) text.textContent = message; refreshParkingActions(); }
+async function blockingOperation(message, fn, minimumMs = 320) { if (state.blockingBusy) return null; state.blockingBusy = true; setOperationOverlay(message || busyText('正在处理...', 'Working...')); const started = performance.now(); try { return await fn(); } catch (error) { if (String(error?.serialarm?.technical || error?.message || error).includes('park interrupted by operator')) toast(busyText('停放已中断，机械臂状态以实时反馈为准', 'Parking interrupted; check live robot state')); else toast(error, true); return null; } finally { const remaining = minimumMs - (performance.now() - started); if (remaining > 0) await new Promise(resolve => setTimeout(resolve, remaining)); state.blockingBusy = false; setOperationOverlay(''); } }
+function refreshParkingActions() {
+    const actions = $('operation-safety-actions');
+    if (!actions) return;
+    actions.hidden = state.parkingBusy !== true;
+    for (const id of ['operation-hold', 'operation-disable']) {
+        const button = $(id);
+        if (button) button.disabled = state.parkingInterruptPending === true || !workbenchConnected() || workbenchRecoveryRequired();
+    }
+    const force = $('operation-force-disconnect');
+    if (force) force.disabled = !workbenchConnected();
+}
+async function interruptibleParking(fn) {
+    state.parkingBusy = true;
+    refreshParkingActions();
+    try { return await fn(); }
+    finally { state.parkingBusy = false; refreshParkingActions(); }
+}
+async function interruptParking(action) {
+    if (!state.parkingBusy || state.parkingInterruptPending || !['hold', 'deactivate'].includes(action)) return;
+    state.parkingInterruptPending = true;
+    refreshParkingActions();
+    try { await operation(() => workbenchRequest(action)); }
+    finally { state.parkingInterruptPending = false; refreshParkingActions(); }
+}
+async function requestWorkbenchStop(params = {}) {
+    return params.force ? api.request('workbench_stop', params) : interruptibleParking(() => api.request('workbench_stop', params));
+}
 function actionBusyMessage(action) { const labels = { activate: ['正在使能...', 'Activating...'], park: ['正在停放并失能...', 'Parking and disabling...'], deactivate: ['正在立即失能...', 'Disabling...'], hold: ['正在保持当前位置...', 'Holding current position...'], clear_fault: ['正在清除故障...', 'Clearing fault...'], fault_compliant: ['正在进入柔性恢复...', 'Entering compliant recovery...'], fault_rigid: ['正在返回刚性保持...', 'Returning to rigid hold...'] }; const value = labels[action] || ['正在处理...', 'Working...']; return busyText(value[0], value[1]); }
 async function refreshProfiles() {
     capture(); if (state.source === 'external' && !state.config.profile_file) throw new Error(t('fileHint')); const data = await api.request('profiles', state.config); state.profiles = data.profiles;
@@ -3195,8 +3225,8 @@ function confirmUnresponsiveDisconnect() {
     dialog.showModal();
     $('cancel-unresponsive-disconnect').onclick = () => dialog.close();
     $('confirm-unresponsive-disconnect').onclick = () => {
-        dialog.close(); blockingOperation(busyText('正在终止无响应的控制会话...', 'Terminating unresponsive control session...'), async () => {
-            await api.request('workbench_stop', { force: true });
+        dialog.close(); operation(async () => {
+            await requestWorkbenchStop({ force: true });
             toast(busyText('已请求终止控制进程，未确认电机失能，请检查硬件再重新连接', 'Control process termination requested; hardware disable was not verified'));
         });
     };
@@ -3210,7 +3240,7 @@ function confirmWorkbenchDisconnect() {
     }
     if (!kinds.length) {
         return blockingOperation(busyText('正在安全断开工作台...', 'Safely disconnecting workspace...'), async () => {
-            await api.request('workbench_stop', {});
+            await requestWorkbenchStop();
         });
     }
     const dialog = $('confirm-dialog');
@@ -3221,7 +3251,7 @@ function confirmWorkbenchDisconnect() {
     $('cancel-disconnect').onclick = () => dialog.close();
     $('confirm-disconnect').onclick = () => {
         dialog.close(); blockingOperation(busyText('正在撤销临时参数并断连...', 'Restoring temporary candidates and disconnecting...'), async () => {
-            await api.request('workbench_stop', {});
+            await requestWorkbenchStop();
             toast(en ? 'Temporary candidates removed before disconnect' : '临时应用已在断连前撤销');
         });
     };
@@ -3321,7 +3351,7 @@ async function workbenchCommand(action) {
     if (!method) throw new Error('unknown workspace action');
     state.commandState = 'submitting';
     try {
-        const result = await workbenchRequest(method);
+        const result = action === 'park' ? await interruptibleParking(() => workbenchRequest(method)) : await workbenchRequest(method);
         if (needsConfirmation) {
             state.confirmedActivationPid = state.session?.pid;
             if (rememberActivation) rememberRobotReminder('first_activation');

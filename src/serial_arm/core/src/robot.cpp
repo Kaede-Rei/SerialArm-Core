@@ -172,6 +172,7 @@ tl::expected<void, RobotFault> Robot::configure(
     }
 
     cfg_ = cfg;
+    requested_safety_ = cfg.safety;
     motor_bus_ = std::move(motor_bus);
     model_feedforward_ = std::move(model_feedforward);
     interaction_model_state_ = std::move(interaction_model_state);
@@ -194,6 +195,10 @@ tl::expected<void, RobotFault> Robot::activate() {
         // not trap the operator in FAULT forever. Only startup bus faults
         // without an active holding controller are eligible for retry.
         // An in-motion safety FAULT must still be cleared explicitly.
+        const bool startup_failure = !fault_hold_active_ && !has_completed_cycle_ && current_fault_ &&
+            (current_fault_->code==RobotErr::MOTOR_BUS_CONNECT_FAILED ||
+             current_fault_->code==RobotErr::MOTOR_BUS_ACTIVATE_FAILED);
+        if(!startup_failure) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
         const auto reset = clear_fault();
         if(!reset) return tl::make_unexpected(reset.error());
     }
@@ -210,6 +215,16 @@ tl::expected<void, RobotFault> Robot::activate() {
         enter_fault(fault, SafetyAction::DISABLE);
         return tl::make_unexpected(fault);
     }
+
+    RobotCfg requested=cfg_;
+    requested.safety=requested_safety_;
+    const auto limits=resolve_connected_safety_cfg(requested,motor_bus_->capabilities());
+    if(!limits) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    Safety replacement;
+    const auto configured=replacement.configure(*limits);
+    if(!configured) return tl::make_unexpected(make_safety_fault(configured.error()));
+    safety_=std::move(replacement);
+    cfg_.safety=*limits;
 
     const auto active = motor_bus_->activate();
     if(!active) {

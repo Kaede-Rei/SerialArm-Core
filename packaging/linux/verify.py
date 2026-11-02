@@ -16,6 +16,7 @@ def digest(stream):
 
 
 def validate_payload(payload):
+    from stage import validate_python_payload
     receipt=json.loads((payload/'build-receipt.json').read_text())
     for name, expected in receipt['files'].items():
         target=(payload/name).resolve()
@@ -35,6 +36,7 @@ def validate_payload(payload):
     if result.returncode:raise ValueError('Relocated model probe failed: '+result.stderr[-1800:])
     model=json.loads(result.stdout)
     if not model.get('ok'):raise ValueError('Relocated model probe returned failure')
+    validate_python_payload(payload)
     return receipt
 
 

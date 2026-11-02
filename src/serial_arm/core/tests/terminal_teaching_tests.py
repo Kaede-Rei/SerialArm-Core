@@ -18,7 +18,7 @@ class Terminal:
         self.proc=subprocess.Popen([TERMINAL,'--machine','--config',str(config),
             '--hardware-plugin',PLUGIN,'--hardware-config',str(hardware)],env=env,
             stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,bufsize=1)
-        self.messages=queue.Queue();self.logs=[];self.number=0
+        self.messages=queue.Queue();self.logs=[];self.number=0;self.replies={}
         def stdout():
             for line in self.proc.stdout:
                 try:self.messages.put(json.loads(line))
@@ -27,19 +27,28 @@ class Terminal:
             for line in self.proc.stderr:self.logs.append(line)
         self.reader=threading.Thread(target=stdout,daemon=True);self.reader.start()
         self.errors=threading.Thread(target=stderr,daemon=True);self.errors.start()
-    def request(self,method,params=None):
+    def send(self,method,params=None):
         self.number+=1;number=self.number
         self.proc.stdin.write(json.dumps({'id':number,'method':method,'params':params or {}})+'\n');self.proc.stdin.flush()
+        return number
+    def reply(self,number,method='request',expected_error=None):
         deadline=time.monotonic()+6
         while time.monotonic()<deadline:
-            try:item=self.messages.get(timeout=.2)
+            try:item=self.replies.pop(number,None) or self.messages.get(timeout=.2)
             except queue.Empty:
                 if self.proc.poll() is not None:raise AssertionError('Terminal exited: '+''.join(self.logs)[-2000:])
                 continue
-            if item.get('id')!=number:continue
+            if item.get('id')!=number:
+                if 'id' in item:self.replies[item['id']]=item
+                continue
+            if expected_error:
+                assert expected_error in item.get('error',''),item
+                return item['error']
             if item.get('error'):raise AssertionError(f'{method}: {item["error"]}')
             return item.get('result')
         raise AssertionError(f'{method} timed out: '+''.join(self.logs)[-2000:])
+    def request(self,method,params=None):
+        return self.reply(self.send(method,params),method)
     def wait(self,predicate):
         deadline=time.monotonic()+5
         while time.monotonic()<deadline:
@@ -112,3 +121,63 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
         finally:reconnected.close()
         print('TERMINAL_TEACHING_FAULT_CLEANUP_AND_RESTART_PASS')
     finally:native.close()
+
+    data['shutdown']['park_before_disable']=True
+    data['shutdown']['timeout_s']=1.6
+    data['shutdown']['compliant_phase_ratio']=.75
+    config.write_text(yaml.safe_dump(data,sort_keys=False))
+    parking=Terminal(config,hardware,folder/'park-storage')
+    try:
+        parking.request('activate');parking.wait(lambda s:s.get('valid') is True)
+        for command,expected_state in [('hold','ACTIVE'),('deactivate','INACTIVE')]:
+            if parking.request('status')['robot_state']=='INACTIVE':
+                parking.request('activate');parking.wait(lambda s:s.get('valid') is True)
+            pending=parking.send('park')
+            parking.wait(lambda s:s.get('impedance_mode')=='COMPLIANT_TRACKING')
+            started=time.monotonic();parking.request(command)
+            assert time.monotonic()-started<.8,'stop waited for park timeout'
+            parking.reply(pending,'park',expected_error='park interrupted by operator')
+            state=parking.request('status')
+            assert state['robot_state']==expected_state,state
+            if command=='hold':assert state['impedance_mode']=='RIGID_HOLD',state
+            time.sleep(.1)
+            assert parking.request('status')['robot_state']==expected_state
+        parking.request('activate');parking.wait(lambda s:s.get('valid') is True)
+        pending=parking.send('shutdown')
+        parking.wait(lambda s:s.get('impedance_mode')=='COMPLIANT_TRACKING')
+        parking.request('hold')
+        parking.reply(pending,'shutdown',expected_error='park interrupted by operator')
+        assert parking.request('status')['robot_state']=='ACTIVE'
+        assert parking.proc.poll() is None
+        parking.request('deactivate');parking.request('shutdown');parking.proc.wait(timeout=3)
+        print('TERMINAL_PARK_AND_SHUTDOWN_INTERRUPTION_PASS')
+    finally:parking.close()
+
+    disconnected=Terminal(config,hardware,folder/'eof-storage')
+    try:
+        disconnected.request('activate');disconnected.wait(lambda s:s.get('valid') is True)
+        disconnected.send('park');disconnected.wait(lambda s:s.get('impedance_mode')=='COMPLIANT_TRACKING')
+        disconnected.proc.stdin.close();disconnected.proc.wait(timeout=4)
+        assert disconnected.proc.returncode==0,disconnected.logs
+        print('TERMINAL_PARK_EOF_CLEANUP_PASS')
+    finally:disconnected.close()
+
+    data['control']['runtime']['write_enabled']=False
+    data['control']['runtime']['model_feedforward_mode']='NONE'
+    data['shutdown']['park_before_disable']=False
+    config.write_text(yaml.safe_dump(data,sort_keys=False))
+    offline=Terminal(config,hardware,folder/'offline-storage')
+    try:
+        initial=offline.request('status')
+        assert initial['robot_state']=='INACTIVE' and initial['write_enabled'] is False,initial
+        capabilities=initial['actuator_info']
+        assert [item['name'] for item in capabilities]==names,capabilities
+        assert all(item['min_pos']<item['max_pos'] and all(item[key]>0 for key in ('max_vel','max_effort','max_kp','max_kd')) for item in capabilities),capabilities
+        offline.request('activate')
+        active=offline.wait(lambda s:s.get('valid') is True)
+        assert active['robot_state']=='ACTIVE' and active['write_enabled'] is False,active
+        assert active['actuator_info']==capabilities,active
+        assert active['actuator_info_source']=='mock_backend_after_successful_activate',active
+        offline.request('deactivate');offline.request('shutdown');offline.proc.wait(timeout=3)
+        print('TERMINAL_OFFLINE_MOCK_CAPABILITIES_PASS')
+    finally:offline.close()

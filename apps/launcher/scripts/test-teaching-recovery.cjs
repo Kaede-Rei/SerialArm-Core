@@ -77,3 +77,37 @@ test('a safety-interrupted task shows the root safety fault without a second cle
     model_calibration:{phase:'failed',error:'same safety fault',fault_interrupted:true}});
   assert.equal(ui.errors.length,1);assert.equal(ui.errors[0][1],'fault');
 });
+test('gain workflow uses the live task while an unrelated gravity record stays selected',()=>{
+  const ui=setup();session(ui,'gain-session');
+  ui.state.calibrationEntry='gain';
+  ui.state.modelCalibrationOffline={directory:'/saved-gravity',result:{phase:'complete',workflow_kind:'gravity'}};
+  ui.state.calibrationToolSelected.gain={directory:'/saved-teaching'};
+  ui.state.telemetry={robot_state:'ACTIVE',model_calibration:{phase:'idle'}};
+  ui.calibrationTaskLoaded=()=>true;
+  const html=ui.calibrationStandalonePanelHtml('gain');
+  assert.match(html,/id="calibration-tool-import"/);
+  assert.doesNotMatch(html,/id="calibration-tool-import"[^>]*disabled/);
+  assert.equal(ui.state.modelCalibrationOffline.directory,'/saved-gravity');
+});
+test('park overlay provides stop actions that bypass the ordinary busy gate',async()=>{
+  const ui=setup(),elements={};
+  for(const id of ['operation-overlay','operation-message','operation-safety-actions','operation-hold','operation-disable','operation-force-disconnect'])
+    elements[id]={hidden:true,disabled:false,setAttribute(){}};
+  ui.$=id=>elements[id];ui.priorityErrorOpen=false;ui.performance=performance;ui.setTimeout=setTimeout;
+  ui.workbenchRecoveryRequired=()=>false;ui.operation=fn=>fn();ui.toast=()=>{};
+  for(const name of ['setOperationOverlay','blockingOperation','refreshParkingActions','interruptibleParking','interruptParking']) {
+    const line=source.split('\n').find(s=>s.startsWith('function '+name+'(')||s.startsWith('async function '+name+'('));
+    vm.runInContext(line.endsWith(' }')?line:source.match(new RegExp('(?:async )?function '+name+'\\([^]*?\\n\\}'))[0],ui);
+  }
+  session(ui,'parking-session');
+  let release;const commands=[];
+  ui.workbenchRequest=async method=>{commands.push(method);if(method==='park')return new Promise(resolve=>release=resolve);};
+  const pending=ui.blockingOperation('Parking',()=>ui.interruptibleParking(()=>ui.workbenchRequest('park')),0);
+  assert.equal(elements['operation-overlay'].hidden,false);
+  assert.equal(elements['operation-safety-actions'].hidden,false);
+  assert.equal(elements['operation-disable'].disabled,false);
+  await ui.interruptParking('deactivate');
+  assert.deepEqual(commands,['park','deactivate']);
+  release();await pending;
+  assert.equal(elements['operation-safety-actions'].hidden,true);
+});

@@ -147,6 +147,60 @@ void local_limits_contract() {
         check(rejected&&a.get_limit_param().dq_max==10,"invalid limit changed instance");
     }
 }
+
+class MemoryBus final : public transport::CanBus {
+public:
+    std::deque<transport::CanFrame> frames;
+    std::function<void(const transport::CanFrame&)> on_send;
+    tl::expected<void,transport::CanErr> open() override {return {};}
+    void close() noexcept override {}
+    bool is_open() const noexcept override {return true;}
+    void flush() noexcept override {frames.clear();}
+    tl::expected<void,transport::CanErr> send(const transport::CanFrame& frame) override {
+        if(on_send) on_send(frame);
+        return {};
+    }
+    tl::expected<transport::CanFrame,transport::CanErr> receive(std::chrono::milliseconds) override {
+        if(frames.empty()) return tl::make_unexpected(transport::CanErr::TIMEOUT);
+        auto frame=frames.front();frames.pop_front();return frame;
+    }
+    void push(unsigned id,std::array<uint8_t,8> data) {
+        transport::CanFrame frame;frame.id=id;frame.size=8;frame.data=data;
+        frame.received_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        frame.receive_timing_valid=true;frames.push_back(frame);
+    }
+};
+void feedback_parameter_classification_contract() {
+    auto bus=std::make_shared<MemoryBus>();
+    damiao::Motor motor(damiao::DM4310,0x11,0x31);
+    damiao::MotorControl control(bus->create_channel());control.add_motor(&motor);
+    for(const unsigned q:{0x33,0x55}) {
+        bus->push(0x31,{{0x11,0,static_cast<uint8_t>(q),0,0,0,0,0}});
+        check(control.receive()&&motor.get_status()==1,"ordinary feedback position mistaken for parameter opcode");
+        const float expected=-12.5f+25.0f*q/65535;
+        check(close(motor.get_position(),expected),"ambiguous position feedback did not reach motor");
+    }
+    bus->on_send=[&](const transport::CanFrame& request) {
+        if(request.id!=0x7ff) return;
+        auto response=request.data;
+        const float value=12.5;
+        std::memcpy(response.data()+4,&value,sizeof(value));
+        bus->push(0x31,response); // Parameter responses can also use the master ID.
+        bus->push(0x31,response); // A duplicate after the transaction is management, not feedback.
+    };
+    check(control.read_motor_param(motor,damiao::PMAX)==12.5f,"parameter transaction on master route failed");
+    const auto previous=motor.get_state_seq();
+    check(!control.receive()&&motor.get_state_seq()==previous,"late parameter duplicate polluted measured state");
+    bus->push(0x31,{{0x11,0,0x33,0x80,0x08,0,0,0}});
+    check(control.receive()&&motor.get_state_seq()==previous+1,"normal runtime feedback not restored after transaction");
+    // A frame buffered before a new request cannot satisfy that request, even
+    // when it happens to have the same slave, RID and operation code.
+    std::array<uint8_t,8> stale{{0x11,0,damiao::PARAM_READ_CMD,damiao::PMAX,0,0,0,0}};
+    const float old=6.25;std::memcpy(stale.data()+4,&old,sizeof(old));bus->push(0x31,stale);
+    check(control.read_motor_param(motor,damiao::PMAX)==12.5f,"old physical-queue response satisfied a newer read");
+    control.drain_feedback();
+}
 void connect_and_codec_contract() {
     Adapter adapter;adapter.interleave=true;
     DamiaoMotorBus bus;check(bool(bus.configure(config(adapter))),"configure");
@@ -212,7 +266,7 @@ void rejected_readback_contract() {
 } // namespace
 int main() {
     try {
-        local_limits_contract();connect_and_codec_contract();rejected_readback_contract();
+        local_limits_contract();feedback_parameter_classification_contract();connect_and_codec_contract();rejected_readback_contract();
         std::cout<<"ENCODING_LIMITS_READBACK_ATOMICITY_AND_CODEC_PASS\n";return 0;
     } catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }
 }

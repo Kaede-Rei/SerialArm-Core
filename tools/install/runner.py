@@ -16,7 +16,7 @@ import sys
 import tempfile
 import time
 
-from provenance import installed_content, native_inputs
+from provenance import installed_content, native_inputs, recovery_command
 
 
 class InstallError(RuntimeError):
@@ -251,6 +251,12 @@ class Runner:
     def preflight(self):
         if platform.system() != "Linux":
             raise InstallError("当前安装执行仅支持 Linux")
+        manifest_file = self.state / 'manifest.json'
+        manifest = json.loads(manifest_file.read_text()) if manifest_file.is_file() else {}
+        relocated = manifest.get('root') and Path(manifest['root']).resolve() != self.root.resolve()
+        if relocated and not self.plan.clean_rebuild:
+            raise InstallError('源码目录已迁移，旧构建缓存和绝对安装链接不能复用\n'
+                               + recovery_command(self.root, manifest))
         if self.plan.ros2 and not self.ros_setup.is_file():
             raise InstallError(
                 f"未检测到 {self.ros_setup}；请先安装 ROS2 {self.plan.ros_distro}，或选择 standalone"
@@ -269,6 +275,16 @@ class Runner:
             from gui import preflight_gui
 
             preflight_gui()
+
+    def clean_configuration(self):
+        """Only discard this selected configuration's generated native outputs."""
+        if not self.plan.clean_rebuild:
+            return
+        for directory in (self.build, self.prefix):
+            if directory.is_symlink():
+                directory.unlink()
+            elif directory.exists():
+                shutil.rmtree(directory)
 
     def native(self):
         self.apt(
@@ -655,6 +671,7 @@ def install(plan):
         atomic_write(runner.state / "last_attempt.json", json.dumps(attempt, indent=2))
         try:
             runner.preflight()
+            runner.clean_configuration()
             if plan.gui_only:
                 from gui import install_gui
 

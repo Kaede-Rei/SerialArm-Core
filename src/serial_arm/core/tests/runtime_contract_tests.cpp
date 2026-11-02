@@ -19,9 +19,10 @@ namespace fs = std::filesystem;
 void require(bool result, const char* message) { if(!result) throw std::runtime_error(message); }
 struct FakeBus final : MotorBus {
     HardwareCapabilities caps;
+    HardwareCapabilities connected_caps;
     ActuatorState state;
     bool fail_read{false}, fail_write{false}, fail_activate{false}, fail_disable{false}, fresh_timestamps{false};
-    int disables{0}, stops{0}, writes{0};
+    int disables{0}, stops{0}, writes{0}, activations{0};
     double peak_torque{0};
     ActuatorCtrlCmd last_command;
     explicit FakeBus(const RobotCfg& cfg) {
@@ -41,8 +42,12 @@ struct FakeBus final : MotorBus {
         state.online.assign(n,1);state.enabled.assign(n,1);state.err_code.assign(n,0);
     }
     tl::expected<void,MotorBusErr> configure(const std::string&) override { return {}; }
-    tl::expected<void,MotorBusErr> connect() override { return {}; }
+    tl::expected<void,MotorBusErr> connect() override {
+        if(!connected_caps.empty()) caps=connected_caps;
+        return {};
+    }
     tl::expected<void,MotorBusErr> activate() override {
+        ++activations;
         if(fail_activate) return tl::make_unexpected(MotorBusErr::ENABLE_FAILED);
         return {};
     }
@@ -131,6 +136,74 @@ void failed_startup_disable_retry() {
     require(bool(robot.force_deactivate())&&robot.get_state()==RobotState::INACTIVE,"disable can be retried after startup fault");
     raw->fail_activate=false;
     require(bool(robot.activate()),"enable after confirmed disable recovers");
+}
+
+void activation_preserves_running_fault() {
+    auto cfg=fixture();auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();Robot robot;
+    require(bool(robot.configure(cfg,std::move(bus))),"fault retry configure");
+    raw->fail_activate=true;
+    require(!robot.activate(),"inject first activation failure");
+    raw->fail_activate=false;
+    require(bool(robot.activate()),"first activation failure remains retryable");
+    require(bool(robot.cycle()),"complete running cycle");
+    raw->fail_read=true;
+    require(!robot.cycle()&&robot.is_fault_holding(),"inject running hold fault");
+    for(unsigned i=0;i<3;++i) require(bool(robot.maintain_fault_hold()),"valid fault hold observation");
+    const auto retried=robot.activate();
+    require(!retried&&retried.error().code==RobotErr::FAULTED,"activate must reject a running fault");
+    require(robot.get_state()==RobotState::FAULT&&robot.is_fault_holding(),"failed activate preserves fault latch");
+    require(bool(robot.clear_fault())&&robot.get_state()==RobotState::ACTIVE,"explicit clear still restores hold");
+}
+
+void connected_limits_follow_policy() {
+    auto original=fixture();FakeBus nominal(original);
+    for(auto& cap:nominal.caps) cap.max_effort=2;
+    auto loaded=load_robot_cfg(std::string(SERIAL_ARM_REPO)+"/src/robot_supports/robots/dm_arm/description/config/core/gray.yaml",nominal.caps);
+    require(bool(loaded),"load provisional hardware limits");
+    auto cfg=*loaded;cfg.runtime.write_enabled=true;cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::NONE;
+    cfg.capability.admittance.enabled=false;
+    auto bus=std::make_unique<FakeBus>(cfg);auto* raw=bus.get();raw->caps=nominal.caps;
+    raw->connected_caps=nominal.caps;
+    for(auto& cap:raw->connected_caps) cap.max_effort=3;
+    Robot robot;require(bool(robot.configure(cfg,std::move(bus))),"connected limits configure");
+    require(bool(robot.activate()),"activate with actual wider encoding range");
+    require(robot.get_config().safety.limits.max_effort[0]==3,"actual wider range replaces provisional default");
+    require(bool(robot.force_deactivate()),"stop before range refresh");
+    for(auto& cap:raw->connected_caps) cap.max_effort=.5;
+    require(bool(robot.activate()),"activate with actual narrower encoding range");
+    require(robot.get_config().safety.limits.max_effort[0]==.5,"actual narrower range reaches Core safety");
+    require(bool(robot.force_deactivate()),"stop before range restores");
+    for(auto& cap:raw->connected_caps) cap.max_effort=3;
+    require(bool(robot.activate())&&robot.get_config().safety.limits.max_effort[0]==3,
+        "reconnect resolves original policy rather than accumulated minima");
+    cfg.safety.limits.max_effort[0]=1;
+    auto edited=resolve_connected_safety_cfg(cfg,raw->connected_caps);
+    require(bool(edited)&&edited->limits.max_effort[0]==1,"preserve explicit SDK safety edit");
+    cfg=*loaded;
+    cfg.safety_limit_source->policy.max_effort_override.assign(cfg.joint_names.size(),1);
+    auto policy=resolve_connected_safety_cfg(cfg,raw->connected_caps);
+    require(bool(policy)&&policy->limits.max_effort[0]==1,"explicit policy is not widened by real hardware");
+    cfg.safety_limit_source.reset();
+    auto manual=resolve_connected_safety_cfg(cfg,raw->connected_caps);
+    require(bool(manual)&&manual->limits.max_effort[0]==2,"programmatic configuration remains an explicit ceiling");
+    require(bool(robot.force_deactivate()),"disable before invalid capability check");
+    const auto activations=raw->activations;
+    raw->connected_caps[0].max_effort=0;
+    require(!robot.activate()&&raw->activations==activations&&robot.get_state()==RobotState::INACTIVE,
+        "invalid real limits must be rejected before enabling actuators");
+
+    cfg=fixture();cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::GRAVITY;
+    auto torque_bus=std::make_unique<FakeBus>(cfg);auto* torque_raw=torque_bus.get();
+    torque_raw->connected_caps=torque_raw->caps;
+    for(auto& cap:torque_raw->connected_caps) cap.max_effort=.5;
+    const auto model=[&](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)
+        ->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector(cfg.joint_names.size(),1);};
+    Robot torque_robot;require(bool(torque_robot.configure(cfg,std::move(torque_bus),model))&&bool(torque_robot.activate()),
+        "real-range effort enforcement setup");
+    const auto rejected=torque_robot.cycle();
+    require(!rejected&&rejected.error().code==RobotErr::SAFETY_FAILED&&
+        rejected.error().safety_fault.code==SafetyErr::CMD_EFFORT_LIMIT&&torque_raw->peak_torque<=.5,
+        "Core must reject over-range model torque before a backend write failure");
 }
 
 void first_hold_limits() {
@@ -315,7 +388,7 @@ void full_id_validity() {
 int main() {
     const auto temp=fs::temp_directory_path()/("serialarm-contract-"+std::to_string(::getpid()));fs::create_directories(temp);
     try {
-        recording_roundtrip(temp);paired_static_recording(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
+        recording_roundtrip(temp);paired_static_recording(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();activation_preserves_running_fault();connected_limits_follow_policy();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
         fs::remove_all(temp);std::cout<<"runtime contracts passed\n";return 0;
     } catch(const std::exception& error) {fs::remove_all(temp);std::cerr<<error.what()<<'\n';return 1;}
 }

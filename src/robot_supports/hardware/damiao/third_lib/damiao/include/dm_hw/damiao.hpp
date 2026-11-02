@@ -643,7 +643,7 @@ public:
             auto maybe_frame = channel_->receive(remaining_timeout(deadline, RECEIVE_SLICE));
             if(!maybe_frame) return;
             ParameterResponse response;
-            if(!parse_parameter_frame(*maybe_frame, response)) continue;
+            if(!parse_parameter_frame(*maybe_frame, response, true)) continue;
             apply_parameter_response(response);
             last_parameter_reply_can_id_ = maybe_frame->id;
             return;
@@ -722,8 +722,9 @@ public:
         uint8_t can_low = id & 0xff;
         uint8_t can_high = (id >> 8) & 0xff;
         std::array<uint8_t, 8> data_buf{ can_low, can_high, PARAM_READ_CMD, reg_id, 0x00, 0x00, 0x00, 0x00 };
+        const auto requested_at=std::chrono::steady_clock::now();
         if(!send_frame(0x7FF, data_buf)) return 0;
-        if(!receive_param_for_response(motor, reg_id, PARAM_READ_CMD, timeout)) return 0;
+        if(!receive_param_for_response(motor, reg_id, PARAM_READ_CMD, timeout, requested_at)) return 0;
 
         if(is_in_ranges(reg_id)) {
             return float(motor.get_param_as_uint32(reg_id));
@@ -750,8 +751,9 @@ public:
         channel_->flush();
         motor.clear_param(reg_id);
         uint8_t write_data[4] = { static_cast<uint8_t>(mode), 0x00, 0x00, 0x00 };
+        const auto requested_at=std::chrono::steady_clock::now();
         if(!write_motor_param(motor, reg_id, write_data)) return false;
-        if(!receive_param_for_response(motor, reg_id, PARAM_WRITE_CMD, timeout)) return false;
+        if(!receive_param_for_response(motor, reg_id, PARAM_WRITE_CMD, timeout, requested_at)) return false;
         return motor.get_param_as_uint32(reg_id) == static_cast<uint32_t>(mode);
     }
 
@@ -774,6 +776,7 @@ public:
 
         channel_->flush();
         motor.clear_param(reg_id);
+        const auto requested_at=std::chrono::steady_clock::now();
         if(is_in_ranges(reg_id)) {
             uint32_t data_uint32 = float_to_uint32(data);
             auto* data_uint8 = reinterpret_cast<uint8_t*>(&data_uint32);
@@ -784,7 +787,7 @@ public:
             if(!write_motor_param(motor, reg_id, data_uint8)) return false;
         }
 
-        if(!receive_param_for_response(motor, reg_id, PARAM_WRITE_CMD, timeout)) return false;
+        if(!receive_param_for_response(motor, reg_id, PARAM_WRITE_CMD, timeout, requested_at)) return false;
         if(is_in_ranges(reg_id)) {
             return motor.get_param_as_uint32(reg_id) == float_to_uint32(data);
         }
@@ -849,14 +852,34 @@ private:
         if(frame.data[2] != PARAM_READ_CMD && frame.data[2] != PARAM_WRITE_CMD) return false;
         const MotorId slave_id = static_cast<MotorId>(frame.data[0]) |
             (static_cast<MotorId>(frame.data[1]) << 8);
-        return motors_by_slave_id_.find(slave_id) != motors_by_slave_id_.end();
+        const auto found=motors_by_slave_id_.find(slave_id);
+        if(found==motors_by_slave_id_.end()) return false;
+        // A normal feedback may contain 0x33/0x55 in its position code. Outside
+        // a parameter transaction, a valid feedback route takes precedence over
+        // this byte coincidence. A duplicate of a known parameter response is
+        // still discarded instead of overwriting the measured state.
+        if(feedback_route_for(frame)) {
+            const auto& motor=*found->second;
+            const auto reg=frame.data[3];
+            if(!motor.has_param(reg)) return false;
+            std::array<uint8_t,4> cached{};
+            if(is_in_ranges(reg)) {
+                const auto value=motor.get_param_as_uint32(reg);
+                for(unsigned i=0;i<4;++i) cached[i]=(value>>(8*i))&0xff;
+            } else {
+                const auto value=motor.get_param_as_float(reg);
+                std::memcpy(cached.data(),&value,sizeof(value));
+            }
+            return std::equal(cached.begin(),cached.end(),frame.data.begin()+4);
+        }
+        return true;
     }
 
     /**
      * @brief 从普通 feedback 中解析实际电机
      */
-    Motor* feedback_motor_for(const serial_arm::transport::CanFrame& frame) const noexcept {
-        if(frame.size < 6 || is_parameter_response(frame)) return nullptr;
+    Motor* feedback_route_for(const serial_arm::transport::CanFrame& frame) const noexcept {
+        if(frame.size < 6) return nullptr;
         if(frame.id == 0) {
             const MotorId slave_id = frame.data[0] & 0x0f;
             auto it = motors_by_slave_id_.find(slave_id);
@@ -864,10 +887,19 @@ private:
         }
 
         auto master_it = motors_by_master_id_.find(frame.id);
-        if(master_it != motors_by_master_id_.end()) return master_it->second;
+        if(master_it != motors_by_master_id_.end()) {
+            auto* motor=master_it->second;
+            return (frame.data[0]&0x0f)==(motor->get_slave_id()&0x0f)?motor:nullptr;
+        }
 
         auto slave_it = motors_by_slave_id_.find(frame.id);
-        return slave_it == motors_by_slave_id_.end() ? nullptr : slave_it->second;
+        if(slave_it==motors_by_slave_id_.end()) return nullptr;
+        auto* motor=slave_it->second;
+        return (frame.data[0]&0x0f)==(motor->get_slave_id()&0x0f)?motor:nullptr;
+    }
+
+    Motor* feedback_motor_for(const serial_arm::transport::CanFrame& frame) const noexcept {
+        return is_parameter_response(frame)?nullptr:feedback_route_for(frame);
     }
 
     /**
@@ -902,10 +934,12 @@ private:
      */
     bool parse_parameter_frame(
         const serial_arm::transport::CanFrame& frame,
-        ParameterResponse& response) const {
+        ParameterResponse& response,
+        bool parameter_context=false) const {
         response = ParameterResponse{};
         if(frame.size < 8) return false;
         if(frame.data[2] != PARAM_READ_CMD && frame.data[2] != PARAM_WRITE_CMD) return false;
+        if(!parameter_context && !is_parameter_response(frame)) return false;
 
         const auto& data = frame.data;
         const MotorId slave_id = static_cast<MotorId>(data[0]) |
@@ -944,7 +978,8 @@ private:
         Motor& motor,
         uint8_t reg_id,
         uint8_t expected_response_type,
-        std::chrono::milliseconds timeout) {
+        std::chrono::milliseconds timeout,
+        std::chrono::steady_clock::time_point not_before={}) {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while(std::chrono::steady_clock::now() < deadline) {
             auto maybe_frame = channel_->receive(remaining_timeout(deadline, RECEIVE_SLICE));
@@ -954,7 +989,7 @@ private:
             }
 
             ParameterResponse response;
-            if(!parse_parameter_frame(*maybe_frame, response)) {
+            if(!parse_parameter_frame(*maybe_frame, response, true)) {
                 // 参数事务期间仍维护普通 feedback 状态，避免显式参数操作造成执行器状态缓存断流
                 Motor* feedback_motor = nullptr;
                 (void)decode_feedback_frame(*maybe_frame, feedback_motor);
@@ -963,6 +998,9 @@ private:
             if(response.motor == nullptr || response.motor->get_slave_id() != motor.get_slave_id()) continue;
             if(response.reg_id != reg_id) continue;
             if(expected_response_type != 0 && response.response_type != expected_response_type) continue;
+            const auto received=std::chrono::steady_clock::time_point(
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::nanoseconds(maybe_frame->received_ns)));
+            if(received<not_before) continue;
             apply_parameter_response(response);
             last_parameter_reply_can_id_ = maybe_frame->id;
             return true;

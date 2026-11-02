@@ -100,7 +100,7 @@ _READ_ONLY_MACHINE = {
     'candidate_dynamics_status', 'teach_replay_status',
 }
 _SAFE_EXIT_MACHINE = {
-    'deactivate', 'gravity_verify_stop', 'gravity_verify_cancel', 'gravity_verify_finish',
+    'deactivate', 'hold', 'gravity_verify_stop', 'gravity_verify_cancel', 'gravity_verify_finish',
     'model_calibration_cancel', 'model_calibration_teach_stop', 'model_calibration_pause',
     'candidate_gain_restore', 'candidate_gravity_restore', 'candidate_dynamics_restore',
     'teach_replay_record_stop', 'teach_replay_stop',
@@ -259,6 +259,21 @@ def main():
     active_workbench_config = None
     active_workbench_fingerprint = None
     repeat_source = None
+    control_job = None
+    control_cancel = threading.Event()
+
+    def start_control_job(request, action):
+        nonlocal control_job
+        control_cancel.clear()
+        def run():
+            try:
+                emit({'id': request.get('id'), 'result': action()})
+            except Exception as error:
+                report = describe(error, request.get('method', ''), request.get('params'))
+                print(f'[SerialArm diagnostic {report["diagnostic_id"]}]\n{traceback.format_exc()}', file=sys.stderr, flush=True)
+                emit({'id': request.get('id'), 'error': report})
+        control_job = threading.Thread(target=run, name='workspace-park')
+        control_job.start()
     emit({'event': 'backend_ready'})
     if '--check' in sys.argv[1:]:
         model_runtime.close()
@@ -276,6 +291,17 @@ def main():
                 request = json.loads(line)
                 method, params = request['method'], request.get('params', {})
                 if not isinstance(params, dict): raise ValueError('params must be an object')
+                if method == 'stop' and native.status().get('state') in ('running', 'stopping'):
+                    method = 'workbench_stop'
+                if control_job and control_job.is_alive():
+                    allowed = (method == 'status' or
+                        (method == 'workbench_request' and params.get('method') in (_READ_ONLY_MACHINE | {'deactivate', 'hold'})) or
+                        (method in ('workbench_stop', 'stop') and params.get('force') is True))
+                    if not allowed:
+                        raise ValueError('请先结束当前停放操作，期间仍可保持、立即失能或强制断开')
+                    if ((method == 'workbench_request' and params.get('method') in ('hold', 'deactivate')) or
+                            (method in ('workbench_stop', 'stop') and params.get('force') is True)):
+                        control_cancel.set()
                 # All potentially lengthy export and analysis routes share the
                 # same admission rule, including retained IPC entrypoints
                 if method in OFFLINE_CALIBRATION_METHODS and any(
@@ -492,7 +518,10 @@ def main():
                         if info['fingerprint'] != active_workbench_fingerprint:
                             raise ValueError('连接期间配置发生变化，请先安全断连并重新检查')
                         verify_machine_admission(profile_library, active_workbench_config, native_method, machine_params, native)
-                    result = native.request(native_method, machine_params, timeout=120 if native_method == 'park' else (45 if native_method in ('model_calibration_teach_stop','model_calibration_import_trajectory') else 8))
+                    if native_method == 'park':
+                        start_control_job(request, lambda machine_params=machine_params: native.request('park', machine_params, timeout=120, cancel_event=control_cancel))
+                        continue
+                    result = native.request(native_method, machine_params, timeout=45 if native_method in ('model_calibration_teach_stop','model_calibration_import_trajectory') else 8)
                     if native_method in ('teach_replay_record_begin', 'teach_replay_record_stop'):
                         repeat_source = None  # Normal teaching cannot be mistaken for a contact-first recording
                 elif method == 'workbench_stop':
@@ -500,25 +529,33 @@ def main():
                     # before disconnect so the outcome is observable and auditable
                     # When safe parking or restoration fails keep the session alive
                     force = params.get('force') is True
-                    try:
-                        if not force and native.status().get('state') == 'running':
-                            admission = profile_library._readiness(active_workbench_config) if active_workbench_config else {}
-                            safe_park = (admission.get('control_available') is True and
-                                all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
-                                    for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
-                            state_before = native.request('status', {}, timeout=8)
-                            if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
-                                raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
-                            if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
-                                raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
-                            restore_temporary_candidates_for_disconnect(native)
-                        result = native.stop(force)
-                    except Exception as error:
-                        native.note_disconnect_failure(error)
-                        raise
-                    active_workbench_config = None
-                    active_workbench_fingerprint = None
-                    repeat_source = None
+                    disconnect_config = active_workbench_config
+                    def disconnect(force=force, disconnect_config=disconnect_config):
+                        nonlocal active_workbench_config, active_workbench_fingerprint, repeat_source
+                        try:
+                            if not force and native.status().get('state') == 'running':
+                                admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
+                                safe_park = (admission.get('control_available') is True and
+                                    all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
+                                        for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
+                                state_before = native.request('status', {}, timeout=8)
+                                if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
+                                    raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
+                                if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
+                                    raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
+                                restore_temporary_candidates_for_disconnect(native)
+                            result = native.stop(force, cancel_event=control_cancel if not force else None)
+                        except Exception as error:
+                            native.note_disconnect_failure(error)
+                            raise
+                        active_workbench_config = None
+                        active_workbench_fingerprint = None
+                        repeat_source = None
+                        return result
+                    if not force:
+                        start_control_job(request, disconnect)
+                        continue
+                    result = disconnect()
                 elif method == 'workbench_config_preview':
                     if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
                         raise ValueError('重力验证进行中不得保存临时参数')
@@ -734,6 +771,7 @@ def main():
                 emit({'id': request.get('id') if isinstance(request, dict) else None, 'error': report})
     except KeyboardInterrupt: pass
     finally:
+        if control_job: control_job.join()
         model_runtime.close()
         native.close()
         manager.close()

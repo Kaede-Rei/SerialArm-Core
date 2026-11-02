@@ -9,7 +9,11 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 fi
 if [[ "${1:-}" == "--doctor" ]]; then
     shift
-    [[ -f .install/setup.bash ]] && source .install/setup.bash
+    if [[ -f .install/setup.bash ]] && python3 "$ROOT_DIR/tools/install/main.py" --check-environment; then
+        if ! source .install/setup.bash; then
+            echo '安装环境加载失败，继续执行只读诊断；请重建安装环境' >&2
+        fi
+    fi
     DOCTOR_PYTHON="${SERIAL_ARM_LAUNCHER_PYTHON:-$ROOT_DIR/.install/gui-venv/bin/python}"
     [[ -x "$DOCTOR_PYTHON" ]] || DOCTOR_PYTHON="$(command -v python3)"
     exec "$DOCTOR_PYTHON" -u "$ROOT_DIR/apps/launcher/backend/doctor.py" "$@"
@@ -32,7 +36,10 @@ if [[ ! -f "$THREE_VENDOR" ]]; then
         exit 1
     fi
 fi
-[[ -f .install/setup.bash ]] && source .install/setup.bash
+if [[ -f .install/setup.bash ]]; then
+    python3 "$ROOT_DIR/tools/install/main.py" --check-environment || exit 1
+    source .install/setup.bash
+fi
 export SERIAL_ARM_LAUNCHER_PYTHON="$ROOT_DIR/.install/gui-venv/bin/python"
 BACKEND="$ROOT_DIR/apps/launcher/backend/bridge.py"
 if ! BACKEND_ERROR="$("$SERIAL_ARM_LAUNCHER_PYTHON" -u "$BACKEND" --check 2>&1 >/dev/null)"; then

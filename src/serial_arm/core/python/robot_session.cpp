@@ -62,15 +62,14 @@ bool is_tracking_mode(JointImpedanceMode mode) {
  */
 class MockMotorBus final : public MotorBus {
 public:
-    explicit MockMotorBus(std::size_t size) {
+    explicit MockMotorBus(HardwareCapabilities capabilities) : capabilities_(std::move(capabilities)) {
+        const auto size=capabilities_.size();
         state_.pos.assign(size, 0.0);
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
         state_.enabled.assign(size, 1);
         state_.err_code.assign(size, 0);
-        capabilities_.resize(size);
-        for(std::size_t i = 0; i < size; ++i) capabilities_[i].actuator_name = "mock" + std::to_string(i + 1);
     }
 
     tl::expected<void, MotorBusErr> configure(const std::string& config_path) override {
@@ -185,7 +184,7 @@ void PyRobotSession::configure(
     }
     else {
         robot_cfg.runtime.write_enabled = true;
-        bus = std::make_unique<MockMotorBus>(cfg.joint_names.size());
+        bus = std::make_unique<MockMotorBus>(*ordered_capabilities);
     }
 
     cfg_ = std::move(cfg);
@@ -244,6 +243,13 @@ void PyRobotSession::start() {
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        cfg_.safety=robot_->get_config().safety;
+        const auto capabilities=robot_->hardware_capabilities();
+        for(std::size_t i=0;i<capabilities.size();++i) {
+            const auto& item=capabilities[i];
+            actuator_info_[i]={item.actuator_name,cfg_.joint_names[i],item.min_pos,item.max_pos,
+                item.max_vel,item.max_effort,item.max_kp,item.max_kd};
+        }
         ref_pos_ = robot_->get_joint_state().pos;
         ref_vel_.assign(ref_pos_.size(), 0.0);
         goal_pos_ = ref_pos_;

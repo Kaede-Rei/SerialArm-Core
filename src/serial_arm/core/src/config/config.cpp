@@ -774,6 +774,8 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         if(!resolved) return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE, "LimitResolver failed"));
         cfg.safety = to_safety_cfg(*resolved);
         load_fault_recovery_cfg(safety_node["fault_recovery"], cfg.joint_names, cfg.safety);
+        cfg.safety_limit_source = SafetyLimitSource{
+            *model_info, policy, cfg.safety.limits, cfg.safety.state_vel_fault_ratio};
 
         auto validated = validate_robot_cfg(cfg);
         if(!validated) return tl::make_unexpected(validated.error());
@@ -1062,6 +1064,69 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs->shutdown.compliant_phase_ratio != rhs->shutdown.compliant_phase_ratio ||
         lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
     return diffs;
+}
+
+tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
+    const RobotCfg& requested, const HardwareCapabilities& capabilities) {
+    const auto invalid = [] {
+        return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE,
+            "connected hardware capabilities conflict with requested safety limits"));
+    };
+    if(!validate_robot_core_cfg(requested)) return invalid();
+    const auto ordered = capabilities_for_joint_order(capabilities, requested.joint_names);
+    if(!ordered) return invalid();
+    SafetyCfg result = requested.safety;
+    if(requested.safety_limit_source) {
+        const auto& source = *requested.safety_limit_source;
+        const auto resolved = LimitResolver{}.resolve(source.model, requested.mapper, *ordered, source.policy);
+        if(!resolved) return invalid();
+        const auto refreshed = to_safety_cfg(*resolved);
+        result.limits = refreshed.limits;
+        if(requested.safety.state_vel_fault_ratio == source.initial_state_vel_fault_ratio)
+            result.state_vel_fault_ratio = refreshed.state_vel_fault_ratio;
+        // A caller may edit the public configuration after loading it. Preserve
+        // those explicit limits while recomputing fields still derived from the
+        // provisional hardware defaults.
+        const auto preserve_edits = [&](auto JointLimitCfg::* field) {
+            const auto& initial = source.initial_limits.*field;
+            const auto& edited = requested.safety.limits.*field;
+            auto& target = result.limits.*field;
+            if(initial.size()!=target.size()) return false;
+            for(std::size_t i=0;i<target.size();++i)
+                if(edited[i]!=initial[i]) target[i]=edited[i];
+            return true;
+        };
+        if(!preserve_edits(&JointLimitCfg::has_position_limit) ||
+           !preserve_edits(&JointLimitCfg::min_pos) || !preserve_edits(&JointLimitCfg::max_pos) ||
+           !preserve_edits(&JointLimitCfg::max_vel) || !preserve_edits(&JointLimitCfg::max_acc) ||
+           !preserve_edits(&JointLimitCfg::max_effort) || !preserve_edits(&JointLimitCfg::max_kp) ||
+           !preserve_edits(&JointLimitCfg::max_kd) || !preserve_edits(&JointLimitCfg::pos_margin)) return invalid();
+    }
+    for(std::size_t i=0;i<ordered->size();++i) {
+        const auto& cap=(*ordered)[i];
+        if(!std::isfinite(cap.min_pos)||!std::isfinite(cap.max_pos)||cap.min_pos>=cap.max_pos ||
+           !std::isfinite(cap.max_vel)||cap.max_vel<=0 || !std::isfinite(cap.max_effort)||cap.max_effort<=0 ||
+           !std::isfinite(cap.max_kp)||cap.max_kp<0 || !std::isfinite(cap.max_kd)||cap.max_kd<0) return invalid();
+        const auto& map=requested.mapper;
+        const double signed_ratio=map.direction[i]*map.pos_ratio[i];
+        const double a=map.joint_zero_offset[i]+(cap.min_pos-map.actuator_zero_offset[i])/signed_ratio;
+        const double b=map.joint_zero_offset[i]+(cap.max_pos-map.actuator_zero_offset[i])/signed_ratio;
+        const bool has_position_limit=result.limits.has_position_limit[i]!=0;
+        result.limits.min_pos[i]=has_position_limit?std::max(result.limits.min_pos[i],std::min(a,b)):std::min(a,b);
+        result.limits.max_pos[i]=has_position_limit?std::min(result.limits.max_pos[i],std::max(a,b)):std::max(a,b);
+        result.limits.has_position_limit[i]=1;
+        result.limits.max_vel[i]=std::min(result.limits.max_vel[i],cap.max_vel/map.pos_ratio[i]);
+        result.limits.max_effort[i]=std::min(result.limits.max_effort[i],cap.max_effort*map.tor_ratio[i]);
+        const double gains=map.pos_ratio[i]*map.tor_ratio[i];
+        result.limits.max_kp[i]=std::min(result.limits.max_kp[i],cap.max_kp*gains);
+        result.limits.max_kd[i]=std::min(result.limits.max_kd[i],cap.max_kd*gains);
+        auto& recovery=result.fault_recovery.compliant_recovery;
+        recovery.max_vel[i]=std::min(recovery.max_vel[i],result.limits.max_vel[i]);
+    }
+    RobotCfg candidate=requested;
+    candidate.safety=result;
+    if(!validate_robot_core_cfg(candidate)) return invalid();
+    return result;
 }
 
 // ! ========================= 私 有 类 方 法 实 现 ========================= ! //

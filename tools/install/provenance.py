@@ -1,7 +1,9 @@
 """Content receipts shared by the installer and Linux packaging"""
 import hashlib
 import json
+import os
 from pathlib import Path
+import shlex
 
 
 NATIVE_INPUTS = ('src', 'install.sh', 'conanfile.py', 'tools/bootstrap_standalone.sh',
@@ -13,6 +15,49 @@ GUI_ASSETS = ('apps/launcher/node_modules/electron/dist',
               'apps/launcher/node_modules/@xterm/addon-fit',
               'apps/launcher/node_modules/three', 'apps/launcher/renderer/vendor/three')
 BUILD_OPTIONS = ('terminal', 'python', 'ros2', 'moveit', 'robot', 'ros_distro', 'packages')
+
+
+def recovery_command(root, manifest):
+    """Rebuild the recorded component selection at the checkout's current path."""
+    argv = [str(Path(root).resolve() / 'install.sh'), '--preset', manifest.get('preset', 'standalone')]
+    for component in ('terminal', 'python', 'ros2', 'moveit', 'gui', 'tests'):
+        argv.append(('--with-' if manifest.get(component) else '--without-') + component)
+    argv += ['--robot', manifest.get('robot', 'dm_arm'), '--ros-distro', manifest.get('ros_distro', 'humble'),
+             '--clean-rebuild', '--yes']
+    return shlex.join(argv)
+
+
+def environment_problem(root):
+    """Inspect installed paths without sourcing them or importing native code."""
+    root = Path(root).resolve()
+    path = root / '.install/manifest.json'
+    if not path.is_file():
+        return '未找到安装记录，请先运行 ./install.sh'
+    try:
+        manifest = json.loads(path.read_text())
+        if not isinstance(manifest, dict):
+            raise ValueError('安装记录必须为对象')
+        recorded = manifest.get('root')
+        problem = ''
+        if recorded and Path(recorded).resolve() != root:
+            problem = f'源码目录已迁移：安装位置 {recorded}，当前位置 {root}'
+        else:
+            for key in ('workspace_setup', 'backend_setup', 'install_prefix'):
+                value = manifest.get(key)
+                if value and not Path(value).exists():
+                    problem = f'安装入口或组件已失效：{value}'
+                    break
+            prefix = manifest.get('install_prefix')
+            if not problem and prefix:
+                for item in Path(prefix).rglob('*'):
+                    if item.is_symlink() and not item.exists():
+                        problem = f'安装链接已失效：{item} -> {os.readlink(item)}'
+                        break
+        if problem:
+            return problem + '\n请在当前目录重建所选组件：\n' + recovery_command(root, manifest)
+        return ''
+    except (OSError, ValueError, TypeError) as exc:
+        return f'无法读取有效安装记录：{exc}\n请运行 ./install.sh 重新选择安装组件'
 
 
 def fingerprint(root, paths, *, source=False):

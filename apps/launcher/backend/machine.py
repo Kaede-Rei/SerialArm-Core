@@ -102,12 +102,14 @@ class NativeSession:
         for line in proc.stderr:
             if line.strip(): self.emit({'event': 'native_log', 'data': line[-8192:]})
 
-    def request(self, method, params=None, timeout=8):
+    def request(self, method, params=None, timeout=8, cancel_event=None):
         if not isinstance(method, str) or not method or len(method) > 128: raise ValueError('invalid native request method')
         if params is None: params = {}
         if not isinstance(params, dict): raise ValueError('native request params must be an object')
         with self.mutex:
             if not self.proc or self.state.get('state') not in ('running', 'stopping'): raise ValueError('workspace session is not running')
+            if cancel_event is not None and cancel_event.is_set():
+                raise ValueError('park interrupted by operator')
             # A timed-out command may still execute later in the native process
             # Never queue another hardware action until the operator reconnects
             if self.state.get('recovery_required'):
@@ -149,7 +151,7 @@ class NativeSession:
             self.state.update(disconnect_blocked=True, disconnect_error=str(error))
             self.emit({'event':'session', **self.state})
 
-    def stop(self, force=False):
+    def stop(self, force=False, cancel_event=None):
         with self.mutex:
             if not self.proc or self.state.get('state') not in ('running', 'stopping'): return self.status()
             proc = self.proc
@@ -158,7 +160,7 @@ class NativeSession:
                 # A native rejection must preserve the connection and its leases
                 # Only an explicit force request may terminate the process
                 try:
-                    self.request('shutdown', timeout=120)
+                    self.request('shutdown', timeout=120, cancel_event=cancel_event)
                 except Exception as error:
                     self.note_disconnect_failure(error)
                     raise

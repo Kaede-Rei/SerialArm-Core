@@ -188,23 +188,41 @@ def bundle_external_libs(native):
 
 def python_gui_modules(root, payload):
     venv = root / '.install/gui-venv/bin/python'
-    query = '''import json, sys, numpy, scipy, yaml
+    query = '''import json, sys
 from pathlib import Path
 from importlib import metadata
-modules = (numpy, scipy, yaml)
-paths = []
-for module in modules:
-    source = Path(module.__file__).resolve().parent
-    paths.append([module.__name__, str(source)])
-    for suffix in ('libs', '.libs'):
-        sibling = source.parent / (source.name + suffix)
-        if sibling.is_dir(): paths.append([sibling.name, str(sibling)])
-for name in ('numpy', 'scipy', 'PyYAML'):
+try:
+    from packaging.requirements import Requirement
+except ImportError:
+    from pip._vendor.packaging.requirements import Requirement
+# Ubuntu's Jinja2 egg metadata omits its runtime MarkupSafe dependency.
+pending = [('numpy', set()), ('scipy', set()), ('PyYAML', set()),
+           ('cvxpy', set()), ('clarabel', set()), ('MarkupSafe', set())]
+seen, paths = set(), {}
+while pending:
+    name, extras = pending.pop()
     distribution = metadata.distribution(name)
-    info = Path(distribution._path)
-    paths.append([info.name, str(info)])
-print(json.dumps({'minor': sys.version_info.minor, 'paths': paths}))'''
-    probe = subprocess.run([str(venv), '-c', query], capture_output=True, text=True)
+    key = (distribution.metadata['Name'].lower(), tuple(sorted(extras)))
+    if key in seen: continue
+    seen.add(key)
+    info = Path(distribution._path).resolve()
+    paths[info.name] = str(info)
+    tops = {str(f).split('/')[0] for f in distribution.files or []
+            if str(f).split('/')[0] not in ('..', '.')}
+    tops.update((distribution.read_text('top_level.txt') or '').split())
+    for top in tops:
+        source = Path(distribution.locate_file(top)).resolve()
+        candidates = [source] if source.exists() else list(source.parent.glob(source.name + '.*'))
+        for candidate in candidates:
+            if candidate.is_dir() or candidate.suffix in ('.py', '.so'):
+                paths[candidate.name] = str(candidate)
+    for raw in distribution.requires or []:
+        requirement = Requirement(raw)
+        if requirement.marker and not any(requirement.marker.evaluate({'extra': extra})
+                                          for extra in extras | {''}): continue
+        pending.append((requirement.name, set(requirement.extras)))
+print(json.dumps({'minor': sys.version_info.minor, 'paths': sorted(paths.items())}))'''
+    probe = subprocess.run([str(venv), '-I', '-c', query], capture_output=True, text=True)
     if probe.returncode != 0:
         fail('GUI Python dependencies are unavailable: ' + probe.stderr[-1300:])
     data = json.loads(probe.stdout)
@@ -213,20 +231,54 @@ print(json.dumps({'minor': sys.version_info.minor, 'paths': paths}))'''
     if data['minor'] != system_minor:
         fail('GUI Python ABI does not match the system ROS2 Python')
     target = payload / 'python'
+    target.mkdir(parents=True, exist_ok=True)
     for name, folder in data['paths']:
-        copytree(Path(folder), target / name)
-    env = dict(os.environ)
-    env['PYTHONPATH'] = str(target) + os.pathsep + env.get('PYTHONPATH', '')
-    env['PYTHONNOUSERSITE'] = '1'
-    verify = subprocess.run(['/usr/bin/python3', '-c',
-        'import yaml, numpy, scipy, sys; from pathlib import Path; '
-        'root=Path(sys.argv[1]).resolve(); '
-        'assert all(Path(mod.__file__).resolve().is_relative_to(root) '
-        'for mod in (yaml,numpy,scipy))', str(target)],
-        env=env, text=True, capture_output=True)
-    if verify.returncode != 0:
-        fail('Packaged Python dependencies failed to import: ' + verify.stderr[-1400:])
-    print('[SerialArm] GUI Python modules copied: numpy, scipy, PyYAML')
+        source = Path(folder)
+        if source.is_dir():
+            copytree(source, target / name)
+        else:
+            shutil.copy2(source, target / name)
+    validate_python_payload(payload)
+    print('[SerialArm] GUI Python dependency closure and CLARABEL solve verified')
+
+
+def validate_python_payload(payload):
+    """Exclude build-host site packages and exercise the solver shipped to users."""
+    check = r'''
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root / 'python'))
+import yaml, numpy as np, scipy, cvxpy as cp, clarabel, osqp, scs
+for module in (yaml, np, scipy, cp, clarabel, osqp, scs):
+    if not Path(module.__file__).resolve().is_relative_to(root / 'python'):
+        raise ValueError('Dependency escaped payload: ' + module.__name__)
+if int(np.__version__.split('.')[0]) >= 2:
+    raise ValueError('Packaged NumPy violates the ROS Humble ABI')
+if 'CLARABEL' not in cp.installed_solvers():
+    raise ValueError('Packaged CLARABEL solver is unavailable')
+# A small joint static/dynamic regression with the same PSD constraint family
+# as physical identification.
+x = cp.Variable(2)
+static = np.array([[1., 0.], [2., 0.]])
+dynamic = np.array([[1., 1.], [1., -1.], [.5, 2.]])
+truth = np.array([2., .3])
+cone = cp.diag(cp.hstack([x[1], x[1], x[1], x[0]]))
+problem = cp.Problem(cp.Minimize(cp.sum_squares(static @ x - static @ truth)
+                               + cp.sum_squares(dynamic @ x - dynamic @ truth)),
+                     [cone >> 1e-6 * np.eye(4)])
+problem.solve(solver='CLARABEL', tol_gap_abs=1e-8, tol_feas=1e-8, tol_gap_rel=1e-8)
+if problem.status != 'optimal' or x.value is None or not np.allclose(x.value, truth, atol=1e-5):
+    raise ValueError('Packaged joint physical solve failed: ' + str(problem.status))
+print('PYTHON_PAYLOAD_SOLVE_PASS')
+'''
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    for name in ('PYTHONPATH', 'PYTHONHOME', 'LD_LIBRARY_PATH'):
+        env.pop(name, None)
+    result = subprocess.run(['/usr/bin/python3', '-I', '-S', '-c', check, str(payload)],
+                            env=env, text=True, capture_output=True, timeout=60)
+    if result.returncode != 0:
+        raise ValueError('Isolated packaged Python solver check failed: ' + result.stderr[-2200:])
 
 
 def release_evidence(root, payload, manifest):

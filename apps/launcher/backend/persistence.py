@@ -480,13 +480,34 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
     return directory, metadata, result, payload
 
 
+def _gravity_target_text(core_path, metadata):
+    text = core_path.read_bytes().decode('utf-8')
+    config = yaml.safe_load(text)
+    model = config.get('model') if isinstance(config, dict) else None
+    if not isinstance(model, dict):
+        raise ValueError('目标 Core 缺少 model 配置，拒绝保存历史重力校正')
+    joints = metadata.get('joint_names')
+    if not isinstance(joints, list) or not joints or model.get('joint_names') != joints:
+        raise ValueError('目标 Core 的关节顺序与重力候选不一致')
+    value = model.get('urdf_path')
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('目标 Core 缺少有效的 model.urdf_path')
+    model_path = Path(value)
+    if not model_path.is_absolute():
+        model_path = core_path.parent / model_path
+    if not matches_recorded_fingerprint(model_path.resolve(), metadata.get('urdf_fingerprint')):
+        raise ValueError('目标 Core 所用 URDF 与重力候选不一致，拒绝修改配置')
+    return text
+
+
 def save_gravity_correction(core_path, expected_sha, task_directory, storage_home=None):
     core_path = Path(core_path).resolve()
     if sha256_file(core_path) != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
     directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
-    if not matches_recorded_fingerprint(metadata['urdf_path'], metadata['urdf_fingerprint']):
-        raise ValueError('当前 URDF 与历史任务不一致，禁止应用参数，请先恢复对应模型')
+    before = _gravity_target_text(core_path, metadata)
+    if hashlib.sha256(before.encode('utf-8')).hexdigest() != expected_sha:
+        raise ValueError('configuration changed outside the workspace; reload before saving')
     candidate_dir = directory / 'candidate'
     candidate_dir.mkdir(parents=True, exist_ok=True)
     correction_path = candidate_dir / 'gravity-correction.yaml'
@@ -495,7 +516,6 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
     yaml.safe_load(temp_correction.read_text())
     temp_correction.replace(correction_path)
     relative = Path(os.path.relpath(correction_path, core_path.parent))
-    before = core_path.read_text()
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative.as_posix())
     yaml.safe_load(after)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -694,7 +714,7 @@ def preview_gravity_correction(core_path, task_directory):
     directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
     candidate_path = directory / 'candidate' / 'gravity-correction.yaml'
     relative = Path(os.path.relpath(candidate_path, core_path.parent)).as_posix()
-    before = core_path.read_text()
+    before = _gravity_target_text(core_path, metadata)
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative)
     yaml.safe_load(after)
     changes = []

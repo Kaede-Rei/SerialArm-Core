@@ -59,15 +59,15 @@ bool parse_positive_int(const std::string& text, int& value) {
  */
 class MockMotorBus final : public serial_arm::MotorBus {
 public:
-    explicit MockMotorBus(std::size_t size) {
+    explicit MockMotorBus(serial_arm::HardwareCapabilities capabilities)
+        : capabilities_(std::move(capabilities)) {
+        const auto size = capabilities_.size();
         state_.pos.assign(size, 0.0);
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
         state_.enabled.assign(size, 1);
         state_.err_code.assign(size, 0);
-        capabilities_.resize(size);
-        for(std::size_t i = 0; i < size; ++i) capabilities_[i].actuator_name = "mock" + std::to_string(i + 1);
     }
 
     tl::expected<void, serial_arm::MotorBusErr> configure(const std::string& config_path) override {
@@ -238,6 +238,7 @@ hardware_interface::CallbackReturn SerialArmSystem::on_activate(const rclcpp_lif
         return hardware_interface::CallbackReturn::ERROR;
     }
     const auto activate_result = robot_->activate();
+    cfg_.safety = robot_->get_config().safety;
     if(!activate_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot activate", activate_result.error()).c_str());
         return hardware_interface::CallbackReturn::ERROR;
@@ -457,7 +458,12 @@ hardware_interface::CallbackReturn SerialArmSystem::configure_robot() {
     }
     else {
         robot_cfg.runtime.write_enabled = true;
-        bus = std::make_unique<MockMotorBus>(cfg_.joint_names.size());
+        const auto capabilities = serial_arm::capabilities_for_joint_order(hardware_bus_->capabilities(), cfg_.joint_names);
+        if(!capabilities) {
+            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Offline hardware capabilities do not match configured joints");
+            return hardware_interface::CallbackReturn::ERROR;
+        }
+        bus = std::make_unique<MockMotorBus>(*capabilities);
         RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "SerialArm ros2_control backend: offline; runtime.write_enabled=false");
     }
 

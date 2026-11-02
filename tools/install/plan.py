@@ -34,6 +34,7 @@ class Plan:
     allow_source_build: bool
     root: str
     gui_only: bool = False
+    clean_rebuild: bool = False
 
     @property
     def install_key(self):
@@ -102,6 +103,7 @@ def parser():
     p = argparse.ArgumentParser(description='SerialArm-Core 统一安装器（Linux / Python 3.10+）')
     p.add_argument('--preset', choices=(*PRESETS, 'standalone-dm'))
     p.add_argument('--gui-only', action='store_true', help='只安装 GUI，复用已有 Core 安装状态')
+    p.add_argument('--clean-rebuild', action='store_true', help='清理当前配置的构建和安装目录后重建，用于源码目录迁移恢复')
     p.add_argument('--robot', choices=('dm_arm', 'none'))
     for name in COMPONENTS:
         group = p.add_mutually_exclusive_group()
@@ -120,6 +122,8 @@ def parser():
 def parse_plan(argv, root):
     p = parser()
     args = p.parse_args(argv)
+    if args.gui_only and args.clean_rebuild:
+        p.error('--clean-rebuild 需要重建 Core，不能与 --gui-only 同时使用')
     if not args.preset:
         p.error('非交互输入需要 --preset；交互向导请执行 ./install.sh')
     preset = 'standalone' if args.preset == 'standalone-dm' else args.preset
@@ -148,4 +152,5 @@ def parse_plan(argv, root):
     return Plan(preset=preset, **values, robot=robot, ros_distro=args.ros_distro,
                 jobs=args.jobs, yes=args.yes, dry_run=args.dry_run,
                 skip_system_deps=args.skip_system_deps,
-                allow_source_build=args.allow_source_build, root=str(root), gui_only=args.gui_only)
+                allow_source_build=args.allow_source_build, root=str(root), gui_only=args.gui_only,
+                clean_rebuild=args.clean_rebuild)
