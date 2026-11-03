@@ -1,20 +1,22 @@
 """Pure installation planning shared by CLI and interactive wizard"""
 import argparse
+import json
 import os
 import re
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 PRESETS = {
-    'core': (False, False, False, False, False, False, 'none'),
-    'standalone': (True, False, False, False, True, False, 'dm_arm'),
-    'python': (False, True, False, False, False, False, 'none'),
-    'ros2': (True, False, True, True, True, False, 'dm_arm'),
-    'dev': (True, True, True, True, True, True, 'dm_arm'),
-    'custom': (False, False, False, False, False, False, 'none'),
+    'core': (False, False, False, False, False, 'none'),
+    'standalone': (True, False, False, False, True, 'dm_arm'),
+    'python': (False, True, False, False, False, 'none'),
+    'ros2': (True, False, True, True, True, 'dm_arm'),
+    'dev': (True, True, True, True, True, 'dm_arm'),
+    'custom': (False, False, False, False, False, 'none'),
 }
-COMPONENTS = ('terminal', 'python', 'ros2', 'moveit', 'gui', 'tests')
+COMPONENTS = ('terminal', 'python', 'ros2', 'moveit', 'gui')
 
 @dataclass
 class Plan:
@@ -24,7 +26,6 @@ class Plan:
     ros2: bool
     moveit: bool
     gui: bool
-    tests: bool
     robot: str
     ros_distro: str
     jobs: int
@@ -39,7 +40,24 @@ class Plan:
     @property
     def install_key(self):
         mode = 'ros2-' + self.ros_distro if self.ros2 else 'standalone'
-        return f'{mode}-{self.robot}-t{int(self.terminal)}-p{int(self.python)}-m{int(self.moveit)}-test{int(self.tests)}'
+        key = f'{mode}-{self.robot}-t{int(self.terminal)}-p{int(self.python)}-m{int(self.moveit)}'
+        # Existing installations encoded the removed development option in their
+        # directory name. Reuse that generation when its native selection matches.
+        root = Path(self.root).resolve()
+        try:
+            manifest = json.loads((root / '.install/manifest.json').read_text())
+            fields = ('terminal', 'python', 'ros2', 'moveit', 'robot', 'ros_distro')
+            if (Path(manifest.get('root', '')).resolve() == root
+                    and (self.gui_only or all(manifest.get(name) == getattr(self, name) for name in fields))):
+                prefix = Path(manifest.get('install_prefix', ''))
+                build = Path(manifest.get('build_dir', ''))
+                if (prefix.parent == root / 'install/unified' and build.parent == root / 'build/unified'
+                        and prefix.name == build.name
+                        and (self.gui_only or prefix.name in (key, key + '-test0', key + '-test1'))):
+                    return prefix.name
+        except (OSError, ValueError, TypeError, AttributeError):
+            pass
+        return key
 
     @property
     def packages(self):
@@ -50,8 +68,6 @@ class Plan:
         if self.robot == 'dm_arm':
             names += ['serial_arm_protocol_damiao_usb2can', 'serial_arm_hardware_damiao',
                       'serial_arm_robot_profiles', 'dm_arm_description']
-        if self.ros2 and self.tests:
-            names += ['dm_arm_description']  # Adapter test fixture only
         if self.moveit:
             names += ['dm_arm_no_gripper', 'dm_arm_with_gripper']
         return list(dict.fromkeys(names))
@@ -110,6 +126,9 @@ def parser():
         group.add_argument('--with-' + name, dest=name, action='store_true')
         group.add_argument('--without-' + name, dest=name, action='store_false')
         p.set_defaults(**{name: None})
+    p.add_argument('--with-tests', dest='_legacy_tests', action='store_true', help=argparse.SUPPRESS)
+    p.add_argument('--without-tests', dest='_legacy_tests', action='store_false', help=argparse.SUPPRESS)
+    p.set_defaults(_legacy_tests=None)
     p.add_argument('--ros-distro', default=os.environ.get('ROS_DISTRO', 'humble'))
     p.add_argument('--jobs', type=int, default=min(os.cpu_count() or 1, 8))
     p.add_argument('--yes', action='store_true', help='跳过安装计划确认；不允许慢速源码回退')
@@ -122,6 +141,8 @@ def parser():
 def parse_plan(argv, root):
     p = parser()
     args = p.parse_args(argv)
+    if args._legacy_tests:
+        print('--with-tests 已停用，不会安装或执行内置测试', file=sys.stderr)
     if args.gui_only and args.clean_rebuild:
         p.error('--clean-rebuild 需要重建 Core，不能与 --gui-only 同时使用')
     if not args.preset:

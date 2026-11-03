@@ -9,6 +9,7 @@
         const joint = snapshot.joint || {};
         return {
             time_s: snapshot.monotonic_ns / 1e9, sequence: snapshot.sequence,
+            feedback_receive_ns: finite(snapshot.feedback_receive_ns) ? snapshot.feedback_receive_ns : null,
             pos: snapshot.joint_names.map((_, i) => at(joint.pos, i)),
             vel: snapshot.joint_names.map((_, i) => at(joint.vel, i)),
             acc: snapshot.joint_names.map((_, i) => at(joint.acc, i)),
@@ -43,19 +44,22 @@
         };
     }
     function summarize(samples, releaseTime, tolerance = 0.01) {
-        if (!finite(tolerance) || tolerance <= 0) throw new Error('Response tolerance must be finite and positive');
         const last = samples.at(-1), first = samples[0];
         if (!first) return { samples: 0, duration_s: 0, joints: [] };
+        const tolerances = Array.isArray(tolerance) ? tolerance : first.pos.map(() => tolerance);
+        if (tolerances.length !== first.pos.length || !tolerances.every(value => finite(value) && value > 0))
+            throw new Error('Each joint response tolerance must be finite and positive');
         const joints = first.pos.map((_, i) => {
+            const band = tolerances[i];
             const tracking = samples.filter(s => finite(s.pos[i]) && finite(s.accepted[i])).map(s => s.pos[i] - s.accepted[i]);
             const offset = samples.filter(s => finite(s.pos[i]) && finite(s.nominal[i])).map(s => ({ time_s: s.time_s, value: s.pos[i] - s.nominal[i], nominal: s.nominal[i] }));
             const post = finite(releaseTime) ? offset.filter(s => s.time_s >= releaseTime) : [];
             const final = post.filter(s => s.time_s >= last.time_s - 0.5);
-            const nominalMoving = post.length > 1 && Math.max(...post.map(s => s.nominal)) - Math.min(...post.map(s => s.nominal)) > tolerance;
+            const nominalMoving = post.length > 1 && Math.max(...post.map(s => s.nominal)) - Math.min(...post.map(s => s.nominal)) > band;
             let settling = null;
             if (post.length > 1 && !nominalMoving) {
                 let start = post.length - 1;
-                while (start >= 0 && Math.abs(post[start].value) <= tolerance) --start;
+                while (start >= 0 && Math.abs(post[start].value) <= band) --start;
                 const entering = post[start + 1];
                 if (entering && post.at(-1).time_s - entering.time_s >= 0.5) settling = entering.time_s - releaseTime;
             }
@@ -67,7 +71,7 @@
                 peak_deflection: offset.length ? Math.max(...offset.map(s => Math.abs(s.value))) : null,
                 peak_external_nm: external.length ? Math.max(...external.map(Math.abs)) : null,
                 final_offset: mean(final.map(s => s.value)),
-                rebound: finite(releaseOffset) && Math.abs(releaseOffset) > tolerance ? Math.max(0, ...post.map(s => -Math.sign(releaseOffset) * s.value)) : null,
+                rebound: finite(releaseOffset) && Math.abs(releaseOffset) > band ? Math.max(0, ...post.map(s => -Math.sign(releaseOffset) * s.value)) : null,
                 post_release_change: post.length > 1 ? post.at(-1).value - post[0].value : null,
                 settling_s: settling, nominal_moving: nominalMoving,
             };

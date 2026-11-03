@@ -415,18 +415,47 @@ class TcpCalibration:
         joint_name = f"{info['profile']}_tcp_fixed"
         root = ET.parse(urdf).getroot()
         existing = {node.get('name') for node in root.findall('link')} | {node.get('name') for node in root.findall('joint')}
+        parent_frame=session['parent_frame']
+        tcp=list(session['candidate']['tcp_xyz_m'])
+        rpy=[0.,0.,0.]
+        before=None
+        operation='create'
         if link_name in existing or joint_name in existing:
-            raise ValueError('TCP Link 名称与现有模型冲突，请先处理已有工具坐标系')
+            old=root.find("joint[@name='"+joint_name+"']")
+            if (old is None or old.get('type')!='fixed' or old.find('child') is None or
+                    old.find('child').get('link')!=link_name or core['model']['tool_frame']!=link_name or
+                    root.find("link[@name='"+link_name+"']") is None or old.find('parent') is None):
+                raise ValueError('TCP 名称已被其他模型元素使用，请选择不同的工具配置')
+            # Recalibrate the existing tool in its original parent coordinates.
+            # Sampling relative to the current TCP is valid and never creates
+            # a self-parenting joint or an ever-growing chain of TCP links.
+            parent_frame=old.find('parent').get('link')
+            transform=self._fixed_component(urdf,parent_frame).get(session['parent_frame'])
+            if transform is None: raise ValueError('所选参考 Frame 与已有工具不是同一固定工具链')
+            rotation,translation=transform
+            tcp=(rotation@np.asarray(tcp)+translation).tolist()
+            pitch=math.atan2(-float(rotation[2,0]), math.hypot(float(rotation[0,0]),float(rotation[1,0])))
+            if abs(math.cos(pitch))>1e-10:
+                roll=math.atan2(float(rotation[2,1]),float(rotation[2,2]))
+                yaw=math.atan2(float(rotation[1,0]),float(rotation[0,0]))
+            else:
+                roll=math.atan2(-float(rotation[1,2]),float(rotation[1,1]));yaw=0.
+            rpy=[roll,pitch,yaw]
+            origin=old.find('origin')
+            before={'name':joint_name,'parent':parent_frame,'child':link_name,
+                    'xyz':[float(v) for v in (origin.get('xyz','0 0 0') if origin is not None else '0 0 0').split()],
+                    'rpy':[float(v) for v in (origin.get('rpy','0 0 0') if origin is not None else '0 0 0').split()]}
+            operation='update'
         return {'profile': info['profile'], 'source_urdf': str(urdf), 'source_core': str(core_path),
-                'source_profile': info['profile_file'], 'parent_frame': session['parent_frame'],
+                'source_profile': info['profile_file'], 'parent_frame': parent_frame, 'sample_parent_frame':session['parent_frame'], 'operation':operation,
                 'tool_frame': link_name, 'fixed_joint': joint_name,
-                'tcp_xyz_m': list(session['candidate']['tcp_xyz_m']),
+                'tcp_xyz_m':tcp,'tcp_rpy_rad':rpy,
                 'source_hashes': {'core': _digest(core_path), 'urdf': _digest(urdf), 'profile': _digest(info['profile_file'])},
                 'change_summary': [
-                    {'field': 'urdf.fixed_joint', 'before': None, 'after': {'name':joint_name, 'parent':session['parent_frame'], 'child':link_name, 'xyz':session['candidate']['tcp_xyz_m'], 'rpy':[0.,0.,0.]}},
+                    {'field': 'urdf.fixed_joint', 'before':before, 'after': {'name':joint_name, 'parent':parent_frame, 'child':link_name, 'xyz':tcp, 'rpy':rpy}},
                     {'field': 'core.model.tool_frame', 'before':core['model']['tool_frame'], 'after':link_name},
                     {'field': 'profile.description.urdf', 'before':str(urdf), 'after':'robot.urdf'}],
-                'writes_source': False, 'orientation': '沿用父坐标系朝向'}
+                'writes_source': False, 'orientation': '沿用采样参考坐标系朝向'}
 
     def export(self, config, destination=None):
         session, info, core, core_path, urdf = self._ensure(config)
@@ -438,8 +467,8 @@ class TcpCalibration:
         directory = Path(session['directory'])
         output = directory / 'tcp-candidate.yaml'
         export = {'profile': session['profile'], 'base_frame': session['base_frame'],
-                  'parent_frame': session['parent_frame'], 'tcp_xyz_m': session['candidate']['tcp_xyz_m'],
-                  'tcp_rpy_rad': [0., 0., 0.], 'rotation_note': '固定点方法仅辨识平移，工具朝向沿用父 Frame',
+                  'parent_frame':preview['parent_frame'], 'sample_parent_frame':session['parent_frame'], 'tcp_xyz_m':preview['tcp_xyz_m'],
+                  'tcp_rpy_rad':preview['tcp_rpy_rad'], 'rotation_note': '固定点方法仅辨识平移，工具朝向沿用采样参考 Frame',
                   'fit': session['candidate'], 'validation': session['report'],
                   'source_hashes': {'core': session['core_hash'], 'urdf': session['urdf_hash']},
                   'training_samples': session['train'], 'validation_samples': session['validation']}
@@ -456,11 +485,18 @@ class TcpCalibration:
             package.mkdir()
             tree = ET.parse(urdf)
             root = tree.getroot()
-            ET.SubElement(root, 'link', {'name':preview['tool_frame']})
-            joint = ET.SubElement(root, 'joint', {'name':preview['fixed_joint'], 'type':'fixed'})
-            ET.SubElement(joint, 'parent', {'link':session['parent_frame']})
-            ET.SubElement(joint, 'child', {'link':preview['tool_frame']})
-            ET.SubElement(joint, 'origin', {'xyz':' '.join(format(float(v), '.12g') for v in preview['tcp_xyz_m']), 'rpy':'0 0 0'})
+            if preview['operation']=='update':
+                joint=root.find("joint[@name='"+preview['fixed_joint']+"']")
+                origin=joint.find('origin')
+                if origin is None: origin=ET.SubElement(joint,'origin')
+            else:
+                ET.SubElement(root,'link',{'name':preview['tool_frame']})
+                joint=ET.SubElement(root,'joint',{'name':preview['fixed_joint'],'type':'fixed'})
+                ET.SubElement(joint,'parent',{'link':preview['parent_frame']})
+                ET.SubElement(joint,'child',{'link':preview['tool_frame']})
+                origin=ET.SubElement(joint,'origin')
+            origin.set('xyz',' '.join(format(float(v),'.12g') for v in preview['tcp_xyz_m']))
+            origin.set('rpy',' '.join(format(float(v),'.12g') for v in preview['tcp_rpy_rad']))
             roots = config.get('resource_paths', '').split(':') if config.get('resource_paths') else []
             copied = {}
             for mesh in root.findall('.//mesh'):

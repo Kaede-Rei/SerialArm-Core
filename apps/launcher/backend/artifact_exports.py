@@ -99,11 +99,11 @@ def _bundle_model(snapshot, metadata, dest, name='robot.urdf'):
     return out
 
 
-def gain_candidate_targets(gain, cfg, joints):
+def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
     """Validate a candidate and return its exact deployment leaves."""
     category = gain.get('category')
     policy = cfg.get('safety_policy') or {}
-    groups = deployment_gain_groups(gain)
+    groups = deployment_gain_groups(gain, gain_purposes)
     targets = {}
     hold_compensation = None
     for item, fields in groups.items():
@@ -119,7 +119,7 @@ def gain_candidate_targets(gain, cfg, joints):
             rigid = fields.get('rigid_reference_kp')
             rigid_kd = fields.get('rigid_reference_kd')
             kp, kd = fields.get('kp'), fields.get('kd')
-            expected = (groups['rigid_tracking'] if category == 'all' else
+            expected = (groups['rigid_tracking'] if 'rigid_tracking' in groups else
                         cfg['control']['controller']['rigid_tracking'])
             def reference_values(term):
                 values = expected.get(term)
@@ -183,23 +183,27 @@ def gain_candidate_targets(gain, cfg, joints):
     return targets, hold_compensation
 
 
-def _gain_export(record, dest):
+def _gain_export(record, dest, gain_purposes=None):
     folder, metadata, model, core, cfg = _snapshot(record)
     gain = _read_json(folder / 'gain-candidate.json')
-    if gain.get('schema') != 'serial_arm_gain_candidate' or gain.get('validated') is not True:
-        raise ValueError('增益候选未通过独立轨迹验收，不能导出为运行配置')
+    if gain.get('schema') != 'serial_arm_gain_candidate':
+        raise ValueError('无法识别增益候选格式，请重新标定或导入有效候选')
     if (gain.get('task_id') != metadata.get('task_id') or
         gain.get('urdf_fingerprint') != metadata.get('urdf_fingerprint') or
         gain.get('joint_names') != metadata.get('joint_names')):
         raise ValueError('增益候选与任务源模型不一致')
+    # Selected groups are merged into the current compatible Core so an older
+    # calibration cannot roll back unrelated gains adjusted since acquisition.
+    core,merge_source=_gravity_merge_source(folder,metadata,core)
+    cfg=yaml.safe_load(core.read_text(encoding='utf-8'))
     category = gain.get('category')
     if category == 'identification_tracking': category = 'servo_tracking'
     if category not in GAIN_FIELDS:
         raise ValueError('未知增益标定目标')
     joints = metadata['joint_names']
-    targets, hold_compensation = gain_candidate_targets(gain, cfg, joints)
+    targets, hold_compensation = gain_candidate_targets(gain, cfg, joints, gain_purposes)
     result = _replace_core(core.read_text(encoding='utf-8'), targets,
-                           include_identification=True, hold_compensation=hold_compensation)
+                           include_identification='servo_tracking' in deployment_gain_groups(gain,gain_purposes), hold_compensation=hold_compensation)
     # Keep model.urdf_path unchanged because this artifact intentionally contains
     # only core.yaml; changing to a missing relative URDF would break deployment
     (dest / 'core.yaml').write_text(result, encoding='utf-8')
@@ -210,7 +214,7 @@ def _gain_export(record, dest):
     for name in ('core.yaml', 'model.urdf', 'hardware.yaml', 'hardware-effective.yaml', 'gravity-correction.yaml'):
         source = folder / 'source' / name
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, snapshots / name)
-    return {'target': category, 'validated': True, 'files_only': ['core.yaml']}
+    return {'target': category, 'gain_purposes':list(deployment_gain_groups(gain,gain_purposes)), 'validated': True, 'validation_scope':gain.get('validation_scope','recorded_scope'), 'merge_source':merge_source, 'files_only': ['core.yaml']}
 
 
 def _gravity_merge_source(folder, metadata, source_core):
@@ -412,7 +416,7 @@ def _dynamics_export(record,dest,report_path=None):
             'validated_on_hardware':False}
 
 
-def export_artifact(root,directory,kind,*,report=None,destination=None,candidate_source=None,candidate_path=None):
+def export_artifact(root,directory,kind,*,report=None,destination=None,candidate_source=None,candidate_path=None,gain_purposes=None):
     if kind not in ('teaching','gain','gravity','dynamics'):raise ValueError('未知标定功能')
     record=load(directory,kind)
     if destination:
@@ -438,7 +442,7 @@ def export_artifact(root,directory,kind,*,report=None,destination=None,candidate
             for name in ('trajectory.checkpoint.csv',):
                 if (source/name).is_file():shutil.copy2(source/name,stage/name)
             payload={'target':'recorded_joint_trajectory','validated':True}
-        elif kind=='gain':payload=_gain_export(record,stage)
+        elif kind=='gain':payload=_gain_export(record,stage,gain_purposes)
         elif kind=='gravity':payload=_gravity_export(record,stage,candidate_source,candidate_path)
         else:payload=_dynamics_export(record,stage,report)
         if not list(stage.rglob('*')):raise ValueError('导出没有产生任何文件')

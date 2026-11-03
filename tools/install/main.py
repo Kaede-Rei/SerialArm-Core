@@ -33,11 +33,11 @@ def wizard(argv):
         ('独立机械臂调试 / Standalone', '安装 Core、C++ Terminal 与 GUI，不依赖 ROS2，内置 DM-Arm 支持可选'),
         ('Python 接口开发 / Python Binding', '安装 Core 与 Python Binding，使用独立 Python 环境，不含 Terminal、ROS2 或 GUI'),
         ('ROS2 控制与规划 / ROS2 + MoveIt', '安装 Core、Terminal、Python Binding、ROS2 Adapter、DM-Arm、MoveIt 与 GUI'),
-        ('源码开发 / Developer', '包含 ROS2 控制与规划所需全部组件，发布包不附带内部测试源码'),
+        ('完整组件开发 / Developer', '安装 Core、Python、Terminal、GUI 与 ROS2 / MoveIt，便于完整组件集成'),
         ('自定义组件 / Custom', '从 Core 起步逐项选择组件，自动补齐依赖，例如 ROS2 需要 Python Binding'),
     ]
     default = '2'
-    print('从核心库到独立调试、ROS2 集成、开发测试，集成需求依次增加')
+    print('按用途选择核心库、独立调试或 ROS2 集成所需组件')
     print('Python 接口是独立选择，选项并非按编号逐级包含')
     for i, (label, detail) in enumerate(labels, 1):
         print(f'  {i}  {label}\n     {detail}')
@@ -55,7 +55,6 @@ def wizard(argv):
             'ros2': 'ROS2 Adapter（接入 ros2_control，同时包含 Python Binding）',
             'moveit': 'MoveIt（内置 DM-Arm 规划配置，同时包含 ROS2 与 DM-Arm 支持）',
             'gui': 'GUI（Profile、运行入口与诊断，需要 Node.js 20+ 和 npm）',
-            'tests': '内部开发测试（仅完整开发检出包含测试源码时可用）',
         }
         for c in COMPONENTS:
             if ask_bool('安装 ' + descriptions[c], False):

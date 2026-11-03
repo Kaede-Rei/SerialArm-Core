@@ -16,7 +16,7 @@ import sys
 
 import yaml
 
-from profiles import config_values, read_yaml, text
+from profiles import Inspector, config_values, read_yaml, text
 from control_parameters import canonical_core, effective_hardware
 
 
@@ -235,7 +235,11 @@ class ProfileLibrary:
                     'checks': {}, 'modes': {}, 'gain_purposes': {}, 'control_available': False,
                     'reason': str(error), 'setup_issues': [self._field_issue(str(error))],
                     'next_actions': [self._field_issue(str(error))['action']], 'fingerprint': info.get('fingerprint', '')}
-        hardware = read_yaml(info['resources']['hardware']) if checks.get('hardware') else {}
+        try:
+            hardware = read_yaml(info['resources']['hardware']) if checks.get('hardware') else {}
+        except (OSError, ValueError, yaml.YAMLError):
+            hardware = {}
+            checks['hardware'] = False
         model = core.get('model') or {}
         joints = model.get('joint_names') or []
         profile_setup = all(checks.get(k, False) for k in ('core', 'description', 'hardware'))
@@ -258,6 +262,41 @@ class ProfileLibrary:
                     and a['motor_id'] > 0 for a in acts.values()) and len(set(ids)) == len(joints))
         if setup_issues: profile_setup = False
         reason = setup_issues[0]['message'] if setup_issues else ''
+        # Offline simulation needs a valid Core model, not a made-up motor type.
+        core_issues = [item for item in setup_issues if item.get('group') != 'hardware']
+        model_valid = bool(checks.get('core') and checks.get('description'))
+        if model_valid:
+            try:
+                Inspector.validate_urdf((Path(info['resources']['core']).parent / model['urdf_path']).resolve(), joints)
+            except (ValueError, OSError, KeyError) as error:
+                model_valid = False
+                core_issues.append(self._field_issue(str(error)))
+        offline_ready = bool(checks.get('core') and checks.get('description') and joints and
+                             model.get('base_frame') and model.get('tool_frame'))
+        if offline_ready and not core_issues:
+            try:
+                self._validate_core_profile(core, {}, {'hardware': {'plugin': ''}}, Path(info['resources']['core']), core)
+                check_model = getattr(self.inspector, 'validate_model_config', None)
+                checked = check_model(config, info['resources']['core'],
+                    (Path(info['resources']['core']).parent / model['urdf_path']).resolve()) if check_model else None
+                if isinstance(checked, dict) and checked.get('valid') is not True:
+                    model_valid = False
+                    raise ValueError(checked['error'])
+            except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
+                core_issues.append(self._field_issue(str(error)))
+        offline_ready = offline_ready and not core_issues
+        for issue in core_issues:
+            if issue not in setup_issues: setup_issues.append(issue)
+        if core_issues:
+            profile_setup = False
+            reason = core_issues[0]['message']
+        if profile_setup and isinstance(self.inspector, Inspector):
+            driver = self.inspector.hardware_driver(info['hardware_plugin'])
+            if not driver['installed']:
+                profile_setup = False
+                missing_driver = self._field_issue('profile_entry.hardware.plugin ' + driver['message'])
+                setup_issues.append(missing_driver)
+                reason = missing_driver['message']
         if profile_setup:
             try:
                 entry = (read_yaml(info['profile_file']).get('profiles') or {})[info['profile']]
@@ -295,7 +334,7 @@ class ProfileLibrary:
                     return 'stale'
             return 'verified'
         values = {
-            'description': 'verified' if checks.get('description') and checks.get('core') else 'failed',
+            'description': 'verified' if model_valid else 'failed',
             'profile_setup': 'verified' if profile_setup else 'pending',
         }
         # Independent evidence describes what was checked, not what may be opened
@@ -345,7 +384,7 @@ class ProfileLibrary:
         if not next_actions:
             next_actions = [{'page': 'workbench', 'label': '进入控制工作台'}] if profile_setup else [{'page': 'profile_setup', 'label': '补齐机器人配置'}]
         urdf_limits = {}
-        if profile_setup:
+        if offline_ready:
             try:
                 urdf = (Path(info['resources']['core']).parent / model['urdf_path']).resolve()
                 joint_xml = {item.get('name'): item for item in ET.parse(urdf).getroot().findall('joint')}
@@ -359,6 +398,12 @@ class ProfileLibrary:
                     }
             except (ET.ParseError, OSError, KeyError, TypeError, ValueError):
                 urdf_limits = {}
+        position_ranges = []
+        for joint in joints:
+            values = urdf_limits.get(joint) or {}
+            try: low, high = float(values['lower']), float(values['upper'])
+            except (KeyError, TypeError, ValueError): low, high = None, None
+            position_ranges.append((low, high))
         safety_summary = {
             'joint_names': joints, 'max_acc': accel if isinstance(accel, dict) else {},
             'position_margin': safety.get('position_margin'),
@@ -370,6 +415,10 @@ class ProfileLibrary:
             'require_continuous_cmd': safety.get('require_continuous_cmd'),
             'fault_recovery': dict(safety.get('fault_recovery') or {}),
             'urdf_limits': urdf_limits,
+            'min_pos': [item[0] for item in position_ranges],
+            'max_pos': [item[1] for item in position_ranges],
+            'pos_margin': [safety.get('position_margin', 0)] * len(joints),
+            'has_position_limit': [all(value is not None and math.isfinite(value) for value in item) for item in position_ranges],
         }
         runtime = ((core.get('control') or {}).get('runtime') or {})
         prerequisites = []
@@ -400,7 +449,9 @@ class ProfileLibrary:
                 'checks': values, 'modes': mode_states, 'reason': reason,
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
-                'connection_readiness': {'structurally_valid': profile_setup, 'read_only_connectable': profile_setup,
+                'connection_readiness': {'structurally_valid': profile_setup, 'read_only_connectable': offline_ready,
+                    'offline_connectable': offline_ready, 'hardware_connectable': profile_setup,
+                    'offline_issues': core_issues,
                     'write_enabled': runtime.get('write_enabled') is True, 'basic_calibration_ready': calibration_ready,
                     'basic_calibration_prerequisites': prerequisites,
                     'next_actions': [item['action'] for item in prerequisites if not item['ready']]},
@@ -624,23 +675,27 @@ class ProfileLibrary:
             files.append(effective)
         return {str(path.resolve()): _sha(path) for path in files}
 
-    def approve_gain_mode(self, config, mode, path, native=None):
+    def approve_gain_mode(self, config, mode, path, native=None, gain_purposes=None):
         from workflow_registry import prepare_gain_candidate
-        from control_parameters import deployment_gain_groups
+        from control_parameters import deployment_gain_groups, selected_gain_purposes
         from artifact_exports import gain_candidate_targets
         source = Path(path).expanduser().resolve()
         if not source.is_dir() and (not source.is_file() or source.name != 'gain-candidate.json'):
             raise ValueError('请选择标定任务中的 gain-candidate.json，或直接选择该任务目录')
         folder = source if source.is_dir() else source.parent
-        candidate_info = prepare_gain_candidate(str(folder))
-        candidate_path = Path(candidate_info['candidate_path'])
-        candidate = json.loads(candidate_path.read_text())
-        groups = deployment_gain_groups(candidate)
         requested = str(mode or '').upper()
         aliases = {key.upper(): purpose for purpose, (_, keys, _) in self._GAIN_PURPOSES.items() for key in keys}
         aliases.update({purpose: purpose for purpose in self._GAIN_PURPOSES})
+        if requested not in ('', 'ALL') and requested not in aliases:
+            raise ValueError('未知增益用途 / Unknown gain purpose: ' + requested)
+        selection = (selected_gain_purposes(gain_purposes) if gain_purposes is not None else
+                     selected_gain_purposes([aliases[requested]]) if requested not in ('', 'ALL') else None)
+        candidate_info = prepare_gain_candidate(str(folder), selection)
+        candidate_path = Path(candidate_info['candidate_path'])
+        candidate = json.loads(candidate_path.read_text())
+        groups = deployment_gain_groups(candidate, selection)
         available = {aliases[key.upper()]: key for key in groups}
-        if requested in ('', 'ALL'):
+        if gain_purposes is not None or requested in ('', 'ALL'):
             selected = available
         elif requested in aliases and aliases[requested] in available:
             selected = {aliases[requested]: available[aliases[requested]]}
@@ -655,7 +710,7 @@ class ProfileLibrary:
         if candidate.get('joint_names') != core['model']['joint_names']:
             raise ValueError('增益候选的关节顺序与当前配置不一致')
         context_files = self._gain_binding(folder, info, core, hardware, selected)
-        targets, _ = gain_candidate_targets(candidate, core, core['model']['joint_names'])
+        targets, _ = gain_candidate_targets(candidate, core, core['model']['joint_names'], selection)
         def same(actual, expected):
             if isinstance(expected, dict): return isinstance(actual, dict) and set(actual) == set(expected) and all(same(actual[k], v) for k, v in expected.items())
             if isinstance(expected, bool): return isinstance(actual, bool) and actual is expected
@@ -805,38 +860,52 @@ class ProfileLibrary:
         package_name = (ET.parse(metadata).getroot().findtext('name') or '').strip() if metadata.is_file() else package_root.name
         if not package_name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in package_name):
             raise ValueError('Description package name is invalid')
+        original_package_root = str(package_root)
+        resource_roots = [str(root), str(package_root.parent), str(package_root),
+                          *self.inspector.roots(config_values({}), str(urdf))]
         if urdf.suffix.lower() == '.xacro':
             # Expand in a cache copy, preserving all relative mesh and include paths
             digest = hashlib.sha256()
             for item in sorted(package_root.rglob('*')):
-                if item.is_file() and item.suffix.lower() in ('.xacro', '.urdf', '.yaml', '.xml'):
+                if item.is_file():
                     digest.update(str(item.relative_to(package_root)).encode())
-                    digest.update(item.read_bytes())
+                    if item.suffix.lower() in ('.xacro', '.urdf', '.yaml', '.xml'):
+                        digest.update(item.read_bytes())
+                    else:
+                        digest.update(str((item.stat().st_size, item.stat().st_mtime_ns)).encode())
             cache = self.cache / ('expanded-' + digest.hexdigest())
             copied = cache / package_root.name
             relative = urdf.relative_to(package_root)
             expanded = copied / relative.with_name(relative.name + '.expanded.urdf')
-            if not expanded.is_file():
+            if not copied.is_dir():
                 cache.mkdir(parents=True, exist_ok=True)
-                if copied.exists(): shutil.rmtree(copied)
                 shutil.copytree(package_root, copied, ignore=shutil.ignore_patterns('.git', '__pycache__', '.serialarm'))
-                script = 'import sys,xacro; print(xacro.process_file(sys.argv[1]).toxml())'
-                result = subprocess.run([sys.executable, '-c', script, str(copied / relative)],
-                    capture_output=True, text=True, timeout=30)
-                if result.returncode:
-                    shutil.rmtree(cache, ignore_errors=True)
-                    raise ValueError('Xacro expansion failed: ' + result.stderr[-1600:])
-                ET.fromstring(result.stdout)
-                expanded.write_text(result.stdout, encoding='utf-8')
+            # The main package copy is reusable; includes in other packages can
+            # change independently, so always evaluate Xacro against current resources.
+            script = ('import sys,json; sys.path.insert(0,sys.argv[2]); '
+                'from profiles import Inspector; import xacro,xacro.substitution_args; '
+                'inspector=Inspector(sys.argv[3]); roots=json.loads(sys.argv[4]); '
+                'xacro.substitution_args._eval_find=lambda package:str(inspector.share(package,roots)); '
+                'print(xacro.process_file(sys.argv[1]).toxml())')
+            result = subprocess.run([sys.executable, '-c', script, str(copied / relative),
+                str(Path(__file__).parent), str(self.root), json.dumps(resource_roots)],
+                capture_output=True, text=True, timeout=30)
+            if result.returncode:
+                shutil.rmtree(cache, ignore_errors=True)
+                raise ValueError('Xacro expansion failed: ' + result.stderr[-1600:])
+            ET.fromstring(result.stdout)
+            expanded.write_text(result.stdout, encoding='utf-8')
             root, package_root, urdf = cache, copied, expanded
-        raw=self.inspector._parse_urdf(urdf,[str(root),str(package_root.parent),str(package_root), *self.inspector.roots(config_values({}), str(urdf))])
+        raw=self.inspector._parse_urdf(urdf,[str(root),str(package_root.parent),str(package_root), *resource_roots])
         children={j['child'] for j in raw['joints']}; roots=[l['name'] for l in raw['links'] if l['name'] not in children]
         parent_joint={j['child']:j for j in raw['joints']}; by_parent={}
         for j in raw['joints']: by_parent.setdefault(j['parent'],[]).append(j)
         matrices={name:[[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]] for name in roots}
-        queue=list(roots)
+        queue=list(roots); visited_frames=set()
         while queue:
-            parent=queue.pop(0); base=matrices[parent]
+            parent=queue.pop(0)
+            if parent in visited_frames: continue
+            visited_frames.add(parent); base=matrices[parent]
             for j in by_parent.get(parent,[]):
                 matrices[j['child']]=_matmul(base,_origin_matrix(j['origin'])); queue.append(j['child'])
         frames=[]
@@ -847,7 +916,90 @@ class ProfileLibrary:
         tool=next((name for name in leaves if name.lower() in ('tool0','tool','tcp')), leaves[0] if leaves else (raw['links'][-1]['name'] if raw['links'] else ''))
         xacros=sorted(package_root.glob('**/*.xacro'))
         preview={'profile':'description-preview','core_config':'','urdf':str(urdf),'description_urdf':str(urdf),'description_mismatch':False,'native':{'config':{'urdf_path':str(urdf),'base_frame':roots[0] if roots else '','tool_frame':tool,'gravity':[0,0,-9.81],'gravity_scale':[],'joint_names':[]},'info':{},'state':{'positions':[],'frames':frames,'center_of_mass':None}},'model':raw,'mesh_files':raw['mesh_files'],'offline':True}
-        return {'source_root':str(root),'package_root':str(package_root),'package_name':package_name,'urdf':str(urdf),'urdf_relative':str(urdf.relative_to(package_root)),'xacro':str(xacros[0]) if xacros else '','ros2_control_xacro':next((str(p) for p in xacros if 'ros2_control' in p.name),''),'roots':roots,'leaves':leaves,'links':[x['name'] for x in raw['links']],'joints':raw['joints'],'preview':preview,'fingerprint':_sha(urdf)}
+        model_issues = []
+        try: Inspector.validate_urdf(urdf)
+        except ValueError as error: model_issues.append(self._field_issue(str(error)))
+        for link in raw['links']:
+            for item in [*link['visuals'], *link['collisions']]:
+                if item.get('error'):
+                    model_issues.append(self._field_issue('model.urdf_path ' + link['name'] + ': ' + item['error']))
+        return {'source_root':str(root),'resource_roots':resource_roots,'original_package_root':original_package_root,'package_root':str(package_root),'package_name':package_name,'urdf':str(urdf),'urdf_relative':str(urdf.relative_to(package_root)),'xacro':str(xacros[0]) if xacros else '','ros2_control_xacro':next((str(p) for p in xacros if 'ros2_control' in p.name),''),'roots':roots,'leaves':leaves,'links':[x['name'] for x in raw['links']],'joints':raw['joints'],'preview':preview,'fingerprint':_sha(urdf), 'model_valid': not model_issues, 'model_issues': model_issues}
+
+    def _collect_description_resources(self, analysis, package_dir, copied):
+        """Keep copied models usable after their original workspace is removed."""
+        original = Path(analysis['package_root']).resolve()
+        roots = [analysis['source_root'], str(original.parent), str(original), *analysis.get('resource_roots', []),
+                 *self.inspector.roots(config_values({}), analysis['urdf'])]
+        urdf = copied / analysis['urdf_relative']
+        tree = ET.parse(urdf)
+        model_changed = False
+        dependencies = {}
+        imported_files = {}
+        def collect_file(source):
+            source = source.resolve()
+            if source in imported_files: return imported_files[source]
+            if not source.is_file(): raise ValueError('model.urdf_path 缺少模型资源 / Missing model resource: ' + str(source))
+            target = copied / 'resources/imported' / hashlib.sha256(str(source.parent).encode()).hexdigest()[:12] / source.name
+            imported_files[source] = target
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            # Preserve the standard relative material/texture dependencies of OBJ and DAE assets.
+            references = []
+            if source.suffix.lower() in ('.obj', '.mtl'):
+                body = source.read_text(errors='replace')
+                for line in body.splitlines():
+                    fields = line.strip().split(maxsplit=1)
+                    if len(fields) == 2 and (fields[0] == 'mtllib' or fields[0].lower().startswith('map_') or fields[0] in ('bump','disp','decal')):
+                        references.append(fields[1].strip())
+                for reference in references:
+                    replacement = collect_file(source.parent / reference)
+                    body = body.replace(reference, os.path.relpath(replacement, target.parent))
+                target.write_text(body)
+            elif source.suffix.lower() == '.dae':
+                asset_tree = ET.parse(source)
+                changed = False
+                for node in asset_tree.getroot().iter():
+                    if node.tag.rsplit('}',1)[-1] == 'init_from' and node.text:
+                        reference = node.text.strip()
+                        if reference.startswith('#'): continue
+                        referenced = source.parent / reference.removeprefix('file://')
+                        if referenced.is_file():
+                            replacement = collect_file(referenced)
+                            node.text = os.path.relpath(replacement, target.parent); changed = True
+                if changed: asset_tree.write(target, encoding='utf-8', xml_declaration=True)
+            return target
+        for mesh in tree.getroot().iter('mesh'):
+            source = Path(self.inspector._resolve_mesh(mesh.get('filename'), analysis['urdf'], roots))
+            if source.is_relative_to(original):
+                target = copied / source.relative_to(original)
+            elif source.is_relative_to(Path(analysis.get('original_package_root', original))):
+                target = copied / source.relative_to(Path(analysis['original_package_root']))
+            else:
+                owner = next((parent for parent in source.parents if (parent / 'package.xml').is_file()), None)
+                if owner:
+                    name = (ET.parse(owner / 'package.xml').findtext('name') or '').strip()
+                    if not name or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in name):
+                        raise ValueError('model.urdf_path 外部资源包名称无效 / Invalid dependency package name')
+                    destination = package_dir / name
+                    if destination.resolve().is_relative_to(owner):
+                        raise ValueError('destination 输出目录不能位于模型依赖包内 / Output must be outside dependency packages')
+                    if name == analysis['package_name'] or (name in dependencies and dependencies[name] != owner):
+                        raise ValueError('model.urdf_path 资源包名称冲突 / Dependency package name collision: ' + name)
+                    if name not in dependencies:
+                        shutil.copytree(owner, destination, ignore=shutil.ignore_patterns('.git', '__pycache__', '.serialarm'))
+                        dependencies[name] = owner
+                    target = destination / source.relative_to(owner)
+                else:
+                    target = collect_file(source)
+            if not target.is_file(): raise ValueError('model.urdf_path 复制后缺少资源 / Copied resource is missing: ' + str(target))
+            relative = os.path.relpath(target, urdf.parent)
+            if mesh.get('filename') != relative:
+                mesh.set('filename', relative); model_changed = True
+        if model_changed: tree.write(urdf, encoding='utf-8', xml_declaration=True)
+        # Parse using generated resources only, with no fallback to the source workspace.
+        parsed = self.inspector._parse_urdf(urdf, [str(package_dir)])
+        problems = [item['error'] for link in parsed['links'] for item in [*link['visuals'],*link['collisions']] if item.get('error')]
+        if problems: raise ValueError('model.urdf_path 生成配置缺少资源 / Generated model resources are incomplete: ' + '; '.join(problems))
 
     @staticmethod
     def _joint_map(names, value): return {name:value for name in names}
@@ -855,6 +1007,8 @@ class ProfileLibrary:
     def create_profile(self, options):
         source=text(options.get('source')); analysis=self.inspect_description(source, options.get('model_relative', ''))
         if analysis.get('model_choices'): raise ValueError('Select a model before creating the Profile')
+        if analysis.get('model_issues'):
+            raise ValueError(analysis['model_issues'][0]['message'])
         profile=text(options.get('profile'))
         if not profile or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in profile): raise ValueError('Profile id may contain letters, numbers, underscore, and hyphen only')
         destination=Path(text(options.get('destination'))).expanduser().resolve()
@@ -872,6 +1026,7 @@ class ProfileLibrary:
         try:
             package_dir.mkdir(parents=True,exist_ok=True)
             copied=package_dir/analysis['package_name']; shutil.copytree(analysis['package_root'],copied,dirs_exist_ok=True)
+            self._collect_description_resources(analysis, package_dir, copied)
             config_dir=copied/'config'/'serialarm'; config_dir.mkdir(parents=True,exist_ok=True)
             joints=[text(x) for x in options.get('joint_names',[]) if text(x)]
             if not joints: raise ValueError('select at least one controlled joint')
@@ -960,11 +1115,11 @@ class ProfileLibrary:
         issues = []
         def issue(group, path, message):
             issues.append({'group': group, 'path': path, 'message': message,
-                           'action': {'page': 'profile_setup', 'group': group, 'field': path, 'label': '检查' + message}})
+                           'action': {'page': 'profile_setup', 'group': group, 'field': path, 'label': '前往配置'}})
         names = ((core.get('model') or {}).get('joint_names') or [])
         plugin = ((entry.get('hardware') or {}).get('plugin') or '').strip()
         if not plugin:
-            issue('hardware', 'profile_entry.hardware.plugin', '请选择硬件驱动，达妙电机请选择 serial_arm_hardware_damiao')
+            issue('hardware', 'profile_entry.hardware.plugin', '请选择与执行器匹配且已安装的硬件驱动')
         if plugin == 'serial_arm_hardware_damiao':
             buses = hardware.get('buses') or {}
             damiao = hardware.get('damiao') or {}
@@ -1075,6 +1230,36 @@ class ProfileLibrary:
             'managed_by_launcher': self._readiness_path(info['profile_file'], info['profile']).is_file(),
         }
 
+    def hardware_inspect(self, config, plugin=None):
+        info = self.inspector.inspect(config)
+        selected = self.inspector.hardware_driver(info.get('hardware_plugin', '') if plugin is None else plugin)
+        drivers = {}
+        for name in ('serial_arm_hardware_damiao', selected['plugin']):
+            if name:
+                driver = self.inspector.hardware_driver(name)
+                drivers[name] = {**driver, 'label': '达妙 / Damiao' if name == 'serial_arm_hardware_damiao' else name}
+        manifest = self.inspector.manifest()
+        for prefix in {manifest.get('native_prefix'), manifest.get('install_prefix')} - {None, ''}:
+            for pattern in ('lib/libserial_arm_hardware_*.so', 'lib64/libserial_arm_hardware_*.so'):
+                for path in Path(prefix).glob(pattern):
+                    name = path.name.removeprefix('lib').removesuffix('.so')
+                    drivers.setdefault(name, {**self.inspector.hardware_driver(name), 'label': name})
+        return {**selected, 'drivers': list(drivers.values())}
+
+    def hardware_import(self, config, path, plugin=None):
+        source = Path(text(path)).expanduser().resolve()
+        if not source.is_file(): raise ValueError('hardware 导入文件不存在 / Hardware YAML file does not exist')
+        hardware = read_yaml(source)
+        editor = self.profile_editor_load(config)
+        editor['hardware'] = hardware
+        if plugin is not None:
+            editor['profile_entry'].setdefault('hardware', {})['plugin'] = text(plugin)
+        editor['hardware_plugin'] = editor['profile_entry'].get('hardware', {}).get('plugin', '')
+        editor['hardware_imported'] = True
+        editor['hardware_import_source'] = str(source)
+        editor['setup_issues'] = self._setup_issues(editor['core'], hardware, editor['profile_entry'])
+        return editor
+
     @staticmethod
     def _finite(value, path, minimum=None, maximum=None, integer=False):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
@@ -1138,10 +1323,7 @@ class ProfileLibrary:
         model = core['model']
         urdf = (core_path.parent / model['urdf_path']).resolve()
         if not urdf.is_file(): raise ValueError('model.urdf_path 无法找到 URDF 文件')
-        try:
-            root = ET.parse(urdf).getroot()
-        except ET.ParseError as error:
-            raise ValueError(f'model.urdf_path URDF 解析失败 {error}') from error
+        root = Inspector.validate_urdf(urdf, names)
         joints_xml = {j.get('name'): j for j in root.findall('joint')}
         links_xml = {n.get('name') for n in root.findall('link')}
         for name in names:
@@ -1354,7 +1536,8 @@ class ProfileLibrary:
         # Disabling recovery trust must always remain possible
         if requested_gravity_trusted and not original_gravity_trusted and payload.get('gravity_recovery_confirmed') is not True:
             raise ValueError('启用柔性故障恢复前必须确认重力补偿已在当前机械臂和负载上完成真机验证')
-        self._same_structure(before_hw,hardware,'hardware')
+        if payload.get('hardware_imported') is not True:
+            self._same_structure(before_hw,hardware,'hardware')
         self._same_structure(original_entry,entry,'profile')
         if entry.get('core') != original_entry.get('core') or entry.get('description') != original_entry.get('description'):
             raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')

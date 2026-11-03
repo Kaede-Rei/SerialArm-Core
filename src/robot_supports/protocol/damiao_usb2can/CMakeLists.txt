@@ -11,7 +11,7 @@ include(CMakePackageConfigHelpers)
 
 find_package(ament_cmake QUIET)
 find_package(serial_arm_core CONFIG REQUIRED)
-include(CTest)
+option(BUILD_TESTING "Compatibility option; project tests are not shipped" OFF)
 
 add_library(serial_arm_protocol_damiao_usb2can SHARED
     src/bus.cpp
@@ -66,19 +66,6 @@ install(FILES
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}
 )
 
-if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests")
-
-    add_executable(serial_arm_protocol_damiao_usb2can_tests
-        tests/bus_tests.cpp
-    )
-    target_link_libraries(serial_arm_protocol_damiao_usb2can_tests
-        PRIVATE
-            serial_arm_protocol_damiao_usb2can
-    )
-    target_compile_features(serial_arm_protocol_damiao_usb2can_tests PRIVATE cxx_std_17)
-
-    add_test(NAME serial_arm_protocol_damiao_usb2can_tests COMMAND serial_arm_protocol_damiao_usb2can_tests)
-endif()
 
 if(ament_cmake_FOUND)
     ament_export_targets(serial_arm_protocol_damiao_usb2can_targets HAS_LIBRARY_TARGET)

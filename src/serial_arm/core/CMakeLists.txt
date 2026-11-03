@@ -25,7 +25,7 @@ if(SERIAL_ARM_ENABLE_ROS2)
 else()
     set(ament_cmake_FOUND FALSE)
 endif()
-include(CTest)
+option(BUILD_TESTING "Compatibility option; project tests are not shipped" OFF)
 
 # =============================================================================
 # 构建选项
@@ -393,69 +393,6 @@ if(SERIAL_ARM_BUILD_TERMINAL)
 endif()
 
 # =============================================================================
-# 测试
-# =============================================================================
-
-if(BUILD_TESTING)
-    add_executable(serial_arm_servo_gain_tuning_tests tests/servo_gain_tuning_tests.cpp)
-    target_include_directories(serial_arm_servo_gain_tuning_tests PRIVATE include)
-    target_link_libraries(serial_arm_servo_gain_tuning_tests PRIVATE Eigen3::Eigen)
-    serial_arm_enable_warnings(serial_arm_servo_gain_tuning_tests)
-    add_test(NAME serial_arm_servo_gain_tuning COMMAND serial_arm_servo_gain_tuning_tests)
-    add_executable(serial_arm_servo_control_contract_tests tests/servo_control_contract_tests.cpp)
-    target_compile_definitions(serial_arm_servo_control_contract_tests PRIVATE SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-    target_link_libraries(serial_arm_servo_control_contract_tests PRIVATE serial_arm_robot serial_arm_config)
-    serial_arm_enable_warnings(serial_arm_servo_control_contract_tests)
-    add_test(NAME serial_arm_servo_control_contracts COMMAND serial_arm_servo_control_contract_tests)
-    add_library(serial_arm_mock_hardware SHARED tests/mock_hardware.cpp)
-    target_link_libraries(serial_arm_mock_hardware PRIVATE serial_arm_core ${SERIAL_ARM_YAML_CPP_TARGET})
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    add_test(NAME serial_arm_sdk_relocation COMMAND ${Python3_EXECUTABLE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tests/sdk_consumer.py ${CMAKE_CURRENT_BINARY_DIR})
-    add_test(NAME serial_arm_launcher_contracts COMMAND ${Python3_EXECUTABLE} -B -m unittest discover
-        -s ${CMAKE_CURRENT_SOURCE_DIR}/../../../apps/launcher/tests)
-    set_tests_properties(serial_arm_launcher_contracts PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
-    if(SERIAL_ARM_BUILD_PYTHON)
-        add_test(NAME serial_arm_python_runtime COMMAND ${Python_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/python_runtime_tests.py
-            $<TARGET_FILE_DIR:_serial_arm> $<TARGET_FILE:serial_arm_mock_hardware>
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
-        set_tests_properties(serial_arm_python_runtime PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
-    endif()
-    if(SERIAL_ARM_BUILD_TERMINAL)
-        add_test(NAME serial_arm_terminal_teaching COMMAND ${Python3_EXECUTABLE} -B
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/terminal_teaching_tests.py
-            $<TARGET_FILE:serial_arm_terminal> $<TARGET_FILE:serial_arm_mock_hardware>
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
-        set_tests_properties(serial_arm_terminal_teaching PROPERTIES TIMEOUT 40 ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONNOUSERSITE=1")
-    endif()
-    add_executable(serial_arm_ordered_capability_tests tests/ordered_capability_tests.cpp)
-    target_link_libraries(serial_arm_ordered_capability_tests PRIVATE serial_arm_core)
-    serial_arm_enable_warnings(serial_arm_ordered_capability_tests)
-    add_test(NAME serial_arm_ordered_capabilities COMMAND serial_arm_ordered_capability_tests)
-    add_executable(serial_arm_runtime_contract_tests tests/runtime_contract_tests.cpp)
-    target_compile_definitions(serial_arm_runtime_contract_tests PRIVATE
-        SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-    target_link_libraries(serial_arm_runtime_contract_tests PRIVATE
-        serial_arm_robot serial_arm_config serial_arm_dynamics)
-    serial_arm_enable_warnings(serial_arm_runtime_contract_tests)
-    add_test(NAME serial_arm_runtime_contracts COMMAND serial_arm_runtime_contract_tests)
-    add_executable(serial_arm_control_runtime_tests tests/control_runtime_tests.cpp)
-    target_compile_definitions(serial_arm_control_runtime_tests PRIVATE SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-    target_link_libraries(serial_arm_control_runtime_tests PRIVATE serial_arm_robot serial_arm_config)
-    serial_arm_enable_warnings(serial_arm_control_runtime_tests)
-    add_test(NAME serial_arm_control_runtime COMMAND serial_arm_control_runtime_tests)
-    add_executable(serial_arm_interaction_architecture_tests tests/interaction_architecture_tests.cpp)
-    target_compile_definitions(serial_arm_interaction_architecture_tests PRIVATE SERIAL_ARM_REPO="${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-    target_link_libraries(serial_arm_interaction_architecture_tests PRIVATE serial_arm_robot serial_arm_config)
-    serial_arm_enable_warnings(serial_arm_interaction_architecture_tests)
-    add_test(NAME serial_arm_interaction_architecture COMMAND serial_arm_interaction_architecture_tests)
-    add_executable(serial_arm_encoding_metadata_tests tests/encoding_metadata_tests.cpp)
-    target_link_libraries(serial_arm_encoding_metadata_tests PRIVATE serial_arm_dynamics ${SERIAL_ARM_YAML_CPP_TARGET})
-    add_test(NAME serial_arm_encoding_metadata COMMAND serial_arm_encoding_metadata_tests)
-endif()
-
-# =============================================================================
 # 安装：库、公共头文件与 CMake package
 # =============================================================================
 
@@ -521,9 +458,3 @@ message(STATUS "  SERIAL_ARM_ENABLE_ROS2    = ${SERIAL_ARM_ENABLE_ROS2}")
 message(STATUS "  SERIAL_ARM_BUILD_TERMINAL = ${SERIAL_ARM_BUILD_TERMINAL}")
 message(STATUS "  Dynamics / Pinocchio    = REQUIRED")
 message(STATUS "  SERIAL_ARM_BUILD_PYTHON   = ${SERIAL_ARM_BUILD_PYTHON}")
-
-if(BUILD_TESTING)
-  add_executable(calibration_acquisition_plan_tests tests/calibration_acquisition_plan_tests.cpp)
-  target_include_directories(calibration_acquisition_plan_tests PRIVATE include)
-  add_test(NAME serial_arm_calibration_acquisition_plan_tests COMMAND calibration_acquisition_plan_tests)
-endif()

@@ -30,10 +30,10 @@ def install_gui(runner):
     scientific_env=dict(runner.env,PYTHONNOUSERSITE='1')
     scientific_bootstrap='import sys; sys.path.insert(0,'+repr(str(venv/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'site-packages'))+'); '
     probe = subprocess.run([str(venv / 'bin/python'), '-c', scientific_bootstrap+
-        'import numpy,scipy,yaml,cvxpy,clarabel; assert int(numpy.__version__.split(".")[0])<2; '
+        'import numpy,scipy,yaml,cvxpy,clarabel,xacro; assert int(numpy.__version__.split(".")[0])<2; '
         'assert tuple(map(int,scipy.__version__.split(".")[:2])) >= (1,11)'], capture_output=True,env=scientific_env)
     if probe.returncode:
-        runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7', 'numpy>=1.23,<2', 'scipy>=1.11,<2', 'cvxpy>=1.6,<1.7'],env=scientific_env)
+        runner.run('gui-python-deps', [venv / 'bin/python', '-m', 'pip', 'install', 'PyYAML>=6,<7', 'numpy>=1.23,<2', 'scipy>=1.11,<2', 'cvxpy>=1.6,<1.7', 'xacro>=2.0,<3'],env=scientific_env)
     expected = json.loads((app / 'package.json').read_text())
     graph_ready = True
     for name, wanted in {**expected['dependencies'], **expected['devDependencies']}.items():
@@ -58,7 +58,7 @@ def install_gui(runner):
             runner.run('gui-electron-official', ['node', app / 'node_modules/electron/install.js'], env=env)
     if not os.access(electron, os.X_OK): raise InstallError('Electron 可执行文件不可用')
     runner.run('gui-static-verify', ['node', app / 'scripts/verify.cjs'])
-    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', scientific_bootstrap+'import sys, numpy, scipy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, cvxpy, clarabel, profiles, runtime, model_runtime, tcp_calibration; assert tuple(map(int,scipy.__version__.split(".")[:2])) >= (1,11); assert "CLARABEL" in cvxpy.installed_solvers()', app / 'backend'],env=scientific_env)
+    runner.run('gui-backend-verify', [venv / 'bin/python', '-c', scientific_bootstrap+'import sys, numpy, scipy; assert int(numpy.__version__.split(".")[0]) < 2; sys.path.insert(0, sys.argv[1]); import yaml, cvxpy, clarabel, xacro, profiles, runtime, model_runtime, tcp_calibration; assert tuple(map(int,scipy.__version__.split(".")[:2])) >= (1,11); assert "CLARABEL" in cvxpy.installed_solvers()', app / 'backend'],env=scientific_env)
     if gui_inputs(runner.root) != source_digest:
         raise InstallError('GUI 安装期间源码发生变化，请重新执行安装')
     return {'gui': True, 'gui_status': 'ready', 'gui_path': str(app),

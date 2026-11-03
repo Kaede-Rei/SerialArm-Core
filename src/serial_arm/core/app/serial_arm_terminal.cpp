@@ -660,6 +660,18 @@ bool is_zero_vector(const JointVector& values) {
     return std::all_of(values.begin(), values.end(), [](double value) { return value == 0.0; });
 }
 
+// Synthetic bounds are used only by the write-disabled mock session. They
+// are never accepted as evidence of physical actuator capabilities.
+HardwareCapabilities simulation_capabilities(const std::vector<std::string>& names) {
+    HardwareCapabilities result;
+    for(const auto& name:names) {
+        ActuatorCapability value;value.actuator_name=name;value.joint_name=name;
+        value.min_pos=-1e6;value.max_pos=1e6;value.max_vel=1e12;value.max_effort=1e12;value.max_kp=1e12;value.max_kd=1e12;
+        result.push_back(std::move(value));
+    }
+    return result;
+}
+
 class MockMotorBus final : public MotorBus {
 public:
     explicit MockMotorBus(HardwareCapabilities capabilities) : capabilities_(std::move(capabilities)) {
@@ -793,20 +805,18 @@ public:
             persistent_gravity_correction_loaded_ = true;
         }
 
-        auto hardware_result = hardware_loader_.load(hardware_plugin_, hardware_config_, hardware_overrides_);
-        if(!hardware_result) return tl::make_unexpected("HardwareLoader 失败: " + to_string(hardware_result.error()));
-        std::unique_ptr<MotorBus> hardware_bus = std::move(hardware_result.value());
-        const auto ordered_capabilities = capabilities_for_joint_order(hardware_bus->capabilities(), cfg_.joint_names);
-        if(!ordered_capabilities) return tl::make_unexpected(std::string("hardware joint identities do not match Core"));
-        actuator_info_ = *ordered_capabilities;
-
         std::unique_ptr<MotorBus> motor_bus;
         if(cfg_.runtime.write_enabled) {
-            motor_bus = std::move(hardware_bus);
-        }
-        else {
-            robot_cfg.runtime.write_enabled = true;
-            motor_bus = std::make_unique<MockMotorBus>(*ordered_capabilities);
+            auto hardware_result=hardware_loader_.load(hardware_plugin_,hardware_config_,hardware_overrides_);
+            if(!hardware_result)return tl::make_unexpected("HardwareLoader 失败: "+to_string(hardware_result.error()));
+            auto hardware_bus=std::move(hardware_result.value());
+            const auto ordered=capabilities_for_joint_order(hardware_bus->capabilities(),cfg_.joint_names);
+            if(!ordered)return tl::make_unexpected(std::string("hardware joint identities do not match Core"));
+            actuator_info_=*ordered;motor_bus=std::move(hardware_bus);
+        } else {
+            actuator_info_=simulation_capabilities(cfg_.joint_names);
+            robot_cfg.runtime.write_enabled=true;
+            motor_bus=std::make_unique<MockMotorBus>(actuator_info_);
         }
         ModelFeedforwardFn model_feedforward = [this](ModelFeedforwardMode mode, const JointState& state, const JointVector& acc, const JointVector& ref_acc, double) {
             const auto update_result = dynamics_.update(state, acc, ref_acc);
@@ -2802,7 +2812,7 @@ private:
                 const double age_ms = now_ns >= feedback_time_ns_ ? static_cast<double>(now_ns - feedback_time_ns_) / 1.0e6 : std::numeric_limits<double>::infinity();
                 endpoint_choice = serial_arm::calibration_recovery::select_endpoint(
                     last_output_->joint_state.pos, last_output_->joint_state.vel,
-                    candidate.positions.front(), candidate.positions.back(), age_ms);
+                    candidate.positions.front(), candidate.positions.back(), age_ms, dynamics_.get_info().joint_types);
             }
         }
         // Feedback is mandatory to choose the safe trajectory orientation.
@@ -4122,13 +4132,12 @@ private:
             const auto now_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
             if(now_ns<feedback_time_ns_ || double(now_ns - feedback_time_ns_) / 1.0e6>serial_arm::calibration_recovery::kFeedbackMaxAgeMs)
                 throw std::runtime_error("joint feedback is stale; manual alignment is not permitted");
-            double velocity = 0.0;
-            for(double v : last_output_->joint_state.vel) {
-                if(!std::isfinite(v)) throw std::runtime_error("non-finite joint speed during alignment");
-                velocity = std::max(velocity, std::abs(v));
+            const auto& types=dynamics_.get_info().joint_types;
+            for(std::size_t i=0;i<last_output_->joint_state.vel.size();++i) {
+                const auto v=last_output_->joint_state.vel[i];
+                if(!std::isfinite(v) || std::abs(v)>serial_arm::calibration_recovery::velocity_tolerance(types.at(i)))
+                    throw std::runtime_error("arm must be stationary before enabling manual alignment at "+cfg_.joint_names.at(i));
             }
-            if(velocity > serial_arm::calibration_recovery::kVelocityToleranceRadS)
-                throw std::runtime_error("arm must be stationary before enabling manual alignment");
         }
         if(!set_tuning_impedance_mode(JointImpedanceMode::COMPLIANT_DRAG))
             throw std::runtime_error("could not enter compliant drag for manual alignment");
@@ -4150,9 +4159,12 @@ private:
             const auto now_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
             if(now_ns<feedback_time_ns_ || double(now_ns - feedback_time_ns_) / 1.0e6>serial_arm::calibration_recovery::kFeedbackMaxAgeMs)
                 throw std::runtime_error("cannot stop manual alignment: joint feedback is stale");
-            for(double v : last_output_->joint_state.vel)
-                if(!std::isfinite(v) || std::abs(v) > serial_arm::calibration_recovery::kVelocityToleranceRadS)
-                    throw std::runtime_error("stop moving and physically support the arm before switching to RIGID_HOLD");
+            const auto& types=dynamics_.get_info().joint_types;
+            for(std::size_t i=0;i<last_output_->joint_state.vel.size();++i) {
+                const auto v=last_output_->joint_state.vel[i];
+                if(!std::isfinite(v) || std::abs(v)>serial_arm::calibration_recovery::velocity_tolerance(types.at(i)))
+                    throw std::runtime_error("stop moving and physically support the arm before switching to RIGID_HOLD at "+cfg_.joint_names.at(i));
+            }
         }
         // Hold the ACTUAL current pose, regardless of alignment outcome.
         // A non-matching pose remains blocked from starting replay.
@@ -4190,6 +4202,8 @@ private:
         model_calibration_workflow_kind_ = params && params["workflow"] ? params["workflow"].as<std::string>() : "gravity";
         if(model_calibration_workflow_kind_!="gravity" && model_calibration_workflow_kind_!="gain")
             throw std::runtime_error("invalid calibration workflow target");
+        if(model_calibration_workflow_kind_=="gain" && std::any_of(dynamics_.get_info().joint_types.begin(),dynamics_.get_info().joint_types.end(),[](const auto& type){return type=="prismatic";}))
+            throw std::runtime_error("automatic actuator gain calibration currently supports rotary joints only; prismatic axes require per-axis linear probe and acceptance requirements");
         model_calibration_gain_mode_=params && params["gain_mode"] ? params["gain_mode"].as<std::string>() : "all";
         if(model_calibration_gain_mode_=="identification" || model_calibration_gain_mode_=="identification_tracking" || model_calibration_gain_mode_=="servo")model_calibration_gain_mode_="servo_tracking";
         if(model_calibration_gain_mode_=="compliant_drag")model_calibration_gain_mode_="drag";
@@ -4219,14 +4233,14 @@ private:
             const double age_ms = now_ns >= feedback_time_ns_ ? double(now_ns - feedback_time_ns_) / 1.0e6 : std::numeric_limits<double>::infinity();
             const auto& start = model_calibration_trajectory_->positions.back();
             const auto& actual = last_output_->joint_state;
-            const auto choice = serial_arm::calibration_recovery::select_endpoint(actual.pos, actual.vel, start, start, age_ms);
+            const auto choice = serial_arm::calibration_recovery::select_endpoint(actual.pos, actual.vel, start, start, age_ms, dynamics_.get_info().joint_types);
             if(!choice.valid) throw std::runtime_error("replay blocked: joint feedback is stale or does not match the imported trajectory");
             if(!choice.at_endpoint) {
                 std::ostringstream message;
                 message << std::fixed << std::setprecision(4)
-                    << "imported replay start pose mismatch (max joint error=" << choice.max_error_rad
-                    << " rad; max joint speed=" << choice.max_speed_rad_s
-                    << " rad/s; allowed 0.08 rad and 0.05 rad/s). Use guided endpoint alignment, then reconfirm.";
+                    << "imported replay start pose mismatch (position tolerance ratio=" << choice.max_position_ratio
+                    << "; velocity tolerance ratio=" << choice.max_velocity_ratio
+                    << "; allowed per axis: rotary 0.08 rad / 0.05 rad/s, prismatic 0.001 m / 0.001 m/s). Use guided endpoint alignment, then reconfirm.";
                 throw std::runtime_error(message.str());
             }
         }
@@ -4274,8 +4288,12 @@ private:
             }
         }
         if(!feedback_fresh || current.size() != model_calibration_pause_reference_.size()) throw std::runtime_error("current feedback is unavailable or stale; resume is not allowed");
-        double max_error = 0.0; for(std::size_t i = 0; i < current.size(); ++i)max_error = std::max(max_error, std::abs(current[i] - model_calibration_pause_reference_[i]));
-        if(max_error > 0.05 && (!params || !params["confirmed"] || !params["confirmed"].as<bool>())) { model_calibration_resume_requires_confirmation_ = true; throw std::runtime_error("robot position changed while paused; explicit resume confirmation is required"); }
+        double max_ratio=0;const auto& types=dynamics_.get_info().joint_types;
+        for(std::size_t i=0;i<current.size();++i) {
+            if(!std::isfinite(current[i]))throw std::runtime_error("non-finite joint feedback; resume is not allowed");
+            max_ratio=std::max(max_ratio,std::abs(current[i]-model_calibration_pause_reference_[i])/serial_arm::calibration_recovery::resume_tolerance(types.at(i)));
+        }
+        if(max_ratio > 1.0 && (!params || !params["confirmed"] || !params["confirmed"].as<bool>())) { model_calibration_resume_requires_confirmation_ = true; throw std::runtime_error("robot position changed while paused; explicit resume confirmation is required"); }
         model_calibration_resume_requires_confirmation_ = false; model_calibration_resume_confirmed_.store(true); model_calibration_pause_.store(false); model_calibration_cv_.notify_all();
     }
 
@@ -4325,7 +4343,9 @@ private:
         out << "{\"gain_applied\":" << (runtime_gain_applied_?"true":"false")
             << ",\"gravity_applied\":" << (runtime_gravity_applied_?"true":"false")
             << ",\"dynamics_applied\":" << (runtime_dynamics_applied_?"true":"false")
-            << ",\"gain_candidate\":\"" << machine_json_escape(runtime_gain_candidate_) << "\""
+            << ",\"gain_purposes\":[";
+        for(std::size_t i=0;i<runtime_gain_purposes_.size();++i){if(i)out<<',';out<<'"'<<runtime_gain_purposes_[i]<<'"';}
+        out << "]" << ",\"gain_candidate\":\"" << machine_json_escape(runtime_gain_candidate_) << "\""
             << ",\"gravity_candidate\":\"" << machine_json_escape(runtime_gravity_candidate_) << "\""
             << ",\"dynamics_candidate\":\"" << machine_json_escape(runtime_dynamics_candidate_) << "\"}";
         return out.str();
@@ -4360,9 +4380,11 @@ private:
         if(runtime_gain_applied_)throw std::runtime_error("restore existing gain candidate first");
         const auto path=std::filesystem::canonical(params["path"].as<std::string>());
         const auto data=YAML::LoadFile(path.string());
-        if(!data || !data["schema"] || data["schema"].as<std::string>()!="serial_arm_gain_candidate" ||
-           !data["validated"] || !data["validated"].as<bool>())
-            throw std::runtime_error("gain candidate is not independently validated");
+        if(!data || !data["schema"] || data["schema"].as<std::string>()!="serial_arm_gain_candidate")
+            throw std::runtime_error("invalid gain candidate schema");
+        const bool explicit_selection=params["gain_purposes"].IsDefined();
+        if(!explicit_selection && (!data["validated"] || !data["validated"].as<bool>()))
+            throw std::runtime_error("gain candidate is partially qualified; explicitly select passed gain_purposes");
         if(!data["urdf_fingerprint"] ||
            data["urdf_fingerprint"].as<std::string>()!=model_calibration_file_fingerprint(cfg_.dynamics.urdf_path))
             throw std::runtime_error("gain candidate URDF fingerprint mismatch");
@@ -4449,13 +4471,30 @@ private:
             }
             else throw std::runtime_error("unknown gain calibration target");
         };
-        if(category=="all") {
-            if(!data["targets"] || !data["targets"].IsMap() || data["targets"].size()!=4 ||
-               !data["targets"]["rigid_tracking"] || !data["targets"]["compliant_tracking"] ||
-               !data["targets"]["servo_tracking"] || !data["targets"]["compliant_drag"])
-                throw std::runtime_error("all-gain deployment requires all four independently qualified gain purposes; legacy records are read-only");
-            for(const auto* purpose:{"rigid_tracking","compliant_tracking","compliant_drag","servo_tracking"})collect(purpose,data["targets"][purpose]);
-        } else collect(category,data);
+        std::vector<std::string> selected;
+        const std::vector<std::string> order={"rigid_tracking","compliant_tracking","compliant_drag","servo_tracking"};
+        if(category!="all" && std::find(order.begin(),order.end(),category)==order.end())throw std::runtime_error("unknown gain calibration target");
+        if(explicit_selection) {
+            if(!params["gain_purposes"].IsSequence() || params["gain_purposes"].size()==0)throw std::runtime_error("select at least one gain purpose");
+            for(const auto& value:params["gain_purposes"]) {
+                auto key=value.as<std::string>();
+                if(key=="RIGID")key="rigid_tracking";else if(key=="COMPLIANT")key="compliant_tracking";
+                else if(key=="DRAG")key="compliant_drag";else if(key=="SERVO_TRACKING" || key=="SERVO")key="servo_tracking";
+                if(std::find(order.begin(),order.end(),key)==order.end())throw std::runtime_error("unknown selected gain purpose");
+                if(std::find(selected.begin(),selected.end(),key)==selected.end())selected.push_back(key);
+            }
+        } else selected=category=="all"?order:std::vector<std::string>{category};
+        // Apply rigid first, so a selected compliant purpose is checked against
+        // either the selected rigid candidate or the currently deployed rigid set.
+        for(const auto& purpose:order)if(std::find(selected.begin(),selected.end(),purpose)!=selected.end()) {
+            if(category=="all") {
+                if(!data["targets"] || !data["targets"].IsMap() || !data["targets"][purpose])throw std::runtime_error("selected gain purpose missing from candidate");
+                collect(purpose,data["targets"][purpose]);
+            } else {
+                if(purpose!=category)throw std::runtime_error("selected gain purpose does not match candidate");
+                collect(purpose,data);
+            }
+        }
         std::vector<std::pair<JointImpedanceMode,JointImpedanceGains>> original;
         for(const auto& item:updates)original.emplace_back(item.first,machine_saved_mode_gains(item.first));
         const auto previous_identification=robot_.get_config().ctrller.servo_tracking_gains;
@@ -4484,7 +4523,8 @@ private:
         runtime_gain_original_modes_=std::move(original);
         runtime_gain_original_identification_=identification ?
             std::optional<JointImpedanceGains>(previous_identification) : std::nullopt;
-        runtime_gain_category_=category;
+        runtime_gain_category_=selected.size()==4?"all":std::find(selected.begin(),selected.end(),"servo_tracking")!=selected.end()?"servo_tracking":selected.front();
+        runtime_gain_purposes_=selected;
         runtime_gain_applied_=true;
         runtime_gain_candidate_=path.string();
     }
@@ -4508,7 +4548,7 @@ private:
         }
         runtime_gain_original_modes_.clear();
         runtime_gain_original_identification_.reset();runtime_gain_original_hold_compensation_.reset();
-        runtime_gain_category_.clear();
+        runtime_gain_category_.clear();runtime_gain_purposes_.clear();
         runtime_gain_applied_=false;
         runtime_gain_candidate_.clear();
     }
@@ -4699,6 +4739,14 @@ private:
         out << ']';
         out << ",\"planner_id\":\"local_hermite\",\"calibration_strategy\":\"bidirectional_two_speed_v1\"";
         out << ",\"alignment_active\":" << (model_calibration_alignment_active_.load() ? "true" : "false");
+        out << ",\"alignment_position_tolerance\":[";
+        const auto& alignment_types=dynamics_.get_info().joint_types;
+        for(std::size_t i=0;i<alignment_types.size();++i){if(i)out<<',';out<<serial_arm::calibration_recovery::position_tolerance(alignment_types[i]);}
+        out << "],\"alignment_velocity_tolerance\":[";
+        for(std::size_t i=0;i<alignment_types.size();++i){if(i)out<<',';out<<serial_arm::calibration_recovery::velocity_tolerance(alignment_types[i]);}
+        out << "],\"joint_units\":[";
+        for(std::size_t i=0;i<alignment_types.size();++i){if(i)out<<',';out<<'"'<<(alignment_types[i]=="prismatic"?"m":"rad")<<'"';}
+        out << ']';
         if(!model_calibration_source_task_id_.empty()) out << ",\"original_start_selected\":" << (model_calibration_source_reversed_.load() ? "true" : "false");
         if(!model_calibration_source_task_id_.empty()) out << ",\"source_task_id\":\"" << machine_json_escape(model_calibration_source_task_id_) << "\"";
         if(model_calibration_trajectory_ && !model_calibration_trajectory_->positions.empty()) {
@@ -4995,6 +5043,7 @@ private:
         machine_json_string(out, to_string(robot_.get_model_feedforward_mode()));
         out << ",\"reference_behavior\":";machine_json_string(out,reference_behavior_name(robot_.get_reference_behavior()));
         out << ",\"monotonic_ns\":" << last_cycle_monotonic_ns_;
+        out << ",\"feedback_receive_ns\":" << feedback_time_ns_;
         out << ",\"valid\":" << (last_output_ ? "true" : "false");
         out << ",\"sequence\":" << cycle_counter_;
         if(feedback_time_ns_ > 0) {
@@ -5107,6 +5156,10 @@ private:
         // Report effective runtime limits, not merely the URDF source limits.
         out << ",\"safety_limits\":{\"max_cmd_vel\":";
         machine_json_joint_vector(out, cfg_.safety.limits.max_vel);
+        out << ",\"min_pos\":";machine_json_joint_vector(out,cfg_.safety.limits.min_pos);
+        out << ",\"max_pos\":";machine_json_joint_vector(out,cfg_.safety.limits.max_pos);
+        out << ",\"pos_margin\":";machine_json_joint_vector(out,cfg_.safety.limits.pos_margin);
+        out << ",\"has_position_limit\":";machine_json_vector(out,cfg_.safety.limits.has_position_limit);
         out << ",\"max_state_vel\":[";
         for(std::size_t i = 0; i < cfg_.safety.limits.max_vel.size(); ++i) {
             if(i) out << ',';
@@ -6406,20 +6459,20 @@ private:
     }
 
     bool friction_trajectory_inside_safe_replay_range(const FrictionCalibrationTrajectory& trajectory) const {
-        constexpr double kCalibrationInnerMargin = 0.05; // rad; calibration replay stays away from URDF hard limits
         const auto& limits = cfg_.safety.limits;
+        const auto& types=dynamics_.get_info().joint_types;
         for(const auto& q : trajectory.positions) {
             if(q.size() != cfg_.joint_names.size()) return false;
             for(std::size_t i = 0; i < q.size(); ++i) {
                 if(!std::isfinite(q[i])) return false;
                 if(i < limits.has_position_limit.size() && limits.has_position_limit[i] != 0) {
-                    const double margin = std::max(kCalibrationInnerMargin, limits.pos_margin[i]);
+                    const double margin = std::max(types.at(i)=="prismatic"?.001:.05, limits.pos_margin[i]);
                     const double lower = limits.min_pos[i] + margin;
                     const double upper = limits.max_pos[i] - margin;
-                    if(lower < upper && (q[i] < lower || q[i] > upper)) {
+                    if(lower >= upper || q[i] < lower || q[i] > upper) {
                         std::cout << "[拒绝回放] " << cfg_.joint_names[i]
                             << " 示教轨迹进入距硬限位 " << margin
-                            << " rad 的标定保护区；请重新示教更保守的轨迹\n";
+                            << (types.at(i)=="prismatic"?" m":" rad") << " 的标定保护区；请重新示教更保守的轨迹\n";
                         return false;
                     }
                 }
@@ -7890,6 +7943,7 @@ private:
     std::optional<JointImpedanceGains> runtime_gain_original_identification_;
     std::optional<HoldCompensationCfg> runtime_gain_original_hold_compensation_;
     std::string runtime_gain_category_;
+    std::vector<std::string> runtime_gain_purposes_;
     std::optional<serial_arm::calibration_gain_adaptation::PassMetrics> model_calibration_gain_validation_metrics_;
     JointVector runtime_gravity_original_scale_;
     std::string runtime_gain_candidate_;
@@ -7959,9 +8013,14 @@ int main(int argc, char** argv) {
         options.hardware_plugin = profile->hardware_plugin;
         options.hardware_config = profile->hardware_config_path;
     }
-    if(options.hardware_plugin.empty() || options.hardware_config.empty()) {
-        std::cerr << "--hardware-plugin and --hardware-config are required\n";
-        print_usage(argv[0]);
+    bool write_enabled=true;
+    try {
+        const auto root=YAML::LoadFile(options.config_path);
+        const auto runtime=root["control"]?root["control"]["runtime"]:root["runtime"];
+        if(runtime && runtime["write_enabled"])write_enabled=runtime["write_enabled"].as<bool>();
+    } catch(const YAML::Exception& error) {std::cerr<<"配置加载失败: "<<error.what()<<'\n';return EXIT_FAILURE;}
+    if((write_enabled || options.compare_config) && (options.hardware_plugin.empty() || options.hardware_config.empty())) {
+        std::cerr << "--hardware-plugin and --hardware-config are required for hardware writing or connected comparison\n";
         return EXIT_FAILURE;
     }
     if(options.compare_config) {
@@ -7985,23 +8044,24 @@ int main(int argc, char** argv) {
         }
         return EXIT_SUCCESS;
     }
-    HardwareLoader config_loader;
-    auto config_bus = config_loader.load(options.hardware_plugin, options.hardware_config, options.hardware_overrides);
-    if(!config_bus) {
-        std::cerr << "HardwareLoader 失败: " << to_string(config_bus.error()) << '\n';
-        return EXIT_FAILURE;
+    HardwareCapabilities capabilities;
+    HardwareConnectionSummary connection_summary;
+    if(write_enabled) {
+        HardwareLoader config_loader;
+        auto config_bus=config_loader.load(options.hardware_plugin,options.hardware_config,options.hardware_overrides);
+        if(!config_bus){std::cerr<<"HardwareLoader 失败: "<<to_string(config_bus.error())<<'\n';return EXIT_FAILURE;}
+        capabilities=config_bus.value()->capabilities();
+        const auto summary=load_hardware_connection_summary(options.hardware_config,options.hardware_overrides);
+        if(!summary){std::cerr<<summary.error()<<'\n';return EXIT_FAILURE;}
+        connection_summary=*summary;
+    } else {
+        const auto model=load_dynamics_cfg(options.config_path);
+        if(!model){std::cerr<<"模型配置加载失败: "<<model.error().message<<'\n';return EXIT_FAILURE;}
+        capabilities=simulation_capabilities(model->joint_names);
+        connection_summary.bus="mock";connection_summary.serial_port="simulation";
     }
-    const auto cfg_result = load_robot_cfg(options.config_path, config_bus.value()->capabilities());
-    if(!cfg_result) {
-        std::cerr << "配置加载失败: " << cfg_result.error().message << '\n';
-        return EXIT_FAILURE;
-    }
-
-    const auto connection_summary = load_hardware_connection_summary(options.hardware_config, options.hardware_overrides);
-    if(!connection_summary) {
-        std::cerr << connection_summary.error() << '\n';
-        return EXIT_FAILURE;
-    }
+    const auto cfg_result=load_robot_cfg(options.config_path,capabilities);
+    if(!cfg_result){std::cerr<<"配置加载失败: "<<cfg_result.error().message<<'\n';return EXIT_FAILURE;}
 
     TerminalApp app(
         cfg_result.value(),
@@ -8009,7 +8069,7 @@ int main(int argc, char** argv) {
         options.hardware_plugin,
         options.hardware_config,
         options.hardware_overrides,
-        connection_summary.value(),
+        connection_summary,
         options.robot_profile,
         options.machine_mode);
     const auto init_result = app.initialize();

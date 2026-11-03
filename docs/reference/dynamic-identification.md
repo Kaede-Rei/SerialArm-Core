@@ -14,7 +14,7 @@
 
 新任务在 `source/` 保存 `model.urdf`、`core.yaml`、`hardware.yaml`、`hardware-effective.yaml`，使用重力校正时另存 `gravity-correction.yaml`；metadata 记录各文件指纹、`hardware_overrides`、程序与驱动文件指纹以及执行器量程来源，便于核对原始配置与实际采集条件
 
-## 静态数据契约
+## 静态数据
 
 `static_observations.py` 是静态重力与完整 IDIM 共用的数据读取器
 
@@ -38,7 +38,7 @@
 
 WLS 使用训练源模型残差的归一化尺度，OLS 使用统一轴尺度；IRLS 先迭代 Huber 诊断权重，再进行物理约束重拟合；WLS 的尺度来自当前数据，不是独立标定的传感器协方差
 
-基线和候选的偏置/摩擦都仅在同一训练静态+运动系统估计，再冻结用于验证；纯重力评分不添加拟合偏置；动态预测改善不等于重力补偿改善
+基线和候选的偏置／摩擦在同一训练静态与运动系统中估计，再冻结用于验证；纯重力评分使用原始预测，运动预测和重力补偿分别评价
 
 方法参考：[IDIM 基准](https://doi.org/10.3390/app11094303)、[物理惯量 LMI](https://arxiv.org/abs/1701.04395)、[参数可观察性](https://arxiv.org/abs/1711.03896)
 
@@ -52,9 +52,9 @@ WLS 使用训练源模型残差的归一化尺度，OLS 使用统一轴尺度；
 
 ## 三种导出
 
-1. **诊断报告**：始终可导出，含完整报告、SHA 收据、原始/拟合/无约束对照参数；不含 URDF
-2. **待审核 URDF**：模型必须物理有效，校验完整惯性参数回读和 FK；可以尚缺独立会话或条件声明，但附明确缺项，不作为硬件应用或改善认证
-3. **通过离线检查的模型**：另需独立会话、相同模型/装机/映射/重力/量程、输入质量通过、未采样关节位置已知、运动与纯重力改善且训练 CV 不推荐保留原模型；仍不等于真机验收
+1. **诊断报告**：导出完整报告、SHA 记录及原始／拟合／无约束参数对照，产物为报告文件
+2. **待审核 URDF**：模型物理有效，完整惯性参数回读和 FK 通过检查；缺少的独立会话或条件声明随报告列出，模型供离线审核
+3. **通过离线检查的模型**：具有独立会话，模型／装机／映射／重力／量程一致、输入质量通过、未采样关节位置已知，运动与纯重力改善且训练 CV 未选择保留原模型；导出后继续进行真机验收
 
 导出绑定选定轮次的报告并写入新目录，保留当前 Core、观测器参数和运行模型；URDF 要求物理有效，报告与源数据哈希匹配；已保存报告和模型的普通导出可在工作台连接期间后台完成
 
@@ -79,12 +79,6 @@ WLS 使用训练源模型残差的归一化尺度，OLS 使用统一轴尺度；
 ./.install/run .install/gui-venv/bin/python tools/model_calibration_cli.py export-dynamics \
   --report /path/to/idim-report.json --destination /new/diagnostics-dir --report-only
 ```
-
-## 实现检查
-
-`apps/launcher/tests/test_dynamic_identification.py` 含独立解析摆臂真值、物理拟合、局部锁定、静态组划分、留出数据不进入选择、报告/源篡改拒绝、三种导出与 FK 回读测试
-
-`apps/launcher/scripts/test-identification-ui.cjs` 使用离线模型和隔离请求桩检查 DOM、Three.js、输入保留及硬件请求边界；运行时设置 `SERIALARM_UI_FIXTURE` 与 `SERIALARM_UI_OUTPUT`
 
 ## 实验案例：2026-10-29 采集复核
 

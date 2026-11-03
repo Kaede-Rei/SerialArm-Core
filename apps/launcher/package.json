@@ -6,9 +6,7 @@
   "main": "desktop/main.cjs",
   "scripts": {
     "start": "electron .",
-    "verify": "node scripts/verify.cjs",
-    "test:model-zoom": "node --test scripts/test-model-zoom.mjs",
-    "test:camera": "node --test scripts/test-model-zoom.mjs scripts/test-camera-transition.mjs"
+    "verify": "node scripts/verify.cjs"
   },
   "dependencies": {
     "@xterm/xterm": "5.5.0",

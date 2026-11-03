@@ -20,6 +20,7 @@ class TrajectoryLibrary:
     def __init__(self, root):
         self.root = Path(root).resolve()
         self.legacy_root = self.root / '.install' / 'teach-replay'
+        self._preview_cache = None
 
     @staticmethod
     def _identity(scope):
@@ -78,6 +79,9 @@ class TrajectoryLibrary:
 
     @staticmethod
     def validate_csv(path, joints):
+        if (not isinstance(joints, list) or not joints or
+                not all(isinstance(name, str) and name for name in joints) or len(set(joints)) != len(joints)):
+            raise ValueError('轨迹缺少有效且唯一的关节名称')
         with Path(path).open(newline='', encoding='utf-8') as handle:
             reader = csv.reader(handle)
             dt = next(reader, None)
@@ -109,6 +113,17 @@ class TrajectoryLibrary:
     def _roots(self, scope):
         return [self.folder(scope), self.legacy_root / safe_profile(scope['profile'])]
 
+    @classmethod
+    def compatibility(cls, scope, metadata):
+        recorded = metadata.get('scope') or {}
+        if recorded == cls._identity(scope):
+            return {'compatible': True, 'incompatibility_reason': ''}
+        fields = [('joints', '关节名称或顺序'), ('mapping_sha256', '执行器映射'),
+                  ('base_frame', '基坐标系'), ('tool_frame', '工具坐标系'), ('urdf_sha256', '模型')]
+        changed = [label for key, label in fields if recorded.get(key) != scope.get(key)]
+        return {'compatible': False, 'incompatibility_reason':
+                '、'.join(changed or ['配置来源']) + '已变化；可查看和导出，回放前需按当前配置重新采集'}
+
     def list(self, scope):
         found = []
         for base in self._roots(scope):
@@ -117,14 +132,16 @@ class TrajectoryLibrary:
             for meta_path in base.glob('*/metadata.json'):
                 try:
                     data = json.loads(meta_path.read_text(encoding='utf-8'))
-                    if data.get('scope') != self._identity(scope) or not (meta_path.parent/'trajectory.csv').is_file():
+                    if not isinstance(data, dict) or not isinstance(data.get('scope'), dict):
                         continue
-                    found.append({**data, 'directory':str(meta_path.parent.resolve())})
+                    if data['scope'].get('profile') != scope['profile'] or not (meta_path.parent/'trajectory.csv').is_file():
+                        continue
+                    found.append({**data, **self.compatibility(scope, data), 'directory':str(meta_path.parent.resolve())})
                 except (OSError, ValueError):
                     continue
-        return sorted(found, key=lambda x: x.get('created_at', x.get('id','')), reverse=True)
+        return sorted(found, key=lambda x: str(x.get('created_at', x.get('id',''))), reverse=True)
 
-    def ensure(self, scope, record_id):
+    def ensure(self, scope, record_id, *, require_compatible=True):
         if not isinstance(record_id,str) or not re.fullmatch(r'[0-9a-f]{32}',record_id):
             raise ValueError('轨迹 ID 无效')
         for base in self._roots(scope):
@@ -133,11 +150,46 @@ class TrajectoryLibrary:
             for path in base.glob('*/metadata.json'):
                 try:
                     info = json.loads(path.read_text(encoding='utf-8'))
-                    if info.get('id') == record_id and info.get('scope') == self._identity(scope):
-                        return path.parent, info
                 except (OSError,ValueError):
                     continue
+                if not isinstance(info, dict) or not isinstance(info.get('scope'), dict):
+                    continue
+                if info.get('id') == record_id and (info.get('scope') or {}).get('profile') == scope['profile']:
+                    compatibility = self.compatibility(scope, info)
+                    if require_compatible and not compatibility['compatible']:
+                        raise ValueError(compatibility['incompatibility_reason'])
+                    return path.parent, info
         raise ValueError('轨迹不存在，或来源与当前机械臂不匹配')
+
+    def select(self, scope, record_id):
+        folder, metadata = self.ensure(scope, record_id, require_compatible=False)
+        joints = (metadata.get('scope') or {}).get('joints')
+        if not isinstance(joints, list) or not joints or not all(isinstance(name, str) and name for name in joints):
+            raise ValueError('轨迹缺少有效关节名称，请检查记录文件')
+        summary = self.validate_csv(folder / 'trajectory.csv', joints)
+        return {**metadata, **summary, **self.compatibility(scope, metadata), 'directory': str(folder)}
+
+    def preview(self, scope, record_id, fraction=0.0):
+        if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not math.isfinite(fraction) or not 0 <= fraction <= 1:
+            raise ValueError('预览时间比例必须在 0 到 1 之间')
+        folder, metadata = self.ensure(scope, record_id, require_compatible=False)
+        trajectory = folder / 'trajectory.csv'
+        stat = trajectory.stat()
+        joints = (metadata.get('scope') or {}).get('joints')
+        cache_key = (str(trajectory), stat.st_mtime_ns, stat.st_size, tuple(joints) if isinstance(joints, list) else None)
+        if self._preview_cache is None or self._preview_cache[0] != cache_key:
+            summary = self.validate_csv(trajectory, joints)
+            with trajectory.open(newline='', encoding='utf-8') as stream:
+                reader = csv.reader(stream)
+                interval = float(next(reader)[1]); next(reader)
+                positions = [[float(value) for value in row] for row in reader]
+            self._preview_cache = (cache_key, positions, interval, summary)
+        _, positions, interval, summary = self._preview_cache
+        index = round(float(fraction) * (len(positions) - 1))
+        compatibility = self.compatibility(scope, metadata)
+        return {**summary, **compatibility, 'id': record_id, 'joint_names': metadata['scope']['joints'],
+                'positions': positions[index], 'sample_index': index, 'time_s': index * interval,
+                'sample_dt': interval, 'model_preview_available': compatibility['compatible']}
 
     def save(self, scope, name, native, kind='general'):
         name = self.validate_name(name)
@@ -163,7 +215,7 @@ class TrajectoryLibrary:
         return {**meta,'directory':str(folder)}
 
     def rename(self,scope,record_id,name):
-        folder,meta=self.ensure(scope,record_id)
+        folder,meta=self.ensure(scope,record_id,require_compatible=False)
         name=self.validate_name(name)
         new_folder=folder
         if folder.parent.resolve()==self.folder(scope).resolve():
@@ -175,15 +227,15 @@ class TrajectoryLibrary:
                 folder.rename(target);new_folder=target
         meta['name']=name
         (new_folder/'metadata.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2),encoding='utf-8')
-        return {**meta,'directory':str(new_folder)}
+        return {**meta, **self.compatibility(scope,meta),'directory':str(new_folder)}
 
     def remove(self,scope,record_id):
-        folder,_=self.ensure(scope,record_id)
+        folder,_=self.ensure(scope,record_id,require_compatible=False)
         shutil.rmtree(folder)
         return {'removed':record_id}
 
     def export(self,scope,record_id,destination):
-        folder,meta=self.ensure(scope,record_id)
+        folder,meta=self.ensure(scope,record_id,require_compatible=False)
         output=Path(destination).expanduser().resolve() if destination else self.folder(scope).parent/'exports'/'teach-replay'
         if destination and not output.is_dir():raise ValueError('请选择存在的导出目录')
         output.mkdir(parents=True,exist_ok=True)
@@ -204,21 +256,25 @@ class TrajectoryLibrary:
                 raise ValueError('轨迹 ZIP 必须只包含 metadata.json 和 trajectory.csv')
             if any(archive.getinfo(k).file_size>30_000_000 for k in names):raise ValueError('轨迹压缩包解压大小超限')
             meta=json.loads(archive.read('metadata.json'))
-            if meta.get('scope')!=self._identity(scope):raise ValueError('轨迹不匹配当前 Profile、控制链或 URDF')
+            if not isinstance(meta,dict) or not isinstance(meta.get('scope'),dict):
+                raise ValueError('轨迹 metadata.json 缺少有效来源记录')
+            if (meta.get('scope') or {}).get('profile')!=scope['profile']:raise ValueError('轨迹属于其他机械臂，请先切换到对应 Profile')
             base=self.folder(scope);base.mkdir(parents=True,exist_ok=True)
             name=self.validate_name(meta.get('name'))
             key=uuid.uuid4().hex
             target=self._new_folder(base,name)
             try:
                 (target/'trajectory.csv').write_bytes(archive.read('trajectory.csv'))
-                checked=self.validate_csv(target/'trajectory.csv',scope['joints'])
+                checked=self.validate_csv(target/'trajectory.csv',meta['scope']['joints'])
                 kind = meta.get('kind', 'general')
                 if kind not in ('general', 'contact_first'):
                     raise ValueError('未知轨迹用途')
-                record={'id':key,'name':name,'scope':self._identity(scope), 'kind':kind,
-                        'created_at':datetime.now().isoformat(timespec='seconds'),**checked}
+                imported_at=datetime.now().isoformat(timespec='seconds')
+                record={**meta, 'id':key,'name':name,'scope':meta['scope'], 'kind':kind,
+                        'source_id':meta.get('source_id') or meta.get('id'),
+                        'created_at':meta.get('created_at') or imported_at,'imported_at':imported_at,**checked}
                 (target/'metadata.json').write_text(json.dumps(record,ensure_ascii=False,indent=2),encoding='utf-8')
-                return {**record,'directory':str(target)}
+                return {**record, **self.compatibility(scope,record),'directory':str(target)}
             except Exception:
                 shutil.rmtree(target,ignore_errors=True)
                 raise

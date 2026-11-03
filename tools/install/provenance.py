@@ -20,7 +20,7 @@ BUILD_OPTIONS = ('terminal', 'python', 'ros2', 'moveit', 'robot', 'ros_distro', 
 def recovery_command(root, manifest):
     """Rebuild the recorded component selection at the checkout's current path."""
     argv = [str(Path(root).resolve() / 'install.sh'), '--preset', manifest.get('preset', 'standalone')]
-    for component in ('terminal', 'python', 'ros2', 'moveit', 'gui', 'tests'):
+    for component in ('terminal', 'python', 'ros2', 'moveit', 'gui'):
         argv.append(('--with-' if manifest.get(component) else '--without-') + component)
     argv += ['--robot', manifest.get('robot', 'dm_arm'), '--ros-distro', manifest.get('ros_distro', 'humble'),
              '--clean-rebuild', '--yes']

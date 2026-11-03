@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
+import os
 
 import numpy as np
 
@@ -124,6 +125,35 @@ class RobotSession:
             str(config_file),
             hardware_plugin,
             str(hardware_config),
+            serial_port=serial_port,
+            baudrate=baudrate,
+            bus=bus,
+        )
+
+    @classmethod
+    def from_profile(
+        cls,
+        profile: str,
+        *,
+        profile_file: str | Path = "",
+        resource_paths: Sequence[str | Path] | str = (),
+        serial_port: str | None = None,
+        baudrate: int | None = None,
+        bus: str | None = None,
+    ) -> "RobotSession":
+        """从与工作台相同的 Profile 解析会话；只配置，不使能机械臂
+
+        resource_paths 接受资源目录序列，或与启动器一致的冒号分隔路径
+        控制写入、模型、映射与 Safety 仍以 Profile 引用的 Core 配置为准
+        """
+        roots = resource_paths.split(os.pathsep) if isinstance(resource_paths, str) else resource_paths
+        resolved = load_robot_profile_core(
+            profile, str(profile_file), [str(value) for value in roots if str(value)]
+        )
+        return cls(
+            resolved.core_config_path,
+            resolved.hardware_plugin,
+            resolved.hardware_config_path,
             serial_port=serial_port,
             baudrate=baudrate,
             bus=bus,

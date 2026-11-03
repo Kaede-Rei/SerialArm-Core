@@ -199,11 +199,11 @@ def prepare_gravity_candidate(directory, *, prefer_recomputed=False, candidate_p
     return {'kind':'gravity','candidate_path':str(target),'task_id':metadata.get('task_id'),
             'urdf_fingerprint':metadata.get('urdf_fingerprint'),'temporary':True, 'candidate_source':source, 'selected_candidate_path':str(selected) if selected else str(folder/'result.json'), 'candidate_run_id':payload.get('candidate_run_id')}
 
-def prepare_gain_candidate(directory):
+def prepare_gain_candidate(directory, gain_purposes=None):
     record=load(directory,'gain')
     path=Path(record['directory'])/'gain-candidate.json'
     candidate=_json(path)
-    if not candidate or candidate.get('schema')!='serial_arm_gain_candidate' or not candidate.get('validated'):
+    if not candidate or candidate.get('schema')!='serial_arm_gain_candidate':
         raise ValueError('当前增益记录尚未通过完整控制质量验证，不能临时应用')
     if candidate.get('task_id') != record.get('task_id'):
         raise ValueError('增益候选与任务编号不一致，请重新选择完整任务目录')
@@ -212,8 +212,9 @@ def prepare_gain_candidate(directory):
     if candidate.get('joint_names')!=(record.get('metadata') or {}).get('joint_names'):
         raise ValueError('增益候选与记录的关节映射不一致')
     from control_parameters import deployment_gain_groups
-    deployment_gain_groups(candidate)
-    return {'kind':'gain','candidate_path':str(path),'task_id':record['task_id'],'temporary':True}
+    groups=deployment_gain_groups(candidate,gain_purposes)
+    return {'kind':'gain','candidate_path':str(path),'task_id':record['task_id'],'temporary':True,
+            'gain_purposes':list(groups),'validation_scope':candidate.get('validation_scope','recorded_scope')}
 
 
 def prepare_dynamics_candidate(report_path):
@@ -231,3 +232,93 @@ def prepare_dynamics_candidate(report_path):
     if not report.get('candidate_urdf_sha256') or report['candidate_urdf_sha256']!=digest:
         raise ValueError('候选 URDF 已变化，必须重新执行离线辨识')
     return {'kind':'dynamics','report':str(report_file),'candidate_path':str(candidate),'temporary':True}
+
+
+def validate_gain_trajectory(directory, response_window, purpose):
+    """Assess a fresh recorded reference path with a frozen, qualified gain set.
+
+    This adds independent path evidence; it never upgrades local qualification
+    into unmeasured workspace or contact certification, or changes runtime gains.
+    """
+    import math
+    from control_parameters import deployment_gain_groups, selected_gain_purposes
+    record=load(directory,'gain')
+    folder=Path(record['directory'])
+    candidate_bytes=(folder/'gain-candidate.json').read_bytes()
+    candidate=json.loads(candidate_bytes)
+    keys=selected_gain_purposes([purpose])
+    groups=deployment_gain_groups(candidate,keys)
+    key=keys[0]
+    if key=='compliant_drag': raise ValueError('拖拽使用释放稳定性验收，轨迹跟踪验收请选择刚性、柔性或伺服用途')
+    metadata=record.get('metadata') or {}
+    if (candidate.get('task_id')!=record.get('task_id') or candidate.get('joint_names')!=metadata.get('joint_names') or
+            candidate.get('urdf_fingerprint')!=metadata.get('urdf_fingerprint')):
+        raise ValueError('增益候选与原标定任务不匹配')
+    if not isinstance(response_window,dict) or response_window.get('joint_names')!=candidate.get('joint_names'):
+        raise ValueError('路径响应的关节顺序与候选不一致')
+    from model_calibration_source import verified_source_urdf
+    source=verified_source_urdf(folder,metadata)
+    identity=response_window.get('model_identity') or {}
+    if identity.get('urdf_sha256')!=hashlib.sha256(Path(source).read_bytes()).hexdigest():
+        raise ValueError('路径响应的模型来源与候选不同或未记录，请应用当前候选并重新录制')
+    if metadata.get('profile') and response_window.get('profile')!=metadata['profile']:
+        raise ValueError('路径响应来自其他机械臂 Profile')
+    names=candidate['joint_names'];n=len(names)
+    if response_window.get('joint_units', ['rad']*n)!=['rad']*n:
+        raise ValueError('当前增益候选的独立路径验收仅支持转动关节')
+    samples=response_window.get('samples') or []
+    if not isinstance(samples,list) or not 100<=len(samples)<=30000:
+        raise ValueError('独立路径验收需要 100～30000 帧新反馈')
+    def number(value):return isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
+    fields=groups[key]
+    for row in samples:
+        if not isinstance(row,dict) or not number(row.get('time_s')): raise ValueError('路径时间戳无效')
+        for field in ('accepted','pos','kp','kd'):
+            if not isinstance(row.get(field),list) or len(row[field])!=n or not all(number(v) for v in row[field]):
+                raise ValueError('路径响应缺少有效逐轴 '+field)
+        if any(not math.isclose(row[field][i],fields[field][i],rel_tol=1e-7,abs_tol=1e-5) for field in ('kp','kd') for i in range(n)):
+            raise ValueError('实际执行增益与所选候选不同，请应用候选后重新录制')
+        age=row.get('feedback_age_ms')
+        if not number(age) or not 0<=age<=100: raise ValueError('路径响应含过期或未知年龄反馈')
+        if not number(row.get('feedback_receive_ns')) or row['feedback_receive_ns']<=0:
+            raise ValueError('路径响应缺少传输接收时间戳，请使用当前程序重新录制')
+    times=[row['time_s'] for row in samples]
+    stamps=[row['feedback_receive_ns'] for row in samples]
+    if times[-1]-times[0]<2 or any(not 0<b-a<=.15 for a,b in zip(times,times[1:])):
+        raise ValueError('路径响应需至少 2 秒连续记录，帧间隔不得超过 150 ms')
+    if any(b<=a for a,b in zip(stamps,stamps[1:])): raise ValueError('路径响应包含重复或回退的实测反馈')
+    condition_fields=('reference_behavior','gain_profile','impedance_mode','model_feedforward_mode')
+    for field in condition_fields:
+        observed=[row.get(field,response_window.get(field)) for row in samples]
+        if any(value!=observed[0] for value in observed): raise ValueError('路径记录期间控制条件发生变化: '+field)
+    expected={'rigid_tracking':'RIGID','compliant_tracking':'COMPLIANT','servo_tracking':'SERVO_TRACKING'}[key]
+    profile=response_window.get('gain_profile')
+    if profile is not None and profile!=expected: raise ValueError('路径记录的增益用途与候选不一致')
+    requirements=candidate.get('gain_requirements') or {}
+    peak=float(requirements.get('peak_error_rad',.012));rms=float(requirements.get('rms_error_rad',.004))
+    if not all(math.isfinite(v) and v>0 for v in (peak,rms)): raise ValueError('候选跟踪验收阈值无效')
+    saturated=any(row.get('torque_limited') or row.get('reference_limited') or any(row.get('torque_limit_flags') or []) for row in samples)
+    joints=[]
+    for i,name in enumerate(names):
+        error=[row['pos'][i]-row['accepted'][i] for row in samples]
+        references=[row['accepted'][i] for row in samples]
+        minimum,maximum=min(references),max(references)
+        rms_value=math.sqrt(sum(v*v for v in error)/len(error));peak_value=max(abs(v) for v in error)
+        joints.append({'joint':name,'unit':'rad','rms_error':rms_value,'peak_error':peak_value,
+                       'rms_limit':rms,'peak_limit':peak,'reference_min':minimum,'reference_max':maximum,
+                       'excited':maximum-minimum>1e-6,'passed':rms_value<=rms and peak_value<=peak and not saturated})
+    report={'schema':'serial_arm_gain_trajectory_validation','task_id':record['task_id'],'purpose':key,
+            'validation_scope':'recorded_reference_path','qualification_scope_unchanged':True,
+            'passed':all(item['passed'] for item in joints) and any(item['excited'] for item in joints),
+            'candidate_sha256':hashlib.sha256(candidate_bytes).hexdigest(),
+            'samples':len(samples),'duration_s':times[-1]-times[0],'limited':saturated,'joints':joints,
+            'control_conditions':{field:response_window.get(field) for field in condition_fields},
+            'recorded_at':time.time(),'trajectory':response_window.get('trajectory'),
+            'source':'ordinary_replay_response_recording'}
+    if (folder/'gain-candidate.json').read_bytes()!=candidate_bytes: raise ValueError('验收期间候选已变化，请重新录制并验收')
+    destination=folder/'gain-trajectory-validations'/str(time.time_ns());destination.mkdir(parents=True)
+    payload=destination/'response.json';payload.write_text(json.dumps(response_window,ensure_ascii=False,allow_nan=False),encoding='utf-8')
+    report['response_sha256']=hashlib.sha256(payload.read_bytes()).hexdigest()
+    report['report_path']=str(destination/'validation.json')
+    Path(report['report_path']).write_text(json.dumps(report,ensure_ascii=False,allow_nan=False,indent=2),encoding='utf-8')
+    return report

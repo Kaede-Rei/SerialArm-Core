@@ -49,15 +49,37 @@ def canonical_core(core):
     return result
 
 
-def deployment_gain_groups(candidate):
+GAIN_PURPOSE_KEYS = ('rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking')
+
+def selected_gain_purposes(gain_purposes):
+    if gain_purposes is None: return None
+    aliases = {'RIGID':'rigid_tracking', 'COMPLIANT':'compliant_tracking', 'DRAG':'compliant_drag', 'SERVO':'servo_tracking', 'SERVO_TRACKING':'servo_tracking'}
+    aliases.update({key.upper():key for key in GAIN_PURPOSE_KEYS})
+    if not isinstance(gain_purposes, (list, tuple)) or not gain_purposes:
+        raise ValueError('请选择至少一种已通过验收的增益用途')
+    result=[]
+    for key in gain_purposes:
+        canonical=aliases.get(str(key).upper())
+        if canonical is None: raise ValueError('未知增益用途: '+str(key))
+        if canonical not in result: result.append(canonical)
+    return [key for key in GAIN_PURPOSE_KEYS if key in result]
+
+
+def deployment_gain_groups(candidate, gain_purposes=None):
     category = candidate.get('category')
     if category == 'identification_tracking':
         raise ValueError('旧辨识增益记录未包含导纳联合验收，请重新运行伺服跟踪标定')
     groups = candidate.get('targets') if category == 'all' else {category: candidate}
     if not isinstance(groups, dict) or not groups:
         raise ValueError('增益候选缺少已验证的用途')
-    if category == 'all' and set(groups) != {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking'}:
-        raise ValueError('统一增益候选必须包含四类用途的独立验收')
+    selected=selected_gain_purposes(gain_purposes)
+    if selected is None:
+        if candidate.get('validated') is not True: raise ValueError('增益候选尚未完整通过验收，请明确选择已通过的用途')
+        if category == 'all' and set(groups) != set(GAIN_PURPOSE_KEYS):
+            raise ValueError('统一增益候选必须包含四类用途的独立验收')
+    else:
+        if any(key not in groups for key in selected): raise ValueError('候选未包含所选增益用途')
+        groups={key:groups[key] for key in selected}
     for purpose, fields in groups.items():
         if not isinstance(fields, dict) or fields.get('validated') is not True:
             raise ValueError('增益用途未通过验证: ' + str(purpose))

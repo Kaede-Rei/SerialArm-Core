@@ -297,12 +297,6 @@ class Runner:
                 "libyaml-cpp-dev",
                 "libeigen3-dev",
             ]
-            + (
-                ["libgtest-dev"]
-                if self.plan.tests
-                and (self.root / "src/serial_arm/core/tests").is_dir()
-                else []
-            )
         )
         for command in ("cmake", "c++"):
             if not shutil.which(command):
@@ -316,8 +310,6 @@ class Runner:
         argv = ["bash", self.root / "tools/bootstrap_standalone.sh"]
         if self.plan.robot == "dm_arm":
             argv += ["--robot", "dm_arm"]
-        if self.plan.tests and (self.root / "src/serial_arm/core/tests").is_dir():
-            argv += ["--with-tests"]
         if not self.plan.terminal:
             argv += ["--without-terminal"]
         try:
@@ -430,8 +422,6 @@ class Runner:
                 )
                 for value in ("--dependency-types", kind)
             ]
-            if self.plan.tests and (self.root / "src/serial_arm/core/tests").exists():
-                types += ["--dependency-types", "test"]
             cmd = [
                 "rosdep",
                 "install",
@@ -452,10 +442,6 @@ class Runner:
                     f"{error}\n\n[rosdep 排查建议] {rosdep_failure_hint(str(error))}\n"
                     "可以单独用相同参数重试 rosdep，不需要重新执行完整安装器"
                 ) from error
-        installed_test_sources = (self.root / "src/serial_arm/core/tests").exists()
-        run_tests = bool(self.plan.tests and installed_test_sources)
-        if self.plan.tests and not run_tests:
-            print("开发包不包含 tests/，将继续构建全部组件并跳过内置测试")
         colcon = ["colcon", "--log-base", str(self.logs / "colcon")]
         build = [
             "build",
@@ -474,36 +460,9 @@ class Runner:
             "-DSERIAL_ARM_ENABLE_ROS2=ON",
             "-DSERIAL_ARM_BUILD_PYTHON=" + ("ON" if self.plan.python else "OFF"),
             "-DSERIAL_ARM_BUILD_TERMINAL=" + ("ON" if self.plan.terminal else "OFF"),
-            "-DBUILD_TESTING=" + ("ON" if run_tests else "OFF"),
+            "-DBUILD_TESTING=OFF",
         ]
         self.run("ros2-build", colcon + build, source=self.ros_setup)
-        if run_tests:
-            self.run(
-                "ros2-test",
-                colcon
-                + [
-                    "test",
-                    "--base-paths",
-                    *paths,
-                    "--build-base",
-                    str(self.build),
-                    "--install-base",
-                    str(self.prefix),
-                    "--merge-install",
-                    "--return-code-on-test-failure",
-                ],
-                source=self.setup,
-            )
-            self.run(
-                "ros2-test-result",
-                [
-                    "colcon",
-                    "test-result",
-                    "--test-result-base",
-                    str(self.build),
-                    "--verbose",
-                ],
-            )
         if self.plan.python:
             self.python = Path("/usr/bin/python3")
 
@@ -633,7 +592,7 @@ class Runner:
             verified_at=datetime.now(timezone.utc).isoformat(),
             installed_components=[
                 c
-                for c in ("core", "terminal", "python", "ros2", "moveit", "tests")
+                for c in ("core", "terminal", "python", "ros2", "moveit")
                 if c == "core" or getattr(self.plan, c)
             ],
             gui=False,
@@ -757,6 +716,8 @@ def install(plan):
                         "workspace_setup": str(runner.state / "gui-setup.bash"),
                     }
                 )
+                manifest.pop("tests", None)
+                manifest["installed_components"] = [component for component in manifest.get("installed_components", []) if component != "tests"]
                 if not manifest_file.exists():
                     atomic_write(
                         runner.state / "gui-setup.bash", "#!/usr/bin/env bash\n:\n"

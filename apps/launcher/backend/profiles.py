@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 import shutil
 import math
+import sysconfig
 import subprocess
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote, urlparse
 import yaml
 
 MODES = ('terminal', 'hardware', 'moveit')
@@ -60,6 +62,101 @@ def command_for(mode, config):
 class Inspector:
     def __init__(self, root):
         self.root = Path(root).resolve()
+        self._model_checks = {}
+
+    def hardware_driver(self, plugin):
+        """Locate a driver without loading its code or opening a device."""
+        plugin = text(plugin)
+        manifest = self.manifest()
+        roots = [manifest.get('native_prefix'), manifest.get('install_prefix'),
+                 str(self.root / '.install/standalone'), str(self.root / 'install/standalone')]
+        folders = [Path(value) / child for value in roots if value for child in ('lib', 'lib64')]
+        folders += [Path(value) for value in os.environ.get('LD_LIBRARY_PATH', '').split(os.pathsep) if value]
+        folders += [Path('/usr/local/lib'), Path('/usr/lib'), Path('/lib')]
+        multiarch = sysconfig.get_config_var('MULTIARCH')
+        if multiarch: folders += [Path('/usr/lib') / multiarch, Path('/lib') / multiarch]
+        candidates = [Path(plugin).expanduser()] if '/' in plugin else [folder / name for folder in folders
+            for name in (plugin, 'lib' + plugin + '.so')]
+        path = next((item.resolve() for item in candidates if item.is_file()), None) if plugin else None
+        return {'plugin': plugin, 'installed': path is not None, 'path': str(path or ''),
+                'inspection': 'file', 'message': ('已找到驱动文件，连接时检查硬件配置 / Driver file found; configuration is checked on connection'
+                    if path else '未找到驱动文件，请安装对应驱动或填写共享库路径 / Driver file not found; install it or select the shared library')}
+
+    @staticmethod
+    def validate_urdf(path, controlled=None):
+        """Validate the single-tree scalar-joint model accepted by the Core."""
+        def fail(detail):
+            raise ValueError('model.urdf_path ' + detail)
+        try:
+            root = ET.parse(path).getroot()
+        except (ET.ParseError, OSError) as error:
+            fail('URDF 无法读取 / Cannot read URDF: ' + str(error))
+        if root.tag != 'robot': fail('URDF 根节点必须是 robot / The root must be robot')
+        links = [item.get('name') for item in root.findall('link')]
+        joints = root.findall('joint'); names = [item.get('name') for item in joints]
+        if not links or not all(links) or len(set(links)) != len(links):
+            fail('Link 名称缺失或重复 / Missing or duplicate link names')
+        if not all(names) or len(set(names)) != len(names):
+            fail('Joint 名称缺失或重复 / Missing or duplicate joint names')
+        parents = {}; by_parent = {}
+        for joint in joints:
+            name, kind = joint.get('name'), joint.get('type')
+            parent, child = joint.find('parent'), joint.find('child')
+            parent = parent.get('link') if parent is not None else None
+            child = child.get('link') if child is not None else None
+            if parent not in links or child not in links or child in parents or child == parent:
+                fail(f'{name} 的父子 Link 无效 / Invalid parent or child link')
+            parents[child] = parent; by_parent.setdefault(parent, []).append(child)
+            if kind not in ('fixed', 'revolute', 'continuous', 'prismatic', 'floating', 'planar'):
+                fail(f'{name} 的关节类型无效 / Invalid joint type')
+            if controlled and name in controlled and kind not in ('revolute', 'continuous', 'prismatic'):
+                fail(f'{name} 不是受支持的单轴关节 / Controlled joints must have one axis')
+            if kind in ('revolute', 'continuous', 'prismatic'):
+                limit = joint.find('limit')
+                required = ('effort', 'velocity') + (() if kind == 'continuous' else ('lower', 'upper'))
+                values = {}
+                for key in required:
+                    try: value = float(limit.get(key)) if limit is not None else float('nan')
+                    except (ValueError, TypeError): value = float('nan')
+                    if not math.isfinite(value) or (key in ('effort', 'velocity') and value <= 0):
+                        fail(f'{name} 的 limit.{key} 缺失或无效 / Missing or invalid limit.{key}')
+                    values[key] = value
+                if kind != 'continuous' and values['lower'] >= values['upper']:
+                    fail(f'{name} 的位置下限必须小于上限 / Lower position limit must be below upper limit')
+        roots = set(links) - set(parents)
+        if len(roots) != 1: fail('模型必须是一棵连通树 / Model must have one connected root')
+        seen = set(); queue = list(roots)
+        while queue:
+            node = queue.pop()
+            if node in seen: fail('模型包含环路 / Model contains a cycle')
+            seen.add(node); queue.extend(by_parent.get(node, []))
+        if seen != set(links): fail('模型存在未连接的 Link 或环路 / Disconnected links or cycle')
+        return root
+
+    def validate_model_config(self, config, core_path, urdf_path):
+        self.validate_urdf(urdf_path, (read_yaml(core_path).get('model') or {}).get('joint_names'))
+        probe = self.model_probe()
+        if not probe:
+            return {'valid': False, 'error': 'model.urdf_path 缺少模型检查组件，请安装 Core Model Probe / Install the Core Model Probe'}
+        key = (str(Path(probe).resolve()), Path(probe).stat().st_mtime_ns,
+               hashlib.sha256(Path(core_path).read_bytes()).hexdigest(),
+               hashlib.sha256(Path(urdf_path).read_bytes()).hexdigest(), config.get('resource_paths', ''))
+        if key in self._model_checks: return self._model_checks[key]
+        env = dict(os.environ)
+        if config.get('resource_paths'):
+            env['SERIAL_ARM_RESOURCE_PATH'] = config['resource_paths'] + os.pathsep + env.get('SERIAL_ARM_RESOURCE_PATH', '')
+        try:
+            result = subprocess.run([probe, '--config', str(core_path)], capture_output=True, text=True, timeout=8, env=env)
+            try: native = json.loads(result.stdout.strip())
+            except json.JSONDecodeError: native = {}
+            valid = result.returncode == 0 and native.get('ok') is True
+            detail = result.stderr.strip() or native.get('error') or 'Model Probe 未返回有效结果 / Model Probe did not return a valid result'
+            checked = {'valid': valid, 'error': '' if valid else 'model.urdf_path Core 无法装载模型 / Core cannot load model: ' + detail[-1600:]}
+        except (OSError, subprocess.TimeoutExpired) as error:
+            checked = {'valid': False, 'error': 'model.urdf_path 模型检查未完成 / Model check failed: ' + str(error)}
+        if len(self._model_checks) >= 16: self._model_checks.clear()
+        self._model_checks[key] = checked
+        return checked
 
     def manifest(self):
         # Packaged Core runs without sourcing ROS; installed adapter metadata is
@@ -227,6 +324,10 @@ class Inspector:
 
     def _resolve_mesh(self, value, urdf, roots):
         value = text(value)
+        if value.startswith('file://'):
+            parsed = urlparse(value)
+            if parsed.netloc not in ('', 'localhost'): raise ValueError('mesh file URI must be local')
+            value = unquote(parsed.path)
         if value.startswith('package://'):
             tail = value[len('package://'):]
             package, sep, relative = tail.partition('/')
@@ -395,9 +496,15 @@ class Inspector:
             except (ValueError, OSError) as error:
                 checks.append({'name': key, 'ok': False, 'detail': str(error)})
         core = read_yaml(resources['core']) if any(x['name'] == 'core' and x['ok'] for x in checks) else {}
-        hw = read_yaml(resources['hardware']) if any(x['name'] == 'hardware' and x['ok'] for x in checks) else {}
         write_enabled = (core.get('control', {}).get('runtime', {}) or {}).get('write_enabled')
         if not isinstance(write_enabled, bool): write_enabled = None
+        try:
+            hw = read_yaml(resources['hardware']) if any(x['name'] == 'hardware' and x['ok'] for x in checks) else {}
+        except (ValueError, OSError, yaml.YAMLError):
+            if write_enabled is not False: raise
+            hw = {}
+            for check in checks:
+                if check['name'] == 'hardware': check.update(ok=False, detail='硬件 YAML 无法读取 / Cannot read hardware YAML')
         buses = hw.get('buses', {})
         if not isinstance(buses, dict): raise ValueError('hardware buses must be a mapping')
         bus_name = c['bus'] or (hw.get('damiao') or {}).get('bus', '')
@@ -428,7 +535,7 @@ class Inspector:
         generic_ros = ament_ready('serial_arm_ros2_control') and installed and 'ros2' in components and 'python' in components and not adapter_problems['hardware']
         available = {'terminal': installed and 'terminal' in components and bool(self.machine_terminal()) and okay.get('core', False) and okay.get('hardware', False),
                      'model': okay.get('core', False) and bool(self.model_probe()),
-                     'workbench': okay.get('core', False) and okay.get('hardware', False) and bool(self.machine_terminal()),
+                     'workbench': okay.get('core', False) and bool(self.machine_terminal()) and (write_enabled is False or okay.get('hardware', False)),
                      'hardware': generic_ros and all(okay.get(k, False) for k in ('core', 'hardware', 'ros2_control', 'controllers')) and all(ament_ready((profile.get(k) or {}).get('package', '')) for k in ('description', 'controllers'))}
         moveit_package = (profile.get('moveit') or {}).get('package', '')
         try: moveit_ready = bool(moveit_package and (self.share(moveit_package, roots) / 'package.xml').is_file())

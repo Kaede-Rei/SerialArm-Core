@@ -1,6 +1,6 @@
 # SerialArm-Core API Reference
 
-按任务查询公共配置、控制接口、数据结构与驱动扩展契约
+按任务查询配置、控制接口、数据结构和驱动扩展方式
 
 如果目标是第一次运行机械臂、配置 Robot Profile、调试 Dynamics / Impedance / Admittance、接入 ROS 2 / MoveIt 或新增机械臂，请先阅读 [配置教程](../tutorial.md)
 
@@ -132,17 +132,19 @@ using JointVector = std::vector<double>;
 
 用途
 
-所有 Joint 侧位置、速度、力矩、增益和加速度都使用 `JointVector`
+Joint 侧位置、速度、力／力矩、增益和加速度使用 `JointVector`，数值采用 SI 单位
 
 约定
 
-```text
-位置   rad
-速度   rad/s
-力矩   N*m
-kp     N*m/rad
-kd     N*m*s/rad
-```
+| 量 | 旋转关节 | 直线关节 |
+| --- | --- | --- |
+| 位置 | rad | m |
+| 速度 | rad/s | m/s |
+| 力矩／力 | N·m | N |
+| Kp | N·m/rad | N/m |
+| Kd | N·m·s/rad | N·s/m |
+
+GUI 的 °／mm 显示转换不改变接口与配置文件中的 SI 数值
 
 所有 JointVector 的顺序必须与 `RobotCfg::joint_names` 一致
 
@@ -567,7 +569,7 @@ struct RobotProfileCore {
 
 用途
 
-把 profile name 解析成 C++ Core 真正需要的资源
+将 Profile 名称解析为 Core 配置、硬件插件和硬件配置路径
 
 典型结果
 
@@ -620,24 +622,24 @@ struct RobotProfileLoadOptions {
 
 额外资源根目录
 
-适合 standalone 安装或测试目录
+适合 standalone 安装或项目自有资源目录
 
 #### 示例
 
 ```cpp
 serial_arm::RobotProfileLoadOptions options;
-options.profile_file = "/tmp/test_robot_profiles.yaml";
+options.profile_file = "/opt/my_robot/config/robot_profiles.yaml";
 options.resource_paths = {
-    "/tmp/test_install",
+    "/opt/my_robot",
     "/opt/serial_arm",
 };
 
 auto profile = serial_arm::load_robot_profile_core(
-    "test_arm",
+    "my_arm",
     options);
 ```
 
-测试代码常使用显式 `profile_file`，正常安装环境更常只依赖 resource path
+固定部署可显式指定 `profile_file`，安装环境也可通过 resource path 解析 Profile
 
 Python Binding 当前实现中完整暴露这两个选项
 
@@ -718,7 +720,7 @@ auto result =
 
 #### 接口说明
 
-将一个 Robot Profile 名称解析为 Core 与 Hardware 真正需要的绝对资源路径
+将 Robot Profile 名称解析为 Core 与 Hardware 使用的绝对资源路径
 
 参数
 
@@ -760,7 +762,7 @@ std::cout << "hardware config: " << profile.hardware_config_path << "\n";
 使用注意
 
 - 不要把解析结果继续当相对路径拼接
-- 显式 `profile_file` 适合测试和固定部署环境，普通安装优先依赖 resource resolver
+- 显式 `profile_file` 适合固定部署环境，普通安装可依赖 resource resolver
 
 ---
 
@@ -806,7 +808,7 @@ Profile 找不到时优先调用这个函数，而不是在代码里硬编码更
 
 ```cpp
 serial_arm::RobotProfileLoadOptions options;
-options.resource_paths.push_back("/tmp/serial_arm_test_install");
+options.resource_paths.push_back("/opt/my_robot");
 
 for(const auto& path : serial_arm::robot_profile_search_paths(options)) {
     std::cout << path << "\n";
@@ -1011,7 +1013,7 @@ std::cout << cfg.joint_names.size() << "\n";
 std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 ```
 
-只有测试 fixture 或配置生成工具才建议手工拼完整 `RobotCfg`
+配置生成工具可手工构造完整 `RobotCfg`，应用优先从 YAML 加载
 
 #### `CapabilityCfg` 与关节空间导纳
 
@@ -1228,7 +1230,7 @@ std::cout << "joint count = " << cfg.joint_names.size() << "\n";
 使用注意
 
 - 不要自己用硬件 YAML 猜 `HardwareCapabilities`
-- 配置加载成功只代表静态配置合法，不代表真机已经连接
+- 配置加载检查静态配置；连接状态由 Backend 连接结果与硬件反馈确认
 
 ---
 
@@ -1244,7 +1246,7 @@ validate_robot_core_cfg(
 
 用途
 
-验证 Robot 闭环真正需要的配置一致性
+验证 Robot 控制循环所需的配置一致性
 
 适合配置经过程序修改后再次检查
 
@@ -1265,7 +1267,7 @@ if(!result) {
 
 #### 接口说明
 
-验证 `Robot` 控制闭环真正依赖的通用配置一致性
+验证 `Robot` 控制循环的通用配置一致性
 
 参数
 
@@ -1313,7 +1315,7 @@ validate_robot_cfg(
 
 #### 接口说明
 
-验证完整 `RobotCfg`，用于配置工具、测试和 配置检查
+验证完整 `RobotCfg`，用于配置生成与配置检查
 
 参数
 
@@ -1869,7 +1871,7 @@ to_safety_cfg(
 
 #### 接口说明
 
-把便于诊断展示的 `ResolvedSafetyCfg` 转成 `Safety` 真正消费的 `SafetyCfg`
+将诊断用的 `ResolvedSafetyCfg` 转成运行时 `Safety` 使用的 `SafetyCfg`
 
 参数
 
@@ -2681,7 +2683,7 @@ FAULT
 
 返回值
 
-成功返回空 `expected`，真正的 Backend deactivate 失败仍返回 `RobotFault`
+成功返回空 `expected`，Backend deactivate 失败返回 `RobotFault`
 
 具体使用示例
 
@@ -3718,7 +3720,7 @@ struct JointImpedanceGains {
 
 #### 示例
 
-为一个三关节测试控制器创建低刚度拖拽参数
+为一个三关节控制器创建低刚度拖拽参数
 
 ```cpp
 serial_arm::JointImpedanceGains drag_gains;
@@ -3833,11 +3835,11 @@ robot.set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
 
 普通应用优先使用 `Robot`
 
-只有在控制器单元测试、算法调试或不连接 Hardware 时才直接使用 `JointCtrller`
+离线算法调试可直接使用 `JointCtrller`
 
 #### 示例
 
-直接使用控制器通常只用于离线测试
+直接计算一周期控制器输出
 
 ```cpp
 serial_arm::JointCtrller ctrller;
@@ -4350,7 +4352,7 @@ get_impedance_mode() const noexcept;
 
 #### 接口说明
 
-读取当前阻抗模式，常用于调试、状态显示和测试断言
+读取当前阻抗模式，用于调试与状态显示
 
 返回值
 
@@ -4598,7 +4600,7 @@ Dcrit = 2*sqrt(M*K)
 settling_time_95_critical = 4.74 / ωn
 ```
 
-`settling_time_95_critical` 是基于临界阻尼二阶模型的参考时间指标，不代表任意 `ζ` 下的精确实际 settling time
+`settling_time_95_critical` 给出临界阻尼二阶模型的参考调节时间；其他 `ζ` 下的实际调节时间需另行计算或测量
 
 ---
 
@@ -5161,7 +5163,7 @@ JointCtrlCmd safe_cmd =
 
 #### 接口说明
 
-检查一帧 Joint 控制命令是否满足位置、速度、力矩、增益和连续性限制，并返回真正应该下发的安全命令
+检查一帧 Joint 控制命令的位置、速度、力矩、增益和连续性限制，返回可下发的命令
 
 参数
 
@@ -5328,7 +5330,7 @@ if(action == serial_arm::SafetyAction::DISABLE) {
 bool is_configured() const noexcept;
 ```
 
-用于诊断和测试
+用于检查 Safety 配置状态
 
 #### 接口说明
 
@@ -5470,7 +5472,7 @@ if(robot.get_state() == serial_arm::RobotState::FAULT &&
 使用注意
 
 - 需要配置允许柔性恢复并且重力模型已验证
-- 该模式仍属于 FAULT，不代表恢复正常 ACTIVE
+- 柔性恢复期间保持 FAULT 状态，正常运行需另行清除故障并使能
 
 ---
 
@@ -5911,7 +5913,7 @@ std::cout << "actuator1 target=" << cmd.pos[0]
 使用注意
 
 - 普通业务代码不应绕过 `Robot` 手工执行这条链路
-- 该示例更适合 Mapper 单元测试或 Backend 联调
+- 该示例适合离线检查映射或 Backend 联调
 
 ---
 
@@ -6313,7 +6315,7 @@ print("tool jacobian shape", dynamics.tool_jacobian.shape)
 
 ### Python `JointCtrller`
 
-主要用于离线控制器测试
+用于离线计算关节控制器输出
 
 创建
 
@@ -6364,7 +6366,7 @@ ctrller.impedance_mode
 
 #### 接口说明
 
-Python `JointCtrller` 暴露 C++ 控制器用于离线单元测试，不负责 hardware、mapping 或 Safety
+Python `JointCtrller` 提供 C++ 控制器的离线计算接口；连接硬件、执行映射与 Safety 检查由 `Robot` 管理
 
 参数
 
@@ -6535,7 +6537,22 @@ else:
 
 ### Python `RobotSession`
 
-创建
+从机械臂 Profile 创建
+
+```python
+session = serial_arm.RobotSession.from_profile(
+    "your_robot",
+    profile_file="/absolute/path/to/robot_profiles.yaml",
+    resource_paths=["/absolute/path/to/resources"],
+    serial_port=None,
+    baudrate=None,
+    bus=None,
+)
+```
+
+`resource_paths` 接受目录序列或冒号分隔字符串，模型、映射、控制写入和 Safety 参数来自 Profile 引用的 Core 配置；该方法只配置会话，调用 `start()` 或进入上下文管理器时才启动
+
+也可直接指定三个资源
 
 ```python
 session = serial_arm.RobotSession(
@@ -6558,9 +6575,7 @@ Python RobotSession
   write_enabled=false 时使用内部 MockMotorBus 运行离线闭环
 ```
 
-RobotSession 配置阶段仍会加载真实 Hardware Backend 来读取 `HardwareCapabilities`
-
-只有实际控制 Bus 在 `write_enabled=false` 时被替换为 mock
+Python 会话通过指定的 Hardware Backend 读取 `HardwareCapabilities`，`write_enabled=false` 时运行 Bus 使用 mock；无硬件驱动的模型会话使用 GUI 或 C++ Terminal 的离线入口
 
 #### 接口说明
 
@@ -7051,7 +7066,7 @@ for actuator in session.actuator_info:
 
 `SerialArmSystem` 析构时会停止后台线程并尽力释放真机硬件
 
-正常使用方式不是手工 `new SerialArmSystem`，而是让 pluginlib 和 controller_manager 管理对象生命周期
+`SerialArmSystem` 由 pluginlib 和 controller_manager 加载并管理生命周期
 
 ```xml
 <plugin>serial_arm_ros2_control/SerialArmSystem</plugin>
@@ -7221,7 +7236,7 @@ Robot::activate
 ros2 control set_hardware_component_state dm_arm inactive
 ```
 
-如果配置启用了 shutdown park，上层 Adapter 可以在真正失能前执行停放轨迹
+配置启用 shutdown park 后，上层 Adapter 可在失能前执行停放轨迹
 
 ---
 
@@ -8085,7 +8100,7 @@ serial_arm::transport::CanFilter filter{0x01, 0x7FF};
 
 `config_signature` 是必填 provider contract，必须包含 provider/backend identity 和物理通信兼容参数，空 signature 会返回 `INVALID_ARGUMENT`
 
-`BusResourceDescriptor::ownership_key` 表示真正需要进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
+`BusResourceDescriptor::ownership_key` 标识进程内唯一持有的底层资源；为空时 Registry 回退使用 `physical_id`，tty-backed Bus 应使用 `tty_ownership_key()` 归一 `/dev/serial/by-id/...` 与 `/dev/tty*` 等别名路径
 
 同名、同类型、同 physical resource、同配置时返回同一 shared bus instance
 

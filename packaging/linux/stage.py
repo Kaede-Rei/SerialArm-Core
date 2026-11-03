@@ -202,7 +202,7 @@ except ImportError:
     from pip._vendor.packaging.requirements import Requirement
 # Ubuntu's Jinja2 egg metadata omits its runtime MarkupSafe dependency.
 pending = [('numpy', set()), ('scipy', set()), ('PyYAML', set()),
-           ('cvxpy', set()), ('clarabel', set()), ('MarkupSafe', set())]
+           ('cvxpy', set()), ('clarabel', set()), ('MarkupSafe', set()), ('xacro', set())]
 seen, paths = set(), {}
 while pending:
     name, extras = pending.pop()
@@ -279,8 +279,8 @@ import sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root / 'python'))
-import yaml, numpy as np, scipy, cvxpy as cp, clarabel, osqp, scs, serial_arm
-for module in (yaml, np, scipy, cp, clarabel, osqp, scs, serial_arm):
+import yaml, numpy as np, scipy, cvxpy as cp, clarabel, osqp, scs, serial_arm, xacro
+for module in (yaml, np, scipy, cp, clarabel, osqp, scs, serial_arm, xacro):
     if not Path(module.__file__).resolve().is_relative_to(root / 'python'):
         raise ValueError('Dependency escaped payload: ' + module.__name__)
 if int(np.__version__.split('.')[0]) >= 2:

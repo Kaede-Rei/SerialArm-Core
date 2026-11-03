@@ -319,7 +319,7 @@ def export_offline_artifact(method, params, inspector, geometry_snapshot=None):
         record_dir = params.get('directory', '')
         result = export_artifact(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''),
             report=params.get('report'), destination=params.get('destination'),
-            candidate_source=params.get('candidate_source'), candidate_path=params.get('candidate_path'))
+            candidate_source=params.get('candidate_source'), candidate_path=params.get('candidate_path'), gain_purposes=params.get('gain_purposes'))
     elif method == 'calibration_tool_export_record':
         from workflow_registry import export_record
         record_dir = params.get('directory', '')
@@ -399,7 +399,7 @@ def main():
                 emit({'id': request.get('id'), 'error': report})
         control_job = threading.Thread(target=run, name='workspace-park')
         control_job.start()
-    def start_export_job(request):
+    def start_export_job(request, action=None):
         nonlocal export_job
         if export_job and export_job.is_alive():
             raise ValueError('已有成果正在导出，请等待当前导出完成；机器人控制仍可使用')
@@ -410,7 +410,9 @@ def main():
             geometry_snapshot.session = copy.deepcopy(session)
         def run():
             try:
-                if geometry_snapshot is not None:
+                if action is not None:
+                    result = action()
+                elif geometry_snapshot is not None:
                     result = export_offline_artifact(request['method'], request.get('params', {}), inspector, geometry_snapshot)
                 else:
                     result = export_offline_artifact(request['method'], request.get('params', {}), inspector)
@@ -438,7 +440,7 @@ def main():
                 request = json.loads(line)
                 method, params = request['method'], request.get('params', {})
                 if not isinstance(params, dict): raise ValueError('params must be an object')
-                if len(line) > 1024 * 1024 and not (method == 'workbench_export' and isinstance(params.get('response_window'), dict)):
+                if len(line) > 1024 * 1024 and not (method in ('workbench_export', 'calibration_gain_validate_trajectory') and isinstance(params.get('response_window'), dict)):
                     raise ValueError('request too large')
                 if method == 'stop' and native.status().get('state') in ('running', 'stopping'):
                     method = 'workbench_stop'
@@ -492,9 +494,11 @@ def main():
                             linked_native = native
                     result = profile_library.record_stage(
                         target, stage, params.get('answers', {}), linked_native)
-                elif method == 'readiness_approve_mode': result = profile_library.approve_gain_mode(config_values(params.get('config', {})), params.get('mode', ''), params.get('candidate_path', ''), native)
+                elif method == 'readiness_approve_mode': result = profile_library.approve_gain_mode(config_values(params.get('config', {})), params.get('mode', ''), params.get('candidate_path', ''), native, params.get('gain_purposes'))
                 elif method == 'profile_editor_load': result = profile_library.profile_editor_load(config_values(params.get('config', params)))
                 elif method == 'profile_editor_save': result = profile_library.profile_editor_save(config_values(params.get('config', {})), params.get('payload', {}))
+                elif method == 'profile_hardware_inspect': result = profile_library.hardware_inspect(config_values(params.get('config', {})), params.get('plugin'))
+                elif method == 'profile_hardware_import': result = profile_library.hardware_import(config_values(params.get('config', {})), params.get('path', ''), params.get('plugin'))
                 elif method == 'inspect': result = inspector.inspect(params)
                 elif method == 'model': result = model_runtime.model(inspector, params.get('config', params), params.get('positions'))
                 elif method == 'model_preview': result = model_runtime.preview(inspector, params.get('config', params), params.get('positions'))
@@ -610,18 +614,20 @@ def main():
                             destination=params.get('destination') or None, expected_hashes=params.get('expected_hashes'))
                     else:
                         raise ValueError('未知几何标定操作')
-                elif method in ('trajectory_list','trajectory_select','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
+                elif method in ('trajectory_list','trajectory_select','trajectory_preview','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
                     config = active_workbench_config or config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     scope = trajectories.scope(info, ROOT)
                     record_id = params.get('id', '')
                     if method == 'trajectory_list': result = {'items': trajectories.list(scope), 'directory': str(trajectories.folder(scope))}
+                    elif method == 'trajectory_preview':
+                        start_export_job(request, lambda scope=scope, record_id=record_id, fraction=params.get('fraction', 0): trajectories.preview(scope, record_id, fraction))
+                        continue
                     elif method == 'trajectory_select':
-                        folder, metadata = trajectories.ensure(scope, record_id)
+                        result = trajectories.select(scope, record_id)
+                        metadata = result
                         if params.get('required_kind') and metadata.get('kind', 'general') != params['required_kind']:
                             raise ValueError('所选轨迹用途不匹配，请选择对应示教轨迹')
-                        summary = trajectories.validate_csv(folder / 'trajectory.csv', scope['joints'])
-                        result = {**metadata, **summary, 'directory': str(folder)}
                     elif method == 'trajectory_import': result = trajectories.import_file(scope, params.get('source',''))
                     elif method == 'trajectory_export': result = trajectories.export(scope,record_id,params.get('destination',''))
                     elif method == 'trajectory_rename': result = trajectories.rename(scope,record_id,params.get('name',''))
@@ -649,8 +655,11 @@ def main():
                     info = inspector.inspect(config)
                     if not info['available'].get('workbench'): raise ValueError('structured workspace is unavailable; install Standalone terminal components')
                     admission = profile_library._readiness(config)
-                    if admission['checks'].get('profile_setup') != 'verified':
-                        issues = admission.get('setup_issues') or []
+                    offline = info['write_enabled'] is False
+                    allowed = ((admission.get('connection_readiness') or {}).get('offline_connectable') is True
+                               if offline else admission['checks'].get('profile_setup') == 'verified')
+                    if not allowed:
+                        issues = ((admission.get('connection_readiness') or {}).get('offline_issues') if offline else admission.get('setup_issues')) or []
                         detail = '；'.join(item['message'] for item in issues[:4]) if issues else (admission.get('reason') or 'Core 或硬件配置尚不完整')
                         raise ValueError('无法连接工作台，请先在 Profile 配置中完成必需项：' + detail)
                     if params.get('fingerprint') != info['fingerprint']: raise ValueError('configuration changed; inspect and confirm again')
@@ -658,8 +667,9 @@ def main():
                         if params.get('confirmed') is not True: raise ValueError('real hardware confirmation is required')
                         if any(not c['ok'] for c in info['checks'] if c['name'] == 'device'):
                             raise ValueError('device is missing or not readable/writable')
-                    argv = [inspector.machine_terminal(), '--machine', '--config', info['resources']['core'],
-                            '--hardware-plugin', info['hardware_plugin'], '--hardware-config', info['resources']['hardware']]
+                    argv = [inspector.machine_terminal(), '--machine', '--config', info['resources']['core']]
+                    if not offline:
+                        argv += ['--hardware-plugin', info['hardware_plugin'], '--hardware-config', info['resources']['hardware']]
                     for key, flag in [('serial_port', '--serial-port'), ('baudrate', '--baudrate'), ('bus', '--bus')]:
                         if config[key]: argv += [flag, config[key]]
                     env = dict(os.environ)
@@ -754,7 +764,7 @@ def main():
                 elif method == 'calibration_candidate_prepare':
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
-                    if kind == 'gain': result = prepare_gain_candidate(params.get('directory', ''))
+                    if kind == 'gain': result = prepare_gain_candidate(params.get('directory', ''), gain_purposes=params.get('gain_purposes'))
                     elif kind == 'gravity': result = prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))
                     elif kind == 'dynamics': result = prepare_dynamics_candidate(params.get('report', ''))
                     else: raise ValueError('未知的候选类型')
@@ -768,7 +778,7 @@ def main():
                                              'candidate_' + str(params.get('kind', '')) + '_apply', {}, native)
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
-                    if kind == 'gain': result_path=prepare_gain_candidate(params.get('directory', ''))['candidate_path'];native_args={'path':result_path}
+                    if kind == 'gain': result_path=prepare_gain_candidate(params.get('directory', ''), gain_purposes=params.get('gain_purposes'))['candidate_path'];native_args={'path':result_path, **({'gain_purposes':params['gain_purposes']} if params.get('gain_purposes') is not None else {})}
                     elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))['candidate_path'];native_args={'path':result_path}
                     elif kind == 'dynamics': result_path=prepare_dynamics_candidate(params.get('report', ''))['report'];native_args={'report':result_path}
                     else: raise ValueError('未知的候选类型')
@@ -793,6 +803,10 @@ def main():
                 elif method == 'calibration_candidates':
                     from workflow_registry import candidates
                     result = candidates(params.get('directory',''),params.get('kind',''))
+                elif method == 'calibration_gain_validate_trajectory':
+                    from workflow_registry import validate_gain_trajectory
+                    start_export_job(request, lambda directory=params.get('directory',''), window=params.get('response_window'), purpose=params.get('purpose'): validate_gain_trajectory(directory, window, purpose))
+                    continue
                 elif method == 'calibration_tool_load':
                     from workflow_registry import load
                     result = load(params.get('directory', ''), params.get('kind', ''), candidate_path=params.get('candidate_path'), report=params.get('report'))

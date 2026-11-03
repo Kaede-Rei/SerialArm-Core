@@ -8,7 +8,6 @@ CORE_BUILD_DIR="${CORE_BUILD_DIR:-${ROOT_DIR}/build/serial_arm_core}"
 INSTALL_PREFIX="${INSTALL_PREFIX:-${ROOT_DIR}/install/standalone}"
 JOBS="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '1')}"
 ROBOT=""
-WITH_TESTS=0
 WITH_TERMINAL=1
 BOOTSTRAP_BUILD_ROOT="${BOOTSTRAP_BUILD_ROOT:-${ROOT_DIR}/build}"
 DEPENDENCY_MODE="system"
@@ -17,15 +16,13 @@ CMAKE_DEP_ARGS=()
 
 usage() {
     cat <<'USAGE'
-Usage: ./tools/bootstrap_standalone.sh [--robot dm_arm] [--with-tests] [--without-terminal]
+Usage: ./tools/bootstrap_standalone.sh [--robot dm_arm] [--without-terminal]
 
 Dependency strategy:
   1. Prefer already installed system CMake packages
   2. If system dependencies are incomplete, try Conan binary packages only
   3. Build missing Conan packages from source only after explicit opt-in
 
-The distributed source excludes the internal test suite
-An external developer checkout with tests may use --with-tests
 Use --without-terminal for a library-only installation
 With --robot dm_arm, also install the Damiao USB2CAN protocol, Damiao hardware
 backend, robot profiles and DM-Arm resources required by dm_arm_gray/white
@@ -56,7 +53,10 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --with-tests)
-            WITH_TESTS=1
+            printf 'warning: --with-tests is retired; no internal tests will be installed or run\n' >&2
+            shift
+            ;;
+        --without-tests)
             shift
             ;;
         -h|--help)
@@ -174,7 +174,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(SERIAL_ARM_PROBE_TEST_DEPS "Probe standalone test dependencies" OFF)
 set(SERIAL_ARM_MISSING_DEPS "")
 
 find_package(yaml-cpp QUIET)
@@ -192,13 +191,6 @@ if(NOT TARGET pinocchio::pinocchio AND NOT pinocchio_FOUND)
     list(APPEND SERIAL_ARM_MISSING_DEPS "pinocchio")
 endif()
 
-if(SERIAL_ARM_PROBE_TEST_DEPS)
-    find_package(GTest QUIET)
-    if(NOT TARGET GTest::gtest_main AND NOT GTest_FOUND)
-        list(APPEND SERIAL_ARM_MISSING_DEPS "GTest")
-    endif()
-endif()
-
 if(SERIAL_ARM_MISSING_DEPS)
     list(JOIN SERIAL_ARM_MISSING_DEPS ", " SERIAL_ARM_MISSING_DEPS_TEXT)
     message(FATAL_ERROR "Missing system CMake packages: ${SERIAL_ARM_MISSING_DEPS_TEXT}")
@@ -210,7 +202,6 @@ EOF_CMAKE
         -S "${probe_src}" \
         -B "${probe_build}" \
         -DCMAKE_BUILD_TYPE="${BUILD_TYPE}" \
-        -DSERIAL_ARM_PROBE_TEST_DEPS=$([[ ${WITH_TESTS} -eq 1 ]] && printf ON || printf OFF) \
         >"${probe_log}" 2>&1; then
         return 0
     fi
@@ -270,7 +261,6 @@ setup_conan_dependencies() {
         --output-folder="${CONAN_DIR}"
         -s build_type="${BUILD_TYPE}"
         -s compiler.cppstd=17
-        -o "&:with_tests=$([[ ${WITH_TESTS} -eq 1 ]] && printf True || printf False)"
     )
 
     printf '\nTrying Conan binary packages first (source builds disabled)...\n'
@@ -281,7 +271,7 @@ error: compatible Conan binaries are unavailable and source builds were not enab
 No long source build was started.
 
 Options:
-  - Install/provide Pinocchio, Eigen3, yaml-cpp and GTest as system CMake packages, then rerun.
+  - Install/provide Pinocchio, Eigen3 and yaml-cpp as system CMake packages, then rerun.
   - Or explicitly allow the slow fallback:
       SERIAL_ARM_ALLOW_SOURCE_BUILD=1 ./tools/bootstrap_standalone.sh
     Add --robot dm_arm to the command when needed.
@@ -313,9 +303,6 @@ EOF_ERROR
 }
 
 require_command cmake
-if [[ ${WITH_TESTS} -eq 1 ]]; then
-    require_command ctest
-fi
 
 printf 'Checking installed system dependencies...\n'
 if probe_system_dependencies; then
@@ -333,12 +320,9 @@ run_standalone_command cmake \
     -DSERIAL_ARM_ENABLE_ROS2=OFF \
     -DSERIAL_ARM_BUILD_PYTHON=OFF \
     -DSERIAL_ARM_BUILD_TERMINAL=$([[ ${WITH_TERMINAL} -eq 1 ]] && printf ON || printf OFF) \
-    -DBUILD_TESTING=$([[ ${WITH_TESTS} -eq 1 ]] && printf ON || printf OFF)
+    -DBUILD_TESTING=OFF
 
 run_standalone_command cmake --build "${CORE_BUILD_DIR}" --parallel "${JOBS}"
-if [[ ${WITH_TESTS} -eq 1 ]]; then
-    run_standalone_command ctest --test-dir "${CORE_BUILD_DIR}" --output-on-failure
-fi
 run_standalone_command cmake --install "${CORE_BUILD_DIR}" --prefix "${INSTALL_PREFIX}"
 
 if [[ "${ROBOT}" == "dm_arm" ]]; then
@@ -380,11 +364,6 @@ printf '\nStandalone Core is ready\n'
 printf '  dependencies: %s\n' "${DEPENDENCY_MODE}"
 printf '  build:        %s\n' "${CORE_BUILD_DIR}"
 printf '  install:      %s\n' "${INSTALL_PREFIX}"
-if [[ ${WITH_TESTS} -eq 1 ]]; then
-    printf '  tests:        enabled\n'
-else
-    printf '  tests:        disabled (use --with-tests)\n'
-fi
 if [[ "${ROBOT}" == "dm_arm" ]]; then
     printf '  robot:        dm_arm (protocol + hardware + profiles + description)\n'
 fi

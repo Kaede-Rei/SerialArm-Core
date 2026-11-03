@@ -1,4 +1,4 @@
-# 开发与验证
+# 开发与部署
 
 ## 手动构建
 
@@ -6,8 +6,11 @@
 
 ```bash
 # Standalone，无 ROS2
-./tools/bootstrap_standalone.sh --robot dm_arm
+./tools/bootstrap_standalone.sh
 source install/standalone/setup.bash
+
+# 同时安装内置达妙驱动与 DM-Arm 示例
+./tools/bootstrap_standalone.sh --robot dm_arm
 
 # 仅构建核心库
 ./tools/bootstrap_standalone.sh --without-terminal
@@ -25,17 +28,15 @@ Core、Python Binding 和桌面工作台的原生构建不依赖 ROS2；准备 P
 
 源码位于 `src/`，GUI 位于 `apps/launcher/`，安装逻辑位于 `tools/install/`
 
-## 验证与部署
+## 构建与部署
 
-分发仓库包含可复现的控制、安全、模型与设备独占契约测试，使用 `BUILD_TESTING=ON` 构建后执行 `ctest --output-on-failure`
-
-控制修改先完成编译、单元与集成测试，再在目标系统和机械臂上验证轨迹、力矩观测与安全停止
+控制修改完成编译后，在目标系统检查配置与模型装载，再在机械臂上验证轨迹、力矩观测与安全停止
 
 常规使用从仓库根目录执行 `./install.sh`；日常更新只编译受影响的目标并执行对应检查，按机器负载选择 `--jobs`，低负载构建可使用 `--jobs 1`
 
 `.install/setup.bash` 和 `.install/run` 默认加载原生环境；显式执行 `./.install/run ros2 ...` 或加载 `.install/ros2-setup.bash` 才进入 ROS2 适配环境，GUI 按相同边界启动
 
-Developer 预设会构建选中的工程组件并执行随源码提供的契约测试；前端与后台脚本修改可单独执行对应回归，不需要生成发行包
+Developer 预设安装全部组件，日常开发按修改范围更新对应组件
 
 准备 Release 时才运行 `./build_linux.sh`，默认打包独立 Core、Python 与 GUI；使用 `--with-ros2` 才附加 ROS2 / MoveIt 适配层，详见 [安装](install.md)
 

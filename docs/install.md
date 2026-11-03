@@ -42,7 +42,7 @@ Linux / Python 3.10+，ROS2 路径需预先安装 ROS2，GUI 需要 Node.js 20+ 
 | 2 / `standalone` | Core + Terminal + Model Probe + GUI，不依赖 ROS2，DM-Arm 支持可选 |
 | 3 / `python` | Core + Python Binding，独立 Python 环境，无 Terminal、ROS2 或 GUI |
 | 4 / `ros2` | Core + Terminal + Python + ROS2 Adapter + DM-Arm + MoveIt + GUI |
-| 5 / `dev` | 包含选项 4，并增加测试依赖与测试执行 |
+| 5 / `dev` | 安装全部组件，用于源码开发 |
 | 6 / `custom` | Core 起步，逐项选择组件，自动补齐依赖 |
 
 选项按集成需求组织，Python 是独立接口选择，并非每个编号都包含前一项
@@ -50,6 +50,8 @@ Linux / Python 3.10+，ROS2 路径需预先安装 ROS2，GUI 需要 Node.js 20+ 
 ROS2 必须包含 Python Binding，内置 MoveIt 必须包含 ROS2 与 DM-Arm 支持
 
 选项 2、4、5 默认启用 DM-Arm，选项 2 可以在向导中取消
+
+DM-Arm 支持包含达妙驱动与配套机械臂示例；自己的机械臂按 Profile 接入，选择 `--robot none` 后单独安装所需驱动和资源，见 [机械臂接入](tutorial.md)
 
 ## Linux AppImage 与 deb 发行包
 
@@ -105,6 +107,8 @@ chmod +x dist/SerialArm-Core-linux-x86_64.AppImage
 
 AppImage 需要 libfuse2 等系统运行库；发行包携带原生非系统依赖、Python Binding 和科学计算模块
 
+桌面模型导入的 Xacro 依赖随 GUI 安装及发行包提供，`$(find package)` 使用项目资源搜索路径，无需另装 ROS2
+
 首次启动时，内置机器人 Profile 复制到用户配置目录，供参数编辑与标定数据保存，不写入只读发行包
 
 选择包含适配层的发行包后，也只有启动 ROS2 Hardware 或 MoveIt 入口时才加载宿主 ROS2 环境；缺少组件时显示安装提示，不影响 Core 和工作台
@@ -142,9 +146,9 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 # 外部机器人，仅构建通用 ROS2 Adapter
 ./install.sh --preset ros2 --robot none --without-moveit --yes
 
-# 自定义非 ROS 的 DM-Arm + Python + Terminal + GUI + Tests
+# 自定义非 ROS 的 DM-Arm + Python + Terminal + GUI
 ./install.sh --preset custom --robot dm_arm \
-  --with-terminal --with-python --with-gui --with-tests --yes
+  --with-terminal --with-python --with-gui --yes
 
 # 单独补装 GUI，保留已有 Core 安装状态
 ./install.sh --gui-only --yes
@@ -157,7 +161,7 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 
 | 参数 | 作用 |
 | --- | --- |
-| `--with-<组件>` / `--without-<组件>` | 组件为 terminal、python、ros2、moveit、gui、tests |
+| `--with-<组件>` / `--without-<组件>` | 组件为 terminal、python、ros2、moveit、gui |
 | `--robot dm_arm` / `--robot none` | 启用或省略内置机器人支持 |
 | `--jobs N` | 并行数，默认 CPU 数且上限 8 |
 | `--ros-distro humble` | 使用 `/opt/ros/<发行版>/setup.bash` |
@@ -193,10 +197,10 @@ source .install/ros2-setup.bash
 
 `.install/manifest.json` 保存最后通过离线检查的安装状态，`.install/last_attempt.json` 保存最近结果
 
-离线检查包括库加载、Terminal help、Model Probe help、Python import、ROS package 与资源存在性，不启动机器人
+离线检查包含原生库加载、Terminal／Model Probe help、Python 与 Xacro 导入、已选组件的包和资源检查，不连接机械臂
 
 失败不会提交新 manifest，但同一安装前缀可能留下部分产物，需要完成重试
 
 仓库搬移后重新安装以更新环境路径，安装器不修改 shell 启动文件、Profile 或串口权限
 
-手动构建与验证命令见 [开发说明](development.md)
+手动构建与部署说明见 [开发说明](development.md)

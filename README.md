@@ -2,7 +2,7 @@
 
 # SerialArm-Core
 
-**面向自研串联机械臂的动力学标定与控制内核**
+**通用串联机械臂工作台与动力学控制内核**
 
 配置模型与驱动，标定动力学与增益，通过 C++、Python 或 ROS2 控制机械臂
 
@@ -23,9 +23,11 @@
 
 ## 项目简介
 
-SerialArm-Core 面向需要自行配置硬件与运动学模型的串联机械臂，将 Robot Profile、关节控制、动力学计算、模型校正和安全状态管理组织为统一的机器人运行环境
+SerialArm-Core 提供通用串联机械臂工作台与 C++ 控制内核，将模型、硬件驱动、关节控制、动力学计算、标定与运行状态组织在同一 Robot Profile 下
 
 用户可以从已有 URDF 或 Description 创建机器人实例，完成硬件映射、参数配置与动力学验证，再通过 C++、Python 或 ROS2 / MoveIt 接入上层应用
+
+达妙是仓库现有的内置硬件驱动，DM-Arm 是配套机械臂示例；其他硬件通过 `MotorBus` 驱动和 Hardware YAML 接入，驱动需提供当前控制链要求的位置、速度、力矩反馈与完整关节阻抗命令语义，接入步骤见 [机械臂接入指南](docs/tutorial.md)
 
 图形界面、Terminal 和 Python 直接使用 C++ Core，无需宿主 ROS2 环境；ROS2 与 MoveIt 按需接入，下游机械臂在自己的 Profile 中维护模型、驱动和标定结果
 
@@ -133,6 +135,18 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 构建机使用 Ubuntu 22.04 x86_64、Node.js 20+；默认发行包可在未安装 ROS2 的目标机运行，包含可选适配层时也只在启动 Hardware 或 MoveIt 入口时加载宿主 ROS2 环境
 
 详细要求见 [安装说明](docs/install.md)
+
+### 从模型开始离线使用
+
+首页新建机械臂 Profile，导入 URDF、Xacro 或 Description 包，选择 Base 与 Tool；工作台检查控制链、关节限位与模型资源，并保存独立配置
+
+保持 `control.runtime.write_enabled: false` 可连接离线仿真会话，无需填写电机型号或安装硬件驱动；模型有效后也可直接运行
+
+```bash
+./.install/run serial_arm_terminal --config /absolute/path/to/core.yaml --machine
+```
+
+仿真状态与量程标记为 mock；接入实机时再选择驱动、填写映射和安全限制，开启写入并重新连接
 
 ### 在已有 ROS2 工作区构建
 
