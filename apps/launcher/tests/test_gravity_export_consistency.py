@@ -80,6 +80,7 @@ control:
                        'static_pass': False, 'validation_conclusion': 'degraded'}
         # Noncanonical whitespace must survive export unchanged.
         self.report_bytes = (json.dumps(self.report, indent=4) + '\n').encode()
+        (self.folder / 'recomputed-candidate.json').write_bytes(self.report_bytes)
         self.payload = {
             'candidate_source': 'recomputed-candidate.json',
             'candidate_run_id': 'run-A',
@@ -98,7 +99,8 @@ control:
     def worker(self, argv, *, capture_output, text, timeout, env,
                changed_candidate=False, bad_report_receipt=False, bad_urdf_receipt=False):
         self.assertEqual(argv[2], str(self.folder))
-        self.assertEqual(argv[4:], ['legacy_gravity_export', '[]'])
+        self.assertEqual(argv[4], 'legacy_gravity_export')
+        self.assertEqual(json.loads(argv[5]), {'candidate_path':str(self.folder / 'recomputed-candidate.json')})
         self.assertEqual(env['PYTHONNOUSERSITE'], '1')
         self.worker_folder = Path(argv[3]) / 'offline'
         self.worker_folder.mkdir()

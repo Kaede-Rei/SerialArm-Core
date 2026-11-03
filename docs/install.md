@@ -1,6 +1,6 @@
 # 安装
 
-SerialArm-Core 支持交互式安装和直接作为 ROS2 工作区中的 CMake 包构建，两种方式使用同一套核心库
+SerialArm-Core 的 Core、Terminal、Python 与桌面工作台可独立运行；ROS2 和 MoveIt 是按需安装的适配层
 
 ![工作区启动界面](images/launcher-start.png)
 
@@ -34,7 +34,7 @@ Python Binding 默认启用，使用仓库内置的 pybind11 构建依赖，不�
 
 Linux / Python 3.10+，ROS2 路径需预先安装 ROS2，GUI 需要 Node.js 20+ 和 npm
 
-输入提示标注 `[默认 4]` 或 `[y/n，默认 y]`，直接 Enter 使用默认值
+向导默认选择独立机械臂调试，输入提示标注 `[默认 2]` 或 `[y/n，默认 y]`，直接 Enter 使用默认值
 
 | 选项 | 内容与用途 |
 | --- | --- |
@@ -53,27 +53,32 @@ ROS2 必须包含 Python Binding，内置 MoveIt 必须包含 ROS2 与 DM-Arm �
 
 ## Linux AppImage 与 deb 发行包
 
-从源码构建完整 Linux 发行包使用第 4 项对应的 `ros2` 安装预设，而非 `standalone`
+发行包只在准备 Release 时生成，日常修复、验证和安装不需要打包
+
+默认发行包含 Core、Terminal、Model Probe、Python Binding、DM-Arm 支持和桌面工作台，不包含 ROS2 与 MoveIt 适配层
 
 ```bash
 ./build_linux.sh
 ```
 
-脚本核对源码指纹、构建选项、安装产物和 GUI 来源，仅复用与当前工程一致的完整 ROS2 安装，缺少记录或内容变化时重新执行安装，再将编译后的 ROS2 工作区、Python Binding、机器人资源和 Electron 工作台打包
+脚本核对源码指纹、安装选项、原生产物和 GUI 来源，复用匹配的独立安装；需要重建时使用单任务编译，避免占满开发机
 
-Electron 构建时直接复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时，不重复从网络下载 Electron
-
-可以明确要求复用现有安装，缺少来源记录或源码、构建选项、安装文件、GUI 来源不匹配时直接报错
+Electron 复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时，不重复下载
 
 ```bash
+# 只复用与源码一致的独立安装，不自动重建
 ./build_linux.sh --reuse-install
+
+# 明确重建选定组件后生成发布包
+./build_linux.sh --rebuild
+
+# 可选：额外包含 ROS2 与 MoveIt 适配组件
+./build_linux.sh --with-ros2
 ```
 
-如需强制重新编译完整组件，可以执行 `./build_linux.sh --rebuild`
+构建需要 Ubuntu 22.04 x86_64、Node.js 20+、npm 和系统 Python；只有选择 `--with-ros2` 才需要构建机安装 ROS2 Humble 与 MoveIt
 
-构建前需要 Ubuntu 22.04 x86_64、ROS2 Humble、Node.js 20+、npm 和系统 Python，打包使用 electron-builder
-
-两个产物及校验文件均输出到 `dist/`
+两个产物及校验文件输出到 `dist/`
 
 ```text
 SerialArm-Core-linux-x86_64.AppImage
@@ -81,36 +86,37 @@ SerialArm-Core-linux-amd64.deb
 SHA256SUMS
 ```
 
-校验文件使用相对文件名，将三个文件放在同一目录后可执行 `sha256sum -c SHA256SUMS`
+将三个文件放在同一目录后，执行 `sha256sum -c SHA256SUMS` 校验
 
-打包期间锁定安装入口，避免其他安装或打包进程同时改写产物，运行记录与缓存不随发行包分发
+打包期间锁定安装入口，避免并发改写产物；运行记录与缓存不随发行包分发
 
 ### 安装发行包
 
-发行包包含 SerialArm-Core 自己编译的 C++ Core、Python Binding、DM-Arm 驱动、ROS2 Adapter、MoveIt 配置与 GUI，但不重复封装整个 ROS2 Humble 系统发行版
-
-目标机器需要 Ubuntu 22.04 x86_64，并先配置 ROS2 Humble apt 软件源及 MoveIt 2、ros2_control 等系统依赖
-
-安装 deb
+目标机器使用 Ubuntu 22.04 x86_64；Core、模型查看、标定和桌面控制不需要安装 ROS2，也不读取 `/opt/ros` 环境
 
 ```bash
 sudo apt install ./dist/SerialArm-Core-linux-amd64.deb
 ```
-
-运行 AppImage
 
 ```bash
 chmod +x dist/SerialArm-Core-linux-x86_64.AppImage
 ./dist/SerialArm-Core-linux-x86_64.AppImage
 ```
 
-AppImage 依赖目标机器的 ROS2 Humble 环境和 AppImage 所需的 libfuse2 等系统运行库
+AppImage 需要 libfuse2 等系统运行库；发行包携带原生非系统依赖、Python Binding 和科学计算模块
 
-首次启动时，内置机器人 Profile 资源复制到当前用户的配置目录，用于保存参数变更和标定数据，不会写回发行包只读资源
+首次启动时，内置机器人 Profile 复制到用户配置目录，供参数编辑与标定数据保存，不写入只读发行包
 
-目标机无需执行源码仓库的 `install.sh` 或重新编译 C++ 与 ROS2 Adapter
+选择包含适配层的发行包后，也只有启动 ROS2 Hardware 或 MoveIt 入口时才加载宿主 ROS2 环境；缺少组件时显示安装提示，不影响 Core 和工作台
 
-建议在干净 Ubuntu 22.04 系统上分别检查 GUI、模型显示、Profile 保存、Terminal、ROS2 控制链及 MoveIt 规划，再发布 GitHub Release
+可选适配运行环境按需安装
+
+```bash
+sudo apt install ros-humble-ros2-control ros-humble-ros2-controllers \
+  ros-humble-robot-state-publisher ros-humble-xacro ros-humble-moveit
+```
+
+Release 前在不含 ROS2 的 Ubuntu 22.04 环境检查 GUI、模型、Profile、Terminal 和 Python；若发布适配层，再单独检查 ROS2 与 MoveIt
 
 ## sudo 与日志
 
@@ -127,7 +133,10 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 ## 常用命令
 
 ```bash
-# 自动确认 ROS2 全栈安装
+# 独立工作台，按需添加 Python Binding
+./install.sh --preset standalone --with-python --jobs 1 --yes
+
+# 明确选择 ROS2 与 MoveIt 适配层
 ./install.sh --preset ros2 --yes
 
 # 外部机器人，仅构建通用 ROS2 Adapter
@@ -171,6 +180,11 @@ apt 和 rosdep 在当前终端显示输出与密码提示，同时记录命令�
 
 # 或在当前终端加载一次环境
 source .install/setup.bash
+
+# 仅调用 ROS2 适配时加载 ROS 环境
+source .install/ros2-setup.bash
+# 或通过运行入口自动选择
+./.install/run ros2 pkg prefix serial_arm_ros2_control
 ```
 
 命令需要对应组件已安装，Terminal 运行可能连接真机

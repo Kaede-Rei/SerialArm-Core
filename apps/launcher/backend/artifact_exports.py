@@ -289,13 +289,13 @@ def _same_dynamics_model(source, candidate):
     return True
 
 
-def _gravity_export(record,dest,candidate_source="online"):
+def _gravity_export(record,dest,candidate_source=None,candidate_path=None):
     folder,metadata,model,core,cfg=_snapshot(record)
     core,core_source=_gravity_merge_source(folder,metadata,core)
-    if candidate_source not in ('online','offline'):
-        raise ValueError('未知重力候选来源')
+    from persistence import select_gravity_candidate
+    candidate_source, candidate_path = select_gravity_candidate(folder, candidate_source, candidate_path)
     offline=candidate_source=='offline'
-    _,_,result,payload=build_gravity_correction_payload(folder,allow_unvalidated=True,prefer_recomputed=offline)
+    _,_,result,payload=build_gravity_correction_payload(folder,allow_unvalidated=True,prefer_recomputed=offline,candidate_path=candidate_path)
     if offline and payload.get('candidate_source') != 'recomputed-candidate.json':
         raise ValueError('此任务尚未生成离线重算候选，请先离线重算')
     verified = bool(payload.get('static_pass'))
@@ -314,7 +314,7 @@ def _gravity_export(record,dest,candidate_source="online"):
             env=dict(os.environ)
             env['PYTHONNOUSERSITE']='1'
             completed=subprocess.run([sys.executable,str(worker),str(folder),str(staging),
-                                      'legacy_gravity_export','[]'],capture_output=True,
+                                      'legacy_gravity_export',json.dumps({'candidate_path': str(candidate_path)})],capture_output=True,
                                       text=True,timeout=120,env=env)
             if completed.returncode:
                 raise ValueError('离线重力候选导出失败 '+(completed.stderr or '')[-1400:])
@@ -370,6 +370,7 @@ def _gravity_export(record,dest,candidate_source="online"):
             'static_pass':verified,'friction_pass':friction_verified,
             'friction_enabled':friction_verified,
             'torque_bias_source':payload.get('torque_bias_source'),
+            'candidate_source': candidate_source, 'candidate_path': payload.get('candidate_path'), 'candidate_run_id': payload.get('candidate_run_id'),
             'mass_scope':'joint_mass_and_com' if offline else 'original_mass_and_corrected_com'}
 
 
@@ -389,8 +390,10 @@ def _dynamics_export(record,dest,report_path=None):
     if report_path:
         report=Path(report_path).expanduser().resolve()
         if report not in available:raise ValueError('所选辨识候选不属于该任务')
+    elif len(available) == 1:
+        report=available[0]
     elif available:
-        report=max(available,key=lambda p:p.stat().st_mtime)
+        raise ValueError('当前任务包含多轮候选，请先选择具体辨识报告再导出')
     else:raise ValueError('未找到高级辨识成果，请先完成所选目标的离线辨识')
     data=_read_json(report)
     if data.get('schema')!='serial_arm_advanced_identification' or data.get('task_id')!=metadata.get('task_id'):
@@ -409,7 +412,7 @@ def _dynamics_export(record,dest,report_path=None):
             'validated_on_hardware':False}
 
 
-def export_artifact(root,directory,kind,*,report=None,destination=None,candidate_source="online"):
+def export_artifact(root,directory,kind,*,report=None,destination=None,candidate_source=None,candidate_path=None):
     if kind not in ('teaching','gain','gravity','dynamics'):raise ValueError('未知标定功能')
     record=load(directory,kind)
     if destination:
@@ -436,7 +439,7 @@ def export_artifact(root,directory,kind,*,report=None,destination=None,candidate
                 if (source/name).is_file():shutil.copy2(source/name,stage/name)
             payload={'target':'recorded_joint_trajectory','validated':True}
         elif kind=='gain':payload=_gain_export(record,stage)
-        elif kind=='gravity':payload=_gravity_export(record,stage,candidate_source)
+        elif kind=='gravity':payload=_gravity_export(record,stage,candidate_source,candidate_path)
         else:payload=_dynamics_export(record,stage,report)
         if not list(stage.rglob('*')):raise ValueError('导出没有产生任何文件')
         # Ensure all resulting YAML and URDF files can be loaded

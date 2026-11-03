@@ -2,6 +2,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import unittest
@@ -18,7 +19,7 @@ from provenance import environment_problem
 from plan import parse_plan
 from runner import Runner
 sys.path.insert(0, str(ROOT / 'packaging/linux'))
-from stage import python_gui_modules, validate_python_payload
+from stage import bundle_external_libs, python_gui_modules, validate_python_payload
 
 URDF = '<robot name="test"><link name="base"/><link name="tip"/><joint name="axis" type="revolute"><parent link="base"/><child link="tip"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" velocity="1" effort="1"/></joint></robot>'
 
@@ -114,7 +115,24 @@ class RuntimeContracts(unittest.TestCase):
                 validate_python_payload(self.path)
     @unittest.skipUnless((ROOT / '.install/gui-venv/bin/python').is_file(), 'GUI environment not provisioned')
     def test_packaged_dependency_closure_solves_without_host_packages(self):
+        manifest_file = ROOT / '.install/manifest.json'
+        if not manifest_file.is_file(): self.skipTest('Native installation not provisioned')
+        manifest = json.loads(manifest_file.read_text())
+        prefix = Path(manifest.get('install_prefix', '/missing'))
+        if not manifest.get('python') or not (prefix / 'bin/serial_arm_model_probe').is_file():
+            self.skipTest('Installed Python Binding and model tool are required')
+        # Match release staging order: native libraries and their dependency
+        # closure are present before validating the packaged Python binding
+        native = self.path / 'native'
+        (native / 'bin').mkdir(parents=True)
+        (native / 'lib').mkdir()
+        shutil.copy2(prefix / 'bin/serial_arm_model_probe', native / 'bin/serial_arm_model_probe')
+        shutil.copy2(prefix / 'lib/libserial_arm_core.so', native / 'lib/libserial_arm_core.so')
+        runner = Runner(parse_plan(['--preset', manifest.get('preset', 'standalone')], ROOT))
+        runner.build = Path(manifest.get('build_dir') or runner.build)
+        bundle_external_libs(native, manifest.get('native_library_paths') or runner.dependency_library_paths())
         python_gui_modules(ROOT, self.path)
+        self.assertTrue((self.path / 'python/serial_arm').is_dir())
         self.assertTrue((self.path / 'python/cvxpy').is_dir())
         self.assertTrue((self.path / 'python/clarabel').is_dir())
         self.assertTrue(any((self.path / 'python').glob('_cffi_backend*.so')))

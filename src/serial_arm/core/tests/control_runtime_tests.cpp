@@ -1,4 +1,5 @@
 #include "serial_arm/runtime/control_runtime.hpp"
+#include "serial_arm/runtime/joint_motion.hpp"
 
 #include <cmath>
 #include <iostream>
@@ -117,4 +118,47 @@ void executor_ownership() {
     require(bool(robot.deactivate()),"executor deactivate");
 }
 
-int main(){try{mailbox_and_fault();shared_progression();executor_ownership();std::cout<<"control runtime contracts passed\n";return 0;}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}
+void point_motion_lifecycle() {
+    JointMotionTracker tracker;
+    const auto id=tracker.begin({0.01,0.01},{"revolute","prismatic"});
+    require(id>0&&tracker.status().state=="running","acceptance is a running request, never completion");
+    require(tracker.status().units==std::vector<std::string>({"rad","m"}),"joint type units stay explicit");
+    RobotCycleOutput cycle;cycle.feedback_age_ms=1;
+    cycle.actuator_state.feedback_timing_valid={1,1};
+    cycle.joint_state.pos={0,0};cycle.joint_state.vel={0,0};
+    auto observe=[&](int sample){cycle.actuator_state.feedback_received_ns={1000000000ull+10000000ull*sample,1000000000ull+10000000ull*sample};tracker.update(cycle,50);};
+    for(int i=1;i<=30;++i)observe(i);
+    require(tracker.status().state=="running","a stationary 10 mrad or 10 mm error cannot complete");
+    cycle.joint_state.pos={0.01,0.01};
+    for(int i=31;i<=60;++i)observe(i);
+    require(tracker.status().state=="running","measured target before reference ends cannot complete");
+    tracker.reference_complete(true);
+    cycle.joint_state.pos[1]=0.009;
+    for(int i=61;i<=90;++i)observe(i);
+    require(tracker.status().state=="running","1 mm prismatic error is not within arrival tolerance");
+    cycle.joint_state.pos[1]=0.01;observe(91);
+    for(int i=0;i<100;++i)tracker.update(cycle,50);
+    require(tracker.status().state=="running","repeated feedback cannot accrue settling time");
+    cycle.feedback_age_ms=51;observe(92);cycle.feedback_age_ms=1;
+    require(tracker.status().settled_s==0,"stale feedback breaks settling");
+    for(int i=93;i<102;++i)observe(i);
+    require(tracker.status().state=="running","target must remain stable for 150 ms");
+    for(int i=102;i<=110;++i)observe(i);
+    require(tracker.status().state=="completed","fresh stable arrival completes the original request");
+    const auto next=tracker.begin({0.02},{"revolute"});
+    require(next>id&&tracker.status().state=="running","replacement has a unique motion id");
+    tracker.finish("interrupted","hold");
+    require(tracker.status().state=="interrupted","hold interrupts without reporting completion");
+    tracker.begin({0.03},{"revolute"});tracker.finish("failed","feedback timeout");
+    tracker.finish("interrupted","clear old command");
+    require(tracker.status().state=="failed","cleanup preserves the failure result");
+    for(const auto* direction:{"forward","reverse","return"}) {
+        const auto plan=teach_replay_plan(direction,30);
+        require(plan.total_passes==1&&plan.cycles==1,"single-direction replay is exactly one pass");
+    }
+    require(teach_replay_plan("cycle",30).total_passes==60,"cycle N means N complete round trips");
+    const auto contact=teach_replay_plan("contact_cycle",3);
+    require(contact.total_passes==6&&contact.first_reverse,"contact cycle starts safe-to-contact and ends safe");
+}
+
+int main(){try{mailbox_and_fault();shared_progression();executor_ownership();point_motion_lifecycle();std::cout<<"control runtime contracts passed\n";return 0;}catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

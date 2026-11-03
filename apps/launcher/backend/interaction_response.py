@@ -1,5 +1,6 @@
 """Offline identification of accepted-reference to measured-position response."""
 import math
+import json
 
 import numpy as np
 
@@ -160,6 +161,20 @@ def _identify(samples, index, name, dt):
     return result
 
 
+def response_condition_change(samples):
+    """Do not fit one execution model across different closed-loop conditions."""
+    keys = ('kp', 'kd', 'actual_kp', 'actual_kd', 'gain_purpose', 'gain_profile',
+            'impedance_mode', 'reference_behavior', 'model_feedforward_mode',
+            'condition_signature', 'hold_compensation_enabled')
+    if not samples: return None
+    for key in keys:
+        if not any(key in sample for sample in samples): continue
+        first = json.dumps(samples[0].get(key), sort_keys=True, allow_nan=False)
+        if any(json.dumps(sample.get(key), sort_keys=True, allow_nan=False) != first for sample in samples[1:]):
+            return '记录期间 ' + key + ' 发生变化，请分别记录每组固定增益与控制条件'
+    return None
+
+
 def analyze_interaction_response(window):
     """Analyze a completed passive window without issuing a robot command."""
     samples = window.get('samples', [])
@@ -187,6 +202,13 @@ def analyze_interaction_response(window):
                 reason = '记录中重复反馈过多，请使用持续收到新反馈的跟踪段'
             elif window.get('impedance_mode') == 'COMPLIANT_DRAG':
                 reason = '原生拖拽不提供位置跟踪激励，请另录无接触跟踪段'
+    changed = response_condition_change(samples) if samples and all(isinstance(s, dict) for s in samples) else None
+    if changed:
+        reason = changed
+        result['conditions_consistent'] = False
+        result['return_verification'].update(joint_pass=None, reason=changed)
+    else:
+        result['conditions_consistent'] = True
     result['joints'] = ([_empty(name, reason) for name in names] if reason else
                         [_identify(samples, i, name, result['sample_dt_s']) for i, name in enumerate(names)])
     return result

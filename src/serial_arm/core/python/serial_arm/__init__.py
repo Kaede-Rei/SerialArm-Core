@@ -30,6 +30,7 @@ from ._serial_arm import JointCtrllerCfg
 from ._serial_arm import JointCtrllerErr
 from ._serial_arm import JointCtrllerState
 from ._serial_arm import JointImpedanceGains
+from ._serial_arm import JointMotionStatus
 from ._serial_arm import JointGainProfile
 from ._serial_arm import GainSource
 from ._serial_arm import HoldCompensationCfg
@@ -190,9 +191,9 @@ class RobotSession:
             np.ascontiguousarray(gravity_scale, dtype=np.float64)
         )
 
-    def move_to(self, pos: np.ndarray, speed_scale: float = 0.3) -> None:
-        """提交各受控关节的绝对位置目标和速度比例"""
-        self._session.move_to(
+    def move_to(self, pos: np.ndarray, speed_scale: float = 0.3) -> int:
+        """提交绝对位置目标并返回运动 ID；通过 snapshot.motion 查询到位或中断状态"""
+        return self._session.move_to(
             np.ascontiguousarray(pos, dtype=np.float64), float(speed_scale)
         )
 
@@ -256,7 +257,7 @@ class RobotSession:
 
 
 __all__ = [
-    "JointGainProfile", "GainSource", "HoldCompensationCfg",
+    "JointMotionStatus", "JointGainProfile", "GainSource", "HoldCompensationCfg",
     "ReferenceGovernorErr",
     "ReferenceBehavior",
     "AdmittanceCapabilityCfg",

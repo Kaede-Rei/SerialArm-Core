@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Line-delimited IPC; events and replies share stdout with serialized writes."""
 import json
+import copy
 import math
 import os
 from pathlib import Path
@@ -32,10 +33,8 @@ from tcp_calibration import TcpCalibration
 ROOT = Path(__file__).resolve().parents[3]
 output_lock = threading.Lock()
 OFFLINE_CALIBRATION_METHODS = frozenset((
-    'calibration_tool_export', 'calibration_tool_export_record',
-    'model_calibration_export_friction', 'model_calibration_export_urdf',
     'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute',
-    'model_calibration_idim', 'model_calibration_idim_audit', 'model_calibration_idim_export',
+    'model_calibration_idim', 'model_calibration_idim_audit',
 ))
 
 
@@ -306,6 +305,71 @@ def emit(data):
         print(json.dumps(data, ensure_ascii=False), flush=True)
 
 
+ASYNC_EXPORT_METHODS = frozenset(('calibration_tool_export', 'calibration_tool_export_record', 'model_calibration_export_friction', 'model_calibration_export_urdf', 'model_calibration_idim_export', 'geometry_fixed_export_tcp'))
+
+def export_offline_artifact(method, params, inspector, geometry_snapshot=None):
+    if method == 'geometry_fixed_export_tcp':
+        if geometry_snapshot is None:
+            raise ValueError('缺少 TCP 候选快照，请重新打开几何实验')
+        result = geometry_snapshot.export(config_values(params.get('config', {})), params.get('destination') or None)
+    elif method == 'calibration_tool_export':
+        from artifact_exports import export_artifact
+        # Export uses the immutable task snapshot and the user-selected output directory
+        # It must not consult the connected hardware or the current GUI Profile
+        record_dir = params.get('directory', '')
+        result = export_artifact(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''),
+            report=params.get('report'), destination=params.get('destination'),
+            candidate_source=params.get('candidate_source'), candidate_path=params.get('candidate_path'))
+    elif method == 'calibration_tool_export_record':
+        from workflow_registry import export_record
+        record_dir = params.get('directory', '')
+        result = export_record(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''))
+    elif method == 'model_calibration_export_friction':
+        directory = params.get('directory', '')
+        result = export_friction_candidate(directory, params.get('destination') or None)
+    elif method == 'model_calibration_export_urdf':
+        directory = params.get('directory', '')
+        from persistence import select_gravity_candidate
+        source, selected_candidate = select_gravity_candidate(directory, params.get('candidate_source'), params.get('candidate_path'))
+        if source == 'offline':
+            result = run_full_inertial_isolated(directory, params.get('destination') or None,
+                mode='legacy_gravity_export', locked_links={'candidate_path':str(selected_candidate)})
+        elif source == 'online':
+            result = export_candidate_urdf(directory, params.get('destination') or None)
+        else:
+            raise ValueError('未知候选来源')
+        # Independent verification is informative for manual-review
+        # candidates and must never abort the IPC loop
+        try:
+            # Verify the exact exported URDF for both candidate sources
+            # without re-fitting, applying commands or inheriting the online pass state
+            calibrator = inspector.model_calibrator()
+            if not calibrator:
+                raise ValueError('离线校验工具未安装，候选 URDF 已导出供人工审核')
+            info = inspector.inspect(config_values(params.get('config', {})))
+            verify_args = [calibrator, '--config', info['resources']['core'],
+                 '--dataset', str(Path(directory).resolve()),
+                 '--verify-urdf', result['candidate_urdf'], '--candidate-source', source]
+            if selected_candidate: verify_args.extend(['--candidate-path', str(selected_candidate)])
+            verification = subprocess.run(
+                verify_args,
+                text=True, capture_output=True, timeout=60)
+            if verification.returncode != 0:
+                raise ValueError((verification.stderr or verification.stdout or
+                                  '候选 URDF 离线验证失败').strip()[-1500:])
+            verified = json.loads(verification.stdout.strip().splitlines()[-1])
+            result['verification'] = update_candidate_urdf_verification(
+                Path(result['candidate_urdf']).parent, verified)
+        except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError, KeyError) as error:
+            result['verification_warning'] = str(error)
+    elif method == 'model_calibration_idim_export':
+        from calibration_jobs import export_dynamics_isolated
+        result = export_dynamics_isolated(params.get('report_path', ''), params.get('destination') or None,review_only=params.get('review_only')is True,report_only=params.get('report_only')is True)
+    else:
+        raise ValueError('未知成果导出操作')
+    return result
+
+
 def main():
     inspector = Inspector(ROOT)
     lock_dir = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'serial-arm/locks'
@@ -320,6 +384,7 @@ def main():
     active_workbench_fingerprint = None
     repeat_source = None
     control_job = None
+    export_job = None
     control_cancel = threading.Event()
 
     def start_control_job(request, action):
@@ -334,6 +399,28 @@ def main():
                 emit({'id': request.get('id'), 'error': report})
         control_job = threading.Thread(target=run, name='workspace-park')
         control_job.start()
+    def start_export_job(request):
+        nonlocal export_job
+        if export_job and export_job.is_alive():
+            raise ValueError('已有成果正在导出，请等待当前导出完成；机器人控制仍可使用')
+        geometry_snapshot = None
+        if request['method'] == 'geometry_fixed_export_tcp':
+            session, *_ = geometry._ensure(config_values(request.get('params', {}).get('config', {})))
+            geometry_snapshot = TcpCalibration(profile_library)
+            geometry_snapshot.session = copy.deepcopy(session)
+        def run():
+            try:
+                if geometry_snapshot is not None:
+                    result = export_offline_artifact(request['method'], request.get('params', {}), inspector, geometry_snapshot)
+                else:
+                    result = export_offline_artifact(request['method'], request.get('params', {}), inspector)
+                emit({'id': request.get('id'), 'result': result})
+            except Exception as error:
+                report = describe(error, request.get('method', ''), request.get('params'))
+                print(f'[SerialArm diagnostic {report["diagnostic_id"]}]\n{traceback.format_exc()}', file=sys.stderr, flush=True)
+                emit({'id': request.get('id'), 'error': report})
+        export_job = threading.Thread(target=run, name='calibration-artifact-export', daemon=True)
+        export_job.start()
     emit({'event': 'backend_ready'})
     if '--check' in sys.argv[1:]:
         model_runtime.close()
@@ -370,6 +457,9 @@ def main():
                         session.status().get('state') in ('running', 'stopping')
                         for session in (native, manager)):
                     raise ValueError('请先安全断开当前运行会话，再处理离线标定成果')
+                if method in ASYNC_EXPORT_METHODS:
+                    start_export_job(request)
+                    continue
                 if method == 'status':
                     native_status = native.status()
                     session = native_status if native_status.get('state') in ('running', 'stopping') else manager.status()
@@ -512,16 +602,26 @@ def main():
                             result = geometry.validate(config, params.get('rms_mm', 2.0), params.get('max_mm', 4.0))
                     elif operation == 'report':
                         result = geometry.export_diagnostic(config)
-                    elif operation == 'export_tcp':
-                        result = geometry.export(config)
+                    elif operation == 'preview_tcp':
+                        result = geometry.preview_export(config)
+                    elif operation == 'apply_tcp':
+                        if params.get('confirmed') is not True: raise ValueError('请先预览 TCP 配置差异，再明确确认采用')
+                        result = geometry.apply(config, native_running=any(session.status().get('state') in ('running','stopping') for session in (native,manager)),
+                            destination=params.get('destination') or None, expected_hashes=params.get('expected_hashes'))
                     else:
                         raise ValueError('未知几何标定操作')
-                elif method in ('trajectory_list','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
+                elif method in ('trajectory_list','trajectory_select','trajectory_save','trajectory_load','trajectory_rename','trajectory_remove','trajectory_export','trajectory_import'):
                     config = active_workbench_config or config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     scope = trajectories.scope(info, ROOT)
                     record_id = params.get('id', '')
                     if method == 'trajectory_list': result = {'items': trajectories.list(scope), 'directory': str(trajectories.folder(scope))}
+                    elif method == 'trajectory_select':
+                        folder, metadata = trajectories.ensure(scope, record_id)
+                        if params.get('required_kind') and metadata.get('kind', 'general') != params['required_kind']:
+                            raise ValueError('所选轨迹用途不匹配，请选择对应示教轨迹')
+                        summary = trajectories.validate_csv(folder / 'trajectory.csv', scope['joints'])
+                        result = {**metadata, **summary, 'directory': str(folder)}
                     elif method == 'trajectory_import': result = trajectories.import_file(scope, params.get('source',''))
                     elif method == 'trajectory_export': result = trajectories.export(scope,record_id,params.get('destination',''))
                     elif method == 'trajectory_rename': result = trajectories.rename(scope,record_id,params.get('name',''))
@@ -655,7 +755,7 @@ def main():
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
                     if kind == 'gain': result = prepare_gain_candidate(params.get('directory', ''))
-                    elif kind == 'gravity': result = prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True)
+                    elif kind == 'gravity': result = prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))
                     elif kind == 'dynamics': result = prepare_dynamics_candidate(params.get('report', ''))
                     else: raise ValueError('未知的候选类型')
                 elif method == 'calibration_candidate_apply':
@@ -669,7 +769,7 @@ def main():
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
                     if kind == 'gain': result_path=prepare_gain_candidate(params.get('directory', ''))['candidate_path'];native_args={'path':result_path}
-                    elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True)['candidate_path'];native_args={'path':result_path}
+                    elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))['candidate_path'];native_args={'path':result_path}
                     elif kind == 'dynamics': result_path=prepare_dynamics_candidate(params.get('report', ''))['report'];native_args={'report':result_path}
                     else: raise ValueError('未知的候选类型')
                     native.request('candidate_'+kind+'_apply', native_args, timeout=12)
@@ -683,29 +783,27 @@ def main():
                     result=native.request('candidate_overrides',{},timeout=8)
                 elif method == 'calibration_candidate_status':
                     result = native.request('candidate_overrides', {}, timeout=8)
-                elif method == 'calibration_tool_records':
-                    from workflow_registry import scan
+                elif method in ('calibration_tool_records','calibration_tool_records_page'):
+                    from workflow_registry import scan, scan_page
                     offline_config = params.get('config') or active_workbench_config or {}
                     selected = config_values(offline_config)
-                    result = scan(offline_profile_home(inspector, selected), params.get('kind', ''), params.get('limit', 60),
-                                  legacy_root=ROOT, profile_name=selected['profile'])
+                    scanner = scan_page if method.endswith('_page') else scan
+                    result = scanner(offline_profile_home(inspector, selected), params.get('kind', ''), params.get('limit', 60),
+                                  offset=params.get('offset',0), query=params.get('query',''), legacy_root=ROOT, profile_name=selected['profile'])
+                elif method == 'calibration_candidates':
+                    from workflow_registry import candidates
+                    result = candidates(params.get('directory',''),params.get('kind',''))
                 elif method == 'calibration_tool_load':
                     from workflow_registry import load
-                    result = load(params.get('directory', ''), params.get('kind', ''))
-                elif method == 'calibration_tool_export':
-                    from artifact_exports import export_artifact
-                    # Export uses the immutable task snapshot and the user-selected output directory
-                    # It must not consult the connected hardware or the current GUI Profile
-                    record_dir = params.get('directory', '')
-                    result = export_artifact(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''),
-                        report=params.get('report'), destination=params.get('destination'),
-                        candidate_source=params.get('candidate_source','online'))
-                elif method == 'calibration_tool_export_record':
-                    from workflow_registry import export_record
-                    record_dir = params.get('directory', '')
-                    result = export_record(offline_task_home(record_dir, ROOT), record_dir, params.get('kind', ''))
+                    result = load(params.get('directory', ''), params.get('kind', ''), candidate_path=params.get('candidate_path'), report=params.get('report'))
+
+
                 elif method == 'model_calibration_load':
-                    result = load_model_calibration_summary(params.get('directory', ''))
+                    if params.get('candidate_path') or params.get('report'):
+                        from workflow_registry import load
+                        result = load(params.get('directory',''), params.get('kind','gravity'), candidate_path=params.get('candidate_path'), report=params.get('report'))
+                    else:
+                        result = load_model_calibration_summary(params.get('directory', ''))
                 elif method == 'model_calibration_model_alignment':
                     directory = params.get('directory', '')
                     summary = load_model_calibration_summary(directory)
@@ -722,53 +820,20 @@ def main():
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = preview_gravity_correction(info['resources']['core'], directory)
+                    result = preview_gravity_correction(info['resources']['core'], directory, candidate_source=params.get('candidate_source'), candidate_path=params.get('candidate_path'))
                 elif method == 'model_calibration_save':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     directory = params.get('directory', '')
                     if not directory and native.status().get('state') == 'running':
                         directory = native.request('model_calibration_status', {}, timeout=8).get('directory', '')
-                    result = save_gravity_correction(info['resources']['core'], params.get('expected_sha', ''), directory, profile_home(info, ROOT))
+                    result = save_gravity_correction(info['resources']['core'], params.get('expected_sha', ''), directory, profile_home(info, ROOT), candidate_source=params.get('candidate_source'), candidate_path=params.get('candidate_path'))
                 elif method == 'model_calibration_restore_config':
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
                     result = restore_gravity_correction(info['resources']['core'], params.get('directory', ''))
-                elif method == 'model_calibration_export_friction':
-                    directory = params.get('directory', '')
-                    result = export_friction_candidate(directory, params.get('destination') or None)
-                elif method == 'model_calibration_export_urdf':
-                    directory = params.get('directory', '')
-                    source = params.get('candidate_source', 'online')
-                    if source == 'offline':
-                        result = run_full_inertial_isolated(directory, params.get('destination') or None,
-                            mode='legacy_gravity_export')
-                    elif source == 'online':
-                        result = export_candidate_urdf(directory, params.get('destination') or None)
-                    else:
-                        raise ValueError('未知候选来源')
-                    # Independent verification is informative for manual-review
-                    # candidates and must never abort the IPC loop
-                    try:
-                        # Verify the exact exported URDF for both candidate sources
-                        # without re-fitting, applying commands or inheriting the online pass state
-                        calibrator = inspector.model_calibrator()
-                        if not calibrator:
-                            raise ValueError('离线校验工具未安装，候选 URDF 已导出供人工审核')
-                        info = inspector.inspect(config_values(params.get('config', {})))
-                        verification = subprocess.run(
-                            [calibrator, '--config', info['resources']['core'],
-                             '--dataset', str(Path(directory).resolve()),
-                             '--verify-urdf', result['candidate_urdf'], '--candidate-source', source],
-                            text=True, capture_output=True, timeout=60)
-                        if verification.returncode != 0:
-                            raise ValueError((verification.stderr or verification.stdout or
-                                              '候选 URDF 离线验证失败').strip()[-1500:])
-                        verified = json.loads(verification.stdout.strip().splitlines()[-1])
-                        result['verification'] = update_candidate_urdf_verification(
-                            Path(result['candidate_urdf']).parent, verified)
-                    except (ValueError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError, KeyError) as error:
-                        result['verification_warning'] = str(error)
+
+
                 elif method == 'model_calibration_assess':
                     from advanced_identification import assess_record
                     directory = params.get('directory', '')
@@ -798,9 +863,7 @@ def main():
                         validation_directory=params.get('validation_directory') or None,
                         estimator=params.get('estimator', 'WLS'), cutoff_hz=params.get('cutoff_hz', 5.),
                         fixed_joint_positions=params.get('fixed_joint_positions') or {},load_description=params.get('load_description')or None)
-                elif method == 'model_calibration_idim_export':
-                    from calibration_jobs import export_dynamics_isolated
-                    result = export_dynamics_isolated(params.get('report_path', ''), params.get('destination') or None,review_only=params.get('review_only')is True,report_only=params.get('report_only')is True)
+
                 elif method == 'model_calibration_recompute':
                     directory = params.get('directory', '')
                     if not directory or not Path(directory).expanduser().is_dir():
@@ -812,7 +875,7 @@ def main():
                     mode = params.get('mode')
                     config = config_values(params.get('config', {}))
                     info = inspector.inspect(config)
-                    if not info['available'].get(mode): raise ValueError('selected run mode is unavailable; inspect installation and resources')
+                    if not info['available'].get(mode): raise ValueError((info.get('unavailable_reasons') or {}).get(mode) or 'selected run mode is unavailable; inspect installation and resources')
                     if params.get('fingerprint') != info['fingerprint']: raise ValueError('configuration changed; inspect and confirm again')
                     if params.get('confirmed') is not True: raise ValueError('real hardware confirmation is required')
                     if info['write_enabled'] is not False:
@@ -823,13 +886,15 @@ def main():
                         raise ValueError('device is missing or not readable/writable')
                     config['profile_file'] = info['profile_file']
                     argv, extra = command_for(mode, config)
-                    result = manager.start(argv, dict(os.environ, **extra, TERM='xterm-256color'),
+                    launch_env = inspector.launch_environment(mode)
+                    result = manager.start(argv, dict(launch_env, **extra, TERM='xterm-256color'),
                                            info['devices'], mode)
                 elif method == 'input': result = manager.input(params.get('data'))
                 elif method == 'resize': result = manager.resize(params.get('cols'), params.get('rows'))
                 elif method == 'stop':
                     result = native.stop(params.get('force') is True) if native.status().get('state') in ('running', 'stopping') else manager.stop(params.get('force') is True)
                 elif method == 'close':
+                    if export_job and export_job.is_alive(): raise ValueError('成果正在导出，请完成后再关闭工作台')
                     if any(session.status().get('state') in ('running', 'stopping') for session in (native, manager)):
                         raise ValueError('请先安全停止当前运行会话，再关闭后台')
                     # Reply before leaving the loop so a rejected shutdown keeps

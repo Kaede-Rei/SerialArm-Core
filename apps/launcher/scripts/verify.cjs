@@ -16,7 +16,7 @@ if (!section) throw new Error('Cannot inspect Electron IPC method whitelist');
 const allowed = new Set([...section[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]));
 const literalMethods = new Set([...renderer.matchAll(/\bapi\.request\(\s*'([a-z_]+)'/g)].map(m => m[1]));
 const dynamicGroups = new Map([
-  ['geometry_fixed_', ['state', 'begin', 'capture', 'solve', 'validate', 'discard', 'report', 'export_tcp']],
+  ['geometry_fixed_', ['state', 'begin', 'capture', 'solve', 'validate', 'discard', 'report', 'preview_tcp', 'export_tcp', 'apply_tcp']],
   ['geometry_repeat_', ['status', 'record_begin', 'record_stop', 'load', 'save', 'play', 'stop']],
 ]);
 for (const [prefix, operations] of dynamicGroups) {

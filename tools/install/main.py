@@ -36,7 +36,7 @@ def wizard(argv):
         ('源码开发 / Developer', '包含 ROS2 控制与规划所需全部组件，发布包不附带内部测试源码'),
         ('自定义组件 / Custom', '从 Core 起步逐项选择组件，自动补齐依赖，例如 ROS2 需要 Python Binding'),
     ]
-    default = '4' if Path('/opt/ros/humble/setup.bash').exists() else '2'
+    default = '2'
     print('从核心库到独立调试、ROS2 集成、开发测试，集成需求依次增加')
     print('Python 接口是独立选择，选项并非按编号逐级包含')
     for i, (label, detail) in enumerate(labels, 1):

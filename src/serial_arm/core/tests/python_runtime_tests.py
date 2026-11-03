@@ -15,8 +15,26 @@ BUILD, PLUGIN, ROOT = sys.argv[1:4]
 sys.argv = sys.argv[:1]
 sys.path.insert(0, BUILD)
 import _serial_arm as arm
+public_path=Path(ROOT)/'src/serial_arm/core/python/serial_arm/__init__.py'
+public_spec=importlib.util.spec_from_file_location('serialarm_public_review',public_path,
+    submodule_search_locations=[str(public_path.parent)])
+public=importlib.util.module_from_spec(public_spec)
+sys.modules['serialarm_public_review._serial_arm']=arm
+public_spec.loader.exec_module(public)
 
 class PythonRuntime(unittest.TestCase):
+    def test_motion_units_follow_the_loaded_urdf(self):
+        with tempfile.TemporaryDirectory(prefix='serialarm-linear-unit-') as temporary:
+            model=Path(temporary)/'linear.urdf'
+            model.write_text('<robot name="linear"><link name="base"/><link name="tool">'
+                '<inertial><mass value="1"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial>'
+                '</link><joint name="slide" type="prismatic"><parent link="base"/><child link="tool"/>'
+                '<axis xyz="1 0 0"/><limit lower="0" upper="1" effort="100" velocity="1"/></joint></robot>')
+            cfg=arm.DynamicsCfg();cfg.urdf_path=str(model);cfg.joint_names=['slide']
+            cfg.base_frame='base';cfg.tool_frame='tool';cfg.gravity_scale=[1.0]
+            dynamics=arm.Dynamics();dynamics.configure(cfg)
+            self.assertEqual(list(dynamics.info.joint_types),['prismatic'])
+
     def test_python_terminal_selects_four_gain_uses(self):
         spec=importlib.util.spec_from_file_location('serialarm_terminal_review',Path(ROOT)/'src/serial_arm/core/app/serial_arm_terminal.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
@@ -94,6 +112,31 @@ class PythonRuntime(unittest.TestCase):
                     self.assertEqual(snapshot.robot_state,arm.RobotState.ACTIVE)
                     self.assertTrue(all(abs(value)<1e-9 for value in snapshot.cycle.joint_state.pos))
                     self.assertFalse(session.config.runtime.write_enabled)
+                    goal=list(snapshot.cycle.joint_state.pos);goal[0]+=.01
+                    facade=public.RobotSession.__new__(public.RobotSession);facade._session=session
+                    motion_id=facade.move_to(goal,.1)
+                    self.assertGreater(motion_id,0)
+                    initial=session.snapshot.motion
+                    self.assertEqual(initial.id,motion_id)
+                    self.assertEqual(initial.state,'running')
+                    self.assertEqual(list(initial.units),['rad']*len(names))
+                    deadline=time.monotonic()+3
+                    while time.monotonic()<deadline:
+                        motion=session.snapshot.motion
+                        if motion.state=='completed':break
+                        time.sleep(.01)
+                    self.assertEqual(motion.state,'completed')
+                    self.assertTrue(motion.reference_complete)
+                    goal[0]+=.1
+                    next_id=session.move_to(goal,.1)
+                    self.assertGreater(next_id,motion_id)
+                    session.hold_current()
+                    self.assertEqual(session.snapshot.motion.state,'interrupted')
+                    session.move_to([0.0]*len(names),.1)
+                    deadline=time.monotonic()+3
+                    while time.monotonic()<deadline and session.snapshot.motion.state!='completed':time.sleep(.01)
+                    self.assertEqual(session.snapshot.motion.state,'completed')
+                    session.hold_current()
                     self.assertEqual(list(session.config.safety.limits.max_effort),limits)
                     self.assertEqual([info.joint_name for info in session.actuator_info],names)
                     self.assertTrue(all(info.max_vel>0 and info.max_effort>0 for info in session.actuator_info))

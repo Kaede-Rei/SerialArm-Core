@@ -16,7 +16,7 @@ def digest(stream):
 
 
 def validate_payload(payload):
-    from stage import validate_python_payload
+    from stage import validate_python_payload, clean_runtime_environment
     receipt=json.loads((payload/'build-receipt.json').read_text())
     for name, expected in receipt['files'].items():
         target=(payload/name).resolve()
@@ -26,9 +26,7 @@ def validate_payload(payload):
             if digest(stream)!=expected:raise ValueError('Payload hash mismatch: '+name)
     for name in ('pybind11.txt','pinocchio.txt','coal.txt','eigenpy.txt'):
         if not (payload/'licenses'/name).is_file():raise ValueError('Missing dependency notice: '+name)
-    env=dict(os.environ)
-    for name in ('LD_LIBRARY_PATH','PYTHONPATH','SERIAL_ARM_RESOURCE_PATH','AMENT_PREFIX_PATH','CMAKE_PREFIX_PATH'):
-        env.pop(name,None)
+    env=clean_runtime_environment()
     native=payload/'native'
     config=native/'share/dm_arm_description/config/core/gray.yaml'
     result=subprocess.run([str(native/'bin/serial_arm_model_probe'),'--config',str(config)],
@@ -67,9 +65,10 @@ def main():
     parser.add_argument('--root',type=Path,required=True)
     parser.add_argument('--deb',type=Path,required=True)
     parser.add_argument('--appimage',type=Path,required=True)
+    parser.add_argument('--with-ros2', action='store_true')
     args=parser.parse_args()
     from stage import read_manifest
-    read_manifest(args.root.resolve())
+    read_manifest(args.root.resolve(), args.with_ros2)
     installation=json.loads((args.root/'.install/manifest.json').read_text())
     with tempfile.TemporaryDirectory(prefix='serialarm-release-check-') as temporary:
         folder=Path(temporary)

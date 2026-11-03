@@ -62,17 +62,27 @@ class Inspector:
         self.root = Path(root).resolve()
 
     def manifest(self):
-        # Release packages ship a relocatable ROS2 overlay rather than the
-        # absolute install paths recorded by the source-tree installer
+        # Packaged Core runs without sourcing ROS; installed adapter metadata is
+        # independent from whether the host can launch the optional ROS stack
         bundled = os.environ.get('SERIAL_ARM_BUNDLE_PREFIX')
         if bundled:
             prefix = Path(bundled).resolve()
             editable = Path(os.environ.get('SERIAL_ARM_BUNDLE_PROFILE_PREFIX', bundled)).resolve()
-            return {'status': 'verified', 'gui': True, 'ros2': True, 'moveit': True,
-                    'ros_distro': os.environ.get('SERIAL_ARM_BUNDLE_ROS_DISTRO', 'humble'),
-                    'installed_components': ['core', 'terminal', 'python', 'ros2', 'moveit'],
-                    'install_prefix': str(editable),
-                    'backend_setup': str(prefix / 'local_setup.bash')}
+            runtime_file = Path(os.environ.get('SERIAL_ARM_BUNDLE_ROOT', prefix.parent)) / 'runtime.json'
+            runtime = json.loads(runtime_file.read_text()) if runtime_file.is_file() else {}
+            components = runtime.get('installed_components')
+            if components is None:
+                components = json.loads(os.environ.get('SERIAL_ARM_BUNDLE_COMPONENTS', '[]'))
+            if not components:
+                components = ['core', 'terminal', 'python']
+                if (prefix / 'share/serial_arm_ros2_control').is_dir(): components.append('ros2')
+                if (prefix / 'share/dm_arm_no_gripper').is_dir(): components.append('moveit')
+            return {'status': 'verified', 'gui': True,
+                    'ros2': 'ros2' in components, 'moveit': 'moveit' in components,
+                    'ros_distro': runtime.get('ros_distro') or os.environ.get('SERIAL_ARM_BUNDLE_ROS_DISTRO', 'humble'),
+                    'installed_components': components,
+                    'install_prefix': str(editable), 'native_prefix': str(prefix),
+                    'backend_setup': str(prefix / 'setup.bash')}
         path = self.root / '.install/manifest.json'
         if not path.exists(): return {}
         value = json.loads(path.read_text())
@@ -85,9 +95,53 @@ class Inspector:
         return {'installed': m.get('status') == 'verified',
                 'components': m.get('installed_components', []), 'gui': bool(m.get('gui')),
                 'prefix': m.get('install_prefix', ''), 'ros_distro': m.get('ros_distro') if m.get('ros2') else '',
-                'terminal': self.machine_terminal(), 'ros2': shutil.which('ros2') or '',
+                'terminal': self.machine_terminal(), 'ros2': self.ros_executable(),
                 'last_attempt': json.loads(attempt.read_text()) if attempt.exists() else {},
                 'devices': sorted(set(glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*') + glob.glob('/dev/serial/by-id/*')))}
+
+    def ros_executable(self):
+        distro = self.manifest().get('ros_distro') or 'humble'
+        if not distro.isidentifier(): return ''
+        executable = Path('/opt/ros') / distro / 'bin/ros2'
+        return str(executable) if executable.is_file() else (shutil.which('ros2') or '')
+
+    def adapter_problem(self, mode):
+        if mode == 'terminal': return ''
+        m = self.manifest()
+        components = m.get('installed_components', [])
+        if 'ros2' not in components:
+            return '未安装 ROS2 适配层，请运行 ./install.sh --preset ros2 --yes；Core 与桌面控制无需 ROS2'
+        if mode == 'moveit' and 'moveit' not in components:
+            return '未安装 MoveIt 适配配置，请运行 ./install.sh --preset ros2 --with-moveit --yes'
+        distro = m.get('ros_distro') or 'humble'
+        if not isinstance(distro, str) or not distro.isidentifier():
+            return 'ROS2 发行版配置无效，请重新安装所选适配层'
+        host = Path('/opt/ros') / distro / 'setup.bash'
+        if not host.is_file():
+            return f'启动此适配层需要 ROS2 {distro}，请安装 {host} 对应的 ROS2 环境；Core 与桌面控制仍可使用'
+        prefix = Path(m.get('native_prefix') or m.get('install_prefix', '/missing'))
+        if not (prefix / 'local_setup.bash').is_file():
+            return 'ROS2 适配层环境文件缺失，请重新安装 ROS2 适配组件'
+        if mode == 'moveit' and not (host.parent / 'share/moveit_ros_move_group').is_dir():
+            return f'启动规划需要 MoveIt，请安装 ros-{distro}-moveit 后重试'
+        if not (host.parent / 'share/controller_manager').is_dir():
+            return f'启动硬件适配需要 ros2_control，请安装 ros-{distro}-ros2-control 与 ros-{distro}-ros2-controllers'
+        return ''
+
+    def launch_environment(self, mode):
+        if mode == 'terminal': return dict(os.environ)
+        if mode not in ROS_LAUNCH: raise ValueError('unknown run mode')
+        problem = self.adapter_problem(mode)
+        if problem: raise ValueError(problem)
+        m = self.manifest()
+        host = Path('/opt/ros') / (m.get('ros_distro') or 'humble') / 'setup.bash'
+        prefix = Path(m.get('native_prefix') or m['install_prefix'])
+        result = subprocess.run(['/bin/bash', '-c', 'set -e; source "$1"; source "$2"; env -0',
+                                 'serial-arm-adapter', str(host), str(prefix / 'local_setup.bash')],
+                                env=os.environ, capture_output=True, timeout=20)
+        if result.returncode:
+            raise ValueError('ROS2 适配环境加载失败，请检查所选安装组件：' + result.stderr.decode(errors='replace')[-1200:])
+        return dict(record.split('=', 1) for record in result.stdout.decode().split('\0') if '=' in record)
 
     def profiles(self, config):
         c = config_values(config)
@@ -359,7 +413,8 @@ class Inspector:
         for device in devices:
             checks.append({'name': 'device', 'ok': os.path.exists(device) and os.access(device, os.R_OK | os.W_OK), 'detail': device})
         m = self.manifest()
-        installed = m.get('status') == 'verified' and Path(m.get('backend_setup', '/missing')).is_file()
+        native_prefix = Path(m.get('native_prefix') or m.get('install_prefix', '/missing'))
+        installed = m.get('status') == 'verified' and any(native_prefix.glob('lib*/libserial_arm_core.so*'))
         okay = {x['name']: x['ok'] for x in checks if x['name'] != 'device'}
         components = m.get('installed_components', [])
         def ament_ready(package):
@@ -369,15 +424,16 @@ class Inspector:
             except Exception:
                 prefixes = [m.get('install_prefix', ''), *os.environ.get('AMENT_PREFIX_PATH', '').split(os.pathsep)]
                 return any((Path(p) / 'share/ament_index/resource_index/packages' / package).is_file() for p in prefixes if p)
-        generic_ros = ament_ready('serial_arm_ros2_control') and installed and 'ros2' in components and 'python' in components and bool(shutil.which('ros2'))
-        available = {'terminal': installed and 'terminal' in components and bool(shutil.which('serial_arm_terminal')) and okay.get('core', False) and okay.get('hardware', False),
+        adapter_problems = {mode: self.adapter_problem(mode) for mode in ROS_LAUNCH}
+        generic_ros = ament_ready('serial_arm_ros2_control') and installed and 'ros2' in components and 'python' in components and not adapter_problems['hardware']
+        available = {'terminal': installed and 'terminal' in components and bool(self.machine_terminal()) and okay.get('core', False) and okay.get('hardware', False),
                      'model': okay.get('core', False) and bool(self.model_probe()),
                      'workbench': okay.get('core', False) and okay.get('hardware', False) and bool(self.machine_terminal()),
                      'hardware': generic_ros and all(okay.get(k, False) for k in ('core', 'hardware', 'ros2_control', 'controllers')) and all(ament_ready((profile.get(k) or {}).get('package', '')) for k in ('description', 'controllers'))}
         moveit_package = (profile.get('moveit') or {}).get('package', '')
         try: moveit_ready = bool(moveit_package and (self.share(moveit_package, roots) / 'package.xml').is_file())
         except ValueError: moveit_ready = False
-        available['moveit'] = available['hardware'] and moveit_ready and ament_ready(moveit_package)
+        available['moveit'] = available['hardware'] and moveit_ready and ament_ready(moveit_package) and not adapter_problems['moveit']
         model_path = (Path(resources['core']).parent / core['model']['urdf_path']).resolve() if core.get('model') else None
         model_digest = hashlib.sha256(model_path.read_bytes()).hexdigest() if model_path and model_path.is_file() else ''
         joint_units = {}
@@ -393,8 +449,13 @@ class Inspector:
         correction_path = (Path(resources['core']).parent / correction).resolve() if correction else None
         correction_digest = hashlib.sha256(correction_path.read_bytes()).hexdigest() if correction_path and correction_path.is_file() else ''
         fingerprint = hashlib.sha256((model_digest + correction_digest + json.dumps(profile, sort_keys=True) + json.dumps(c, sort_keys=True) + ''.join(Path(v).read_text(errors='replace') for k, v in resources.items() if k in ('core', 'hardware') and Path(v).is_file())).encode()).hexdigest()
-        return {'fingerprint': fingerprint, 'profile': c['profile'], 'profile_file': listing['profile_file'], 'resources': resources,
-                'checks': checks, 'available': available, 'write_enabled': write_enabled,
+        return {'fingerprint': fingerprint, 'model_identity': {
+                    'urdf_path': str(model_path) if model_path else '', 'urdf_sha256': model_digest,
+                    'joint_names': (core.get('model') or {}).get('joint_names', []),
+                    'base_frame': (core.get('model') or {}).get('base_frame', ''),
+                    'tool_frame': (core.get('model') or {}).get('tool_frame', '')},
+                'profile': c['profile'], 'profile_file': listing['profile_file'], 'resources': resources,
+                'checks': checks, 'available': available, 'unavailable_reasons': adapter_problems, 'write_enabled': write_enabled,
                 'devices': devices, 'default_port': default_port, 'default_baudrate': selected.get('baudrate', ''),
                 'joint_units': joint_units, 'bus': bus_name, 'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
                 'connection_overrides': {key: c[key] for key in ('serial_port', 'baudrate', 'bus') if c[key]},

@@ -88,6 +88,7 @@ struct DynamicsInfo {
     std::string base_frame;                     ///< 配置 base_frame
     std::string tool_frame;                     ///< 配置 tool_frame
     std::vector<std::string> joint_names;       ///< 受控关节名称
+    std::vector<std::string> joint_types;       ///< URDF revolute、continuous 或 prismatic，与 joint_names 同序
     std::vector<std::string> frame_names;       ///< 约简模型全部 Frame 名称
     std::vector<int> q_indices;                 ///< 受控关节位置索引
     std::vector<int> v_indices;                 ///< 受控关节速度索引

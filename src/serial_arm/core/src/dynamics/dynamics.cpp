@@ -463,6 +463,12 @@ tl::expected<void, DynamicsErr> Dynamics::configure(const DynamicsCfg& cfg) {
     impl_->info.base_frame = cfg.base_frame;
     impl_->info.tool_frame = cfg.tool_frame;
     impl_->info.joint_names = cfg.joint_names;
+    impl_->info.joint_types.clear();
+    for(const auto& name:cfg.joint_names) {
+        const auto joint=parsed_urdf->getJoint(name);
+        impl_->info.joint_types.push_back(joint&&joint->type==::urdf::Joint::PRISMATIC?"prismatic":
+            joint&&joint->type==::urdf::Joint::CONTINUOUS?"continuous":"revolute");
+    }
     impl_->info.q_indices = impl_->q_indices;
     impl_->info.v_indices = impl_->v_indices;
     impl_->info.frame_names.clear();

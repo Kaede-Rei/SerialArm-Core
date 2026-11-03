@@ -15,21 +15,21 @@
 
 内置零位、比例和增益对应具体机械臂；新的实例需要自己的标定与限位
 
-下游项目可独立维护 `robot_profiles.yaml`、模型、Hardware Backend、Controllers 与 MoveIt 资源
+下游项目维护自己的 `robot_profiles.yaml`、模型与 Hardware Backend；Controllers 和 MoveIt 资源只在使用相应适配层时提供
 
 ```bash
-./install.sh --preset ros2 --robot none --without-moveit --yes
+./install.sh --preset standalone --robot none --with-python --jobs 1 --yes
 export SERIAL_ARM_RESOURCE_PATH=/absolute/path/downstream/workspace
 ./.install/run serial_arm_terminal \
   --robot-profile your_robot \
   --profile-file /absolute/path/downstream/robot_profiles.yaml
 ```
 
-安装预设提供通用 Core 与 ROS2 Adapter，下游驱动和资源包需构建并加载
+此预设安装原生 Core、Terminal、Python 与桌面工作台，下游驱动和资源包需构建并加载；需要 ROS2 时再显式选择 `--preset ros2 --robot none --without-moveit`
 
 ## 创建与填写 Profile
 
-在 GUI 导入 URDF、Xacro 或 Description 包，选择 Base 与 Tool 后检查主串联链和受控关节顺序
+首页使用“打开机械臂 Profile”选择已有资源目录，或用“选择机械臂 Profile 文件 · YAML”指定配置文件；新模型从“新建机械臂 Profile”导入 URDF、Xacro 或 Description 包，再选择 Base、Tool 并检查主串联链和受控关节顺序
 
 `tool_frame` 使用实际末端坐标系，旁支夹爪不会自动加入主臂控制链
 
@@ -46,10 +46,10 @@ export SERIAL_ARM_RESOURCE_PATH=/absolute/path/downstream/workspace
 | 安全 | `safety_policy` | 反馈与命令超时、关节限位、力矩预算、恢复条件 |
 | 停放 | `shutdown` | 停放目标、路径速度、容差与超时 |
 | 硬件 | Hardware YAML | 驱动、总线、设备、执行器 ID 与型号 |
-| ROS2 | Profile 的 `controllers` | 控制器、接口与关节匹配 |
-| MoveIt | Profile 的 `moveit` | SRDF、规划关节与控制器匹配 |
+| ROS2 可选适配 | Profile 的 `controllers` | 控制器、接口与关节匹配 |
+| MoveIt 可选适配 | Profile 的 `moveit` | SRDF、规划关节与控制器匹配 |
 
-参数页先显示缺项与具体位置；保存后返回准备页面重新检查
+参数页先显示缺项与具体位置；保存后返回准备页面重新检查；配置结构有效、可只读连接与可开始标定分别显示，拖拽缺少正阻尼或重力补偿时可直接定位对应字段
 
 ## 区分控制方式、增益用途与任务
 
@@ -122,13 +122,18 @@ Terminal 在关闭写入时使用离线 mock；开启后使用实际 Hardware Ba
 
 “当前位置保持”捕获当前位置；普通模式交接保留原名义目标，受扰退让不会自动成为新保持点
 
+速度比例须在 `(0, 1]`，空值或越界输入会阻止移动；提交成功后使用运动编号与到位状态判断完成，不能用按钮响应成功代替完成反馈
+
 | 操作 | 结果 |
 | --- | --- |
 | 编辑配置 | 修改待保存值 |
 | 覆盖连接参数 | 只影响本次连接 |
 | 应用会话参数或候选 | 只影响当前运行环境 |
 | 预览差异并保存 | 写入选定配置文件，保留备份 |
-| 导出 URDF | 生成候选模型文件，按导出范围审核后采用 |
+| 导出 URDF | 按选定的候选来源与重算轮次生成模型，核对差异后独立验证 |
+| 采用 TCP 候选 | 预览后导出独立 URDF、Core 和 Profile，确认后添加为新机械臂配置 |
+
+重算产生的多轮候选可分别选择和比较；保存重力覆盖与导出 URDF 使用同一明确候选，重力覆盖仅影响重力项
 
 正常断开等待停放与失能；立即失能前可靠支撑机械臂，FAULT 或通信中断时现场确认是否仍有保持力矩
 

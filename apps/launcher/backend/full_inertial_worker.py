@@ -27,7 +27,7 @@ def main():
         result = recompute(sys.argv[1], settings.get('mode', 'global'), settings.get('locked_links', []), objective=settings.get('objective', 'bias_separated'))
     elif sys.argv[3] == 'legacy_gravity_export':
         from gravity_legacy import export_recomputed
-        result = export_recomputed(sys.argv[1], sys.argv[2] or None)
+        result = export_recomputed(sys.argv[1], sys.argv[2] or None, candidate_path=(locked or {}).get('candidate_path') if isinstance(locked, dict) else None)
     else:
         from advanced_identification import run_advanced
         result = run_advanced(sys.argv[1], sys.argv[3], sys.argv[2] or None, locked)

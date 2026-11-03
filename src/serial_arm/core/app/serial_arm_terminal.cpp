@@ -20,6 +20,7 @@
 #include "serial_arm/interaction/estimators/torque_residual_observer.hpp"
 #include "serial_arm/robot.hpp"
 #include "serial_arm/runtime/control_runtime.hpp"
+#include "serial_arm/runtime/joint_motion.hpp"
 
 #include <yaml-cpp/yaml.h>
 #include <Eigen/Cholesky>
@@ -683,6 +684,8 @@ public:
 
     tl::expected<ActuatorState, MotorBusErr> read() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
+        const auto stamp=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+        state_.feedback_received_ns.assign(size(),stamp);state_.feedback_timing_valid.assign(size(),1);
         return state_;
     }
 
@@ -1094,12 +1097,12 @@ public:
                     else if(method == "move_to") {
                         const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
                         machine_move_to(machine_node_vector(params["positions"], "positions"), speed_scale, false);
-                        emit_reply(id, "true");
+                        emit_reply(id, machine_motion_json());
                     }
                     else if(method == "move_relative") {
                         const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
                         machine_move_to(machine_node_vector(params["delta"], "delta"), speed_scale, true);
-                        emit_reply(id, "true");
+                        emit_reply(id, machine_motion_json());
                     }
                     else if(method == "get_admittance") {
                         emit_reply(id, machine_admittance_json());
@@ -1751,7 +1754,9 @@ private:
         if(!std::isfinite(speed_scale) || speed_scale <= 0.0 || speed_scale > 1.0) throw std::runtime_error("speed_scale must be in (0, 1]");
         for(std::size_t i = 0; i < target.size(); ++i) {
             if(!std::isfinite(target[i])) throw std::runtime_error("target contains non-finite value");
-            if(target[i] < cfg_.safety.limits.min_pos[i] || target[i] > cfg_.safety.limits.max_pos[i]) {
+            const bool limited=cfg_.safety.limits.has_position_limit.empty()||cfg_.safety.limits.has_position_limit[i]!=0;
+            if(limited&&(target[i] < cfg_.safety.limits.min_pos[i]+cfg_.safety.limits.pos_margin[i] ||
+                target[i] > cfg_.safety.limits.max_pos[i]-cfg_.safety.limits.pos_margin[i])) {
                 throw std::runtime_error("target exceeds configured joint position limit: " + cfg_.joint_names[i]);
             }
         }
@@ -1791,6 +1796,7 @@ private:
             begin_stream(target,speed_scale);
             const auto queued=runtime_.submit_reference(robot_,JointPosVelCmd{first_pos,first_vel},Robot::Clock::now(),MotionSource::STREAM);
             if(!queued)throw machine_robot_error("motion submission",queued.error());
+            motion_.begin(target,dynamics_.get_info().joint_types);
         } catch(...) {
             clear_command_sources();(void)runtime_.set_impedance_mode(robot_,previous_mode);
             (void)robot_.set_execution_gain_profile(purpose);throw;
@@ -2083,6 +2089,18 @@ private:
         out << "{\"phase\":\"" << (teach_replay_phase_ == 1 ? "recording" : teach_replay_phase_ == 2 ? "ready" : teach_replay_phase_ == 3 ? "playing" : teach_replay_phase_ == 4 ? "failed" : "idle") << '"';
         out << ",\"error\":\"" << machine_json_escape(teach_replay_error_) << '"';
         out << ",\"completed\":" << teach_replay_completed_.load();
+        if(teach_replay_plan_) {
+            const auto& plan=*teach_replay_plan_;
+            out << ",\"plan\":{\"direction\":\"" << plan.direction << "\",\"cycles\":" << plan.cycles
+                << ",\"total_passes\":" << plan.total_passes;
+            if(teach_replay_trajectory_&&!teach_replay_trajectory_->positions.empty()) {
+                const auto& positions=teach_replay_trajectory_->positions;
+                out << ",\"start\":";machine_json_joint_vector(out,plan.first_reverse?positions.back():positions.front());
+                const bool final_reverse=plan.first_reverse?plan.total_passes%2!=0:plan.total_passes%2==0;
+                out << ",\"end\":";machine_json_joint_vector(out,final_reverse?positions.front():positions.back());
+            }
+            out << '}';
+        }
         out << ",\"selected_reference_behavior\":\"" << reference_behavior_name(teach_replay_behavior_) << "\",\"reference_behavior\":\"" << reference_behavior_name(teach_replay_behavior_) << "\",\"gain_profile\":\"" << to_string(teach_replay_gain_profile_) << '\"';
         out << ",\"has_trajectory\":" << (teach_replay_trajectory_ && !teach_replay_trajectory_->positions.empty()?"true":"false")
             << ",\"fault_interrupted\":" << (teach_replay_fault_interrupted_?"true":"false");
@@ -2159,7 +2177,7 @@ private:
             if(!result){teach_restore_controls_locked();throw machine_robot_error("teach drag",result.error());}
             clear_command_sources();teach_replay_fault_interrupted_=false;
             teach_replay_behavior_=ReferenceBehavior::NATIVE_IMPEDANCE;teach_replay_gain_profile_=JointGainProfile::DRAG;
-            teach_replay_trajectory_.reset(); teach_replay_record_start_=last_output_->joint_state.pos; teach_replay_error_.clear();
+            teach_replay_plan_.reset();teach_replay_trajectory_.reset(); teach_replay_record_start_=last_output_->joint_state.pos; teach_replay_error_.clear();
             teach_replay_record_stop_.store(false);
             teach_replay_phase_.store(1);
             teach_replay_completed_.store(0);
@@ -2265,7 +2283,7 @@ private:
         if(trajectory.positions.size()<20 || !friction_trajectory_inside_safe_replay_range(trajectory))
             throw std::runtime_error("trajectory is too short or violates safety limits");
         std::lock_guard<std::mutex> lock(mutex_);
-        teach_replay_trajectory_=std::move(trajectory);teach_replay_phase_.store(2);teach_replay_error_.clear();teach_replay_fault_interrupted_=false;
+        teach_replay_plan_.reset();teach_replay_completed_.store(0);teach_replay_trajectory_=std::move(trajectory);teach_replay_phase_.store(2);teach_replay_error_.clear();teach_replay_fault_interrupted_=false;
     }
 
     void machine_teach_replay_stop() {
@@ -2342,12 +2360,16 @@ private:
             const auto& expected=(reverse || direction=="contact_cycle")?planned.positions.back():planned.positions.front();
             const auto& state=last_output_->joint_state;
             if(state.pos.size()!=expected.size())throw std::runtime_error("joint feedback size mismatch");
-            double max_error=0,max_speed=0;
-            for(std::size_t i=0;i<expected.size();++i){max_error=std::max(max_error,std::abs(state.pos[i]-expected[i]));max_speed=std::max(max_speed,std::abs(state.vel[i]));}
-            const double position_limit=direction=="contact_cycle" ? 0.03 : 0.08;
-            const double speed_limit=direction=="contact_cycle" ? 0.03 : 0.05;
-            if(max_error>position_limit || max_speed>speed_limit)
-                throw std::runtime_error("robot is not aligned with the selected trajectory endpoint; return to the corresponding safe start pose before playback");
+            const auto& types=dynamics_.get_info().joint_types;
+            for(std::size_t i=0;i<expected.size();++i) {
+                const bool linear=i<types.size()&&types[i]=="prismatic";
+                const double position_limit=linear?(direction=="contact_cycle"?0.0005:0.001):(direction=="contact_cycle"?0.03:0.08);
+                const double speed_limit=linear?0.001:(direction=="contact_cycle"?0.03:0.05);
+                if(!std::isfinite(state.pos[i])||!std::isfinite(state.vel[i])||
+                    std::abs(state.pos[i]-expected[i])>position_limit||std::abs(state.vel[i])>speed_limit)
+                    throw std::runtime_error("robot is not aligned with the selected trajectory endpoint at "+cfg_.joint_names[i]+
+                        "; return to the corresponding safe start pose before playback");
+            }
             teach_prepare_controls_locked(behavior,false);
             const auto mode=runtime_.set_impedance_mode(robot_, replay_mode);
             if(!mode){teach_restore_controls_locked();throw machine_robot_error("teach replay tracking",mode.error());}
@@ -2358,12 +2380,14 @@ private:
             model_calibration_error_.clear();
             model_calibration_active_tracking_gains_=profile==JointGainProfile::SERVO_TRACKING ? robot_.get_config().ctrller.servo_tracking_gains :
                 profile==JointGainProfile::COMPLIANT ? cfg_.ctrller.compliant_tracking_gains : cfg_.ctrller.rigid_tracking_gains;
+            teach_replay_plan_=teach_replay_plan(direction,cycles);
             teach_replay_phase_.store(3);teach_replay_error_.clear();teach_replay_completed_.store(0);teach_replay_fault_interrupted_=false;
         }
         teach_replay_worker_=std::thread([this,path=std::move(planned),direction,rate,cycles,profile,endpoint_dwell_s]() {
             bool failed=false;
-            const int passes=direction=="return"?1:(direction=="cycle"||direction=="contact_cycle")?2*cycles:2*cycles-1;
-            const bool first_reverse=direction=="reverse"||direction=="return"||direction=="contact_cycle";
+            const auto plan=teach_replay_plan(direction,cycles);
+            const int passes=plan.total_passes;
+            const bool first_reverse=plan.first_reverse;
             for(int pass=0;pass<passes && !teach_replay_stop_.load();++pass){
                 const bool reverse=first_reverse ? pass%2==0 : pass%2!=0;
                 auto ordered=path.positions;
@@ -4940,6 +4964,23 @@ private:
         out << '}'; return out.str();
     }
 
+    std::string motion_json_locked() const {
+        const auto& motion=motion_.status();
+        std::ostringstream out;out << std::setprecision(17);
+        out << "{\"id\":" << motion.id << ",\"state\":\"" << motion.state << "\",\"target\":";
+        machine_json_joint_vector(out,motion.target);
+        out << ",\"position_tolerance\":";machine_json_joint_vector(out,motion.position_tolerance);
+        out << ",\"velocity_tolerance\":";machine_json_joint_vector(out,motion.velocity_tolerance);
+        out << ",\"units\":[";
+        for(std::size_t i=0;i<motion.units.size();++i){if(i)out<<',';machine_json_string(out,motion.units[i]);}
+        out << "],\"tolerance_source\":\"joint_type_defaults\",\"reference_complete\":" << (motion.reference_complete?"true":"false")
+            << ",\"settled_s\":" << motion.settled_s << ",\"reason\":\"" << machine_json_escape(motion.reason) << "\"}";
+        return out.str();
+    }
+    std::string machine_motion_json() const {
+        std::lock_guard<std::mutex> lock(mutex_);return motion_json_locked();
+    }
+
     std::string machine_snapshot_json() const {
         std::lock_guard<std::mutex> lock(mutex_);
         std::ostringstream out;
@@ -4975,10 +5016,23 @@ private:
         out << (settled ? "true" : "false") << ",\"target\":";
         machine_json_joint_vector(out, gravity_verify_target_scale_);
         out << '}';
+        out << ",\"motion\":" << motion_json_locked();
         out << ",\"calibration\":" << machine_calibration_status_json();
         out << ",\"model_calibration\":" << machine_model_calibration_status_json();
         out << ",\"teach_replay\":{\"phase\":\"" << (teach_replay_phase_ == 1 ? "recording" : teach_replay_phase_ == 2 ? "ready" : teach_replay_phase_ == 3 ? "playing" : teach_replay_phase_ == 4 ? "failed" : "idle") << '"';
         out << ",\"completed\":" << teach_replay_completed_.load();
+        if(teach_replay_plan_) {
+            const auto& plan=*teach_replay_plan_;
+            out << ",\"plan\":{\"direction\":\"" << plan.direction << "\",\"cycles\":" << plan.cycles
+                << ",\"total_passes\":" << plan.total_passes;
+            if(teach_replay_trajectory_&&!teach_replay_trajectory_->positions.empty()) {
+                const auto& positions=teach_replay_trajectory_->positions;
+                out << ",\"start\":";machine_json_joint_vector(out,plan.first_reverse?positions.back():positions.front());
+                const bool final_reverse=plan.first_reverse?plan.total_passes%2!=0:plan.total_passes%2==0;
+                out << ",\"end\":";machine_json_joint_vector(out,final_reverse?positions.front():positions.back());
+            }
+            out << '}';
+        }
         out << ",\"selected_reference_behavior\":\"" << reference_behavior_name(teach_replay_behavior_) << "\",\"reference_behavior\":\"" << reference_behavior_name(teach_replay_behavior_) << "\",\"gain_profile\":\"" << to_string(teach_replay_gain_profile_) << '\"';
         out << ",\"has_trajectory\":" << (teach_replay_trajectory_ && !teach_replay_trajectory_->positions.empty()?"true":"false")
             << ",\"fault_interrupted\":" << (teach_replay_fault_interrupted_?"true":"false");
@@ -5215,6 +5269,7 @@ private:
                 feedback_time_ns_=std::isfinite(measured_feedback_age_ms(*last_output_)) ?
                     *std::min_element(stamps.begin(),stamps.end()) : 0;
                 ++cycle_counter_;
+                motion_.update(*last_output_,cfg_.safety.state_timeout_s*1000.0);
                 record_model_calibration_cycle(*last_output_,Robot::TimePoint(std::chrono::nanoseconds(step.monotonic_ns)));
                 cycle_cv_.notify_all();
             }
@@ -5285,6 +5340,7 @@ private:
         stream_.ref_vel = std::move(next_vel);
         stream_.last_update_time = now;
         stream_.has_last_update_time = true;
+        if(!stream_.park_mode)motion_.reference_complete(complete);
         if(complete && !stream_.completion_reported) {
             stream_.completion_reported = true;
             std::cout << "\n[轨迹] 参考已到达目标，继续刷新并等待实测停放判据\n请输入菜单编号继续\n";
@@ -5293,6 +5349,7 @@ private:
     }
 
     void report_background_fault(const RobotFault& fault) {
+        motion_.finish("failed",machine_robot_error("motion",fault).what());
         clear_command_sources();
         if(background_fault_reported_) return;
         background_fault_reported_ = true;
@@ -5897,7 +5954,7 @@ private:
     }
 
     void start_absolute_stream() {
-        const auto target = read_vector("输入目标位置 rad，以空格分隔: ", cfg_.joint_names.size());
+        const auto target = read_vector("输入目标位置，旋转关节 rad、直线关节 m，以空格分隔: ", cfg_.joint_names.size());
         const auto speed_scale = read_double("速度比例 (0, 1]，建议 0.1~0.5: ");
         if(!target || !speed_scale || *speed_scale <= 0.0 || *speed_scale > 1.0) {
             std::cout << "目标位置或速度比例输入无效\n";
@@ -6164,6 +6221,7 @@ private:
         std::lock_guard<std::mutex> lock(mutex_);
         const bool finish_drag=robot_.get_impedance_mode()==JointImpedanceMode::COMPLIANT_DRAG &&
             (mode==JointImpedanceMode::RIGID_HOLD || mode==JointImpedanceMode::COMPLIANT_HOLD);
+        clear_command_sources();
         const auto result = runtime_.set_impedance_mode(robot_, mode,Robot::Clock::now(),finish_drag?HoldTargetPolicy::CAPTURE_MEASURED:HoldTargetPolicy::PRESERVE_NOMINAL);
         if(!result) {
             std::cout << "切换阻抗模式失败：\n";
@@ -7699,6 +7757,7 @@ private:
     }
 
     void clear_command_sources() {
+        motion_.finish("interrupted","motion replaced or stopped");
         runtime_.clear_commands();
         stream_ = StreamState{ };
     }
@@ -7719,6 +7778,7 @@ private:
     HardwareLoader hardware_loader_;
     Robot robot_;
     ControlRuntime runtime_;
+    JointMotionTracker motion_;
     HardwareCapabilities actuator_info_;
     bool actuator_info_after_connect_{ false };
 
@@ -7764,6 +7824,7 @@ private:
     double machine_friction_replay_rate_{ 0.0 };
     std::string machine_calibration_error_;
 
+    std::optional<TeachReplayPlan> teach_replay_plan_;
     std::atomic<int> teach_replay_phase_{0};
     std::atomic<bool> teach_replay_record_stop_{false};
     std::atomic<bool> teach_replay_stop_{false};

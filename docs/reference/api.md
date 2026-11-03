@@ -1959,11 +1959,15 @@ void clear_commands();
 MotionSource source() const;
 ```
 
-以上为类成员签名；Terminal、Python 和 ROS2 共享此执行器，`run()` 管理周期，`step()` 由外部周期推进，二者不能并发执行同一 Robot
+以上为类成员签名；Terminal、Python 和可选 ROS2 Adapter 共享此执行器，`run()` 管理周期，`step()` 由外部周期推进，二者不能并发执行同一 Robot；Core、Terminal 与 Python 不要求宿主 ROS2 环境
 
 `RuntimeSnapshot` 保存序号、单调时刻、生命周期、运动来源、可选周期与故障，以及故障保持状态；`RuntimeHooks` 在同一串行上下文执行周期前后回调
 
 运动来源为 `NONE/EXTERNAL/STREAM/REPLAY/CALIBRATION/PARK`，提交冲突由当前来源与任务规则处理
+
+Terminal `--machine` 的 `move_to`、`move_relative` 返回运动对象，包含 `id/state/target/units/position_tolerance/velocity_tolerance/reference_complete/settled_s/reason`，`tolerance_source` 为 `joint_type_defaults`；后续遥测的 `motion` 对象更新同一编号的状态，接收命令成功与实际到位分别报告
+
+回放方向 `forward/reverse/return` 均执行一个单程，`cycle/contact_cycle` 执行 N 次完整往返，即 2N 个单程；单程方向忽略旧调用传入的重复次数
 
 ---
 
@@ -5955,7 +5959,9 @@ source .install/setup.bash
 python -c 'import serial_arm; print(serial_arm.__file__)'
 ```
 
-ROS2 工作区使用 `colcon build --symlink-install` 后加载 `install/setup.bash`；Python Binding 默认参与构建，Profile launch 依赖其 C++ 资源解析
+安装器生成的 `.install/setup.bash` 加载原生环境，不 source ROS2；`.install/run ros2 ...` 或 `.install/ros2-setup.bash` 显式加载可选适配层
+
+直接在 ROS2 工作区构建时，使用 `colcon build --symlink-install` 后加载该工作区的 `install/setup.bash`；Python Binding 默认参与构建，Profile launch 依赖其 C++ 资源解析
 
 单独构建 wheel 时，在已准备 CMake 系统依赖的环境执行
 
@@ -6787,8 +6793,10 @@ print("requested gravity scale", scale)
 ### `RobotSession.move_to()`
 
 ```python
-session.move_to(pos, speed_scale=0.3)
+motion_id = session.move_to(pos, speed_scale=0.3)
 ```
+
+返回本次请求的整数运动编号，使用 `session.snapshot.motion` 查询同一请求的执行状态
 
 要求会话运行、ACTIVE、有限的一维目标且长度等于关节数，速度比例在 `(0, 1]`；目标先检查 Safety 软限位
 
@@ -6803,22 +6811,27 @@ if not snap.valid:
     raise RuntimeError("No valid joint feedback")
 target = np.array(snap.cycle.joint_state.pos, dtype=np.float64, copy=True)
 target[0] += 0.05
-session.move_to(target, speed_scale=0.15)
+motion_id = session.move_to(target, speed_scale=0.15)
 
 deadline = time.monotonic() + 5.0
 while time.monotonic() < deadline:
     snap = session.snapshot
     if snap.robot_state == serial_arm.RobotState.FAULT:
         raise RuntimeError(snap.last_error)
-    if snap.valid and abs(snap.cycle.joint_state.pos[0] - target[0]) < 0.01:
+    motion = snap.motion
+    if motion.id != motion_id:
+        raise RuntimeError("Motion was replaced by another request")
+    if motion.state == "completed":
         break
+    if motion.state in ("interrupted", "failed"):
+        raise RuntimeError(motion.reason)
     time.sleep(0.02)
 else:
     session.hold_current()
     raise TimeoutError("Motion did not settle within 5 s")
 ```
 
-此例阈值仅演示结果等待，实际到位条件按关节类型、任务及外部测量设置
+到位条件来自受控关节类型：旋转轴位置 0.001 rad、速度 0.01 rad/s，直线轴位置 0.0001 m、速度 0.001 m/s；参考生成结束后，全部关节须在新鲜反馈中连续满足这些条件 150 ms，外部末端精度使用独立测量
 
 ---
 
@@ -6928,11 +6941,26 @@ snapshot = session.snapshot
 
 ```python
 snapshot.robot_state
+snapshot.sequence
+snapshot.monotonic_ns
+snapshot.motion
 snapshot.cycle
 snapshot.dynamics
 snapshot.valid
 snapshot.last_error
 ```
+
+`sequence` 与 `monotonic_ns` 标记快照序号和单调时刻；`motion` 是 `JointMotionStatus`，包含
+
+| 字段 | 含义 |
+| --- | --- |
+| `id`、`state` | 运动编号及 `idle/running/completed/interrupted/failed` 状态 |
+| `target`、`units` | 目标及每轴 `rad` 或 `m` 单位 |
+| `position_tolerance`、`velocity_tolerance` | 按关节类型给出的逐轴到位阈值 |
+| `reference_complete`、`settled_s` | 参考是否结束及连续稳定时间 |
+| `reason` | 中断或失败原因 |
+
+模式切换、当前位置保持或停止会话会中断尚未完成的运动；故障标记失败，重复反馈不增加连续稳定时间
 
 #### `state`
 
@@ -7011,7 +7039,7 @@ for actuator in session.actuator_info:
 
 ## 11 ROS 2 / ros2_control Adapter
 
-本章只描述 `SerialArmSystem` 对 ros2_control 暴露的公共生命周期和数据接口，MoveIt 的启动与配置路径见 Tutorial
+本章描述可选 `SerialArmSystem` 对 ros2_control 暴露的公共生命周期和数据接口；只构建或使用 Core、Terminal、Python 和桌面控制时无需 ROS2，MoveIt 的启动与配置路径见 Tutorial
 
 这一部分直接对应 `src/serial_arm/bringup/ros2_control/include/serial_arm_ros2_control/serial_arm_system.hpp` 的公共接口
 

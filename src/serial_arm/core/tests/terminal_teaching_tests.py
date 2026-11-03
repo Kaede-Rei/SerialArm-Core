@@ -1,6 +1,7 @@
 """Exercise native teaching fault cleanup through the actual JSON process API"""
 from pathlib import Path
 import json
+import copy
 import math
 import os
 import queue
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import yaml
+import xml.etree.ElementTree as ET
 
 TERMINAL,PLUGIN,REPO=sys.argv[1:4]
 
@@ -73,6 +75,7 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
     data['shutdown']['park_before_disable']=False
     # Give CI scheduling the existing watchdog margin while testing feedback freshness
     data['safety_policy']['max_dt_s']=.2
+    data['safety_policy']['position_margin']=.01
     config=folder/'core.yaml';config.write_text(yaml.safe_dump(data,sort_keys=False))
     positions=[]
     for name in names:
@@ -101,8 +104,32 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
         bad=list(target);bad[0]=1e9
         native.reply(native.send('move_to',{'positions':bad,'speed_scale':.1}),expected_error='position limit')
         assert native.request('status')['impedance_mode']=='RIGID_HOLD'
-        native.request('move_to',{'positions':target,'speed_scale':.1})
+        # Boundary values inside the URDF hard range can still violate the
+        # Safety margin and must fail before a tracking transition or ID allocation.
+        boundary=list(target)
+        joint_node=ET.parse(data['model']['urdf_path']).getroot().find("joint[@name='"+names[0]+"']/limit")
+        boundary[0]=float(joint_node.attrib['lower'])
+        old_motion=native.request('status')['motion']
+        native.reply(native.send('move_to',{'positions':boundary,'speed_scale':.1}),expected_error='position limit')
+        assert native.request('status')['motion']==old_motion
+        assert native.request('status')['impedance_mode']=='RIGID_HOLD'
+        move=native.request('move_to',{'positions':target,'speed_scale':.1})
+        assert move['id']>0 and move['state']=='running' and move['units']==['rad']*len(names),move
+        native.wait(lambda s:s.get('motion',{}).get('state')=='completed')
+        stalled=list(target);stalled[0]+=.01
+        moving=native.request('move_to',{'positions':stalled,'speed_scale':.1})
+        assert moving['id']>move['id'] and moving['state']=='running',moving
+        time.sleep(.35)
+        assert native.request('status')['motion']['state']=='running'
+        native.request('hold')
+        assert native.request('status')['motion']['state']=='interrupted'
+        last_move=native.request('move_to',{'positions':stalled,'speed_scale':.1})
         assert native.request('status')['impedance_mode']=='RIGID_TRACKING'
+        trigger.touch()
+        failed_move=native.wait(lambda s:s.get('robot_state')=='FAULT')['motion']
+        assert failed_move['id']==last_move['id'] and failed_move['state']=='failed',failed_move
+        trigger.unlink();native.request('deactivate');native.request('activate')
+        native.wait(lambda s:s.get('valid') is True)
         native.request('hold')
         native.reply(native.send('set_reference_behavior',{'behavior':'MODEL_ADMITTANCE'}),expected_error='NOT_INACTIVE')
         task=native.request('model_calibration_teach_begin')
@@ -231,11 +258,14 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
             row=list(center);row[0]+=.015*math.sin(4*math.pi*k/40);rows.append(row)
         path.write_text('sample_dt,0.02\n'+','.join(names)+'\n'+'\n'.join(','.join(map(str,row)) for row in rows)+'\n')
         control.request('teach_replay_load',{'path':str(path)})
-        params={'direction':'forward','rate':.2,'cycles':1,'confirmed':True,'mode':'RIGID_TRACKING',
+        params={'direction':'forward','rate':.2,'cycles':30,'confirmed':True,'mode':'RIGID_TRACKING',
                 'reference_behavior':'NATIVE_IMPEDANCE','gain_profile':'SERVO_TRACKING'}
         control.request('teach_replay_play',params)
         playing=control.wait(lambda s:s.get('teach_replay',{}).get('phase')=='playing' and s.get('gain_profile')=='SERVO_TRACKING')
         assert playing['teach_replay']['reference_behavior']=='NATIVE_IMPEDANCE',playing
+        plan=playing['teach_replay']['plan']
+        assert plan['direction']=='forward' and plan['cycles']==1 and plan['total_passes']==1,plan
+        assert plan['start']==rows[0] and plan['end']==rows[-1],plan
         trigger.touch();control.wait(lambda s:s.get('robot_state')=='FAULT')
         failed=control.wait(lambda s:s.get('teach_replay',{}).get('phase')=='failed')['teach_replay']
         assert failed['has_trajectory'] and failed['fault_interrupted'] and 'STATE_TIMEOUT' in failed['error'],failed
@@ -244,6 +274,7 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
         assert retried['gain_profile']=='SERVO_TRACKING',retried
         restored=control.wait(lambda s:s.get('teach_replay',{}).get('phase')=='ready' and s.get('valid') is True)
         assert restored['gain_profile']=='SERVO_TRACKING' and restored['model_feedforward_mode']=='FULL_INVERSE_DYNAMICS',restored
+        assert restored['teach_replay']['completed']==1,restored
         params['reference_behavior']='MODEL_ADMITTANCE'
         control.request('teach_replay_play',params)
         model=control.wait(lambda s:s.get('teach_replay',{}).get('phase')=='playing' and s.get('admittance_active') is True)
@@ -378,3 +409,23 @@ with tempfile.TemporaryDirectory(prefix='serialarm-teaching-fault-') as temporar
         offline.request('deactivate');offline.request('shutdown');offline.proc.wait(timeout=3)
         print('TERMINAL_OFFLINE_MOCK_CAPABILITIES_PASS')
     finally:offline.close()
+
+
+def fnv(path):
+    value=1469598103934665603
+    for byte in Path(path).read_bytes():value=((value^byte)*1099511628211)&0xffffffffffffffff
+    return f"{value:016x}"
+with tempfile.TemporaryDirectory(prefix='serialarm-selected-native-') as temporary:
+    folder=Path(temporary);task=folder/'task';selected=task/'offline_candidates'/'run-A'/'recomputed-candidate.json';selected.parent.mkdir(parents=True)
+    urdf=folder/'model.urdf';urdf.write_text('''<robot name="one"><link name="base"/><link name="arm"><inertial><origin xyz="0 1 0"/><mass value="1"/><inertia ixx="0.1" ixy="0" ixz="0" iyy="0.1" iyz="0" izz="0.1"/></inertial></link><joint name="joint" type="revolute"><parent link="base"/><child link="arm"/><axis xyz="1 0 0"/><limit lower="-2" upper="2" effort="100" velocity="1"/></joint><link name="tool"/><joint name="tip" type="fixed"><parent link="arm"/><child link="tool"/></joint></robot>''')
+    config=folder/'core.yaml';config.write_text(yaml.safe_dump({'model':{'urdf_path':str(urdf),'joint_names':['joint'],'base_frame':'base','tool_frame':'tool','gravity':[0,0,-9.81],'gravity_scale':[1]}}))
+    meta={'task_id':'one','core_fingerprint':fnv(config),'urdf_fingerprint':fnv(urdf),'joint_names':['joint']};(task/'metadata.json').write_text(json.dumps(meta))
+    (task/'frames.csv').write_text('header\n'+','.join(map(str,[1000000,1,'static_forward','forward','none',1,0,1,1,'test','RIGID_HOLD',0,0,0,0,0,0]))+'\n')
+    candidate={**meta,'first_moments':[{'link_name':'arm','value':[0,1,0]}],'candidate_masses':{'arm':1}}
+    selected.write_text(json.dumps(candidate));latest=copy.deepcopy(candidate);latest['first_moments'][0]['value']=[0,0,0];(task/'recomputed-candidate.json').write_text(json.dumps(latest))
+    args=[str(Path(TERMINAL).with_name('serial_arm_model_calibrator')),'--config',str(config),'--dataset',str(task),'--verify-urdf',str(urdf),'--candidate-source','offline']
+    for extra,code in [([],4),(['--candidate-path',str(selected)],0)]:
+        run=subprocess.run(args+extra,text=True,capture_output=True);assert run.returncode==code,(run.stdout,run.stderr)
+    candidate['core_fingerprint']='bad';selected.write_text(json.dumps(candidate));run=subprocess.run(args+['--candidate-path',str(selected)],text=True,capture_output=True);assert run.returncode and 'fingerprints' in run.stderr
+    outside=folder/'recomputed-candidate.json';outside.write_text(json.dumps(candidate));run=subprocess.run(args+['--candidate-path',str(outside)],text=True,capture_output=True);assert run.returncode and 'inside the task' in run.stderr
+    print('NATIVE_SELECTED_CANDIDATE_PASS')

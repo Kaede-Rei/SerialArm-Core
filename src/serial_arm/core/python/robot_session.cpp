@@ -86,6 +86,8 @@ public:
     }
     tl::expected<ActuatorState, MotorBusErr> read() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
+        const auto stamp=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+        state_.feedback_received_ns.assign(size(),stamp);state_.feedback_timing_valid.assign(size(),1);
         return state_;
     }
     tl::expected<void, MotorBusErr> activate() override {
@@ -206,6 +208,7 @@ void PyRobotSession::configure(
 
     std::lock_guard<std::mutex> snapshot_lock(mutex_);
     robot_ = std::move(robot);
+    motion_=JointMotionTracker{};snapshot_.motion=motion_.status();
     requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
     requested_gravity_scale_ = cfg_.dynamics.gravity_scale;
     goal_pos_.assign(cfg_.joint_names.size(), 0.0);
@@ -383,6 +386,7 @@ void PyRobotSession::set_impedance_mode(JointImpedanceMode mode) {
     requested_impedance_mode_ = mode;
     requested_hold_policy_=HoldTargetPolicy::PRESERVE_NOMINAL;
     requested_execution_profile_.reset();
+    motion_.finish("interrupted","control mode changed");snapshot_.motion=motion_.status();
     has_goal_=false;
     ++impedance_sequence_;
 }
@@ -499,7 +503,7 @@ void PyRobotSession::set_gravity_scale(const JointVector& gravity_scale) {
     ++gravity_sequence_;
 }
 
-void PyRobotSession::move_to(const JointVector& pos, double speed_scale) {
+std::uint64_t PyRobotSession::move_to(const JointVector& pos, double speed_scale) {
     validate_joint_vector(pos, "pos");
     if(!running_.load()) {
         throw SerialArmPythonError("RobotSession must be running before move_to()");
@@ -532,6 +536,8 @@ void PyRobotSession::move_to(const JointVector& pos, double speed_scale) {
     goal_pos_ = pos;
     speed_scale_ = speed_scale;
     has_goal_ = true;
+    const auto id=motion_.begin(pos,dynamics_->get_info().joint_types);
+    snapshot_.motion=motion_.status();return id;
 }
 
 void PyRobotSession::hold_current() {
@@ -548,6 +554,7 @@ void PyRobotSession::hold_current() {
     requested_execution_profile_.reset();
     ++impedance_sequence_;
     has_goal_ = false;
+    motion_.finish("interrupted","current-position hold requested");snapshot_.motion=motion_.status();
 }
 
 // ! ========================= 状 态 / 快 照 读 取 方 法 实 现 ========================= ! //
@@ -712,6 +719,8 @@ void PyRobotSession::loop() noexcept {
             if(dynamics_->is_updated())static_cast<void>(dynamics_->update_reference(step.cycle->joint_ref_acc));
             fault_reported=false;
             std::lock_guard<std::mutex> lock(mutex_);
+            motion_.update(*step.cycle,cfg_.safety.state_timeout_s*1000.0);
+            snapshot_.motion=motion_.status();
             snapshot_.cycle=*step.cycle;
             snapshot_.sequence=step.sequence;snapshot_.monotonic_ns=step.monotonic_ns;
             snapshot_.dynamics=dynamics_->get_state();
@@ -763,6 +772,7 @@ void PyRobotSession::loop() noexcept {
     running_.store(false);
     fault_recovery_cv_.notify_all();
     std::lock_guard<std::mutex> lock(mutex_);
+    motion_.finish("interrupted","session stopped");snapshot_.motion=motion_.status();
     snapshot_.robot_state = robot_ ? robot_->get_state() : RobotState::UNCONFIGURED;
     fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
 }
@@ -880,23 +890,13 @@ void PyRobotSession::process_fault_recovery_request(
  * @param dt 当前参考生成时间步长
  */
 void PyRobotSession::update_reference(double dt) {
-    JointVector goal;
-    double speed_scale;
-    bool has_goal;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        goal = goal_pos_;
-        speed_scale = speed_scale_;
-        has_goal = has_goal_;
-    }
-
-    if(!has_goal) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(!has_goal_) {
         ref_vel_.assign(ref_vel_.size(), 0.0);
         return;
     }
-
-    advance_joint_reference(ref_pos_,ref_vel_,goal,cfg_.safety.limits.max_vel,
-        cfg_.safety.limits.max_acc,speed_scale,dt);
+    motion_.reference_complete(advance_joint_reference(ref_pos_,ref_vel_,goal_pos_,cfg_.safety.limits.max_vel,
+        cfg_.safety.limits.max_acc,speed_scale_,dt));
 }
 
 /**
@@ -925,6 +925,7 @@ void PyRobotSession::validate_joint_vector(const JointVector& values, const char
 void PyRobotSession::set_worker_error(const std::string& message) noexcept {
     try {
         std::lock_guard<std::mutex> lock(mutex_);
+        motion_.finish("failed",message);snapshot_.motion=motion_.status();
         snapshot_.last_error = message;
         snapshot_.robot_state = robot_ ? robot_->get_state() : RobotState::UNCONFIGURED;
     }

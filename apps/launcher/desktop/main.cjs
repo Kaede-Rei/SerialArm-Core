@@ -2,7 +2,7 @@ const {app, BrowserWindow, dialog, ipcMain, clipboard, Menu, shell} = require('e
 const path = require('node:path');
 const fs = require('node:fs');
 const {pathToFileURL} = require('node:url');
-const {spawnSync} = require('node:child_process');
+const {nativeEnvironment, developmentBackend} = require('./native-runtime.cjs');
 const {Bridge} = require('./bridge.cjs');
 const {synchronizeResources} = require('./resources.cjs');
 const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : path.resolve(__dirname, '../../..');
@@ -78,12 +78,11 @@ async function closeWindow() {
 }
 function packagedBackend() {
   const native = path.join(root, 'native');
-  const distro = '/opt/ros/humble/setup.bash';
-  const overlay = path.join(native, 'local_setup.bash');
-  if (!fs.existsSync(distro)) throw new Error('ROS2 Humble 未安装，请先在 Ubuntu 22.04 安装 ROS2 Humble 与 MoveIt 2');
-  if (!fs.existsSync(overlay)) throw new Error('发行包不包含完整 ROS2 工作区，请重新安装发行包');
+  if (!fs.existsSync(path.join(native, 'lib/libserial_arm_core.so'))) {
+    throw new Error('发行包缺少 Core 运行库，请重新安装完整发行包');
+  }
 
-  // The ROS2 installer places Profile configuration below share/ in a read-only
+  // The installer places Profile configuration below share/ in a read-only
   // installation; use a user-owned resource overlay so Profile editing and
   // calibration work in both a mounted AppImage and a system-wide deb install
   const writable = path.join(app.getPath('userData'), 'profile-resources');
@@ -104,35 +103,19 @@ function packagedBackend() {
     }
   }
 
-  // Source the host ROS2 environment and the bundled workspace's local setup;
-  // native colcon entrypoints and Python bindings are then resolved at their
-  // installed location, never at the build machine's checkout path
-  const sourced = spawnSync('/bin/bash',
-    ['-c', 'set -e; source "$1"; source "$2"; env -0', 'serial-arm', distro, overlay],
-    {env: process.env, encoding: 'buffer', timeout: 20000, maxBuffer: 12 * 1024 * 1024});
-  if (sourced.error || sourced.status !== 0) {
-    throw new Error('ROS2 运行环境初始化失败: ' +
-      ((sourced.stderr || '').toString('utf8').slice(-1200) || sourced.error?.message || sourced.status));
-  }
-  const env = {};
-  for (const record of sourced.stdout.toString('utf8').split('\0')) {
-    const idx = record.indexOf('=');
-    if (idx > 0) env[record.slice(0, idx)] = record.slice(idx + 1);
-  }
+  const env = nativeEnvironment(native, process.env, path.join(root, 'python'));
   const prepend = (key, value) => { env[key] = [value, env[key]].filter(Boolean).join(path.delimiter); };
-  prepend('AMENT_PREFIX_PATH', writable);
-  prepend('CMAKE_PREFIX_PATH', writable);
-  prepend('SERIAL_ARM_RESOURCE_PATH', native);
   prepend('SERIAL_ARM_RESOURCE_PATH', writable);
-  prepend('PYTHONPATH', path.join(root, 'python'));
-  for (const folder of ['lib', 'lib64']) {
-    if (fs.existsSync(path.join(native, folder))) prepend('LD_LIBRARY_PATH', path.join(native, folder));
-  }
-  prepend('PATH', path.join(native, 'bin'));
   env.SERIAL_ARM_BUNDLE_ROOT = root;
   env.SERIAL_ARM_BUNDLE_PREFIX = native;
   env.SERIAL_ARM_BUNDLE_PROFILE_PREFIX = writable;
-  env.SERIAL_ARM_BUNDLE_ROS_DISTRO = 'humble';
+  const runtimeFile = path.join(root, 'runtime.json');
+  const runtime = fs.existsSync(runtimeFile) ? JSON.parse(fs.readFileSync(runtimeFile, 'utf8')) : {};
+  const components = runtime.installed_components || ['core', 'terminal', 'python',
+    ...(fs.existsSync(path.join(native, 'share/serial_arm_ros2_control')) ? ['ros2'] : []),
+    ...(fs.existsSync(path.join(native, 'share/dm_arm_no_gripper')) ? ['moveit'] : [])];
+  env.SERIAL_ARM_BUNDLE_COMPONENTS = JSON.stringify(components);
+  env.SERIAL_ARM_BUNDLE_ROS_DISTRO = runtime.ros_distro || 'humble';
   env.PYTHONNOUSERSITE = '1';
   return {python: '/usr/bin/python3', script: path.join(root, 'apps/launcher/backend/bridge.py'), env};
 }
@@ -142,10 +125,7 @@ async function start() {
     throw new Error('系统未启用 Electron 沙箱，请启用用户命名空间；如需明确接受禁用沙箱运行，请设置 SERIAL_ARM_ALLOW_NO_SANDBOX=1');
   }
   const prefs = readPrefs();
-  const backend = app.isPackaged ? packagedBackend() : {
-    python: process.env.SERIAL_ARM_LAUNCHER_PYTHON || '/usr/bin/python3',
-    script: path.resolve(__dirname, '../backend/bridge.py'), env: process.env,
-  };
+  const backend = app.isPackaged ? packagedBackend() : developmentBackend(root);
   bridge = new Bridge(backend.python, backend.script, {cwd: root, env: backend.env});
   await bridge.ready;
   win = new BrowserWindow({width: prefs.bounds?.width || 1300, height: prefs.bounds?.height || 900, minWidth: 1000, minHeight: 720,
@@ -156,7 +136,7 @@ async function start() {
   win.webContents.on('will-navigate', event => event.preventDefault());
   win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });
   win.once('ready-to-show', () => { if (!app.commandLine.hasSwitch('smoke-test')) win.show(); });
-  const methods = new Set(['status', 'profiles', 'profile_library', 'profile_source_inspect', 'profile_library_register', 'profile_library_remove', 'description_inspect', 'description_create_profile', 'readiness', 'readiness_mark', 'readiness_record', 'readiness_approve_mode', 'profile_editor_load', 'profile_editor_save', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'model_calibration_load', 'model_calibration_model_alignment', 'model_calibration_records', 'model_calibration_preview_save', 'model_calibration_save', 'model_calibration_restore_config', 'model_calibration_export_friction', 'model_calibration_export_urdf', 'model_calibration_export_full_inertial', 'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute', 'model_calibration_idim', 'model_calibration_idim_audit', 'model_calibration_idim_export', 'calibration_tool_records', 'calibration_tool_load', 'calibration_tool_export', 'calibration_tool_export_record', 'geometry_fixed_state', 'geometry_fixed_begin', 'geometry_fixed_capture', 'geometry_fixed_solve', 'geometry_fixed_validate', 'geometry_fixed_discard', 'geometry_fixed_report', 'geometry_fixed_export_tcp', 'geometry_repeat_status', 'geometry_repeat_record_begin', 'geometry_repeat_record_stop', 'geometry_repeat_load', 'geometry_repeat_save', 'geometry_repeat_play', 'geometry_repeat_stop', 'trajectory_list', 'trajectory_save', 'trajectory_load', 'trajectory_rename', 'trajectory_remove', 'trajectory_export', 'trajectory_import', 'calibration_candidate_prepare', 'calibration_candidate_apply', 'calibration_candidate_restore', 'calibration_candidate_status', 'start', 'input', 'resize', 'stop']);
+  const methods = new Set(['calibration_tool_records_page', 'calibration_candidates', 'trajectory_select', 'geometry_fixed_preview_tcp', 'geometry_fixed_apply_tcp', 'status', 'profiles', 'profile_library', 'profile_source_inspect', 'profile_library_register', 'profile_library_remove', 'description_inspect', 'description_create_profile', 'readiness', 'readiness_mark', 'readiness_record', 'readiness_approve_mode', 'profile_editor_load', 'profile_editor_save', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'model_calibration_load', 'model_calibration_model_alignment', 'model_calibration_records', 'model_calibration_preview_save', 'model_calibration_save', 'model_calibration_restore_config', 'model_calibration_export_friction', 'model_calibration_export_urdf', 'model_calibration_export_full_inertial', 'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute', 'model_calibration_idim', 'model_calibration_idim_audit', 'model_calibration_idim_export', 'calibration_tool_records', 'calibration_tool_load', 'calibration_tool_export', 'calibration_tool_export_record', 'geometry_fixed_state', 'geometry_fixed_begin', 'geometry_fixed_capture', 'geometry_fixed_solve', 'geometry_fixed_validate', 'geometry_fixed_discard', 'geometry_fixed_report', 'geometry_fixed_export_tcp', 'geometry_repeat_status', 'geometry_repeat_record_begin', 'geometry_repeat_record_stop', 'geometry_repeat_load', 'geometry_repeat_save', 'geometry_repeat_play', 'geometry_repeat_stop', 'trajectory_list', 'trajectory_save', 'trajectory_load', 'trajectory_rename', 'trajectory_remove', 'trajectory_export', 'trajectory_import', 'calibration_candidate_prepare', 'calibration_candidate_apply', 'calibration_candidate_restore', 'calibration_candidate_status', 'start', 'input', 'resize', 'stop']);
   ipcMain.handle('launcher:request', async (event, method, params = {}) => {
     trusted(event);
     if (method === 'logs') return bridge.output;

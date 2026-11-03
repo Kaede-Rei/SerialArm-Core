@@ -371,10 +371,39 @@ class ProfileLibrary:
             'fault_recovery': dict(safety.get('fault_recovery') or {}),
             'urdf_limits': urdf_limits,
         }
+        runtime = ((core.get('control') or {}).get('runtime') or {})
+        prerequisites = []
+        def prerequisite(key, label, ok, field, group):
+            prerequisites.append({'id': key, 'label': label, 'ready': bool(ok),
+                'action': {'page': 'profile_setup', 'group': group, 'field': field, 'label': '配置' + label}})
+        prerequisite('write_enabled', '控制写入', runtime.get('write_enabled') is True,
+            'core.control.runtime.write_enabled', 'motion')
+        drag = controller.get('compliant_drag') or {}
+        kd = drag.get('kd') or {}
+        prerequisite('drag_damping', '拖拽阻尼', bool(joints) and all(
+            isinstance(kd.get(j), (int, float)) and not isinstance(kd.get(j), bool) and
+            math.isfinite(kd[j]) and kd[j] > 0 for j in joints),
+            'core.control.controller.compliant_drag.kd', 'motion')
+        gravity = model.get('gravity')
+        scales = model.get('gravity_scale') or {}
+        gravity_ready = (isinstance(gravity, list) and len(gravity) == 3 and
+            all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in gravity) and
+            sum(v*v for v in gravity) > 1e-12 and bool(joints) and
+            all(isinstance(scales.get(j), (int, float)) and not isinstance(scales.get(j), bool) and
+                math.isfinite(scales[j]) and scales[j] > 0 for j in joints))
+        prerequisite('gravity', '重力模型与补偿比例', gravity_ready,
+            'core.model.gravity' if not isinstance(gravity, list) or len(gravity) != 3 or not gravity_ready and not any(gravity or []) else 'core.model.gravity_scale', 'model')
+        prerequisite('hold_gains', '刚性保持增益', mode_states.get('RIGID_HOLD') != 'unconfigured',
+            'core.control.controller.rigid_hold.kp', 'motion')
+        calibration_ready = profile_setup and all(item['ready'] for item in prerequisites)
         return {'state': state, 'verification_state': verification_state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'reason': reason,
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
+                'connection_readiness': {'structurally_valid': profile_setup, 'read_only_connectable': profile_setup,
+                    'write_enabled': runtime.get('write_enabled') is True, 'basic_calibration_ready': calibration_ready,
+                    'basic_calibration_prerequisites': prerequisites,
+                    'next_actions': [item['action'] for item in prerequisites if not item['ready']]},
                 'setup_issues': setup_issues, 'next_actions': next_actions, 'gain_purposes': gain_purposes,
                 'source_trusted': self._is_official_profile(info),
                 'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', ''),
@@ -830,6 +859,9 @@ class ProfileLibrary:
         if not profile or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-' for c in profile): raise ValueError('Profile id may contain letters, numbers, underscore, and hyphen only')
         destination=Path(text(options.get('destination'))).expanduser().resolve()
         package_dir=destination/profile
+        source_package = Path(analysis['package_root']).resolve()
+        if package_dir == source_package or package_dir.is_relative_to(source_package):
+            raise ValueError('destination 输出目录不能位于源 Description 目录内，请选择其外部目录')
         if package_dir.exists() and any(package_dir.iterdir()): raise ValueError('destination Profile package already exists and is not empty')
         requested_joints = options.get('joint_names') or []
         known_joints = {j['name'] for j in analysis['joints'] if j['type'] != 'fixed'}
@@ -1073,6 +1105,11 @@ class ProfileLibrary:
             ProfileLibrary._finite(candidate, path)
         elif isinstance(original, str):
             if not isinstance(candidate, str): raise ValueError(f'{path} 必须是文本')
+        elif original is None:
+            if isinstance(candidate, (dict, list)) or not (candidate is None or isinstance(candidate, (str, bool, int, float))):
+                raise ValueError(f'{path} 请输入标量值')
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                ProfileLibrary._finite(candidate, path)
         elif candidate != original:
             raise ValueError(f'{path} 不支持此参数类型')
 
@@ -1146,6 +1183,22 @@ class ProfileLibrary:
             if data['pos_ratio'] == 0 or data['tor_ratio'] == 0:
                 raise ValueError(f'{path} 位置和力矩比例不能为零')
         runtime = section('control.runtime')
+        absent_boolean = object()
+        for field in ('control.runtime.write_enabled', 'control.controller.allow_full_cmd',
+                      'safety_policy.require_all_actuators_online', 'safety_policy.require_all_actuators_enabled',
+                      'safety_policy.reject_motor_error', 'safety_policy.require_continuous_cmd',
+                      'safety_policy.fault_recovery.allow_compliant_recovery',
+                      'safety_policy.fault_recovery.require_operator_request',
+                      'safety_policy.fault_recovery.gravity_model_validated', 'shutdown.park_before_disable',
+                      'capability.admittance.calibration.friction.enabled'):
+            value = core
+            for part in field.split('.'):
+                if not isinstance(value, dict) or part not in value:
+                    value = absent_boolean
+                    break
+                value = value[part]
+            if value is not absent_boolean and not isinstance(value, bool):
+                raise ValueError(f'{field} 必须是布尔值')
         scalar('control.runtime.ctrl_frequency_hz',1)
         scalar('control.runtime.joint_acc_filter_alpha',0,1)
         if runtime['model_feedforward_mode'] not in ('NONE','GRAVITY','FULL_INVERSE_DYNAMICS'):

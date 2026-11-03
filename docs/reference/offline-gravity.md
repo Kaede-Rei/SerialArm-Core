@@ -49,7 +49,7 @@ bias_separated: min_z  Σ ||C A Δθ − C r||² + λ ||z||²
 
 ## 使用与复现
 
-GUI：断开硬件后加载重力任务记录 → 选择全局/局部及可信 Link → 选择离线拟合目标 → 离线重算 → 审核原始/去偏置分数、状态和质量/质心 → 导出供审核
+GUI：加载重力任务记录 → 断开运行会话后选择全局/局部及可信 Link → 选择离线拟合目标并重算 → 选定本轮候选 → 审核原始/去偏置分数、状态和质量/质心 → 预览保存或导出供审核；已保存候选的普通导出可在连接期间进行
 
 CLI 的 `--config` 为记录入口参数，拟合使用任务中经过校验的源快照：
 
@@ -63,7 +63,13 @@ python3 tools/model_calibration_cli.py recompute \
 
 将 `--objective` 改为 `urdf` 可运行直接预测实验对照；名称应使用自己模型中的 Link，不能照搬示例
 
-每次重算独立归档 `offline_candidates/<run_id>/recomputed-candidate.json`；根目录同名文件仅代表最近一次结果，导出使用最近一次已存候选而不重新拟合；记录导出包含历史候选，成果包包含 `robot.urdf`、`core.yaml`、`identification-report.json`、`candidate-verification.json`，用模型与报告 SHA 确认对应关系
+每次重算独立归档 `offline_candidates/<run_id>/recomputed-candidate.json`；根目录同名文件仅代表最近一次结果，选择轮次后，保存与导出均使用该轮归档而不重新拟合
+
+CLI 重算返回 `candidate_run_id` 和 `candidate_path`，后续 `preview-save/save/export-urdf` 使用同一 `--source offline --run-id ID`；也可用 `--candidate-path PATH` 替代轮次编号，两者互斥；任务存在离线候选时不省略来源，在线结果使用 `--source online`，完整命令见 [工作台指南](../launcher.md#terminalros2-与命令行)
+
+重力校正文件同时保存选定候选的质量与一阶矩，仅用于运行时重力覆盖；导出 URDF 则按 `c=h/m` 写入模型质量与质心，并校验这一轮模型
+
+记录导出包含历史候选，成果包包含 `robot.urdf`、`core.yaml`、`identification-report.json`、`candidate-verification.json`，用模型与报告 SHA 确认对应关系
 
 若原始数据、已验收静态数据或模型发生变化，需重新计算；得到 `improved` 后仍须用独立会话数据及同工况的原模型/候选对照验证补偿效果
 

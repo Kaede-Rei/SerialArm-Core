@@ -440,11 +440,12 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
             'output': '静态质量与一阶矩求解已完成；原始 URDF 与去偏置误差分别报告，每次候选已归档'}
 
 
-def export_recomputed(directory, destination=None):
+def export_recomputed(directory, destination=None, *, candidate_path=None):
     """Export only the *stored* selected gravity candidate, never re-fit"""
     import numpy as np
     folder, metadata, _result, snapshot, _ = _prepare_inputs(directory)
-    record = folder / 'recomputed-candidate.json'
+    from persistence import select_gravity_candidate
+    _, record = select_gravity_candidate(folder, 'offline', candidate_path)
     if not record.is_file():
         raise ValueError('该任务尚无离线候选，请先执行离线重算')
     record_bytes = record.read_bytes()

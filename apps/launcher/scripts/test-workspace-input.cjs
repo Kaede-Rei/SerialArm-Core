@@ -158,6 +158,8 @@ app.whenReady().then(async () => {
         assert.equal(await js(`modelView===window.__inputReplayView`),true,'reverse updates ghost on the existing view');
         await pointerClick('#teach-direction + .ros-select-trigger');
         await pointerClick('[id^="studio-options-"]:popover-open [data-value="forward"]');await wait(150);
+        // Return is admitted only after fresh feedback is aligned to the recorded end
+        await js(`state.telemetry.joint.pos=[.6];state.telemetryReceivedAt=Date.now();refreshTeachEndpointState()`);
         await pointerClick('#teach-return');await wait(150);
         assert.deepEqual(requestDetails.filter(item=>item.method==='model_preview').at(-1).params.positions,[.6]);
         assert.equal(await js(`modelView===window.__inputReplayView`),true,'return updates ghost without remounting');

@@ -296,10 +296,11 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 /* Preserve SerialArm's original three entrances and navigation categories. */
 .onboarding-shell .onboarding-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .onboarding-shell .onboarding-content {
-  width: 100%; max-width: 1180px; margin: 0 auto;
-  padding: clamp(36px,7vw,92px) clamp(24px,5vw,72px) 72px;
-  min-width: 0; overflow: auto;
+  width: 100%; max-width: none; margin: 0;
+  padding: clamp(24px,5vh,64px) clamp(24px,5vw,72px) 40px;
+  min-width: 0; overflow: auto; scrollbar-gutter: stable;
 }
+.onboarding-content > .page { max-width: 1036px; margin-inline: auto; }
 .start-choice:hover { transform: none; }
 .sidebar-nav-group { flex: none; min-width: 0; }
 .app.atil-shell .sidebar .nav-caption {
@@ -311,3 +312,15 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
   .onboarding-shell .onboarding-content { padding: 24px 14px 50px; }
   .app.atil-shell .sidebar .nav-caption { font-size: 0; padding: 0; margin: 10px 4px; border-top: 1px solid var(--line); }
 }
+
+/* Daily actions remain visible while editing targets and control settings. */
+.robot-operation-bar { position: sticky; top: 86px; z-index: 8; box-shadow: var(--shadow); padding: 12px 14px; }
+.robot-operation-bar .hint { margin: 8px 0 0; }
+.robot-operation-bar #control-operation-next:empty, #workbench-speed-error:empty { display: none; }
+#workbench-speed-error { display: block; color: var(--red); max-width: 240px; }
+.candidate-comparison-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(230px,1fr)); gap: 12px; margin: 12px 0; }
+.candidate-comparison-grid table { table-layout: fixed; white-space: normal; }
+.candidate-comparison-grid td { overflow-wrap: anywhere; }
+.candidate-rounds > label { display: block; margin: 10px 0; }
+.candidate-rounds select { width: 100%; }
+@media (max-width: 900px) { .robot-operation-bar { top: 78px; } }

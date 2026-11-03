@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../renderer/app.js'), 'utf8');
 function context(objective) {
-  const sandbox = {state:{modelCalibrationObjective:objective}};
+  const sandbox = {state:{modelCalibrationObjective:objective,calibrationCandidateSelection:{},calibrationCandidateRounds:{}}};
   vm.createContext(sandbox);
   const match = source.match(/function adoptGravityRecord\([^]*?\n\}/);
   assert.ok(match);

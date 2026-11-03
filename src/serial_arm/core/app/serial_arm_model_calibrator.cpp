@@ -23,6 +23,7 @@ int main(int argc, char** argv) {
         std::string output_path;
         std::string verify_urdf_path;
         std::string candidate_source="online";
+        std::string selected_candidate_path;
         std::string requested_mode;
         std::vector<std::string> requested_locked_links;
         bool locked_override=false;
@@ -33,10 +34,11 @@ int main(int argc, char** argv) {
             else if(arg=="--output"&&i+1<argc) output_path=argv[++i];
             else if(arg=="--verify-urdf"&&i+1<argc) verify_urdf_path=argv[++i];
             else if(arg=="--candidate-source"&&i+1<argc) candidate_source=argv[++i];
+            else if(arg=="--candidate-path"&&i+1<argc) selected_candidate_path=argv[++i];
             else if(arg=="--mode"&&i+1<argc) requested_mode=argv[++i];
             else if(arg=="--lock-link"&&i+1<argc) {requested_locked_links.push_back(argv[++i]);locked_override=true;}
             else if(arg=="--help"||arg=="-h") {
-                std::cout << "Usage: serial_arm_model_calibrator --config <core.yaml> --dataset <task-dir> --verify-urdf candidate.urdf [--candidate-source online|offline]\n";
+                std::cout << "Usage: serial_arm_model_calibrator --config <core.yaml> --dataset <task-dir> --verify-urdf candidate.urdf [--candidate-source online|offline] [--candidate-path task-dir/recomputed-candidate.json]\n";
                 return EXIT_SUCCESS;
             } else throw std::runtime_error("unknown or incomplete argument: "+arg);
         }
@@ -81,10 +83,26 @@ int main(int argc, char** argv) {
         const auto frames=serial_arm::load_model_calibration_frames(dataset_path,cfg_result->joint_names.size());
         if(!frames) throw std::runtime_error(frames.error());
         // Verify the selected saved candidate without running any solver
-        const auto record_path=task_directory/(candidate_source=="offline"?"recomputed-candidate.json":"result.json");
+        auto record_path=task_directory/(candidate_source=="offline"?"recomputed-candidate.json":"result.json");
+        if(!selected_candidate_path.empty()) {
+            if(candidate_source!="offline")throw std::runtime_error("--candidate-path requires offline candidate source");
+            const auto root=std::filesystem::canonical(task_directory);
+            const auto selected=std::filesystem::canonical(selected_candidate_path);
+            const auto relative=selected.lexically_relative(root);
+            if(selected.filename()!="recomputed-candidate.json"||relative.empty()||
+                *relative.begin()==".."||!std::filesystem::is_regular_file(selected))
+                throw std::runtime_error("candidate path must be a recomputed-candidate.json inside the task directory");
+            record_path=selected;
+        }
         const auto record=YAML::LoadFile(record_path.string());
         if(!record["task_id"] || record["task_id"].as<std::string>()!=metadata["task_id"].as<std::string>())
             throw std::runtime_error("candidate task does not match dataset");
+        if(!selected_candidate_path.empty()) {
+            if(!record["core_fingerprint"]||!record["urdf_fingerprint"]||
+                record["core_fingerprint"].as<std::string>()!=recorded_core||
+                record["urdf_fingerprint"].as<std::string>()!=recorded_urdf)
+                throw std::runtime_error("selected candidate source fingerprints do not match the recorded dataset");
+        }
         const auto candidate_record=candidate_source=="offline"?record:record["gravity_result"];
         if(!candidate_record || !candidate_record["first_moments"] || !candidate_record["first_moments"].IsSequence())
             throw std::runtime_error("saved gravity candidate is missing");

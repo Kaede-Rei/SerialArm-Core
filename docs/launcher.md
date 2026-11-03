@@ -9,11 +9,11 @@
 ./launch.sh
 ```
 
-已有 Core 时可用 `./install.sh --gui-only --yes` 补装 GUI；环境要求与发行包使用方式见 [安装](install.md)
+Core、模型查看、标定和桌面控制独立于 ROS2；已有 Core 时可用 `./install.sh --gui-only --yes` 补装 GUI，环境要求见 [安装](install.md)
 
 ![机械臂工作区](images/launcher-start.png)
 
-从机械臂列表选择内置或外部 Profile，也可以导入 URDF、Xacro 或 Description 包创建新的配置
+从机械臂列表继续使用已有配置；“打开机械臂 Profile”扫描资源目录，“选择机械臂 Profile 文件 · YAML”直接指定配置文件，“新建机械臂 Profile”从 URDF、Xacro 或 Description 包创建配置
 
 Profile 保存模型、关节映射、控制参数与硬件资源引用；外部机械臂的资源由自己的项目维护
 
@@ -31,7 +31,7 @@ Profile 保存模型、关节映射、控制参数与硬件资源引用；外部
 | 专项标定 | 重力模型校正、高级动力学辨识、几何标定 | 按模型与应用需要选择 |
 | 检查记录 | 操作者备注、已导入的验证结果 | 对照配置与记录来源，配置变化后重新核对 |
 
-配置有效表示满足连接前检查；能否使能和发送运动仍由当前反馈、硬件状态与 Core 安全检查决定
+配置结构有效、离线会话可用与可开始标定分别显示；准备页列出当前缺少的写入许可、拖拽阻尼和重力补偿等条件并直达字段，关闭写入时使用离线后端，不连接电机；开放写入并重新连接后读取真实反馈，使能与运动检查实际反馈和硬件状态
 
 “运动与停放”进入控制页的机械臂运行区，检查使能、保持与停放；专项标定通过同级卡片进入对应工具
 
@@ -53,7 +53,7 @@ Profile 保存模型、关节映射、控制参数与硬件资源引用；外部
 
 刚性保持补偿在 `control.hold_compensation` 中配置，只作用于原生阻抗下的刚性保持
 
-配置编辑器修改的是保存值；连接覆盖、会话调参和标定试用值分别显示，保存前检查目标文件与差异
+配置编辑器修改的是保存值；连接覆盖、会话调参和标定试用值分别显示，保存前检查目标文件与差异；输入错误会保留在原字段，切换分组后仍可修正
 
 ## 模型查看
 
@@ -86,6 +86,8 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 关节目标只保留一组滑条和精确数值框，青绿色半透明模型显示待执行目标；编辑后点击“移动到目标”才发送运动命令
 
+速度比例须在 `(0, 1]`，清空、零值和越界值会阻止移动，不沿用旧值；命令提交后显示执行状态，参考结束且新鲜反馈持续满足逐轴位置与速度容差后才显示完成
+
 “同步实际”把当前反馈作为新目标；目标归零只修改预览；“当前位置保持”停止当前移动并捕获当前位置作为保持目标
 
 普通模式交接保留原名义目标，避免把受扰偏移当成新的保持位置
@@ -95,14 +97,21 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 1. 连接并使能，开始示教后进入拖拽
 2. 在安全范围内拖动机械臂，结束记录后检查轨迹
 3. 命名并保存，或从轨迹管理中导入已有轨迹
-4. 选择回放方向、速度、循环次数、控制方式与增益用途
-5. 核对青绿色起点预览，松手并确认路径后开始回放
+4. 选择已保存轨迹，连接后点击“载入所选轨迹到当前会话”
+5. 选择单程正放、单程倒放或往返；往返模式再设置次数，并选择速度、控制方式与增益用途
+6. 核对青绿色起点预览，松手并确认路径后开始回放
 
-正放起点是记录首点，倒放起点是记录末点；实际位置需与所选起点对齐
+正放从记录首点到末点，倒放从末点到首点，都只运行一个单程；往返 N 次执行 2N 个单程，起点预览随方向更新
+
+选择轨迹只读取离线记录与起点预览，不自动载入原生会话；“将所选起点填入目标草稿”切到控制页编辑预览，仍需明确点击“移动到目标”
+
+开始前显示各关节相对所选端点的误差；检查虚影并移动后，回到回放页再次核对；回放速度比例须在 `[0.05, 1]`，无效输入直接指出错误，不沿用旧值
+
+普通回放的直线关节起点允许位置误差 1 mm、速度 1 mm/s；触点往返收紧为 0.5 mm、1 mm/s；旋转关节分别按 0.08 rad / 0.05 rad/s 和 0.03 rad / 0.03 rad/s 检查
 
 模型导纳回放使用伺服跟踪增益；原生阻抗回放可使用刚性、柔性或伺服跟踪，拖拽用途不用于轨迹回放
 
-示教轨迹按机械臂保存在 `.serialarm/teach-replay/`，支持 ZIP 导入导出、重命名和删除；故障中断的录制会显示失败原因
+示教轨迹按机械臂保存在 `.serialarm/teach-replay/`，支持 ZIP 导入导出、重命名和删除；选择与管理已有轨迹无需连接机械臂，真正载入执行器回放前才要求连接与确认；故障中断的录制显示失败原因
 
 ### 交互调试
 
@@ -112,7 +121,7 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 应用只影响当前会话，运行中的参数按控制周期平滑过渡；保存为默认值需要单独预览差异并确认
 
-响应记录包含名义参考、导纳参考、最终参考与实测运动；标记松手时刻后，可检查原目标、关节回位与外部针尖测量
+响应记录包含名义参考、导纳参考、最终参考与实测运动；记录期间保持执行器增益和控制方式一致，切换用途或增益前先结束当前记录；标记松手时刻后，可检查原目标、关节回位与外部针尖测量
 
 关节反馈用于关节回位判定；针尖精度需录入独立外部测量，缺少测量时显示未验证
 
@@ -136,7 +145,7 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 ![动力学标定](images/launcher-dynamics.png)
 
-各工具共享任务记录，但候选结果、验证范围与应用动作分别管理
+各工具共享任务记录，按机器人、工具与搜索条件筛选后分页；离线重算的不同轮次可分别选择和比较，预览、保存与导出始终显示所选来源和轮次
 
 ### 执行器增益自动标定
 
@@ -167,11 +176,11 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 自动阶段可以暂停、继续、取消、保持或立即失能；暂停后位置变化过大时，继续需要重新确认
 
-在线预览固定质量及质心处惯量，只校正静态重力相关的一阶矩；运行时重力覆盖不替换质量矩阵与科氏项，不能配合 `FULL_INVERSE_DYNAMICS` 或 `FULL_ID` 使用
+在线预览固定质量及质心处惯量，只校正静态重力相关的一阶矩；离线静态重算可同时辨识质量与一阶矩，并按该轮次保存到重力校正文件；运行时重力覆盖不替换质量矩阵与科氏项，不能配合 `FULL_INVERSE_DYNAMICS` 或 `FULL_ID` 使用
 
 候选应用与恢复在失能且无活动模型任务时执行；保存写入独立校正文件和 `gravity_correction_path`，保留校正前备份
 
-任务目录保存 `metadata.json`、`frames.csv`、`trajectory.csv`、`result.json` 与源快照；新任务另存硬件原始配置、生效配置及本次连接覆盖，历史任务可在未连接硬件时扫描或直接加载
+任务目录保存 `metadata.json`、`frames.csv`、`trajectory.csv`、`result.json` 与源快照；新任务另存硬件原始配置、生效配置及本次连接覆盖，历史记录按条件搜索与分页，不被其他工具任务挤出列表
 
 静态验证通过表示达到当前误差容差；`prior_preferred=true` 或保留先验表示本轮未支持更新参数
 
@@ -179,7 +188,7 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 按“数据检查 → 辨识设置 → 结果与推荐 → 导出”操作，可选择静态重力或完整惯性辨识、全局或局部范围；局部模式中勾选的可信连杆从求解开始保持固定
 
-离线处理使用已保存任务；开始重算或导出前断开运行会话
+离线处理使用已保存任务；拟合、重算和采集审计前断开运行会话，已保存记录、候选和成果的普通导出可在连接期间后台完成，保持与失能命令继续响应
 
 原始与去偏置误差分别展示，模型改善按实际导出的原始预测判定；算法、导出条件及实验案例见 [离线重力辨识](reference/offline-gravity.md) 与 [完整动力学辨识](reference/dynamic-identification.md)
 
@@ -187,7 +196,9 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 
 固定点工具分为临时针尖的 FK 一致性诊断和 TCP 位置候选；采样训练姿态后，使用独立姿态验证
 
-固定点方法辨识 TCP 平移，工具朝向沿用父 Frame；临时诊断只导出报告，正式 TCP 工具导出待审核候选
+固定点方法辨识 TCP 平移，工具朝向沿用父 Frame；恢复实验时使用记录中的实际 Frame，临时诊断只导出报告
+
+正式 TCP 工具先预览工具 Frame、偏移和文件差异，再导出包含 URDF、Core 与 Profile 的独立成果；会话断开后确认采用，将候选登记为新的机械臂 Profile，原模型和配置保留
 
 重复到位测试从触点 B 记录到安全点 A，循环时从 A 倒放至 B、停留，再沿记录方向返回 A；旧的 A 到 B 轨迹需重新示教
 
@@ -204,7 +215,7 @@ URDF 中的连杆惯性与 Core 约简后的有效惯性分别展示，无效参
 | `hardware.launch.py` | 启动 ros2_control 与 Controllers |
 | `moveit.launch.py` | 启动硬件、规划与 RViz |
 
-Terminal、Python Session 与 ROS2 Adapter 复用 Core 控制运行时；ROS2 默认跟踪用途读取 Core 的 `tracking_gain_profile`
+Terminal、Python Session 与 ROS2 Adapter 复用 Core 控制运行时；GUI 启动不加载 ROS2，Hardware / MoveIt 入口按需加载已安装适配层和宿主环境；缺少环境时显示对应安装步骤，ROS2 默认跟踪用途读取 Core 的 `tracking_gain_profile`
 
 C++ Terminal 普通示教与 GUI 使用自动临时控制上下文；Python 交互终端需显式执行“停放失能 → 原生阻抗 → GRAVITY 与有效重力比例 → 使能 → 拖拽”，结束后由用户在失能状态切回原控制方式
 
@@ -217,13 +228,20 @@ GUI 按实际设备路径互斥占用，直接运行底层程序需自行保证�
 保存后的模型任务也可用 CLI 处理
 
 ```bash
-python3 tools/model_calibration_cli.py inspect --directory /path/to/task
-python3 tools/model_calibration_cli.py recompute --config /path/to/core.yaml --directory /path/to/task
-python3 tools/model_calibration_cli.py preview-save --config /path/to/core.yaml --directory /path/to/task
-python3 tools/model_calibration_cli.py save --config /path/to/core.yaml --directory /path/to/task --confirm
-python3 tools/model_calibration_cli.py export-urdf --config /path/to/core.yaml --directory /path/to/task
-python3 tools/model_calibration_cli.py restore-config --config /path/to/core.yaml --directory /path/to/task --confirm
+source .install/setup.bash
+PYTHON="$PWD/.install/gui-venv/bin/python"
+CORE=/path/to/core.yaml
+TASK=/path/to/task
+"$PYTHON" tools/model_calibration_cli.py inspect --directory "$TASK"
+RESULT="$("$PYTHON" tools/model_calibration_cli.py recompute --config "$CORE" --directory "$TASK")"
+RUN_ID="$(printf '%s' "$RESULT" | "$PYTHON" -c 'import json,sys; print(json.load(sys.stdin)["candidate_run_id"])')"
+"$PYTHON" tools/model_calibration_cli.py preview-save --config "$CORE" --directory "$TASK" --source offline --run-id "$RUN_ID"
+"$PYTHON" tools/model_calibration_cli.py save --config "$CORE" --directory "$TASK" --source offline --run-id "$RUN_ID" --confirm
+"$PYTHON" tools/model_calibration_cli.py export-urdf --config "$CORE" --directory "$TASK" --source offline --run-id "$RUN_ID"
+"$PYTHON" tools/model_calibration_cli.py restore-config --config "$CORE" --directory "$TASK" --confirm
 ```
+
+`--candidate-path` 可替代 `--run-id` 选择当前任务内归档候选，两者互斥；在线结果使用 `--source online`，任务存在离线候选而未指定来源时拒绝保存与导出，避免混用旧结果
 
 ## 诊断与偏好
 

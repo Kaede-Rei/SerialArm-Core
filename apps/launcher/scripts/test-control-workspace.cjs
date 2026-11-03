@@ -54,7 +54,7 @@ test('model interaction exposes servo use and blocks contradictory native gain s
 });
 test('reverse and return previews use the endpoint required by native playback admission', () => {
     const state = {teachSelectedId: 'path', teachTrajectories: [{id: 'path', start: [0, 1], end: [2, 3]}], teachDirection: 'forward'};
-    const context = ui(['replayStartPose'], state);
+    const context = ui(['replayTrajectoryMetadata', 'replayStartPose'], state);
     for (const direction of ['forward', 'cycle']) assert.deepEqual(plain(context.replayStartPose(direction)), [0, 1]);
     for (const direction of ['reverse', 'return']) assert.deepEqual(plain(context.replayStartPose(direction)), [2, 3]);
     state.teachTrajectories = []; state.telemetry = {teach_replay: {start: [4], end: [5]}};
@@ -65,7 +65,8 @@ test('changing playback direction requests a fresh ghost without a hardware comm
     const state = {page: 'workbench', workbenchTab: 'replay', teachPreviewDirection: 'return'};
     let previews = 0, commands = 0;
     const context = ui(['wireTeachReplay'], state, {$: id => nodes[id], wireReplaySelection: () => {},
-        updateStartGhost: force => {assert.equal(force, true); previews++;}, workbenchRequest: () => commands++});
+        updateStartGhost: force => {assert.equal(force, true); previews++;}, workbenchRequest: () => commands++,
+        refreshTeachEndpointState: () => {}, refreshTeachReplayPanel: () => {}});
     context.wireTeachReplay(); nodes['teach-direction'].onchange();
     assert.equal(state.teachDirection, 'reverse'); assert.equal(state.teachPreviewDirection, null);
     assert.equal(previews, 1); assert.equal(commands, 0);
@@ -80,7 +81,7 @@ test('faulted playback requires retained trajectory evidence to offer an explici
 test('playback settings unlock after completion while model servo selection stays fixed', () => {
     const nodes = Object.fromEntries(['teach-reference-behavior', 'teach-gain-purpose', 'teach-direction', 'teach-rate', 'teach-repeats'].map(id => [id, {}]));
     const state = {teachReplayBehavior: 'NATIVE_IMPEDANCE', teachGainPurpose: 'RIGID'};
-    const context = ui(['replaySelection', 'refreshReplaySelection'], state, {$: id => nodes[id]});
+    const context = ui(['replaySelection', 'refreshReplaySelection'], state, {$: id => nodes[id], refreshTeachEndpointState: () => {}});
     context.refreshReplaySelection('teach', {phase: 'playing'});
     assert.ok(Object.values(nodes).every(node => node.disabled));
     context.refreshReplaySelection('teach', {phase: 'ready'});
@@ -94,6 +95,7 @@ test('telemetry updates enable and park without forcing users to change tabs', (
     const empty = () => {};
     const context = ui(['replayTrajectoryAvailable', 'taskStateLabel', 'updateWorkbenchLive'], state,
         {$: id => nodes[id], refreshReplaySelection: empty, refreshCapabilityDiagnostics: empty,
+         refreshWorkbenchStatus: empty, updateMotionCompletion: empty,
          refreshWorkbenchTargetFields: empty, updateWorkbenchControlState: empty,
          refreshCalibrationQuickControls: empty, refreshCalibrationActionControls: empty,
          refreshGainApplyControls: empty, updateWorkbenchModel: empty, updateStartGhost: empty,
@@ -178,4 +180,15 @@ test('late model mounts preserve the newer view and failed mounts allow a clean 
     assert.equal(context.modelView, null); assert.equal(context.workspaceMount, null); assert.equal(notices, 1);
     fail = false; const retried = context.mountWorkbenchView(); views[3].finish(); await retried;
     assert.equal(context.modelView, views[3]); assert.equal(views[3].disposals, 0);
+});
+
+test('control admission reads the connected runtime writing flag rather than a newly saved default', () => {
+    const modes=Object.fromEntries(['RIGID_HOLD','RIGID_TRACKING','COMPLIANT_TRACKING'].map(name=>[name,'configured']));
+    const state={telemetry:{robot_state:'ACTIVE',write_enabled:true},readiness:{modes,control_available:true,connection_readiness:{write_enabled:false}}};
+    const context=ui(['controlOperationProblem'],state);
+    assert.equal(context.controlOperationProblem('hold'),'');
+    assert.equal(context.controlOperationProblem('park'),'');
+    state.telemetry.write_enabled=false;
+    assert.match(context.controlOperationProblem('hold'),/离线后端/);
+    assert.equal(context.controlOperationProblem('deactivate'),'');
 });

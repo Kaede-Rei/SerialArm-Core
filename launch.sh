@@ -10,13 +10,20 @@ fi
 if [[ "${1:-}" == "--doctor" ]]; then
     shift
     if [[ -f .install/setup.bash ]] && python3 "$ROOT_DIR/tools/install/main.py" --check-environment; then
-        if ! source .install/setup.bash; then
-            echo '安装环境加载失败，继续执行只读诊断；请重建安装环境' >&2
-        fi
+        : # Desktop and diagnostics construct a native environment without ROS
     fi
     DOCTOR_PYTHON="${SERIAL_ARM_LAUNCHER_PYTHON:-$ROOT_DIR/.install/gui-venv/bin/python}"
     [[ -x "$DOCTOR_PYTHON" ]] || DOCTOR_PYTHON="$(command -v python3)"
-    exec "$DOCTOR_PYTHON" -u "$ROOT_DIR/apps/launcher/backend/doctor.py" "$@"
+    exec node - "$ROOT_DIR" "$DOCTOR_PYTHON" "$@" <<'JS'
+const {spawnSync} = require('node:child_process');
+const path = require('node:path');
+const [root, python, ...args] = process.argv.slice(2);
+const {developmentBackend} = require(path.join(root, 'apps/launcher/desktop/native-runtime.cjs'));
+const result = spawnSync(python, ['-u', path.join(root, 'apps/launcher/backend/doctor.py'), ...args],
+  {env: developmentBackend(root).env, stdio: 'inherit'});
+if (result.error) process.stderr.write(result.error.message + '\n');
+process.exit(result.status ?? 1);
+JS
 fi
 if [[ $# -ne 0 ]]; then
     echo 'Usage: ./launch.sh [--doctor [--profile NAME] [--profile-file FILE] [--resource-paths ROOTS]]' >&2
@@ -38,7 +45,6 @@ if [[ ! -f "$THREE_VENDOR" ]]; then
 fi
 if [[ -f .install/setup.bash ]]; then
     python3 "$ROOT_DIR/tools/install/main.py" --check-environment || exit 1
-    source .install/setup.bash
 fi
 export SERIAL_ARM_LAUNCHER_PYTHON="$ROOT_DIR/.install/gui-venv/bin/python"
 BACKEND="$ROOT_DIR/apps/launcher/backend/bridge.py"

@@ -24,6 +24,7 @@ from persistence import (  # noqa: E402
     restore_gravity_correction,
     save_gravity_correction,
     sha256_file,
+    select_gravity_candidate,
     update_candidate_urdf_verification,
 )
 
@@ -62,12 +63,15 @@ def recompute(config: Path, directory: Path, mode='global', locked_links=None, *
             'static_validation_passed': candidate.get('static_pass') is True}
 
 
-def export_verified(config: Path, directory: Path, destination: str | None, source='online') -> dict:
-    exported = (run_full_inertial_isolated(directory,destination,mode='legacy_gravity_export')
+def export_verified(config: Path, directory: Path, destination: str | None, source=None, candidate_path=None) -> dict:
+    source, selected = select_gravity_candidate(directory, source, candidate_path)
+    exported = (run_full_inertial_isolated(directory,destination,mode='legacy_gravity_export',locked_links={'candidate_path':str(selected)})
                 if source=='offline' else export_candidate_urdf(directory, destination))
     calibrator = find_calibrator()
+    verify_args = [calibrator, '--config', str(config), '--dataset', str(directory), '--verify-urdf', exported['candidate_urdf'], '--candidate-source', source]
+    if selected: verify_args.extend(['--candidate-path', str(selected)])
     completed = subprocess.run(
-        [calibrator, '--config', str(config), '--dataset', str(directory), '--verify-urdf', exported['candidate_urdf'], '--candidate-source', source],
+        verify_args,
         text=True, capture_output=True, timeout=120,
     )
     if completed.returncode != 0:
@@ -133,9 +137,14 @@ def parser() -> argparse.ArgumentParser:
 
     export = commands.add_parser('export-urdf', help='导出并校验候选 URDF')
     export.add_argument('--config', required=True, help='Core YAML 路径')
-    export.add_argument('--source', choices=('online','offline'), default='online')
+    export.add_argument('--source', choices=('online','offline'), help='任务存在离线候选时必须明确选择来源')
     export.add_argument('--directory', required=True, help='模型校正任务目录')
     export.add_argument('--destination', help='候选 URDF 输出目录，默认写入任务目录 candidate')
+    for command in (preview, save, export):
+        if command is not export: command.add_argument('--source', choices=('online','offline'), help='明确选择在线结果或离线候选')
+        choice = command.add_mutually_exclusive_group()
+        choice.add_argument('--candidate-path', help='当前任务内归档的 recomputed-candidate.json')
+        choice.add_argument('--run-id', help='离线重算返回的 candidate_run_id')
     return value
 
 
@@ -170,17 +179,20 @@ def main() -> int:
         if args.command == 'recompute':
             emit(recompute(config, directory, args.mode, args.locked_link, objective=args.objective))
         elif args.command == 'preview-save':
-            emit(preview_gravity_correction(config, directory))
+            source, selected = select_gravity_candidate(directory, args.source, args.candidate_path, args.run_id)
+            emit(preview_gravity_correction(config, directory, candidate_source=source, candidate_path=selected))
         elif args.command == 'save':
             if not args.confirm:
                 raise ValueError('保存会修改 Core YAML，请先执行 preview-save 检查差异，再使用 --confirm')
-            emit(save_gravity_correction(config, sha256_file(config), directory))
+            source, selected = select_gravity_candidate(directory, args.source, args.candidate_path, args.run_id)
+            emit(save_gravity_correction(config, sha256_file(config), directory, candidate_source=source, candidate_path=selected))
         elif args.command == 'restore-config':
             if not args.confirm:
                 raise ValueError('恢复会替换当前 Core YAML，请使用 --confirm 明确确认')
             emit(restore_gravity_correction(config, directory))
         elif args.command == 'export-urdf':
-            emit(export_verified(config, directory, args.destination, args.source))
+            source, selected = select_gravity_candidate(directory, args.source, args.candidate_path, args.run_id)
+            emit(export_verified(config, directory, args.destination, source, selected))
         else:
             raise ValueError('未知命令')
         return 0

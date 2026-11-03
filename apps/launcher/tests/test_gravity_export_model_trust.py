@@ -135,11 +135,12 @@ class GravityExportModelTrustTests(unittest.TestCase):
             current = folder / 'current-core.yaml'
             current.write_bytes(core_bytes(current_validated if current_validated != 'unused' else validated,
                                            allow, scale if current_scale is None else current_scale))
-            originals = {path: path.read_bytes() for path in folder.iterdir()}
             selected_core = core if current_validated == 'unused' else current
             selected_cfg = yaml.safe_load(selected_core.read_bytes())
             metadata = {'joint_names': ['axis'], 'task_id': 'fixture'}
             report_bytes = json.dumps({'static_pass': static_pass, 'candidate_run_id': 'fixture'}).encode()
+            if source == 'offline': (folder / 'recomputed-candidate.json').write_bytes(report_bytes)
+            originals = {path: path.read_bytes() for path in folder.iterdir()}
             payload = {
                 'candidate_source': 'recomputed-candidate.json' if source == 'offline' else 'online',
                 'candidate_report_sha256': hashlib.sha256(report_bytes).hexdigest(),

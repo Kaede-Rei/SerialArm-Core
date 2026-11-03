@@ -27,7 +27,7 @@ SerialArm-Core 面向需要自行配置硬件与运动学模型的串联机械�
 
 用户可以从已有 URDF 或 Description 创建机器人实例，完成硬件映射、参数配置与动力学验证，再通过 C++、Python 或 ROS2 / MoveIt 接入上层应用
 
-图形界面、Terminal、Python 与 ROS2 共享 C++ Core；下游机械臂在自己的 Profile 中维护模型、驱动和标定结果
+图形界面、Terminal 和 Python 直接使用 C++ Core，无需宿主 ROS2 环境；ROS2 与 MoveIt 按需接入，下游机械臂在自己的 Profile 中维护模型、驱动和标定结果
 
 <p align="center">
   <img src="docs/images/launcher-new-arm.png" alt="新机械臂导入页面展示三维模型、控制链与配置步骤" width="94%" />
@@ -100,10 +100,10 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 ### 环境要求
 
-- Linux，推荐 Ubuntu 与 ROS2 Humble 组合
+- Linux，桌面发行包面向 Ubuntu x86_64
 - C++17、Python 3.10 及以上
 - 桌面 GUI 需要 Node.js 20 及以上、npm 与图形桌面
-- ROS2 / MoveIt 功能需要预先配置对应的 ROS2 环境
+- ROS2 / MoveIt 是可选适配层，仅使用这些入口时需要相应环境
 
 ### 一键安装与启动
 
@@ -112,25 +112,25 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 ./launch.sh
 ```
 
-安装向导可选择 C++ Core、Standalone、Python Binding、ROS2、MoveIt 或桌面 GUI 等组件，安装过程会明确显示所需系统依赖
+安装向导默认选择 Standalone，可独立使用 Core、Terminal 与桌面 GUI；Python、ROS2 和 MoveIt 按需选择，安装计划列出所需系统依赖
 
 ### Linux 发行包构建
 
-`build_linux.sh` 生成包含 Core、Terminal、Python Binding、DM-Arm、ROS2 Adapter、MoveIt 配置及 GUI 的完整发行包
+只在准备 Release 时生成 AppImage 与 deb，日常修改、编译验证和更新本机安装不运行发布打包
+
+默认发行包包含 Core、Terminal、Python Binding、DM-Arm 与 GUI，启动和控制不依赖 ROS2
 
 ```bash
 ./build_linux.sh
-```
-
-已执行过完整 ROS2 预设且安装状态已验证时，可以直接复用已有构建产物
-
-```bash
+# 仅复用与当前源码一致的独立安装
 ./build_linux.sh --reuse-install
+# 显式增加 ROS2 / MoveIt 适配层
+./build_linux.sh --with-ros2
 ```
 
-生成的 `dist/SerialArm-Core-linux-x86_64.AppImage` 和 `dist/SerialArm-Core-linux-amd64.deb` 可用于 GitHub Releases
+产物为 `dist/SerialArm-Core-linux-x86_64.AppImage` 与 `dist/SerialArm-Core-linux-amd64.deb`
 
-构建机需使用 Ubuntu 22.04 x86_64、ROS2 Humble、Node.js 20+，目标机需配置兼容的 ROS2 Humble、MoveIt 2 及 ros2_control 系统环境，发行包无需在目标机重新编译 SerialArm-Core
+构建机使用 Ubuntu 22.04 x86_64、Node.js 20+；默认发行包可在未安装 ROS2 的目标机运行，包含可选适配层时也只在启动 Hardware 或 MoveIt 入口时加载宿主 ROS2 环境
 
 详细要求见 [安装说明](docs/install.md)
 

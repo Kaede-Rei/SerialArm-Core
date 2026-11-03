@@ -383,12 +383,44 @@ def _recorded_joint_bias(directory, metadata, joints):
     return ordered
 
 
-def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False):
+def select_gravity_candidate(directory, source=None, candidate_path=None, run_id=None):
+    """Resolve one stored candidate; never silently fall back to online after a recompute."""
+    folder = Path(directory).expanduser().resolve()
+    if candidate_path and run_id:
+        raise ValueError('候选路径与轮次只能指定一项')
+    if source not in (None, 'online', 'offline'):
+        raise ValueError('未知重力候选来源')
+    if candidate_path and not run_id and Path(candidate_path).expanduser().resolve() == folder / 'result.json':
+        if source == 'offline':
+            raise ValueError('离线候选不能选择在线 result.json')
+        return 'online', None
+    if candidate_path or run_id:
+        if source == 'online':
+            raise ValueError('在线结果不能指定离线候选轮次')
+        source = 'offline'
+    if source is None:
+        if (folder / 'recomputed-candidate.json').is_file() or any(folder.glob('offline_candidates/*/recomputed-candidate.json')):
+            raise ValueError('当前任务同时有在线结果与离线候选，请明确选择 source=online 或 source=offline，并指定候选轮次')
+        source = 'online'
+    if source == 'online':
+        return source, None
+    if run_id:
+        if not isinstance(run_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', run_id):
+            raise ValueError('离线候选轮次无效')
+        selected = folder / 'offline_candidates' / run_id / 'recomputed-candidate.json'
+    else:
+        selected = Path(candidate_path).expanduser().resolve() if candidate_path else folder / 'recomputed-candidate.json'
+    if not selected.is_file() or not selected.resolve().is_relative_to(folder) or selected.name != 'recomputed-candidate.json':
+        raise ValueError('请选择当前任务内完整的离线候选报告')
+    return source, selected.resolve()
+
+
+def build_gravity_correction_payload(directory, *, allow_unvalidated=False, prefer_recomputed=False, candidate_path=None):
     directory, metadata, result = _load_model_calibration_task(directory)
     gravity = result.get('gravity_result') or {}
     candidate_report_sha256 = None
-    if prefer_recomputed:
-        recomputed = directory / 'recomputed-candidate.json'
+    if prefer_recomputed or candidate_path:
+        _, recomputed = select_gravity_candidate(directory, 'offline', candidate_path)
         if not recomputed.is_file():
             raise ValueError('此任务尚未生成离线重力候选，请先执行离线重算')
         # Bind the payload to the exact bytes parsed, not a later read of the
@@ -500,6 +532,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
         'friction_status': 'validated' if friction_pass else 'requires_refit_or_review',
         'candidate_source': source_id,
         'candidate_run_id': gravity.get('candidate_run_id'),
+        'candidate_path': str(recomputed) if recomputed_used else str(directory / 'result.json'),
         'candidate_report_sha256': candidate_report_sha256,
         'fit_objective': gravity.get('fit_objective'),
         'deployment_objective': gravity.get('deployment_objective'),
@@ -572,17 +605,27 @@ def _gravity_target_text(core_path, metadata):
     return text
 
 
-def save_gravity_correction(core_path, expected_sha, task_directory, storage_home=None):
+def _gravity_correction_output(directory, payload):
+    if payload.get('candidate_source') == 'recomputed-candidate.json':
+        # Keep saved configurations bound to their selected run even when a
+        # later candidate from this task is adopted by a different profile
+        receipt = payload.get('candidate_report_sha256') or hashlib.sha256(json.dumps(payload,sort_keys=True).encode()).hexdigest()
+        return directory / 'candidate' / ('gravity-correction-' + receipt[:16] + '.yaml')
+    return directory / 'candidate' / 'gravity-correction.yaml'
+
+
+def save_gravity_correction(core_path, expected_sha, task_directory, storage_home=None, *, candidate_source=None, candidate_path=None):
+    source, selected = select_gravity_candidate(task_directory, candidate_source, candidate_path)
     core_path = Path(core_path).resolve()
     if sha256_file(core_path) != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
-    directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
+    directory, metadata, result, payload = build_gravity_correction_payload(task_directory, prefer_recomputed=source=='offline', candidate_path=selected)
     before = _gravity_target_text(core_path, metadata)
     if hashlib.sha256(before.encode('utf-8')).hexdigest() != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
     candidate_dir = directory / 'candidate'
     candidate_dir.mkdir(parents=True, exist_ok=True)
-    correction_path = candidate_dir / 'gravity-correction.yaml'
+    correction_path = _gravity_correction_output(directory, payload)
     temp_correction = correction_path.with_suffix('.yaml.tmp')
     temp_correction.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False))
     yaml.safe_load(temp_correction.read_text())
@@ -610,6 +653,9 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
         'core_backup': str(backup),
         'gravity_correction_path': str(correction_path),
         'core_sha256': sha256_file(core_path),
+        'candidate_source': payload.get('candidate_source'),
+        'candidate_run_id': payload.get('candidate_run_id'),
+        'selected_candidate_path': payload.get('candidate_path'),
     }
     (directory / 'application.json').write_text(json.dumps(application, ensure_ascii=False, indent=2))
     return application
@@ -754,8 +800,12 @@ def load_model_calibration_summary(directory):
             'files': files, 'trajectory': trajectory, 'note': note, 'task_id': task_id}
 
 
-def list_model_calibration_records(root, limit=30, *, legacy_root=None, profile_name=None):
+def list_model_calibration_records(root, limit=30, *, legacy_root=None, profile_name=None, offset=0):
     """Read-only inventory, always derived from disk rather than cached GUI state"""
+    if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+        raise ValueError('任务数量必须为正整数')
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        raise ValueError('任务起点必须为非负整数')
     root = Path(root)
     parents = [root / '.serialarm' / 'model-calibration']
     if legacy_root is not None:
@@ -765,8 +815,13 @@ def list_model_calibration_records(root, limit=30, *, legacy_root=None, profile_
     directories = [folder for parent in parents if parent.is_dir() for folder in parent.iterdir()
                    if folder.is_dir() and folder.name.startswith('model-calibration-')]
     records = []
-    for folder in sorted(directories, key=lambda x: x.stat().st_mtime, reverse=True)[:limit]:
+    for folder in sorted(set(directories), key=lambda x: x.stat().st_mtime, reverse=True):
         try:
+            if profile_name:
+                metadata_file = folder / 'metadata.json'
+                metadata_profile = json.loads(metadata_file.read_text(encoding='utf-8')).get('profile') if metadata_file.is_file() else None
+                if metadata_profile and metadata_profile != profile_name:
+                    continue
             record = load_model_calibration_summary(folder)
             recorded_profile = (record.get('metadata') or {}).get('profile')
             if profile_name and recorded_profile and recorded_profile != profile_name:
@@ -778,13 +833,14 @@ def list_model_calibration_records(root, limit=30, *, legacy_root=None, profile_
                             'files': {name: (folder/name).is_file() for name in
                                       ('metadata.json', 'frames.csv', 'trajectory.csv', 'trajectory.checkpoint.csv', 'result.json')},
                             'note': f'记录校验未通过: {exc}'})
-    return records
+    return records[offset:offset + limit if limit is not None else None]
 
 
-def preview_gravity_correction(core_path, task_directory):
+def preview_gravity_correction(core_path, task_directory, *, candidate_source=None, candidate_path=None):
+    source, selected = select_gravity_candidate(task_directory, candidate_source, candidate_path)
     core_path = Path(core_path).resolve()
-    directory, metadata, result, payload = build_gravity_correction_payload(task_directory)
-    candidate_path = directory / 'candidate' / 'gravity-correction.yaml'
+    directory, metadata, result, payload = build_gravity_correction_payload(task_directory, prefer_recomputed=source=='offline', candidate_path=selected)
+    candidate_path = _gravity_correction_output(directory, payload)
     relative = Path(os.path.relpath(candidate_path, core_path.parent)).as_posix()
     before = _gravity_target_text(core_path, metadata)
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative)
@@ -809,6 +865,9 @@ def preview_gravity_correction(core_path, task_directory):
         'friction_pass': bool(payload['friction_pass']),
         'friction_status': payload.get('friction_status', 'requires_refit_or_review'),
         'candidate_source': payload.get('candidate_source', 'result.json'),
+        'candidate_run_id': payload.get('candidate_run_id'),
+        'selected_candidate_path': payload.get('candidate_path'),
+        'scope': 'gravity_only_mass_and_first_moments' if source=='offline' else 'gravity_only_first_moments',
     }
 
 
@@ -842,6 +901,9 @@ def restore_gravity_correction(core_path, task_directory):
         'core_path': str(core_path),
         'restored_from': str(backup),
         'core_sha256': sha256_file(core_path),
+        'candidate_source': payload.get('candidate_source'),
+        'candidate_run_id': payload.get('candidate_run_id'),
+        'selected_candidate_path': payload.get('candidate_path'),
     }
     (directory / 'restore.json').write_text(json.dumps(restore_record, ensure_ascii=False, indent=2))
     return restore_record
@@ -986,6 +1048,9 @@ def export_candidate_urdf(task_directory, destination=None):
         'locked_links_preserved': payload.get('locked_links', []),
         'identification_mode': payload.get('identification_mode', 'global'),
         'candidate_source': payload.get('candidate_source', 'result.json'),
+        'candidate_run_id': payload.get('candidate_run_id'),
+        'selected_candidate_path': payload.get('candidate_path'),
+        'scope': 'gravity_only_mass_and_first_moments' if source=='offline' else 'gravity_only_first_moments',
         'friction_status': payload.get('friction_status', 'requires_refit_or_review'),
         'joint_geometry_modified': False,
         'copied_relative_meshes': copied,

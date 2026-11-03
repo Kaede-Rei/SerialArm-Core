@@ -70,13 +70,15 @@ class CalibrationEntrypoints(unittest.TestCase):
         output={'candidate_urdf':'/tmp/candidate/offline/model.urdf'}
         verified={'ok':True,'quality_validation_performed':False}
         completed=mock.Mock(returncode=0,stdout=json.dumps(verified),stderr='')
-        with mock.patch.object(cli,'run_full_inertial_isolated',return_value=output) as job, \
+        selected=Path('/tmp/task/offline_candidates/run-A/recomputed-candidate.json')
+        with mock.patch.object(cli,'select_gravity_candidate',return_value=('offline',selected)), \
+             mock.patch.object(cli,'run_full_inertial_isolated',return_value=output) as job, \
              mock.patch.object(cli,'find_calibrator',return_value='/test/calibrator'), \
              mock.patch.object(cli.subprocess,'run',return_value=completed) as run, \
              mock.patch.object(cli,'update_candidate_urdf_verification',return_value=verified):
             result=cli.export_verified(Path('core.yaml'),Path('task'),None,'offline')
-        job.assert_called_once_with(Path('task'),None,mode='legacy_gravity_export')
-        self.assertEqual(run.call_args.args[0][-2:],['--candidate-source','offline'])
+        job.assert_called_once_with(Path('task'),None,mode='legacy_gravity_export',locked_links={'candidate_path':str(selected)})
+        self.assertEqual(run.call_args.args[0][-4:],['--candidate-source','offline','--candidate-path',str(selected)])
         self.assertFalse(result['verification']['quality_validation_performed'])
 
 if __name__=='__main__':unittest.main()

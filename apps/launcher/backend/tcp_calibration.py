@@ -10,6 +10,8 @@ import hashlib
 import math
 from pathlib import Path
 import re
+import shutil
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 
@@ -403,8 +405,32 @@ class TcpCalibration:
         temporary.replace(output)
         return {'path': str(output), 'directory': str(output.parent)}
 
-    def export(self, config):
-        session, *_ = self._ensure(config)
+    def preview_export(self, config):
+        session, info, core, core_path, urdf = self._ensure(config)
+        if session.get('purpose', 'tcp') != 'tcp':
+            raise ValueError('诊断针尖不能导出正式 TCP 模型')
+        if not session.get('report') or session['report'].get('passed') is not True:
+            raise ValueError('请先通过独立针尖验证')
+        link_name = f"{info['profile']}_tcp"
+        joint_name = f"{info['profile']}_tcp_fixed"
+        root = ET.parse(urdf).getroot()
+        existing = {node.get('name') for node in root.findall('link')} | {node.get('name') for node in root.findall('joint')}
+        if link_name in existing or joint_name in existing:
+            raise ValueError('TCP Link 名称与现有模型冲突，请先处理已有工具坐标系')
+        return {'profile': info['profile'], 'source_urdf': str(urdf), 'source_core': str(core_path),
+                'source_profile': info['profile_file'], 'parent_frame': session['parent_frame'],
+                'tool_frame': link_name, 'fixed_joint': joint_name,
+                'tcp_xyz_m': list(session['candidate']['tcp_xyz_m']),
+                'source_hashes': {'core': _digest(core_path), 'urdf': _digest(urdf), 'profile': _digest(info['profile_file'])},
+                'change_summary': [
+                    {'field': 'urdf.fixed_joint', 'before': None, 'after': {'name':joint_name, 'parent':session['parent_frame'], 'child':link_name, 'xyz':session['candidate']['tcp_xyz_m'], 'rpy':[0.,0.,0.]}},
+                    {'field': 'core.model.tool_frame', 'before':core['model']['tool_frame'], 'after':link_name},
+                    {'field': 'profile.description.urdf', 'before':str(urdf), 'after':'robot.urdf'}],
+                'writes_source': False, 'orientation': '沿用父坐标系朝向'}
+
+    def export(self, config, destination=None):
+        session, info, core, core_path, urdf = self._ensure(config)
+        preview = self.preview_export(config)
         if session.get('purpose', 'tcp') != 'tcp':
             raise ValueError('诊断针尖属于临时工具，不能导出正式 TCP 候选')
         if not session['report'] or not session['report']['passed']:
@@ -420,77 +446,86 @@ class TcpCalibration:
         tmp = output.with_suffix('.yaml.tmp')
         tmp.write_text(yaml.safe_dump(export, allow_unicode=True, sort_keys=False), encoding='utf-8')
         tmp.replace(output)
-        return {'path': str(output), 'directory': str(directory)}
-
-    def apply(self, config, *, native_running):
-        session, info, core, core_path, urdf = self._ensure(config)
-        if session.get('purpose', 'tcp') != 'tcp':
-            raise ValueError('诊断会话不能修改 URDF 或 Profile')
-        if native_running:
-            raise ValueError('保存 TCP 模型前必须停放并断开真机会话')
-        if not session['report'] or session['report']['passed'] is not True:
-            raise ValueError('候选尚未通过独立验证，禁止应用')
-        self.export(config)
-        profile = Path(info['profile_file']).resolve()
-        if profile.is_relative_to((self.library.root / 'src' / 'robot_supports').resolve()):
-            raise ValueError('内置 Profile 不可直接改写，请导出结果并在独立 Profile 包中应用')
-        if not profile.is_file(): raise ValueError('Profile 配置文件不存在')
-        profile_doc = yaml.safe_load(profile.read_text(encoding='utf-8'))
-        entry = (profile_doc.get('profiles') or {}).get(info['profile'])
-        if not isinstance(entry, dict): raise ValueError('Profile 配置结构无效')
-        description = entry.get('description') or {}
-        desc_uri = description.get('urdf')
-        if not isinstance(desc_uri, str) or not desc_uri.lower().endswith('.urdf'):
-            raise ValueError('Profile Description 不是可直接修改的 URDF，先导出 TCP 候选')
-        # This requires the model and display description to be one identical source
-        desc_package = description.get('package')
-        resolved_desc = self.library.inspector.share(desc_package, config.get('resource_paths','').split(':') if config.get('resource_paths') else []) / desc_uri
-        if resolved_desc.resolve() != urdf:
-            raise ValueError('Core URDF 与 Profile Description URDF 不同，禁止自动应用以免上层模型不一致')
-        xml = ET.parse(urdf)
-        root = xml.getroot()
-        link_name = f"{info['profile']}_tcp"
-        joint_name = f"{info['profile']}_tcp_fixed"
-        existing = {x.get('name') for x in root.findall('link')} | {x.get('name') for x in root.findall('joint')}
-        if link_name in existing or joint_name in existing:
-            raise ValueError('目标 TCP Link 名称与原始模型冲突，请先处理旧工具配置')
-        link = ET.SubElement(root, 'link', {'name':link_name})
-        joint = ET.SubElement(root,'joint', {'name':joint_name,'type':'fixed'})
-        ET.SubElement(joint, 'parent', {'link': session['parent_frame']})
-        ET.SubElement(joint, 'child', {'link': link_name})
-        xyz = ' '.join(format(float(x), '.12g') for x in session['candidate']['tcp_xyz_m'])
-        ET.SubElement(joint, 'origin', {'xyz':xyz,'rpy':'0 0 0'})
-        generated = urdf.with_name(urdf.stem+'-tcp.urdf')
-        if generated.exists():
-            raise ValueError(f'候选模型文件已存在，不自动覆盖 {generated}')
-        # The new URDF shares the original directory to preserve relative mesh paths
-        new_core = copy.deepcopy(core)
-        new_core['model']['urdf_path'] = str(generated.relative_to(core_path.parent)) if generated.is_relative_to(core_path.parent) else str(generated)
-        new_core['model']['tool_frame'] = link_name
-        profile_doc['profiles'][info['profile']]['description']['urdf'] = str(Path(desc_uri).with_name(generated.name)).replace('\\','/')
-        core_data = yaml.safe_dump(new_core, allow_unicode=True, sort_keys=False)
-        profile_data = yaml.safe_dump(profile_doc, allow_unicode=True, sort_keys=False)
-        core_backup, profile_backup = core_path.read_bytes(), profile.read_bytes()
+        base = Path(destination).expanduser().resolve() if destination else directory
+        if destination and not base.is_dir(): raise ValueError('请选择存在的候选导出目录')
+        bundle = base / ('tcp-profile-' + str(time.time_ns()))
+        package_name = 'serialarm_tcp_' + re.sub(r'[^A-Za-z0-9_]', '_', info['profile'])
+        bundle.mkdir(parents=True, exist_ok=False)
         try:
-            tmp_urdf = generated.with_suffix('.urdf.tmp')
-            xml.write(tmp_urdf, encoding='utf-8', xml_declaration=True)
-            ET.parse(tmp_urdf)
-            tmp_urdf.replace(generated)
-            c_tmp = core_path.with_suffix(core_path.suffix+'.tmp')
-            p_tmp = profile.with_suffix(profile.suffix+'.tmp')
-            c_tmp.write_text(core_data, encoding='utf-8')
-            p_tmp.write_text(profile_data, encoding='utf-8')
-            yaml.safe_load(c_tmp.read_text());yaml.safe_load(p_tmp.read_text())
-            c_tmp.replace(core_path)
-            p_tmp.replace(profile)
-            self.library.inspector.inspect(config)
+            package = bundle / package_name
+            package.mkdir()
+            tree = ET.parse(urdf)
+            root = tree.getroot()
+            ET.SubElement(root, 'link', {'name':preview['tool_frame']})
+            joint = ET.SubElement(root, 'joint', {'name':preview['fixed_joint'], 'type':'fixed'})
+            ET.SubElement(joint, 'parent', {'link':session['parent_frame']})
+            ET.SubElement(joint, 'child', {'link':preview['tool_frame']})
+            ET.SubElement(joint, 'origin', {'xyz':' '.join(format(float(v), '.12g') for v in preview['tcp_xyz_m']), 'rpy':'0 0 0'})
+            roots = config.get('resource_paths', '').split(':') if config.get('resource_paths') else []
+            copied = {}
+            for mesh in root.findall('.//mesh'):
+                filename = mesh.get('filename', '')
+                if not filename: continue
+                if filename.startswith('package://'):
+                    name, relative = filename.removeprefix('package://').split('/', 1)
+                    source = self.library.inspector.share(name, roots) / relative
+                else:
+                    source = Path(filename)
+                    if not source.is_absolute(): source = urdf.parent / source
+                source = source.resolve()
+                if not source.is_file(): raise ValueError('模型网格资源不存在 ' + filename)
+                if source not in copied:
+                    resource = package / 'resources' / (str(len(copied)) + '-' + source.name)
+                    resource.parent.mkdir(exist_ok=True)
+                    shutil.copy2(source, resource)
+                    copied[source] = resource.relative_to(package).as_posix()
+                mesh.set('filename', copied[source])
+            tree.write(package / 'robot.urdf', encoding='utf-8', xml_declaration=True)
+            new_core = copy.deepcopy(core)
+            new_core['model'].update(urdf_path='robot.urdf', tool_frame=preview['tool_frame'])
+            correction = new_core['model'].get('gravity_correction_path')
+            if correction:
+                correction_source = (core_path.parent / correction).resolve()
+                if not correction_source.is_file(): raise ValueError('原配置引用的重力校正不存在')
+                from model_calibration_source import matches_recorded_fingerprint, recorded_file_fingerprint
+                correction_data = yaml.safe_load(correction_source.read_text(encoding='utf-8'))
+                if not isinstance(correction_data, dict) or not matches_recorded_fingerprint(urdf, correction_data.get('urdf_fingerprint')) or correction_data.get('joint_names') != core['model']['joint_names']:
+                    raise ValueError('原重力校正与当前模型不匹配，请先处理源配置')
+                correction_data['tcp_frame_extension_source_fingerprint'] = correction_data['urdf_fingerprint']
+                correction_data['urdf_fingerprint'] = recorded_file_fingerprint(package / 'robot.urdf')
+                (package / 'gravity-correction.yaml').write_text(yaml.safe_dump(correction_data, allow_unicode=True, sort_keys=False), encoding='utf-8')
+                new_core['model']['gravity_correction_path'] = 'gravity-correction.yaml'
+            (package / 'core.yaml').write_text(yaml.safe_dump(new_core, allow_unicode=True, sort_keys=False), encoding='utf-8')
+            hardware = Path(info['resources']['hardware'])
+            shutil.copy2(hardware, package / 'hardware.yaml')
+            profile_doc = yaml.safe_load(Path(info['profile_file']).read_text(encoding='utf-8'))
+            entry = copy.deepcopy(profile_doc['profiles'][info['profile']])
+            entry['core'] = {'package':package_name, 'config':'core.yaml'}
+            entry['hardware'].update(config_package=package_name, config='hardware.yaml')
+            entry['description'] = {'package':package_name, 'urdf':'robot.urdf'}
+            profile_path = bundle / 'robot_profiles.yaml'
+            profile_path.write_text(yaml.safe_dump({'profiles':{info['profile']:entry}}, allow_unicode=True, sort_keys=False), encoding='utf-8')
+            bundle_report = bundle / output.name
+            bundle_report.write_text(yaml.safe_dump(export, allow_unicode=True, sort_keys=False), encoding='utf-8')
+            (bundle / 'changes.yaml').write_text(yaml.safe_dump(preview, allow_unicode=True, sort_keys=False), encoding='utf-8')
+            return {**preview, 'path':str(bundle_report), 'directory':str(bundle), 'bundle_directory':str(bundle),
+                    'candidate_urdf':str(package/'robot.urdf'), 'candidate_core':str(package/'core.yaml'),
+                    'profile_file':str(profile_path), 'resource_paths':str(bundle),
+                    'config':{**config, 'profile':info['profile'], 'profile_file':str(profile_path), 'resource_paths':str(bundle)}}
         except Exception:
-            core_path.write_bytes(core_backup)
-            profile.write_bytes(profile_backup)
-            generated.unlink(missing_ok=True)
+            shutil.rmtree(bundle, ignore_errors=True)
             raise
-        (Path(session['directory']) / 'fixed-point-session.yaml').unlink(missing_ok=True)
-        (Path(session['directory']) / 'tcp-session.yaml').unlink(missing_ok=True)
+
+    def apply(self, config, *, native_running, destination=None, expected_hashes=None):
+        if native_running:
+            raise ValueError('采用 TCP 候选前请停放并断开工作台')
+        preview = self.preview_export(config)
+        if expected_hashes != preview['source_hashes']:
+            raise ValueError('源配置已变化，请重新预览 TCP 差异后再确认采用')
+        exported = self.export(config, destination)
+        entry = self.library.register(exported['profile_file'], exported['profile'], exported['resource_paths'], 'suffix')
+        # Adopting the independent candidate leaves all source files and runtime
+        # profiles untouched, including bundled examples
         self.session = None
-        return {'applied': True, 'tool_frame': link_name, 'urdf': str(generated),
-                'warning':'Core 与 Profile Description 已更新，外部 ROS2 / MoveIt / LeRobot / Isaac 模型资源须自行同步，并在重新连接后完成几何验收'}
+        return {**exported, 'applied': True, 'adopted': True, 'library_entry': entry,
+                'warning': '已添加独立 TCP 配置，请使用新配置连接机械臂'}

@@ -282,8 +282,8 @@ void session_set_gravity_scale(PyRobotSession& self, const DoubleArray& gravity_
     self.set_gravity_scale(numpy_to_joint_vector(gravity_scale, "gravity_scale"));
 }
 
-void session_move_to(PyRobotSession& self, const DoubleArray& pos, double speed_scale) {
-    self.move_to(numpy_to_joint_vector(pos, "pos"), speed_scale);
+std::uint64_t session_move_to(PyRobotSession& self, const DoubleArray& pos, double speed_scale) {
+    return self.move_to(numpy_to_joint_vector(pos, "pos"), speed_scale);
 }
 
 // ! ========================= 基 础 类 型 绑 定 方 法 实 现 ========================= ! //
@@ -810,6 +810,7 @@ void bind_dynamics(py::module_& module) {
         .def_readonly("nv", &DynamicsInfo::nv)
         .def_readonly("total_mass", &DynamicsInfo::total_mass)
         .def_readonly("joint_names", &DynamicsInfo::joint_names)
+        .def_readonly("joint_types", &DynamicsInfo::joint_types)
         .def_readonly("q_indices", &DynamicsInfo::q_indices)
         .def_readonly("v_indices", &DynamicsInfo::v_indices);
 
@@ -943,11 +944,23 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("max_kp", &RobotSessionActuatorInfo::max_kp)
         .def_readonly("max_kd", &RobotSessionActuatorInfo::max_kd);
 
+    py::class_<JointMotionStatus>(module,"JointMotionStatus")
+        .def_readonly("id",&JointMotionStatus::id)
+        .def_readonly("state",&JointMotionStatus::state)
+        .def_readonly("target",&JointMotionStatus::target)
+        .def_readonly("position_tolerance",&JointMotionStatus::position_tolerance)
+        .def_readonly("velocity_tolerance",&JointMotionStatus::velocity_tolerance)
+        .def_readonly("units",&JointMotionStatus::units)
+        .def_readonly("reference_complete",&JointMotionStatus::reference_complete)
+        .def_readonly("settled_s",&JointMotionStatus::settled_s)
+        .def_readonly("reason",&JointMotionStatus::reason);
+
     py::class_<RobotSessionSnapshot>(module, "RobotSessionSnapshot")
         .def(py::init<>())
         .def_readonly("robot_state", &RobotSessionSnapshot::robot_state)
         .def_readonly("sequence",&RobotSessionSnapshot::sequence)
         .def_readonly("monotonic_ns",&RobotSessionSnapshot::monotonic_ns)
+        .def_readonly("motion", &RobotSessionSnapshot::motion)
         .def_readonly("cycle", &RobotSessionSnapshot::cycle)
         .def_readonly("dynamics", &RobotSessionSnapshot::dynamics)
         .def_readonly("valid", &RobotSessionSnapshot::valid)

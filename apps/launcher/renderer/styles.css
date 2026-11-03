@@ -614,6 +614,14 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .readiness-section { margin: 24px 0; }
 .readiness-section > h3 { margin: 0 0 12px; }
 .readiness-section > .workspace-actions { margin-top: 12px; }
+.readiness-connection { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }
+.readiness-connection > div { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--card); min-width:0; }
+.readiness-connection b { font-size:12px; }
+.readiness-connection .readiness-chip { white-space:normal; }
+.profile-calibration-guide { margin-top:16px; }
+.profile-calibration-guide > b { font-size:13px; }
+.gravity-preflight { margin:12px 0; }
+.readiness-prerequisites { margin-bottom:12px; }
 .readiness-todos { display: grid; gap: 8px; margin-top: 12px; }
 .readiness-todos > div, .readiness-record { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
 .readiness-todos span, .readiness-record span { min-width: 0; overflow-wrap: anywhere; }
@@ -640,6 +648,7 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .profile-joint-table input, .profile-joint-table select { width: 100%; min-width: 100px; }
 .setup-highlight { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 8px; scroll-margin: 100px 0 30px; }
 @media (max-width: 900px) {
+  .readiness-connection { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .readiness-todos > div, .readiness-record { align-items: flex-start; flex-wrap: wrap; }
   .parameter-top-actions { flex-wrap: wrap; }
   .profile-review-defaults .profile-guide-grid { grid-template-columns: 1fr; }

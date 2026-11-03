@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a relocatable installed ROS2 overlay for an Electron Linux release"""
+"""Prepare a standalone native runtime with optional ROS2 adapters for Linux releases"""
 
 import argparse
 import hashlib
@@ -16,16 +16,6 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'tools/install'))
 from provenance import gui_assets, gui_inputs, installed_content, native_inputs
 
-REQUIRED_PACKAGES = (
-    'serial_arm_core',
-    'serial_arm_robot_profiles',
-    'serial_arm_ros2_control',
-    'serial_arm_protocol_damiao_usb2can',
-    'serial_arm_hardware_damiao',
-    'dm_arm_description',
-    'dm_arm_no_gripper',
-    'dm_arm_with_gripper',
-)
 REQUIRED_BINARIES = (
     'serial_arm_terminal',
     'serial_arm_model_probe',
@@ -47,24 +37,33 @@ def copytree(source: Path, target: Path):
                                                   '.DS_Store', '.git', '.serialarm'))
 
 
-def read_manifest(root):
+def read_manifest(root, with_ros2=False):
     path = root / '.install/manifest.json'
     if not path.is_file():
-        fail('Missing verified installation; run ./install.sh --preset ros2 --yes')
+        fail('Missing verified installation; run ./install.sh --preset standalone --with-python --yes')
     data = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(data, dict) or data.get('status') != 'verified':
         fail('Installation did not pass its verification stage')
-    if not (data.get('ros2') and data.get('moveit') and data.get('python')
-            and data.get('terminal') and data.get('gui')):
-        fail('The active installation is not full ROS2 + MoveIt + GUI (install.sh choice 4)')
-    if data.get('robot') != 'dm_arm' or data.get('ros_distro') != 'humble':
-        fail('Only the DM-Arm / ROS2 Humble release target is supported')
+    if not (data.get('python') and data.get('terminal') and data.get('gui')):
+        fail('Release needs Core, Terminal, Python Binding and GUI')
+    if bool(data.get('ros2')) != bool(with_ros2):
+        fail('Installation adapter selection differs from the release target; use --with-ros2 for the optional ROS release')
+    if data.get('robot') != 'dm_arm':
+        fail('The built-in Linux release needs DM-Arm resources')
+    if with_ros2 and data.get('ros_distro') != 'humble':
+        fail('The optional ROS adapter release targets Humble')
     if data.get('gui_status') != 'ready':
         fail('GUI installation has not been verified')
-    if not set(REQUIRED_PACKAGES).issubset(set(data.get('packages') or [])):
-        fail('Manifest does not include all required ROS2, DM-Arm and MoveIt packages')
-    if not set(('core', 'terminal', 'python', 'ros2', 'moveit')).issubset(
-            set(data.get('installed_components') or [])):
+    required = {'serial_arm_core', 'serial_arm_robot_profiles', 'serial_arm_protocol_damiao_usb2can',
+                'serial_arm_hardware_damiao', 'dm_arm_description'}
+    if with_ros2:
+        required.add('serial_arm_ros2_control')
+    if data.get('moveit'):
+        required.update(('dm_arm_no_gripper', 'dm_arm_with_gripper'))
+    if not required.issubset(set(data.get('packages') or [])):
+        fail('Manifest does not include the selected Core, robot resources or adapters')
+    components = {'core', 'terminal', 'python'} | ({'ros2'} if with_ros2 else set())
+    if not components.issubset(set(data.get('installed_components') or [])):
         fail('Installer has not verified the required compiled components')
     prefix_raw = data.get('install_prefix')
     if not isinstance(prefix_raw, str) or not prefix_raw:
@@ -88,13 +87,13 @@ def read_manifest(root):
         exe = prefix / 'bin' / binary
         if not exe.is_file() or not os.access(exe, os.X_OK):
             fail(f'Missing compiled executable: {exe}')
-    if not (prefix / 'local_setup.bash').is_file():
-        fail('ROS2 local setup script not installed')
+    if with_ros2 and not (prefix / 'local_setup.bash').is_file():
+        fail('Optional ROS2 adapter setup script is missing')
     if not any(prefix.glob('lib*/libserial_arm_core.so*')):
         fail('Compiled Core shared library is missing')
-    for package in REQUIRED_PACKAGES:
+    for package in sorted(required):
         p = prefix / 'share/ament_index/resource_index/packages' / package
-        if not p.is_file():
+        if with_ros2 and not p.is_file():
             fail(f'ROS2 package index not installed: {package}')
         share = prefix / 'share' / package
         if not share.is_dir():
@@ -110,15 +109,17 @@ def read_manifest(root):
     return prefix
 
 
-def check_elf_dependencies(prefix):
+def check_elf_dependencies(prefix, library_paths=()):
     if not shutil.which('ldd'):
         fail('ldd is needed to validate installed native runtime libraries')
-    env = os.environ.copy()
+    env = clean_runtime_environment()
     env['LD_LIBRARY_PATH'] = os.pathsep.join(
-        [str(prefix / 'lib'), str(prefix / 'lib64'), env.get('LD_LIBRARY_PATH', '')])
+        [str(prefix / 'lib'), str(prefix / 'lib64'), *map(str, library_paths), env.get('LD_LIBRARY_PATH', '')])
     for name in REQUIRED_BINARIES:
         result = subprocess.run(['ldd', str(prefix / 'bin' / name)],
                                 env=env, text=True, capture_output=True)
+        if '/opt/ros/' in result.stdout:
+            fail(f'Core executable unexpectedly depends on ROS: {name}')
         if result.returncode or 'not found' in result.stdout:
             fail(f'Native dependency missing for {name}: ' +
                  (result.stdout + result.stderr)[-1700:])
@@ -133,7 +134,7 @@ def prepare_gui(root, project):
     # Make sure the main process and renderer are from the current source
     main = (project / 'desktop/main.cjs').read_text(encoding='utf-8')
     if 'function packagedBackend()' not in main or 'SERIAL_ARM_BUNDLE_PREFIX' not in main:
-        fail('Electron entry does not support relocated ROS2 release runtimes')
+        fail('Electron entry does not support relocated native runtimes')
     for asset in ('renderer/vendor/three/build/three.module.js',
                   'renderer/index.html', 'renderer/app.js',
                   'node_modules/@xterm/xterm/lib/xterm.js',
@@ -142,8 +143,8 @@ def prepare_gui(root, project):
             fail('Missing staged GUI asset: ' + asset)
 
 
-def bundle_external_libs(native):
-    """Include non-system ELF deps while leaving the ROS2 distro in /opt/ros/humble"""
+def bundle_external_libs(native, library_paths=()):
+    """Bundle external native dependencies; optional ROS adapters use their host distro"""
     libdest = native / 'lib'
     libdest.mkdir(parents=True, exist_ok=True)
     dirs = [native / 'bin', native / 'lib', native / 'lib64']
@@ -160,7 +161,7 @@ def bundle_external_libs(native):
             continue
         env = os.environ.copy()
         env['LD_LIBRARY_PATH'] = os.pathsep.join(
-            [str(native / 'lib'), str(native / 'lib64'), env.get('LD_LIBRARY_PATH', '')])
+            [str(native / 'lib'), str(native / 'lib64'), *map(str, library_paths), env.get('LD_LIBRARY_PATH', '')])
         proc = subprocess.run(['ldd', str(candidate)], env=env, text=True, capture_output=True)
         if proc.returncode != 0:
             fail(f'Cannot inspect shared libraries: {candidate}: {proc.stderr[-700:]}')
@@ -172,9 +173,13 @@ def bundle_external_libs(native):
                 continue
             soname, filename = match.groups()
             resolved = Path(filename).resolve()
-            if (resolved.is_relative_to(native.resolve()) or
-                resolved.is_relative_to(Path('/lib').resolve()) or
-                resolved.is_relative_to(Path('/usr/lib').resolve()) or
+            # Desktop/glibc runtimes come from the target OS. Domain libraries
+            # such as yaml-cpp, Boost, URDF and collision parsers must be bundled
+            # even if apt installed them under /usr/lib on the build machine
+            platform_libraries = ('libc.so.', 'libm.so.', 'libdl.so.', 'libpthread.so.',
+                'librt.so.', 'libresolv.so.', 'libutil.so.', 'libstdc++.so.', 'libgcc_s.so.',
+                'libgomp.so.', 'libgfortran.so.', 'libquadmath.so.', 'ld-linux')
+            if (resolved.is_relative_to(native.resolve()) or soname.startswith(platform_libraries) or
                 resolved.is_relative_to(Path('/opt/ros/humble').resolve())):
                 continue
             if not resolved.is_file() or '/' in soname:
@@ -229,7 +234,7 @@ print(json.dumps({'minor': sys.version_info.minor, 'paths': sorted(paths.items()
     system_minor = int(subprocess.check_output(
         ['/usr/bin/python3', '-c', 'import sys; print(sys.version_info.minor)'], text=True))
     if data['minor'] != system_minor:
-        fail('GUI Python ABI does not match the system ROS2 Python')
+        fail('GUI Python ABI does not match the target system Python')
     target = payload / 'python'
     target.mkdir(parents=True, exist_ok=True)
     for name, folder in data['paths']:
@@ -238,8 +243,33 @@ print(json.dumps({'minor': sys.version_info.minor, 'paths': sorted(paths.items()
             copytree(source, target / name)
         else:
             shutil.copy2(source, target / name)
+    bundle_python_binding(root, payload)
     validate_python_payload(payload)
-    print('[SerialArm] GUI Python dependency closure and CLARABEL solve verified')
+    print('[SerialArm] GUI Python dependencies, native binding and CLARABEL solve verified')
+
+
+def bundle_python_binding(root, payload):
+    manifest = json.loads((root / '.install/manifest.json').read_text())
+    prefix = Path(manifest['install_prefix'])
+    candidates = [p for folder in ('local/lib', 'lib', 'lib64', 'python-venv/lib')
+                  for p in (prefix / folder).glob('python*/*-packages/serial_arm')
+                  if any(p.glob('_serial_arm*.so'))]
+    if len(candidates) != 1:
+        fail('Expected one installed SerialArm Python binding, found: ' + str(candidates))
+    copytree(candidates[0], payload / 'python/serial_arm')
+
+
+def clean_runtime_environment():
+    env = dict(os.environ)
+    ros_prefixes = [p for name in ('AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH')
+                    for p in env.get(name, '').split(os.pathsep) if p]
+    for name in ('PATH', 'LD_LIBRARY_PATH', 'PYTHONPATH', 'CMAKE_PREFIX_PATH'):
+        env[name] = os.pathsep.join(p for p in env.get(name, '').split(os.pathsep)
+            if p and not p.startswith('/opt/ros/') and not any(p == base or p.startswith(base + '/') for base in ros_prefixes))
+    for name in list(env):
+        if name.startswith('ROS_') or name in ('AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH', 'PYTHONHOME', 'PYTHONPATH'):
+            env.pop(name, None)
+    return env
 
 
 def validate_python_payload(payload):
@@ -249,12 +279,12 @@ import sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
 sys.path.insert(0, str(root / 'python'))
-import yaml, numpy as np, scipy, cvxpy as cp, clarabel, osqp, scs
-for module in (yaml, np, scipy, cp, clarabel, osqp, scs):
+import yaml, numpy as np, scipy, cvxpy as cp, clarabel, osqp, scs, serial_arm
+for module in (yaml, np, scipy, cp, clarabel, osqp, scs, serial_arm):
     if not Path(module.__file__).resolve().is_relative_to(root / 'python'):
         raise ValueError('Dependency escaped payload: ' + module.__name__)
 if int(np.__version__.split('.')[0]) >= 2:
-    raise ValueError('Packaged NumPy violates the ROS Humble ABI')
+    raise ValueError('Packaged NumPy violates the native binding ABI')
 if 'CLARABEL' not in cp.installed_solvers():
     raise ValueError('Packaged CLARABEL solver is unavailable')
 # A small joint static/dynamic regression with the same PSD constraint family
@@ -272,9 +302,9 @@ if problem.status != 'optimal' or x.value is None or not np.allclose(x.value, tr
     raise ValueError('Packaged joint physical solve failed: ' + str(problem.status))
 print('PYTHON_PAYLOAD_SOLVE_PASS')
 '''
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
-    for name in ('PYTHONPATH', 'PYTHONHOME', 'LD_LIBRARY_PATH'):
-        env.pop(name, None)
+    env = clean_runtime_environment()
+    env.update(PYTHONDONTWRITEBYTECODE='1', OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    env['LD_LIBRARY_PATH'] = os.pathsep.join(str(payload / 'native' / folder) for folder in ('lib', 'lib64'))
     result = subprocess.run(['/usr/bin/python3', '-I', '-S', '-c', check, str(payload)],
                             env=env, text=True, capture_output=True, timeout=60)
     if result.returncode != 0:
@@ -341,7 +371,7 @@ def make_manifest(root, stage, payload):
     gui_package.update({
         'name': 'serial-arm-core',
         'version': version,
-        'description': 'SerialArm-Core complete ROS2 control, MoveIt and desktop application',
+        'description': 'SerialArm-Core native control and desktop workbench with optional ROS2 adapters',
         'productName': 'SerialArm Core',
         'main': 'desktop/main.cjs',
         'license': 'GPL-3.0-only',
@@ -377,10 +407,7 @@ def make_manifest(root, stage, payload):
                 'depends': [
                     'libgtk-3-0', 'libnss3', 'libxss1', 'libasound2',
                     'libgbm1', 'libstdc++6', 'libgomp1', 'libgfortran5',
-                    'python3', 'ros-humble-ros2-control',
-                    'ros-humble-ros2-controllers', 'ros-humble-moveit',
-                    'ros-humble-robot-state-publisher',
-                    'ros-humble-xacro',
+                    'python3',
                 ],
             },
         },
@@ -404,9 +431,10 @@ def main():
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--stage', type=Path)
     parser.add_argument('--check-only', action='store_true')
+    parser.add_argument('--with-ros2', action='store_true', help='Include explicitly selected ROS2 adapters')
     args = parser.parse_args()
     root = args.root.resolve()
-    prefix = read_manifest(root)
+    prefix = read_manifest(root, args.with_ros2)
     if args.check_only:
         print(prefix)
         return
@@ -414,17 +442,18 @@ def main():
         parser.error('--stage is required unless --check-only is set')
     receipt_text = (root / '.install/manifest.json').read_text(encoding='utf-8')
     manifest = json.loads(receipt_text)
-    check_elf_dependencies(prefix)
+    check_elf_dependencies(prefix, manifest.get('native_library_paths', []))
     stage = args.stage.resolve()
     project, payload = stage / 'project', stage / 'payload'
     project.mkdir(parents=True, exist_ok=True)
     payload.mkdir(parents=True, exist_ok=True)
 
-    print('[SerialArm] Copying full ROS2 overlay, Python Binding, MoveIt and DM-Arm')
+    print('[SerialArm] Copying native Core, Python Binding, DM-Arm and selected adapters')
     copytree(prefix, payload / 'native')
     if installed_content(payload / 'native') != manifest['native_receipt']['installed_sha256']:
         fail('Installed files changed while copying the release payload')
-    bundle_external_libs(payload / 'native')
+    shutil.rmtree(payload / 'native/python-venv', ignore_errors=True)
+    bundle_external_libs(payload / 'native', manifest.get('native_library_paths', []))
     wrap_native_entrypoints(payload / 'native')
     print('[SerialArm] Staging Electron GUI and Python bridge')
     prepare_gui(root, project)
@@ -434,13 +463,17 @@ def main():
         copytree(fallback, payload / 'src/robot_supports/profiles/config')
     shutil.copy2(root / 'LICENSE', payload / 'LICENSE')
     python_gui_modules(root, payload)
-    if read_manifest(root) != prefix:
+    if read_manifest(root, args.with_ros2) != prefix:
         fail('Active installation changed while preparing the release payload')
     if (root / '.install/manifest.json').read_text(encoding='utf-8') != receipt_text:
         fail('Installation receipt changed while preparing the release payload')
+    (payload / 'runtime.json').write_text(json.dumps({
+        'installed_components': manifest['installed_components'],
+        'ros_distro': manifest.get('ros_distro') if manifest.get('ros2') else '',
+    }, indent=2) + '\n')
     release_evidence(root, payload, manifest)
     make_manifest(root, stage, payload)
-    print('[SerialArm] Full release staged successfully')
+    print('[SerialArm] Selected release runtime staged successfully')
 
 
 if __name__ == '__main__':

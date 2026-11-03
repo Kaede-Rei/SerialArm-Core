@@ -2,7 +2,7 @@
 
 ![Core、上层适配、机器人配置与硬件驱动](images/architecture.svg)
 
-SerialArm-Core 以同一 C++ Core 提供控制、动力学、交互和安全检查；GUI、Terminal、Python 与 ROS2 负责各自的输入和展示
+SerialArm-Core 以同一 C++ Core 提供控制、动力学、交互和安全检查；GUI、Terminal 与 Python 可独立运行，ROS2 和 MoveIt 是可选适配层
 
 ## 模块职责
 
@@ -10,8 +10,8 @@ SerialArm-Core 以同一 C++ Core 提供控制、动力学、交互和安全检�
 | --- | --- | --- |
 | Core | 生命周期、关节控制、动力学、交互、安全与标定 | `src/serial_arm/core/` |
 | ControlRuntime | 周期执行、命令收取、运动来源与快照 | `src/serial_arm/core/include/serial_arm/runtime/` |
-| ROS2 Adapter | 将 ros2_control 的命令、状态和生命周期接入 Core | `src/serial_arm/bringup/ros2_control/` |
-| Profile | 组合模型、Core、硬件、Controllers 与 MoveIt 资源 | `src/robot_supports/profiles/` 或下游包 |
+| ROS2 Adapter（可选） | 将 ros2_control 的命令、状态和生命周期接入 Core | `src/serial_arm/bringup/ros2_control/` |
+| Profile | 组合模型、Core、硬件及可选 Controllers、MoveIt 资源 | `src/robot_supports/profiles/` 或下游包 |
 | Hardware Backend | 将统一执行器语义转换为厂商协议 | `src/robot_supports/hardware/` |
 | Protocol / Transport | 编解码、通信时间戳、共享总线与事务 | `src/robot_supports/protocol/` 与 Core transport |
 | Launcher | 模型导入、配置、任务组织、可视化与进程管理 | `apps/launcher/` |
@@ -85,6 +85,10 @@ Terminal、Python Session 和 ROS2 Adapter 共享 `ControlRuntime` 的执行与�
 
 ROS2 从 Core 配置读取默认任务与增益用途；停止、故障恢复和停放按各自生命周期执行
 
+Core 与桌面启动直接组装原生库、Python 与资源搜索路径，不 source 宿主 ROS2；只有显式启动适配入口时才加载 ROS2 发行版和适配工作区，缺少适配组件不影响原生功能
+
+点到点命令分配独立运动编号；参考生成结束后，使用新鲜反馈检查逐关节位置、速度和连续稳定时间，向上层报告执行中、完成、中断或失败，滑条目标与命令接收状态不用于推测到位
+
 ### 原生阻抗
 
 执行器按关节位置、速度误差及前馈执行 MIT 命令
@@ -132,7 +136,11 @@ Backend 将接收时间与连续性随帧传入 Core，反馈年龄取接收时�
 
 候选携带采样姿态范围、负载、响应估计、验证指标及保持补偿状态；局部无接触试验给出的范围用于后续调参，接触和末端精度由对应实测验证
 
-在线静态重力校正与离线完整辨识分别保存候选，临时应用、写入配置和导出是独立动作
+在线结果与离线每轮辨识分别保存候选，预览、写入配置和导出绑定明确的来源与轮次；存在离线候选时不会默认采用在线旧结果
+
+在线静态重力候选固定质量并校正一阶矩，离线静态候选可以同时更新质量与一阶矩；重力覆盖只将这些参数用于重力计算，完整惯性部署通过 URDF 导出与对应验证
+
+几何 TCP 候选先比较新 Frame 与工具偏移，再导出独立的 URDF、Core 与 Profile；确认采用时登记新 Profile，保留原模型与原配置
 
 重力覆盖只替换重力项；导出 URDF 的质量或质心变化会影响完整动力学，需在对应工况重新验证
 
@@ -152,6 +160,10 @@ Backend 将接收时间与连续性随帧传入 Core，反馈年龄取接收时�
 | 标定或停放临时参数 | 对应任务，结束或故障按任务契约恢复 |
 
 保存核对目标文件和来源指纹，保留备份并原子替换；历史任务与候选使用自己的源快照，导出不读取另一台在线机械臂的临时参数
+
+历史任务按机器人和工具筛选后分页，普通轨迹选择、重命名及记录导出可离线操作；已保存记录的导出不要求断开工作台，耗时导出在后台执行，保持与失能命令继续使用控制通道
+
+子页切换保留模型和相机；URDF 内容、路径或受控链变化时以模型身份失效缓存，重新加载模型与限位
 
 ## 硬件与资源边界
 

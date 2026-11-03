@@ -5,6 +5,7 @@
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/robot.hpp"
 #include "serial_arm/runtime/control_runtime.hpp"
+#include "serial_arm/runtime/joint_motion.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -49,6 +50,7 @@ struct RobotSessionSnapshot {
     RobotState robot_state{ RobotState::UNCONFIGURED };  ///< Robot 生命周期状态
     std::uint64_t sequence{0};
     std::uint64_t monotonic_ns{0};
+    JointMotionStatus motion;
     RobotCycleOutput cycle;                              ///< 最近一次完整控制周期输出
     DynamicsState dynamics;                              ///< 最近一次动力学缓存
     bool valid{ false };                                 ///< 是否已经存在合法周期快照
@@ -132,7 +134,7 @@ public:
      * @param pos 各受控关节的绝对位置目标
      * @param speed_scale 速度比例，范围为 (0, 1]
      */
-    void move_to(const JointVector& pos, double speed_scale);
+    std::uint64_t move_to(const JointVector& pos, double speed_scale);
     /**
      * @brief 取消位置目标并切换到当前位置保持
      */
@@ -259,6 +261,7 @@ private:
     std::function<tl::expected<void,RobotFault>()> pending_execution_update_;
     std::uint64_t execution_sequence_{0},completed_execution_sequence_{0};
     std::string execution_error_;
+    JointMotionTracker motion_;
     bool has_goal_{ false };                            ///< 是否存在位置目标
     std::atomic<bool> configured_{ false };                          ///< 会话是否已完成配置
 
