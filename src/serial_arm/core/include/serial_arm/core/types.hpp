@@ -22,6 +22,10 @@ enum class JointImpedanceMode {
     COMPLIANT_TRACKING,     ///< 柔性跟踪模式
 };
 
+enum class JointGainProfile { RIGID, COMPLIANT, DRAG, SERVO_TRACKING };
+enum class GainSource { CONFIGURED, CALIBRATION_OVERRIDE, PARK_OVERRIDE, FULL_COMMAND, TRANSITION };
+enum class HoldTargetPolicy { PRESERVE_NOMINAL, CAPTURE_MEASURED };
+
 /**
  * @brief 模型前馈策略
  */

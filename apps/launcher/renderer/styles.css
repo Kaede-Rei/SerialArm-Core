@@ -30,12 +30,12 @@
 .workspace-tabs{display:flex;gap:6px;margin-bottom:12px;padding:5px;border:1px solid var(--line);border-radius:12px;background:var(--card);width:max-content;max-width:100%}
 .workspace-tabs button{border:0;background:transparent;padding:9px 16px;border-radius:8px;color:var(--muted);font-weight:700;cursor:pointer}
 .workspace-tabs button.active{background:var(--soft);color:var(--text);box-shadow:inset 0 0 0 1px var(--line)}
-.workbench-layout{display:grid;grid-template-columns:minmax(360px,44%) minmax(0,56%);min-height:680px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--card);isolation:isolate}
-.workbench-model{position:relative;z-index:1;min-width:0;min-height:680px;overflow:hidden;border-right:1px solid var(--line);background:var(--soft);isolation:isolate}
-#workbench-viewport{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:540px;overflow:hidden;contain:paint}
+.workbench-layout{display:grid;grid-template-columns:minmax(360px,44%) minmax(0,56%);align-items:start;border:1px solid var(--line);border-radius:16px;overflow:clip;background:var(--card);isolation:isolate}
+.workbench-model{position:sticky;top:84px;align-self:start;z-index:1;min-width:0;min-height:0;height:clamp(280px,calc(100dvh - 184px),720px);overflow:hidden;border-right:1px solid var(--line);background:var(--soft);isolation:isolate}
+#workbench-viewport{position:absolute;inset:0;width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;contain:paint}
 #workbench-viewport canvas{position:absolute!important;inset:0!important;display:block!important;width:100%!important;height:100%!important;max-width:100%!important;max-height:100%!important}
 .workbench-model-note{position:absolute;z-index:2;left:14px;bottom:14px;padding:7px 10px;border-radius:8px;background:rgba(15,23,42,.76);color:#fff;font:11px/1.2 monospace;letter-spacing:.04em;pointer-events:none}
-.workbench-task{position:relative;z-index:3;min-width:0;max-height:780px;overflow:auto;background:var(--card);isolation:isolate}
+.workbench-task{position:relative;z-index:3;min-width:0;background:var(--card);isolation:isolate}
 .workspace-panel{padding:18px;display:flex;flex-direction:column;gap:14px}
 .workspace-section{border:1px solid var(--line);border-radius:12px;padding:14px;background:var(--card)}
 .workspace-section h3{margin:0 0 10px;font-size:15px}
@@ -51,7 +51,7 @@
 .task-status pre{max-height:280px;overflow:auto;background:var(--soft);padding:10px;border-radius:8px;font-size:11px}
 .matrix-table{border-collapse:collapse;font:10px monospace;margin-top:10px}.matrix-table td{border:1px solid var(--line);padding:4px 6px;text-align:right}
 #workbench-chart{width:100%;display:block;background:var(--soft);border-radius:8px}
-@media(max-width:1200px){.workbench-layout{grid-template-columns:1fr}.workbench-model{min-height:420px;border-right:0;border-bottom:1px solid var(--line)}#workbench-viewport{min-height:420px}}
+@media(max-width:900px){.workbench-layout{grid-template-columns:1fr}.workbench-model{position:relative;top:auto;height:clamp(260px,42dvh,400px);border-right:0;border-bottom:1px solid var(--line)}}
 
 
 .operation-overlay{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:24px;background:rgba(15,23,42,.16);backdrop-filter:blur(9px) saturate(.82);-webkit-backdrop-filter:blur(9px) saturate(.82);cursor:wait}
@@ -429,6 +429,28 @@
 .capability-tune-table .workspace-number{width:86px;min-width:0}
 .capability-runtime .workspace-section-head{gap:14px;flex-wrap:wrap}
 .capability-runtime .parameter-guidance{margin-top:8px}
+.capability-behavior .calibration-entry-title{font-size:13px}
+.capability-behavior .calibration-entry-grid{margin-top:12px}
+.capability-diagnostics,.capability-response{display:flex;flex-direction:column;gap:12px;min-width:0}
+.capability-diagnostics .workspace-section-head,.capability-response .workspace-section-head{margin-bottom:0}
+.capability-diagnostics h4{font-size:12px;margin:5px 0 0}
+.capability-reference-table{min-width:870px}
+.capability-torque-table{min-width:650px}
+.capability-reference-table td{white-space:nowrap;font:11px ui-monospace,monospace}
+.capability-observer-summary,.capability-response-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+.capability-response canvas{display:block;width:100%;max-width:100%;height:190px;border:1px solid var(--line);border-radius:9px;background:var(--subtle)}
+.capability-chart-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:11px;color:var(--muted)}
+.capability-chart-legend span{display:inline-flex;align-items:center;gap:5px}
+.capability-chart-legend span::before{content:"";display:inline-block;width:16px;height:2px;background:#8a8a92}
+.capability-chart-legend [data-line=virtual]::before{background:#df7b00}
+.capability-chart-legend [data-line=accepted]::before{background:#22a4ba}
+.capability-chart-legend [data-line=pos]::before{background:#9b72d4}
+.capability-response .model-calibration-options{grid-template-columns:repeat(2,minmax(0,1fr))}
+.capability-response .workspace-actions{margin-top:0}
+.capability-response #response-metrics{display:grid;gap:9px}
+.capability-response #response-metrics .hint{margin:0}
+.capability-behavior .calibration-entry-title{overflow-wrap:anywhere}
+@media(max-width:550px){.capability-behavior .calibration-entry-grid,.capability-response .model-calibration-options,.capability-observer-summary,.capability-response-metrics{grid-template-columns:1fr}}
 @media(max-width:760px){.capability-overview .workspace-section-head{flex-wrap:wrap}.capability-overview .kv{grid-template-columns:minmax(100px,.8fr) minmax(0,1fr)}}
 
 /* Keep orbit controls accessible in every robot preview */
@@ -545,3 +567,80 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .priority-error-card #priority-error-guidance{white-space:pre-wrap}
 .priority-error-card #priority-error-copy{flex-shrink:0}
 @media(max-width:520px){.priority-error-card{padding:18px}.priority-error-card .actions{flex-wrap:wrap}}
+
+/* Motion setup and interaction targets share the calibration visual structure. */
+.profile-motion-control{display:flex;flex-direction:column;gap:16px;min-width:0}
+.profile-motion-control>.calibration-step{margin:0}
+.motion-control-chain{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--subtle);color:var(--muted);font-size:11px;line-height:1.7}
+.motion-control-chain span:nth-child(2n){color:var(--accent)}
+.profile-gain-purpose-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:14px 0}
+.profile-gain-purpose{min-width:0;border:1px solid var(--line);border-radius:11px;padding:13px;background:var(--card)}
+.profile-gain-purpose>summary{cursor:pointer;font-size:13px;font-weight:650;color:var(--text);line-height:1.5}
+.profile-gain-purpose>summary small{display:inline-block;margin-left:9px;font:10px ui-monospace,monospace;color:var(--dim);overflow-wrap:anywhere}
+.profile-gain-purpose>.hint{font-size:11px;line-height:1.7}
+.profile-gain-task{padding-top:12px;margin-top:12px;border-top:1px solid var(--line);min-width:0}
+.profile-gain-task>b{font-size:11px;display:block;margin-bottom:9px}
+.profile-gain-task .parameter-subgroup{padding:10px;margin-bottom:8px}
+.profile-gain-task .parameter-fields{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.profile-gain-task .parameter-field>small{font-size:9px}
+.profile-gain-task>.parameter-fields{grid-template-columns:minmax(0,1fr)}
+.interaction-goal-editor{min-width:0;background:var(--subtle)}
+.interaction-goal-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+.interaction-goal-fields label{min-width:0}
+.interaction-goal-fields input,.interaction-goal-fields select{width:100%;min-width:0}
+.interaction-goal-editor h4{margin:0 0 13px}
+.control-gain-context{margin-top:14px;font-size:11px;grid-template-columns:110px minmax(0,1fr)}
+.control-gain-context dd{overflow-wrap:anywhere}
+.control-gain-context .mono-block{font-size:10px}
+.workbench-target-card>.workspace-section-head>label{display:grid;gap:6px;font-size:11px;max-width:95px;color:var(--muted)}
+.workbench-target-card #workbench-speed{width:100%;min-width:0}
+.target-joint-row{grid-template-columns:minmax(105px,1fr) minmax(100px,1.2fr) 80px;padding:11px 0;border-bottom:1px solid var(--line);gap:12px}
+.target-joint-row label{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;font-size:11px;row-gap:5px;overflow-wrap:anywhere}
+.target-joint-row label small{grid-column:1/-1;font-size:10px;color:var(--dim);font-weight:400}
+.target-joint-row label small b{font-weight:400;color:var(--muted)}
+.target-joint-row input[type=range]{accent-color:#22a4a0}
+.target-joint-row .joint-number{font-size:11px!important;height:33px!important}
+.secondary-target-actions{margin-top:13px;padding-top:12px;border-top:1px solid var(--line)}
+.secondary-target-actions .button{font-size:11px;color:var(--muted)}
+@media(max-width:1360px){.profile-gain-purpose-grid{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.interaction-goal-fields{grid-template-columns:minmax(0,1fr)}.target-joint-row{grid-template-columns:minmax(0,1fr) 80px}.target-joint-row label{grid-column:1/-1}.target-joint-row input[type=range]{min-width:0}.motion-control-chain{font-size:10px}.control-gain-context{grid-template-columns:95px minmax(0,1fr)}}
+.joint-number{border:1px solid var(--line);border-radius:7px;background:var(--subtle);color:var(--text)}
+.gain-qualification-table td:nth-child(2){white-space:normal;min-width:160px;line-height:1.65}
+.task-progress-track.is-indeterminate span{animation:task-measuring 1.8s ease-in-out infinite}
+@keyframes task-measuring{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
+@media(prefers-reduced-motion:reduce){.task-progress-track.is-indeterminate span{animation:none}}
+
+/* Preparation and configuration share precise, keyboard-visible destinations */
+.readiness-section { margin: 24px 0; }
+.readiness-section > h3 { margin: 0 0 12px; }
+.readiness-section > .workspace-actions { margin-top: 12px; }
+.readiness-todos { display: grid; gap: 8px; margin-top: 12px; }
+.readiness-todos > div, .readiness-record { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.readiness-todos span, .readiness-record span { min-width: 0; overflow-wrap: anywhere; }
+.readiness-records { margin-top: 20px; padding: 18px; }
+.readiness-records > summary { cursor: pointer; font-weight: 600; }
+.readiness-records .readiness-record { margin-top: 8px; }
+.mode-admission-row { flex-wrap: wrap; gap: 12px; }
+.mode-admission-row > b { min-width: 110px; }
+.mode-admission-row > details { flex-basis: 100%; }
+.profile-review-defaults { margin-top: 12px; }
+.profile-review-defaults > summary { cursor: pointer; }
+.profile-review-defaults .profile-guide-grid { margin-top: 14px; }
+.profile-review-defaults section { min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+.profile-review-defaults p { overflow-wrap: anywhere; }
+.parameter-key, .parameter-source { font-size: 12px; font-weight: 400; color: var(--muted); }
+.parameter-key summary, .parameter-source summary { cursor: pointer; }
+.parameter-key code, .parameter-source code { display: block; overflow-wrap: anywhere; white-space: normal; margin-top: 6px; }
+.parameter-field > .parameter-key { flex-basis: 100%; }
+.parameter-field [data-field-error] { color: var(--danger, #c84040); font-style: normal; }
+.profile-joint-table { width: 100%; border-collapse: collapse; min-width: 720px; }
+.profile-joint-table th, .profile-joint-table td { padding: 12px 8px; vertical-align: top; text-align: left; border-bottom: 1px solid var(--line); }
+.profile-joint-table .parameter-field { min-width: 105px; }
+.profile-joint-table td .parameter-field > span { display: none; }
+.profile-joint-table input, .profile-joint-table select { width: 100%; min-width: 100px; }
+.setup-highlight { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 8px; scroll-margin: 100px 0 30px; }
+@media (max-width: 900px) {
+  .readiness-todos > div, .readiness-record { align-items: flex-start; flex-wrap: wrap; }
+  .parameter-top-actions { flex-wrap: wrap; }
+  .profile-review-defaults .profile-guide-grid { grid-template-columns: 1fr; }
+}

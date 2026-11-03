@@ -8,7 +8,7 @@ function setup() {
   const state={workbenchEpoch:0,workbenchIdentity:null,session:{state:'idle'},language:'zh-CN',
     calibrationEntry:'teaching',calibrationToolSelected:{},telemetryHistory:[],modelCalibrationOffline:null};
   const errors=[];
-  const ui={state,lastRuntimeFaultKey:'',lastTeachReplayErrorKey:'',reportedCalibrationErrors:new Set(),errors,
+  const ui={state,ghostGeneration:0,modelView:null,lastRuntimeFaultKey:'',lastTeachReplayErrorKey:'',reportedCalibrationErrors:new Set(),errors,
     workbenchConnected:()=>['running','stopping'].includes(state.session.state),
     modelCalibrationActive:s=>!['idle','failed','complete','cancelled'].includes(s.phase),
     gainCandidateDeployable:()=>false,calibrationToolHistoryHtml:()=>'',modelCalibrationPhaseText:s=>s,
@@ -19,7 +19,7 @@ function setup() {
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../renderer/error-i18n.js'),'utf8'),ui);
   ui.localizedError=s=>ui.serialArmErrorI18n.translate(s,state.language);
   for(const name of ['synchronizeWorkbenchSession','currentModelCalibration','modelCalibrationTaskParams',
-      'calibrationStandalonePanelHtml','modelCalibrationQuick','finishTeachingSafely','describeRuntimeFault',
+      'gainRequirementFieldsHtml','gainCalibrationOptionsHtml','calibrationStandalonePanelHtml','modelCalibrationQuick','finishTeachingSafely','describeRuntimeFault',
       'normalizeDialogError','checkRuntimeAlerts']) {
     const match=source.match(new RegExp('(?:async )?function '+name+'\\([^]*?\\n\\}'));
     assert.ok(match,name);vm.runInContext(match[0],ui);

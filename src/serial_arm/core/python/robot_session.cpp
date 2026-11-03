@@ -45,6 +45,10 @@ std::string make_robot_error(const char* action, const RobotFault& fault) {
         stream << "; InteractionControllerErr=" << static_cast<int>(fault.interaction_err);
     }
 
+    if(fault.code==RobotErr::REFERENCE_GOVERNOR_FAILED)
+        stream << "; REFERENCE_GOVERNOR_FAILED / " << (fault.reference_governor_err==ReferenceGovernorErr::INFEASIBLE ? "INFEASIBLE" : "INVALID_INPUT");
+    if(fault.code==RobotErr::MOTION_SOURCE_BUSY)
+        stream << "; MOTION_SOURCE_BUSY: another motion task owns the reference";
     return stream.str();
 }
 
@@ -215,6 +219,9 @@ void PyRobotSession::configure(
     completed_fault_recovery_sequence_ = 0;
     fault_recovery_error_.clear();
     fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
+    pending_execution_update_={};execution_sequence_=completed_execution_sequence_=0;execution_error_.clear();
+    pending_admittance_.reset();admittance_sequence_=completed_admittance_sequence_=0;admittance_error_.clear();
+    runtime_.clear_commands();
     configured_ = true;
 }
 
@@ -258,6 +265,9 @@ void PyRobotSession::start() {
         impedance_sequence_ = 0;
         gravity_sequence_ = 0;
         speed_scale_ = 0.3;
+        requested_execution_profile_.reset();
+        pending_execution_update_={};completed_execution_sequence_=execution_sequence_;
+        pending_admittance_.reset();completed_admittance_sequence_=admittance_sequence_;
         has_goal_ = false;
         requested_fault_recovery_ = FaultRecoveryRequest::NONE;
         fault_recovery_sequence_ = 0;
@@ -371,7 +381,72 @@ void PyRobotSession::set_impedance_mode(JointImpedanceMode mode) {
         throw SerialArmPythonError("set_impedance_mode() requires RobotState::ACTIVE");
     }
     requested_impedance_mode_ = mode;
+    requested_hold_policy_=HoldTargetPolicy::PRESERVE_NOMINAL;
+    requested_execution_profile_.reset();
+    has_goal_=false;
     ++impedance_sequence_;
+}
+
+void PyRobotSession::submit_execution_update(std::function<tl::expected<void,RobotFault>()> update) {
+    std::lock_guard<std::mutex> single(admittance_update_mutex_);
+    std::unique_lock<std::recursive_mutex> lifecycle(lifecycle_mutex_);
+    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(!running_.load()) {
+        if(worker_.joinable())worker_.join();
+        auto result=update();if(!result)throw SerialArmPythonError(make_robot_error("execution profile",result.error()));return;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    if(snapshot_.robot_state!=RobotState::ACTIVE)throw SerialArmPythonError("execution profile requires ACTIVE or INACTIVE");
+    pending_execution_update_=std::move(update);const auto sequence=++execution_sequence_;
+    lifecycle.unlock();
+    fault_recovery_cv_.wait(lock,[&]{return completed_execution_sequence_>=sequence||!running_.load();});
+    if(completed_execution_sequence_<sequence)throw SerialArmPythonError("session stopped before execution profile update");
+    if(!execution_error_.empty())throw SerialArmPythonError(execution_error_);
+}
+void PyRobotSession::set_hold_compensation_cfg(const HoldCompensationCfg& cfg) {
+    submit_execution_update([this,cfg]{auto result=robot_->set_hold_compensation_cfg(cfg);if(result){std::lock_guard<std::mutex> lock(mutex_);cfg_.hold_compensation=cfg;}return result;});
+}
+void PyRobotSession::set_servo_tracking_gains(const JointImpedanceGains& gains) {
+    submit_execution_update([this,gains]{auto result=robot_->set_servo_tracking_gains(gains);if(result){std::lock_guard<std::mutex> lock(mutex_);cfg_.ctrller.servo_tracking_gains=gains;}return result;});
+}
+void PyRobotSession::set_execution_gain_profile(JointGainProfile profile) {
+    submit_execution_update([this,profile]{auto result=robot_->set_execution_gain_profile(profile);if(result){std::lock_guard<std::mutex> lock(mutex_);requested_execution_profile_=profile;}return result;});
+}
+void PyRobotSession::clear_execution_gain_profile() {
+    submit_execution_update([this]{robot_->clear_execution_gain_profile();{std::lock_guard<std::mutex> lock(mutex_);requested_execution_profile_.reset();}return tl::expected<void,RobotFault>{};});
+}
+
+void PyRobotSession::set_reference_behavior(ReferenceBehavior behavior) {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(running_.load() || robot_->get_state()!=RobotState::INACTIVE)
+        throw SerialArmPythonError("set_reference_behavior() requires an INACTIVE session");
+    if(worker_.joinable())worker_.join();
+    const auto result=robot_->set_reference_behavior(behavior);
+    if(!result)throw SerialArmPythonError(make_robot_error("Robot set_reference_behavior",result.error()));
+    std::lock_guard<std::mutex> lock(mutex_);
+    cfg_.capability.admittance.reference_behavior=behavior;
+    runtime_.clear_commands();
+}
+
+void PyRobotSession::set_admittance_cfg(const AdmittanceCapabilityCfg& cfg) {
+    std::lock_guard<std::mutex> single_update(admittance_update_mutex_);
+    std::unique_lock<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(!running_.load()) {
+        if(worker_.joinable())worker_.join();
+        const auto result=robot_->set_admittance_cfg(cfg);
+        if(!result)throw SerialArmPythonError(make_robot_error("Robot set_admittance_cfg",result.error()));
+        std::lock_guard<std::mutex> lock(mutex_);cfg_.capability.admittance=cfg;return;
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    if(snapshot_.robot_state!=RobotState::ACTIVE)throw SerialArmPythonError("set_admittance_cfg() requires ACTIVE or INACTIVE");
+    pending_admittance_=cfg;admittance_error_.clear();
+    const auto sequence=++admittance_sequence_;
+    lifecycle_lock.unlock();
+    fault_recovery_cv_.wait(lock,[&]{return completed_admittance_sequence_>=sequence || !running_.load();});
+    if(completed_admittance_sequence_<sequence)throw SerialArmPythonError("RobotSession stopped before parameter update completed");
+    if(!admittance_error_.empty())throw SerialArmPythonError(admittance_error_);
 }
 
 void PyRobotSession::set_model_feedforward_mode(ModelFeedforwardMode mode) {
@@ -447,8 +522,12 @@ void PyRobotSession::move_to(const JointVector& pos, double speed_scale) {
     if(snapshot_.robot_state != RobotState::ACTIVE) {
         throw SerialArmPythonError("move_to() requires RobotState::ACTIVE");
     }
+    if(requested_impedance_mode_==JointImpedanceMode::COMPLIANT_DRAG || requested_execution_profile_==JointGainProfile::DRAG)
+        throw SerialArmPythonError("leave drag mode before move_to()");
     if(!is_tracking_mode(requested_impedance_mode_)) {
-        throw SerialArmPythonError("move_to() requires RIGID_TRACKING or COMPLIANT_TRACKING");
+        requested_impedance_mode_=(requested_execution_profile_==JointGainProfile::COMPLIANT || (!requested_execution_profile_ && requested_impedance_mode_==JointImpedanceMode::COMPLIANT_HOLD))?
+            JointImpedanceMode::COMPLIANT_TRACKING:JointImpedanceMode::RIGID_TRACKING;
+        ++impedance_sequence_;
     }
     goal_pos_ = pos;
     speed_scale_ = speed_scale;
@@ -465,6 +544,8 @@ void PyRobotSession::hold_current() {
         throw SerialArmPythonError("hold_current() requires RobotState::ACTIVE");
     }
     requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+    requested_hold_policy_=HoldTargetPolicy::CAPTURE_MEASURED;
+    requested_execution_profile_.reset();
     ++impedance_sequence_;
     has_goal_ = false;
 }
@@ -503,6 +584,7 @@ RobotCfg PyRobotSession::get_config() const {
     if(!configured_) {
         throw SerialArmPythonError("RobotSession is not configured");
     }
+    std::lock_guard<std::mutex> lock(mutex_);
     return cfg_;
 }
 
@@ -527,88 +609,51 @@ std::vector<RobotSessionActuatorInfo> PyRobotSession::get_actuator_info() const 
  * 工作线程串行执行模式切换、重力比例更新、参考生成、Robot::set_cmd() 和 Robot::cycle()；退出前在 ACTIVE 状态下执行安全失能
  */
 void PyRobotSession::loop() noexcept {
-    const double target_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
-    const auto period = std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(target_dt));
-    auto previous_time = Robot::Clock::now();
-    auto next_time = previous_time;
-
-    std::uint64_t applied_impedance_sequence = 0;
-    std::uint64_t applied_gravity_sequence = 0;
-    JointImpedanceMode applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
-
-    auto finish_period = [&] {
-        next_time += period;
-        std::this_thread::sleep_until(next_time);
-        };
-
+    std::uint64_t applied_impedance_sequence=0,applied_gravity_sequence=0;
+    JointImpedanceMode applied_impedance_mode=JointImpedanceMode::RIGID_HOLD;
+    bool fault_reported=false;
     auto handle_robot_failure = [&](const std::string& message) -> bool {
         set_worker_error(message);
-        if(robot_ && robot_->get_state() == RobotState::FAULT && robot_->is_fault_holding()) {
-            invalidate_motion_requests_for_fault(applied_impedance_sequence, applied_gravity_sequence, applied_impedance_mode);
+        if(robot_ && robot_->get_state()==RobotState::FAULT && robot_->is_fault_holding()) {
+            invalidate_motion_requests_for_fault(applied_impedance_sequence,applied_gravity_sequence,applied_impedance_mode);
+            runtime_.clear_commands();
             return true;
         }
-        running_.store(false);
-        fault_recovery_cv_.notify_all();
-        return false;
-        };
-
-    while(running_.load()) {
-        const auto now = Robot::Clock::now();
-        if(now > next_time) next_time = now;
-        double dt = std::chrono::duration<double>(now - previous_time).count();
-        previous_time = now;
-        if(!std::isfinite(dt) || dt <= 0.0 || dt > cfg_.safety.max_dt_s) {
-            dt = target_dt;
+        running_.store(false);fault_recovery_cv_.notify_all();return false;
+    };
+    RuntimeHooks hooks;
+    hooks.running=[this]{return running_.load();};
+    hooks.before_cycle=[&](Robot::TimePoint now,double dt) {
+        std::function<tl::expected<void,RobotFault>()> execution;
+        std::uint64_t execution_sequence=0;
+        {std::lock_guard<std::mutex> lock(mutex_);execution=std::move(pending_execution_update_);pending_execution_update_={};execution_sequence=execution_sequence_;}
+        if(execution) {
+            auto result=execution();std::lock_guard<std::mutex> lock(mutex_);
+            execution_error_=result?std::string{}:make_robot_error("execution profile",result.error());
+            completed_execution_sequence_=execution_sequence;fault_recovery_cv_.notify_all();
         }
-
-        const RobotState state = robot_->get_state();
-        if(state == RobotState::FAULT) {
-            if(!robot_->is_fault_holding()) {
-                set_worker_error("Robot entered FAULT without an active hold; online recovery is unavailable");
-                running_.store(false);
-                fault_recovery_cv_.notify_all();
-                break;
-            }
-
-            // Keep the safety reaction alive first. This also accumulates the
-            // consecutive valid hold cycles required by Robot::clear_fault().
-            const auto hold_result = robot_->maintain_fault_hold();
-            if(!hold_result) {
-                set_worker_error(make_robot_error("Robot maintain_fault_hold", hold_result.error()));
-                running_.store(false);
-                fault_recovery_cv_.notify_all();
-                break;
-            }
-
-            process_fault_recovery_request(applied_impedance_sequence, applied_impedance_mode);
-
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                snapshot_.robot_state = robot_->get_state();
-                snapshot_.cycle.joint_state = robot_->get_joint_state();
-                snapshot_.valid = false;
-                fault_hold_mode_cache_ = robot_->get_state() == RobotState::FAULT ?
-                    robot_->get_fault_hold_mode() : FaultHoldMode::RIGID_HOLD;
-            }
-
-            finish_period();
-            continue;
-        }
-
-        if(state != RobotState::ACTIVE) {
-            set_worker_error("RobotSession worker found Robot outside ACTIVE/FAULT state");
-            running_.store(false);
+        std::optional<AdmittanceCapabilityCfg> update;
+        std::uint64_t update_sequence=0;
+        {std::lock_guard<std::mutex> lock(mutex_);update=std::move(pending_admittance_);pending_admittance_.reset();update_sequence=admittance_sequence_;}
+        if(update) {
+            const auto applied=robot_->set_admittance_cfg(*update);
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(applied){cfg_.capability.admittance=*update;admittance_error_.clear();}
+            else admittance_error_=make_robot_error("Robot set_admittance_cfg",applied.error());
+            completed_admittance_sequence_=update_sequence;
             fault_recovery_cv_.notify_all();
-            break;
         }
-
         JointImpedanceMode impedance_mode;
+        HoldTargetPolicy hold_policy;
+        std::optional<JointGainProfile> execution_profile;
         JointVector gravity_scale;
         std::uint64_t impedance_sequence;
         std::uint64_t gravity_sequence;
         {
             std::lock_guard<std::mutex> lock(mutex_);
             impedance_mode = requested_impedance_mode_;
+            hold_policy=requested_hold_policy_;
+            execution_profile=requested_execution_profile_;
             gravity_scale = requested_gravity_scale_;
             impedance_sequence = impedance_sequence_;
             gravity_sequence = gravity_sequence_;
@@ -620,21 +665,24 @@ void PyRobotSession::loop() noexcept {
                 set_worker_error("Dynamics set_gravity_scale failed; DynamicsErr=" + std::to_string(static_cast<int>(result.error())));
                 running_.store(false);
                 fault_recovery_cv_.notify_all();
-                break;
+                return false;
             }
             applied_gravity_sequence = gravity_sequence;
         }
 
         if(impedance_sequence != applied_impedance_sequence) {
-            const auto result = robot_->set_impedance_mode(impedance_mode, now);
+            const auto result = runtime_.set_impedance_mode(*robot_,impedance_mode, now,hold_policy);
             if(!result) {
                 if(handle_robot_failure(make_robot_error("Robot set_impedance_mode", result.error()))) {
-                    finish_period();
-                    continue;
+                    return false;
                 }
-                break;
+                return false;
             }
 
+            if(execution_profile) {
+                const auto profile=robot_->set_execution_gain_profile(*execution_profile);
+                if(!profile) {set_worker_error(make_robot_error("execution profile handover",profile.error()));running_.store(false);return false;}
+            }
             applied_impedance_mode = impedance_mode;
             applied_impedance_sequence = impedance_sequence;
             ref_pos_ = robot_->get_joint_state().pos;
@@ -648,38 +696,53 @@ void PyRobotSession::loop() noexcept {
 
         if(is_tracking_mode(applied_impedance_mode)) {
             update_reference(dt);
-            const auto cmd_result = robot_->set_cmd(JointPosVelCmd{ ref_pos_, ref_vel_ }, now);
+            const auto cmd_result = runtime_.submit_reference(*robot_,JointPosVelCmd{ ref_pos_, ref_vel_ }, now,MotionSource::STREAM);
             if(!cmd_result) {
                 if(handle_robot_failure(make_robot_error("Robot set_cmd", cmd_result.error()))) {
-                    finish_period();
-                    continue;
+                    return false;
                 }
-                break;
+                return false;
             }
         }
 
-        const auto cycle_result = robot_->cycle(now);
-        if(!cycle_result) {
-            if(handle_robot_failure(make_robot_error("Robot cycle", cycle_result.error()))) {
-                finish_period();
-                continue;
-            }
-            break;
-        }
-
-        {
+        return true;
+    };
+    hooks.after_step=[&](const RuntimeSnapshot& step) {
+        if(step.cycle) {
+            if(dynamics_->is_updated())static_cast<void>(dynamics_->update_reference(step.cycle->joint_ref_acc));
+            fault_reported=false;
             std::lock_guard<std::mutex> lock(mutex_);
-            snapshot_.cycle = cycle_result.value();
-            snapshot_.dynamics = dynamics_->get_state();
-            snapshot_.robot_state = RobotState::ACTIVE;
-            snapshot_.valid = true;
-            snapshot_.last_error.clear();
-            fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;
+            snapshot_.cycle=*step.cycle;
+            snapshot_.sequence=step.sequence;snapshot_.monotonic_ns=step.monotonic_ns;
+            snapshot_.dynamics=dynamics_->get_state();
+            snapshot_.robot_state=RobotState::ACTIVE;
+            snapshot_.valid=true;snapshot_.last_error.clear();
+            fault_hold_mode_cache_=FaultHoldMode::RIGID_HOLD;
+            return;
         }
-
-        finish_period();
-    }
-
+        if(step.fault && (!fault_reported || !step.fault_hold_maintained)) {
+            fault_reported=true;
+            handle_robot_failure(make_robot_error("ControlRuntime step",*step.fault));
+        }
+        if(step.state==RobotState::FAULT) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(pending_admittance_) {
+                pending_admittance_.reset();completed_admittance_sequence_=admittance_sequence_;
+                admittance_error_="parameter update cancelled by FAULT";fault_recovery_cv_.notify_all();
+            }
+        }
+        if(robot_->get_state()==RobotState::FAULT && step.fault_hold_maintained) {
+            process_fault_recovery_request(applied_impedance_sequence,applied_impedance_mode);
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.robot_state=robot_->get_state();
+            snapshot_.cycle.joint_state=robot_->get_joint_state();snapshot_.valid=false;
+            fault_hold_mode_cache_=robot_->get_state()==RobotState::FAULT ? robot_->get_fault_hold_mode() : FaultHoldMode::RIGID_HOLD;
+        } else if(step.state!=RobotState::ACTIVE) {
+            running_.store(false);fault_recovery_cv_.notify_all();
+        }
+    };
+    try {runtime_.run(*robot_,cfg_.runtime.ctrl_frequency_hz,cfg_.safety.max_dt_s,hooks);}
+    catch(const std::exception& error){set_worker_error(error.what());running_.store(false);}
     // A stopped worker must never leave a periodic FAULT hold unattended
     if(robot_) {
         const RobotState state = robot_->get_state();
@@ -716,6 +779,10 @@ void PyRobotSession::invalidate_motion_requests_for_fault(
         ref_vel_.assign(measured.size(), 0.0);
         goal_pos_ = measured;
         has_goal_ = false;
+        requested_execution_profile_.reset();
+        pending_execution_update_={};execution_error_="FAULT interrupted execution profile update";completed_execution_sequence_=execution_sequence_;
+        pending_admittance_.reset();admittance_error_="FAULT interrupted admittance update";completed_admittance_sequence_=admittance_sequence_;
+        fault_recovery_cv_.notify_all();
         speed_scale_ = 0.3;
         requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
         ++impedance_sequence_;
@@ -828,27 +895,8 @@ void PyRobotSession::update_reference(double dt) {
         return;
     }
 
-    for(std::size_t i = 0; i < goal.size(); ++i) {
-        const double error = goal[i] - ref_pos_[i];
-        const double max_vel = cfg_.safety.limits.max_vel[i] * speed_scale;
-        const double max_acc = cfg_.safety.limits.max_acc[i];
-        const double direction = error >= 0.0 ? 1.0 : -1.0;
-        const double braking_vel = std::sqrt(std::max(0.0, 2.0 * max_acc * std::abs(error)));
-        const double desired_vel = direction * std::min(max_vel, braking_vel);
-        const double max_delta_vel = max_acc * dt;
-        const double next_vel = ref_vel_[i] + std::clamp(desired_vel - ref_vel_[i], -max_delta_vel, max_delta_vel);
-        const double next_pos = ref_pos_[i] + next_vel * dt;
-        const bool crossed_target = (goal[i] - ref_pos_[i]) * (goal[i] - next_pos) <= 0.0;
-
-        if(crossed_target) {
-            ref_pos_[i] = goal[i];
-            ref_vel_[i] += std::clamp(-ref_vel_[i], -max_delta_vel, max_delta_vel);
-        }
-        else {
-            ref_pos_[i] = next_pos;
-            ref_vel_[i] = next_vel;
-        }
-    }
+    advance_joint_reference(ref_pos_,ref_vel_,goal,cfg_.safety.limits.max_vel,
+        cfg_.safety.limits.max_acc,speed_scale,dt);
 }
 
 /**
@@ -906,7 +954,7 @@ ModelFeedforwardFn PyRobotSession::make_model_feedforward() {
 
 InteractionModelStateFn PyRobotSession::make_interaction_model_state() {
     return [this](const JointState& state, double) -> tl::expected<InteractionModelState, ModelFeedforwardErr> {
-        if(!dynamics_->is_updated() || dynamics_->get_state().pos != state.pos) {
+        if(!dynamics_->update_state(state,JointVector(state.pos.size(),0.0))) {
             return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
         }
         InteractionModelState snapshot;

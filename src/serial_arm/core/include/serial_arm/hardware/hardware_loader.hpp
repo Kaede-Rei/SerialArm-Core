@@ -75,6 +75,11 @@ public:
         const std::string& plugin,
         const std::string& config_path,
         const HardwareConfigOverrides& overrides);
+    const std::string& source_config() const noexcept {return source_config_;}
+    const std::string& effective_config() const noexcept {return effective_config_;}
+private:
+    std::string source_config_;
+    std::string effective_config_;
 };
 
 // ! ========================= 模 版 方 法 实 现 ========================= ! //

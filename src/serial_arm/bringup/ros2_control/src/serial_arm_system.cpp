@@ -256,9 +256,18 @@ hardware_interface::CallbackReturn SerialArmSystem::on_activate(const rclcpp_lif
         hw_effort_ = state_frame_.effort;
     }
 
-    const auto mode_result = robot_->set_impedance_mode(cfg_.runtime.tracking_impedance_mode);
+    const auto profile=serial_arm::resolve_tracking_gain_profile(cfg_.runtime,robot_->get_reference_behavior());
+    const auto mode=profile==serial_arm::JointGainProfile::COMPLIANT ?
+        serial_arm::JointImpedanceMode::COMPLIANT_TRACKING : serial_arm::JointImpedanceMode::RIGID_TRACKING;
+    const auto mode_result = runtime_.set_impedance_mode(*robot_,mode);
     if(!mode_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", mode_result.error()).c_str());
+        static_cast<void>(robot_->force_deactivate());
+        return hardware_interface::CallbackReturn::ERROR;
+    }
+    const auto gains_result=robot_->set_execution_gain_profile(profile);
+    if(!gains_result) {
+        RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot select tracking gains",gains_result.error()).c_str());
         static_cast<void>(robot_->force_deactivate());
         return hardware_interface::CallbackReturn::ERROR;
     }
@@ -277,7 +286,7 @@ hardware_interface::CallbackReturn SerialArmSystem::on_activate(const rclcpp_lif
         internal_commands_ = false;
         cmd_position_ = initial_cmd.pos;
         cmd_velocity_ = initial_cmd.vel;
-        return robot_->set_cmd(initial_cmd, command_frame_.received_at);
+        return runtime_.submit_reference(*robot_,initial_cmd, command_frame_.received_at,serial_arm::MotionSource::EXTERNAL);
     }();
     if(!command_result) {
         RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot initial command", command_result.error()).c_str());
@@ -320,7 +329,7 @@ hardware_interface::CallbackReturn SerialArmSystem::on_deactivate(const rclcpp_l
     {
         std::lock_guard<std::mutex> robot_lock(robot_mutex_);
         if(robot_->get_state() == serial_arm::RobotState::ACTIVE) {
-            const auto result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD);
+            const auto result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID_HOLD,serial_arm::Robot::Clock::now(),serial_arm::HoldTargetPolicy::CAPTURE_MEASURED);
             holding = static_cast<bool>(result);
             if(!result) RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", result.error()).c_str());
         }
@@ -514,7 +523,7 @@ serial_arm::ModelFeedforwardFn SerialArmSystem::make_model_feedforward() {
 
 serial_arm::InteractionModelStateFn SerialArmSystem::make_interaction_model_state() {
     return [this](const serial_arm::JointState& state, double) -> tl::expected<serial_arm::InteractionModelState, serial_arm::ModelFeedforwardErr> {
-        if(!dynamics_->is_updated() || dynamics_->get_state().pos != state.pos) {
+        if(!dynamics_->update_state(state,serial_arm::JointVector(state.pos.size(),0.0))) {
             return tl::make_unexpected(serial_arm::ModelFeedforwardErr::COMPUTE_FAILED);
         }
 
@@ -538,81 +547,45 @@ serial_arm::InteractionModelStateFn SerialArmSystem::make_interaction_model_stat
  * @brief 固定频率执行 Robot::set_cmd()、Robot::cycle() 和状态缓存更新
  */
 void SerialArmSystem::worker_loop() noexcept {
-    const double target_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
-    const auto period = std::chrono::duration_cast<serial_arm::Robot::Clock::duration>(std::chrono::duration<double>(target_dt));
-    auto next_time = serial_arm::Robot::Clock::now();
-    serial_arm::JointPosVelCmd cmd;
-    cmd.pos.assign(cfg_.joint_names.size(), 0.0);
-    cmd.vel.assign(cfg_.joint_names.size(), 0.0);
-
-    while(worker_running_.load()) {
+    serial_arm::RuntimeHooks hooks;
+    hooks.running=[this]{return worker_running_.load();};
+    hooks.serialization_mutex=&robot_mutex_;
+    hooks.before_cycle=[this](serial_arm::Robot::TimePoint now,double) {
+        serial_arm::JointPosVelCmd cmd;
+        std::uint64_t sequence;
+        serial_arm::Robot::TimePoint received_at;
+        bool internal;
         {
-            std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-            std::uint64_t sequence;
-            serial_arm::Robot::TimePoint received_at;
-            serial_arm::Robot::TimePoint now;
-            {
-                std::lock_guard<std::mutex> command_lock(command_mutex_);
-                cmd.pos = command_frame_.pos;
-                cmd.vel = command_frame_.vel;
-                sequence = command_frame_.sequence;
-                received_at = command_frame_.received_at;
-                // Timestamp the cycle before a subsequent write can arrive
-                now = serial_arm::Robot::Clock::now();
-            }
-            if(now > next_time) next_time = now;
-
-            if(robot_->get_state() != serial_arm::RobotState::FAULT) {
-                const auto mode = robot_->get_impedance_mode();
-                const bool tracking = mode == serial_arm::JointImpedanceMode::RIGID_TRACKING ||
-                    mode == serial_arm::JointImpedanceMode::COMPLIANT_TRACKING;
-                const double command_age = std::chrono::duration<double>(now - received_at).count();
-                if(tracking && sequence != consumed_command_sequence_ &&
-                    command_age >= 0.0 && command_age <= cfg_.safety.cmd_timeout_s) {
-                    const auto cmd_result = robot_->set_cmd(cmd, received_at);
-                    if(!cmd_result) {
-                        set_error(make_robot_error("Robot set_cmd", cmd_result.error()));
-                        worker_running_.store(false);
-                        break;
-                    }
-                    consumed_command_sequence_ = sequence;
-                }
-
-                const auto cycle_result = robot_->cycle(now);
-                if(!cycle_result) {
-                    set_error(make_robot_error("Robot cycle", cycle_result.error()));
-                    if(robot_->get_state() != serial_arm::RobotState::FAULT || !robot_->is_fault_holding()) {
-                        worker_running_.store(false);
-                        break;
-                    }
-                }
-                else {
-                    publish_robot_state(cycle_result->dt);
-                }
-            }
-
-            if(robot_->get_state() == serial_arm::RobotState::FAULT) {
-                if(!worker_error_.load()) {
-                    const auto& fault = robot_->get_last_fault();
-                    set_error(fault ? make_robot_error("Robot fault", *fault) : "Robot entered FAULT");
-                }
-                if(!robot_->is_fault_holding()) {
-                    worker_running_.store(false);
-                    break;
-                }
-                const auto hold_result = robot_->maintain_fault_hold();
-                if(!hold_result) {
-                    set_error(make_robot_error("Robot maintain_fault_hold", hold_result.error()));
-                    worker_running_.store(false);
-                    break;
-                }
-                publish_robot_state(target_dt);
-                clear_command();
-            }
+            std::lock_guard<std::mutex> lock(command_mutex_);
+            cmd={command_frame_.pos,command_frame_.vel};
+            sequence=command_frame_.sequence;received_at=command_frame_.received_at;
+            internal=internal_commands_;
         }
-        next_time += period;
-        std::this_thread::sleep_until(next_time);
-    }
+        const auto mode=robot_->get_impedance_mode();
+        const bool tracking=mode==serial_arm::JointImpedanceMode::RIGID_TRACKING || mode==serial_arm::JointImpedanceMode::COMPLIANT_TRACKING;
+        const double age=std::chrono::duration<double>(now-received_at).count();
+        if(tracking && sequence!=consumed_command_sequence_ && age>=0 && age<=cfg_.safety.cmd_timeout_s) {
+            auto sent=runtime_.submit_reference(*robot_,std::move(cmd),received_at,
+                internal ? serial_arm::MotionSource::PARK : serial_arm::MotionSource::EXTERNAL);
+            if(!sent){set_error(make_robot_error("ControlRuntime reference",sent.error()));worker_running_.store(false);return false;}
+            consumed_command_sequence_=sequence;
+        }
+        return true;
+    };
+    hooks.after_step=[this](const serial_arm::RuntimeSnapshot& step) {
+        if(step.cycle) {
+            if(dynamics_->is_updated())static_cast<void>(dynamics_->update_reference(step.cycle->joint_ref_acc));
+            publish_robot_state(step.cycle->dt);
+        }
+        if(step.fault && !worker_error_.load())set_error(make_robot_error("ControlRuntime step",*step.fault));
+        if(step.state==serial_arm::RobotState::FAULT) {
+            clear_command();
+            if(step.fault_hold_maintained)publish_robot_state(1.0/cfg_.runtime.ctrl_frequency_hz);
+            else worker_running_.store(false);
+        } else if(step.fault)worker_running_.store(false);
+    };
+    try {runtime_.run(*robot_,cfg_.runtime.ctrl_frequency_hz,cfg_.safety.max_dt_s,hooks);}
+    catch(const std::exception& error){set_error(error.what());worker_running_.store(false);}
 }
 
 void SerialArmSystem::publish_robot_state(double dt) {
@@ -649,7 +622,7 @@ bool SerialArmSystem::park_before_deactivate() {
     {
         std::lock_guard<std::mutex> robot_lock(robot_mutex_);
         robot_->set_admittance_suspended(true);
-        const auto mode_result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
+        const auto mode_result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::COMPLIANT_TRACKING);
         if(!mode_result) {
             RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", mode_result.error()).c_str());
             robot_->set_admittance_suspended(false);
@@ -687,27 +660,11 @@ bool SerialArmSystem::park_before_deactivate() {
 
         serial_arm::JointVector next_pos = ref_pos;
         serial_arm::JointVector next_vel = ref_vel;
-        for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-            const double error = cfg_.shutdown.park_pos[i] - ref_pos[i];
-            const double max_vel = cfg_.safety.limits.max_vel[i] * cfg_.shutdown.speed_scale;
-            const double max_acc = cfg_.safety.limits.max_acc[i];
-            const double direction = error > 0.0 ? 1.0 : (error < 0.0 ? -1.0 : 0.0);
-            const double braking_speed = std::sqrt(std::max(0.0, 2.0 * max_acc * std::abs(error)));
-            const double target_vel = direction * std::min(max_vel, braking_speed);
-            const double max_delta_vel = max_acc * dt;
-            next_vel[i] = ref_vel[i] + std::clamp(target_vel - ref_vel[i], -max_delta_vel, max_delta_vel);
-
-            const double candidate_pos = ref_pos[i] + next_vel[i] * dt;
-            const bool crossed_target = error != 0.0 && (cfg_.shutdown.park_pos[i] - candidate_pos) * error <= 0.0;
-            const double pos_tolerance = std::max(1.0e-5, max_vel * dt * 0.25);
-            if(crossed_target || std::abs(error) <= pos_tolerance) {
-                next_pos[i] = cfg_.shutdown.park_pos[i];
-                next_vel[i] = ref_vel[i] + std::clamp(-ref_vel[i], -max_delta_vel, max_delta_vel);
-            }
-            else {
-                next_pos[i] = candidate_pos;
-            }
-        }
+        serial_arm::JointVector measured;
+        {std::lock_guard<std::mutex> lock(state_mutex_);if(state_frame_.valid)measured=state_frame_.pos;}
+        serial_arm::advance_joint_reference(next_pos,next_vel,cfg_.shutdown.park_pos,
+            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,cfg_.shutdown.speed_scale,dt,
+            measured.empty()?nullptr:&measured);
 
         {
             std::lock_guard<std::mutex> lock(command_mutex_);
@@ -758,13 +715,13 @@ bool SerialArmSystem::park_before_deactivate() {
         if(!rigid_finish_mode && !reached && elapsed_s >= rigid_finish_switch_s) {
             const auto rigid_result = [&]() {
                 std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-                const auto result = robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
+                const auto result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID_TRACKING);
                 if(result) {
                     ref_pos = robot_->get_joint_state().pos;
                     std::fill(ref_vel.begin(), ref_vel.end(), 0.0);
                 }
                 else {
-                    static_cast<void>(robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD));
+                    static_cast<void>(runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID_HOLD));
                 }
                 clear_command();
                 return result;
@@ -786,7 +743,7 @@ bool SerialArmSystem::park_before_deactivate() {
         if(elapsed_s > cfg_.shutdown.timeout_s) {
             {
                 std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-                static_cast<void>(robot_->set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_HOLD));
+                static_cast<void>(runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID_HOLD));
                 clear_command();
             }
             RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking timeout; strict seating check still failed, keep ACTIVE in RIGID_HOLD. error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
@@ -806,6 +763,7 @@ bool SerialArmSystem::park_before_deactivate() {
  * @brief 清除外部命令并切换为最近状态位置保持
  */
 void SerialArmSystem::clear_command() {
+    runtime_.clear_commands();
     std::vector<double> hold_pos;
     {
         std::lock_guard<std::mutex> state_lock(state_mutex_);
@@ -849,6 +807,10 @@ std::string SerialArmSystem::make_robot_error(const char* action, const serial_a
     stream << "; JointCtrllerErr=" << static_cast<int>(fault.ctrller_err);
     stream << "; SafetyErr=" << static_cast<int>(fault.safety_fault.code);
     stream << "; ModelFeedforwardErr=" << static_cast<int>(fault.model_feedforward_err);
+    if(fault.code==serial_arm::RobotErr::REFERENCE_GOVERNOR_FAILED)
+        stream << "; REFERENCE_GOVERNOR_FAILED / " << (fault.reference_governor_err==serial_arm::ReferenceGovernorErr::INFEASIBLE ? "INFEASIBLE" : "INVALID_INPUT");
+    if(fault.code==serial_arm::RobotErr::MOTION_SOURCE_BUSY)
+        stream << "; MOTION_SOURCE_BUSY: another motion task owns the reference";
     return stream.str();
 }
 

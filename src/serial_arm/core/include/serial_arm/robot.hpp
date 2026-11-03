@@ -8,6 +8,7 @@
 #include "serial_arm/core/joints_ctrller.hpp"
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/core/dt_overrun_watchdog.hpp"
+#include "serial_arm/core/reference_governor.hpp"
 #include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/interaction/runtime/interaction_state.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
@@ -73,6 +74,8 @@ enum class RobotErr {
     INVALID_MODEL_FEEDFORWARD,  ///< 模型前馈结果非法
     INTERACTION_FAILED,         ///< 导纳能力计算失败
     FAULT_RECOVERY_NOT_ALLOWED, ///< 当前故障不允许柔性恢复或清故障
+    REFERENCE_GOVERNOR_FAILED,
+    MOTION_SOURCE_BUSY,
 };
 
 /**
@@ -87,6 +90,7 @@ struct RobotFault {
     ModelFeedforwardErr model_feedforward_err{
         ModelFeedforwardErr::COMPUTE_FAILED
     };                                                                  ///< 模型前馈子错误
+    ReferenceGovernorErr reference_governor_err{ ReferenceGovernorErr::INVALID_INPUT };
     InteractionControllerErr interaction_err{ InteractionControllerErr::INVALID_CFG }; ///< 导纳能力子错误
 };
 
@@ -105,6 +109,22 @@ struct RobotCycleOutput {
     double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
+    JointGainProfile gain_profile{JointGainProfile::RIGID};
+    GainSource gain_source{GainSource::CONFIGURED};
+    JointVector effective_kp,effective_kd,hold_target_pos,hold_integral_torque;
+    bool hold_integrator_frozen{true};
+    ReferenceBehavior reference_behavior{ ReferenceBehavior::NATIVE_IMPEDANCE };
+    double parameter_update_progress{ 1.0 };
+    bool observer_valid{ false };
+    bool new_measurement{ false };
+    double measurement_dt{ 0.0 };
+    double feedback_skew_ms{ std::numeric_limits<double>::quiet_NaN() };
+    JointVector nominal_ref_pos, nominal_ref_vel, nominal_ref_acc;
+    JointVector virtual_ref_pos, virtual_ref_vel, virtual_ref_acc;
+    JointVector accepted_ref_pos, accepted_ref_vel, accepted_ref_acc;
+    JointVector predicted_total_torque;
+    std::vector<std::uint8_t> reference_limited, torque_limited;
+    JointVector delta_q_ddot;
     bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
     InteractionState interaction_state;                       ///< Interaction runtime state
     JointVector residual_raw;                              ///< 正式 observer 的 raw residual
@@ -128,11 +148,13 @@ struct RobotCycleOutput {
  */
 using ModelFeedforwardFn = std::function<tl::expected<JointVector, ModelFeedforwardErr>(ModelFeedforwardMode, const JointState&, const JointVector&, const JointVector&, double)>;
 
-struct InteractionModelState {
+struct MeasuredDynamicsSnapshot {
     JointVector gravity;
     JointVector coriolis;
     std::vector<JointVector> mass_matrix;
 };
+
+using InteractionModelState = MeasuredDynamicsSnapshot;
 
 using InteractionModelStateFn = std::function<tl::expected<InteractionModelState, ModelFeedforwardErr>(const JointState&, double)>;
 
@@ -194,7 +216,20 @@ public:
      * @param now 当前时间点
      * @return 成功返回空 expected，失败返回 RobotFault
      */
-    tl::expected<void, RobotFault> set_impedance_mode(JointImpedanceMode mode, TimePoint now = Clock::now());
+    tl::expected<void, RobotFault> set_impedance_mode(JointImpedanceMode mode, TimePoint now = Clock::now(), HoldTargetPolicy target_policy=HoldTargetPolicy::PRESERVE_NOMINAL);
+    // FAULT permits validated configuration restoration only, without execution
+    tl::expected<void,RobotFault> set_servo_tracking_gains(const JointImpedanceGains& gains);
+    tl::expected<void,RobotFault> set_calibration_reference_behavior(ReferenceBehavior behavior);
+    void clear_calibration_reference_behavior();
+    tl::expected<void,RobotFault> set_calibration_model_feedforward_mode(ModelFeedforwardMode mode);
+    void clear_calibration_model_feedforward_mode();
+    const JointVector& get_hold_target() const noexcept;
+    // FAULT permits validated configuration restoration only, without execution
+    tl::expected<void,RobotFault> set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
+    const HoldCompensationCfg& get_hold_compensation_cfg() const noexcept;
+    JointGainProfile get_gain_profile() const noexcept;
+    tl::expected<void,RobotFault> set_execution_gain_profile(JointGainProfile profile);
+    void clear_execution_gain_profile();
     /** Temporary hold gains used only by automatic static model identification.
      * They never modify the robot configuration or other impedance modes.
      * The override is cleared on leaving RIGID_HOLD and on deactivation.
@@ -221,15 +256,17 @@ public:
      */
     tl::expected<void, RobotFault> set_model_feedforward_mode(ModelFeedforwardMode mode);
     /**
-     * @brief 运行时更新导纳能力配置；成功后自动清空 observer 与 delta_q 状态
+     * @brief 更新导纳配置；ACTIVE 仅允许同策略调参，M/D/K 连续过渡并保留已接受虚拟状态
      */
     tl::expected<void, RobotFault> set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
+    tl::expected<void, RobotFault> set_reference_behavior(ReferenceBehavior behavior);
+    ReferenceBehavior get_reference_behavior() const noexcept;
     /**
      * @brief 获取当前进程正在使用的导纳能力配置
      */
     const AdmittanceCapabilityCfg& get_admittance_cfg() const noexcept;
     /**
-     * @brief 临时挂起/恢复导纳运行时修正，不改变 YAML/config 中的 enabled
+     * @brief 临时挂起/恢复导纳运行时修正并重锚到已接受参考，不改变配置
      * @param suspended true 时整条导纳修正旁路并清空 observer/delta 状态
      */
     void set_admittance_suspended(bool suspended);
@@ -372,10 +409,6 @@ private:
     /**
      * @brief 使用实际 q/dq/qdd 计算导纳 observer 的完整内部动力学模型力矩
      */
-    tl::expected<JointVector, RobotFault> compute_interaction_model_torque(
-        const JointState& state,
-        const JointVector& joint_acc,
-        double dt) const;
 
     /**
      * @brief 构造仅包含通用错误码的故障对象
@@ -481,6 +514,7 @@ private:
         * @return 当前是否处于跟踪模式
      */
     bool is_tracking_mode() const noexcept;
+    void apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now);
 
     /**
      * @brief 计算两个时间点之间的秒数差
@@ -500,7 +534,7 @@ private:
     InteractionState interaction_state_; ///< 最近一次交互状态
     std::unique_ptr<MotorBus> motor_bus_;           ///< 执行器后端
     ModelFeedforwardFn model_feedforward_;          ///< 动力学前馈入口
-    InteractionModelStateFn interaction_model_state_; ///< momentum observer 动力学状态入口
+    InteractionModelStateFn interaction_model_state_; ///< 每个实测样本独立更新的模型快照
 
     RobotState state_{ RobotState::UNCONFIGURED };  ///< Robot 生命周期状态
     JointState joint_state_;                        ///< 最近一次合法 JointState
@@ -532,6 +566,21 @@ private:
     double park_rigid_ramp_duration_s_{0.65};
     TimePoint calibration_tracking_started_{};
     TimePoint calibration_hold_started_{};
+    std::vector<std::uint64_t> observer_received_ns_;
+    std::uint64_t observer_sample_ns_{ 0 };
+    JointVector last_nominal_velocity_;
+    JointCtrlCmd accepted_nominal_cmd_;
+    JointVector nominal_hold_target_;
+    JointVector hold_integral_torque_;
+    bool hold_integrator_frozen_{true};
+    std::optional<ReferenceBehavior> calibration_reference_behavior_;
+    std::optional<ModelFeedforwardMode> calibration_feedforward_mode_;
+    std::optional<JointGainProfile> execution_gain_profile_;
+    std::optional<JointImpedanceGains> handover_source_gains_;
+    JointCtrlCmd handover_source_cmd_;
+    TimePoint handover_started_{};
+    bool full_command_active_{false};
+    GainSource gain_source_{GainSource::CONFIGURED};
     bool admittance_suspended_{ false };            ///< 运行时临时挂起导纳，不改变静态配置
     FaultHoldMode fault_hold_mode_{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 内部保持模式
     DtOverrunWatchdog dt_overrun_watchdog_;        ///< 三次连续过长周期触发 FAULT

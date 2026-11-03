@@ -43,6 +43,10 @@ struct InteractionInput {
     JointVector measured_velocity;
     GeneralizedMomentumInput momentum_input;
     bool full_id_acceleration_valid{ false };
+    bool new_measurement{ true };
+    bool observation_valid{ true };
+    double measurement_dt{ 0.0 };
+    bool apply_admittance{ true };
 };
 
 struct InteractionOutput {
@@ -57,6 +61,7 @@ struct InteractionOutput {
     std::vector<std::uint8_t> threshold_active;
     JointVector delta_q;
     JointVector delta_q_dot;
+    JointVector delta_q_ddot;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
 };
@@ -65,17 +70,25 @@ class InteractionController {
 public:
     tl::expected<void, InteractionControllerErr> configure(const InteractionControllerCfg& cfg);
     tl::expected<InteractionOutput, InteractionControllerErr> update(const InteractionInput& input);
+    tl::expected<void, InteractionControllerErr> reconfigure(const InteractionControllerCfg& cfg);
+    tl::expected<void, InteractionControllerErr> accept_reference(const JointVector& delta_q, const JointVector& delta_q_dot);
+    void reset_reference();
     void reset();
     bool is_configured() const noexcept;
     bool is_enabled() const noexcept;
+    double parameter_update_progress() const noexcept;
 
 private:
     TorqueResidualObserver residual_observer_;
     GeneralizedMomentumObserver momentum_observer_;
+    GeneralizedMomentumObserver raw_momentum_observer_;
+    ExternalTorqueObserver net_external_torque_observer_;
     ExternalTorqueObserver external_torque_observer_;
     JointAdmittanceController admittance_controller_;
     InteractionControllerCfg cfg_;
     bool is_configured_{ false };
+    InteractionOutput last_observation_;
+    bool observation_initialized_{ false };
 };
 
 } // namespace serial_arm

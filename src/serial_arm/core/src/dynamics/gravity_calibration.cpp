@@ -228,6 +228,20 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
         frames_.clear();
         approved_static_frames_.clear();
     }
+    if(!metadata_.hardware_source_config.empty()) {
+        const auto source=directory_/"source";
+        std::filesystem::create_directories(source,error);
+        if(error){running_.store(false);return tl::make_unexpected("failed to create hardware snapshot directory: "+error.message());}
+        const auto snapshot=[&](const char* name,const std::string& text,std::string& fingerprint) {
+            std::ofstream output(source/name,std::ios::binary|std::ios::trunc);output<<text;output.close();
+            if(!output)return false;
+            fingerprint=model_calibration_file_fingerprint((source/name).string());return !fingerprint.empty();
+        };
+        if(!snapshot("hardware.yaml",metadata_.hardware_source_config,metadata_.hardware_fingerprint) ||
+           !snapshot("hardware-effective.yaml",metadata_.hardware_effective_config,metadata_.hardware_effective_fingerprint)) {
+            running_.store(false);return tl::make_unexpected(std::string("failed to write hardware configuration snapshot"));
+        }
+    }
     const auto meta = write_metadata();
     if(!meta) {
         running_.store(false);
@@ -347,6 +361,16 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
         << "\",\"hardware_plugin_identity\":\"on_disk_file_at_task_start_not_loaded_image_attestation\"},\n";
     out << "  \"core_config_path\":\"" << json_escape(metadata_.core_config_path) << "\",\n";
     out << "  \"core_fingerprint\":\"" << json_escape(metadata_.core_fingerprint) << "\",\n";
+    out << "  \"hardware_config_path\":\"" << json_escape(metadata_.hardware_config_path) << "\",\n";
+    out << "  \"hardware_fingerprint\":\"" << json_escape(metadata_.hardware_fingerprint) << "\",\n";
+    out << "  \"hardware_effective_fingerprint\":\"" << json_escape(metadata_.hardware_effective_fingerprint) << "\",\n";
+    out << "  \"hardware_overrides\":{";
+    bool hardware_separator=false;
+    if(metadata_.hardware_serial_port_override){out << "\"serial_port\":\"" << json_escape(*metadata_.hardware_serial_port_override) << '\"';hardware_separator=true;}
+    if(metadata_.hardware_baudrate_override){if(hardware_separator)out<<',';out << "\"baudrate\":" << *metadata_.hardware_baudrate_override;hardware_separator=true;}
+    if(metadata_.hardware_bus_override){if(hardware_separator)out<<',';out << "\"bus\":\"" << json_escape(*metadata_.hardware_bus_override) << '\"';}
+    out << "},\n";
+    out << "  \"gravity_correction_fingerprint\":\"" << json_escape(metadata_.gravity_correction_fingerprint) << "\",\n";
     out << "  \"urdf_path\":\"" << json_escape(metadata_.urdf_path) << "\",\n";
     out << "  \"urdf_fingerprint\":\"" << json_escape(metadata_.urdf_fingerprint) << "\",\n";
     out << "  \"base_frame\":\"" << json_escape(metadata_.base_frame) << "\",\n";

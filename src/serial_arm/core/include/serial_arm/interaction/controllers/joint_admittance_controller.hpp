@@ -50,6 +50,7 @@ struct JointAdmittanceOutput {
     JointVector delta_q_dot;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
+    JointVector delta_q_ddot;
 };
 
 struct AdmittanceDampingMetrics {
@@ -68,14 +69,20 @@ public:
     tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> update(const JointAdmittanceInput& input);
     tl::expected<JointAdmittanceOutput, JointAdmittanceControllerErr> hold(
         const JointVector& min_delta_q, const JointVector& max_delta_q);
+    tl::expected<void, JointAdmittanceControllerErr> reconfigure(const JointAdmittanceControllerCfg& cfg);
+    tl::expected<void, JointAdmittanceControllerErr> accept(const JointVector& position, const JointVector& velocity);
     void reset();
     bool is_configured() const noexcept;
+    double parameter_update_progress() const noexcept;
+    void advance_parameters(double dt);
 
 private:
     JointAdmittanceControllerCfg cfg_;
     JointVector delta_q_;
     JointVector delta_q_dot_;
     bool is_configured_{ false };
+    JointAdmittanceControllerCfg ramp_source_, ramp_target_;
+    double parameter_elapsed_s_{ 0.3 };
 };
 
 } // namespace serial_arm

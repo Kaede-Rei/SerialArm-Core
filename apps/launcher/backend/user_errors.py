@@ -43,6 +43,38 @@ OPERATIONS = {
 }
 
 
+def _machine_reason(technical):
+    codes = set(re.findall(r'\b(?:STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|FAULTED|SAFETY_FAILED|REFERENCE_GOVERNOR_FAILED|MOTOR_BUS_[A-Z_]+|ACTUATOR_OFFLINE|ENABLE_FAILED|DISABLE_FAILED|JOINT_[A-Z_]+)\b', technical))
+    if not codes: return None
+    joint = re.search(r"(?:joint|actuator)\s*[=:]\s*['\"]?([A-Za-z0-9_.-]+)", technical, re.I)
+    prefix = joint.group(1) + '：' if joint else ''
+    values = {key: float(value) for key, value in re.findall(r'\b(value|limit)\s*=\s*([-+0-9.eE]+)', technical) if re.fullmatch(r'[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?', value)}
+    if 'STATE_TIMEOUT' in codes:
+        measured = f"（{values['value'] * 1000:.1f} ms，允许 {values['limit'] * 1000:.1f} ms）" if set(values) == {'value', 'limit'} else ''
+        return 'FEEDBACK_TIMEOUT', 'safety', prefix + '关节反馈已超时' + measured, '检查电机供电、USB-CAN 连接和反馈连续性；反馈恢复后清除故障，再重新使能', {'page': 'diagnostics'}
+    if 'CMD_TIMEOUT' in codes:
+        return 'COMMAND_TIMEOUT', 'safety', '运动命令更新超时，当前任务已中断', '检查命令发送程序及更新频率；处理后清除故障，再重新开始任务', {'page': 'workbench', 'tab': 'monitor'}
+    if codes & {'MOTOR_BUS_DEACTIVATE_FAILED', 'DISABLE_FAILED'}:
+        return 'MOTOR_DISABLE_UNCONFIRMED', 'safety', prefix + '电机失能未得到确认', '先支撑机械臂，检查电机供电和通信；需要时使用硬件急停，再处理连接', {'page': 'diagnostics'}
+    if codes & {'MOTOR_BUS_ACTIVATE_FAILED', 'ENABLE_FAILED', 'ACTUATOR_OFFLINE'}:
+        return 'MOTOR_ENABLE_FAILED', 'safety', prefix + '电机使能失败或执行器离线', '检查电机供电、急停、CAN 接线及电机 ID；反馈正常后清除故障并重新使能', {'page': 'diagnostics'}
+    if 'MOTOR_BUS_CONNECT_FAILED' in codes:
+        return 'MOTOR_CONNECTION_FAILED', 'communication', '无法连接执行器通信设备', '在连接诊断中核对设备路径与权限，并检查 USB-CAN 连接', {'page': 'diagnostics'}
+    if 'MOTOR_BUS_READ_FAILED' in codes:
+        return 'MOTOR_FEEDBACK_FAILED', 'safety', prefix + '执行器反馈读取失败', '检查通信设备、线缆与电机供电；反馈恢复后清除故障', {'page': 'diagnostics'}
+    if 'MOTOR_BUS_WRITE_FAILED' in codes:
+        return 'MOTOR_COMMAND_FAILED', 'safety', prefix + '执行器未接受控制命令', '先支撑机械臂，再检查通信、电机状态和供电', {'page': 'diagnostics'}
+    if any(code.startswith('JOINT_POS') for code in codes):
+        return 'JOINT_POSITION_LIMIT', 'safety', prefix + '关节位置超出安全范围', '核对机械位置、零位和方向；按页面恢复条件处理后再清除故障', {'page': 'profile_setup', 'group': 'mapping'}
+    if any(code.startswith('JOINT_VEL') for code in codes):
+        return 'JOINT_VELOCITY_LIMIT', 'safety', prefix + '关节速度超出安全上限', '检查实际运动和反馈速度，降低命令速度后再重新开始任务', {'page': 'workbench', 'tab': 'control'}
+    if 'REFERENCE_GOVERNOR_FAILED' in codes:
+        return 'REFERENCE_LIMIT_REJECTED', 'safety', '当前目标无法满足运动或总力矩限制', '缩小目标变化或降低速度；仍被拒绝时检查关节限位、增益和力矩预算', {'page': 'workbench', 'tab': 'control'}
+    if 'INVALID_DT' in codes:
+        return 'CONTROL_CYCLE_INVALID', 'safety', '控制周期超出允许范围', '检查控制循环调度和系统负载；周期恢复正常后清除故障', {'page': 'diagnostics'}
+    return 'ROBOT_SAFETY_REJECTED', 'safety', '机械臂处于故障状态，当前操作被拒绝', '查看当前故障原因，处理后清除故障；重新使能需单独操作', {'page': 'workbench', 'tab': 'control'}
+
+
 def describe(error, method='', params=None):
     params = params if isinstance(params, dict) else {}
     operation = method if isinstance(method, str) else ''
@@ -64,10 +96,10 @@ def describe(error, method='', params=None):
     code = 'OPERATION_FAILED'
     category = 'operation'
     reason = original_message if re.search(r'[\u3400-\u9fff]', original_message) else (
-        f'请求失败（{exception_name}）：{original_message[:280]}' if original_message
-        else f'请求失败（{exception_name}），后端异常未提供文字说明')
+        original_message[:280] if original_message else '后台未能完成请求，未返回具体原因')
     advice = '请核对当前状态和操作条件，必要时复制诊断信息进行排查'
     retryable = False
+    action = None
     details = {'exception_type': exception_name}
     if error.__traceback__ is not None:
         frames = traceback.extract_tb(error.__traceback__)
@@ -81,7 +113,10 @@ def describe(error, method='', params=None):
         details['cause_type'] = type(error.__cause__).__name__
     if operation.startswith('calibration_tool_') and operation not in OPERATIONS:
         label = '标定成果操作'
-    if isinstance(error, ValueError) and ('尚未选择机器人 Profile' in original_message or 'robot profile not found:' in original_message):
+    machine = _machine_reason(technical)
+    if machine:
+        code, category, reason, advice, action = machine
+    elif isinstance(error, ValueError) and ('尚未选择机器人 Profile' in original_message or 'robot profile not found:' in original_message):
         code, category = 'PROFILE_NOT_SELECTED', 'configuration'
         reason = '尚未选择机器人 Profile，无法扫描对应机器人的历史任务'
         advice = '先选择机器人 Profile 再扫描，或点击加载任务记录直接选择历史任务目录；离线导出不需要连接机械臂'
@@ -92,15 +127,18 @@ def describe(error, method='', params=None):
     elif isinstance(error, yaml.YAMLError):
         code, category = ('PROFILE_EXPORT_YAML_INVALID' if 'export' in operation else 'PROFILE_YAML_INVALID'), 'configuration'
         reason = '生成的 Core YAML 格式不正确，未能完成导出' if 'export' in operation else 'YAML 配置格式错误，无法读取相关参数'
-        advice = '无需重新采集标定数据 请检查 Core 配置及导出程序后重试 原始任务数据不会因本次解析失败而自动修改'
+        advice = ('导出程序生成了无效 YAML，请保留任务文件并复制诊断信息排查导出逻辑' if 'export' in operation
+                  else '检查报错行附近的缩进、冒号和字段值，修正 YAML 后重新加载')
         mark = getattr(error, 'problem_mark', None) or getattr(error, 'context_mark', None)
         if mark:
             details['line'] = mark.line + 1
             details['column'] = mark.column + 1
+            reason += f'（第 {mark.line + 1} 行，第 {mark.column + 1} 列）'
         if 'export' in operation:
             details['suspected_section'] = 'Core YAML 标定候选参数'
     elif isinstance(error, FileNotFoundError):
-        code, category, reason = 'RESOURCE_NOT_FOUND', 'file', '所需文件不存在或已被移动'
+        path = getattr(error, 'filename', None) or ''
+        code, category, reason = 'RESOURCE_NOT_FOUND', 'file', '找不到文件' + ('：' + str(path).rsplit('/', 1)[-1] if path else '')
         advice = '请确认 Profile、任务记录与资源路径仍然有效'
         details['path'] = getattr(error, 'filename', None) or ''
     elif isinstance(error, PermissionError):
@@ -109,19 +147,23 @@ def describe(error, method='', params=None):
         details['path'] = getattr(error, 'filename', None) or ''
     elif isinstance(error, TimeoutError) or re.search(r'timed out|timeout|EPIPE', technical, re.I):
         code, category = 'BACKEND_TIMEOUT', 'communication'
-        reason = '后台请求超时或通信中断，上一条指令的执行结果可能未知'
-        advice = '涉及机械臂运动时先确认当前硬件状态，不要直接重复下发运动命令'
-    elif re.search(r'\b(?:FAULTED|SAFETY_FAILED|MOTOR_BUS_[A-Z_]+|JOINT_POS_LIMIT|JOINT_VEL_LIMIT|INVALID_DT)\b', technical):
-        code, category = 'ROBOT_SAFETY_REJECTED', 'safety'
-        reason = '机器人安全状态不允许当前操作'
-        advice = '先确保机械臂安全并检查具体故障，再按控制内核的恢复流程处理，不能自动重试'
+        hardware_request = operation in ('workbench_request', 'workbench_start', 'workbench_stop', 'geometry_repeat_play')
+        reason = '控制会话请求超时，指令执行结果尚未确认' if hardware_request else label + '超时'
+        advice = '先确认机械臂状态，再处理连接；不要重复发送未确认的运动命令' if hardware_request else '检查任务文件与后台诊断；数据量较大时可减少计算范围后重试'
+        action = {'page': 'diagnostics'} if hardware_request else None
     elif isinstance(error, ValueError):
         code, category = 'INVALID_OPERATION_INPUT', 'validation'
         if re.search(r'[\u3400-\u9fff]', technical):
-            reason = technical.strip("'\"")
+            reason = original_message.strip("'\"")
         advice = '请检查页面中的参数、任务选择和当前机器人状态，修改后再操作'
+        from profile_library import ProfileLibrary
+        field = ProfileLibrary._field_issue(original_message)
+        if field['path']:
+            action = field['action']
+            advice = '打开对应参数，修正后重新保存'
     elif isinstance(error, (TypeError, KeyError, IndexError, AttributeError, AssertionError)):
         code, category = 'BACKEND_INTERNAL_ERROR', 'internal'
+        reason = '程序无法处理当前数据'
         advice = '程序处理当前数据时发生异常，请复制完整诊断信息以定位源码位置，无需盲目修改机器人配置'
     elif isinstance(error, OSError):
         code, category = 'IO_OPERATION_FAILED', 'file'
@@ -133,8 +175,9 @@ def describe(error, method='', params=None):
     if isinstance(params.get('directory'), str):
         details['directory'] = params['directory'][:1024]
     return {
-        'code': code, 'category': category, 'severity': 'critical' if category == 'safety' else 'error',
+        'code': code, 'category': category, 'severity': 'critical' if category == 'safety' and code != 'REFERENCE_LIMIT_REJECTED' else 'error',
         'operation': operation, 'title': label + '失败', 'message': reason,
         'advice': advice, 'details': details, 'diagnostic_id': diagnostic_id,
         'technical': technical + ('\n\n' + technical_trace[-14000:] if technical_trace != technical else ''), 'retryable': retryable,
+        'action': action,
     }

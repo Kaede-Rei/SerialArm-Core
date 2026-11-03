@@ -13,6 +13,7 @@ struct Assessment {
     State state{State::PAUSE_FOR_FEEDBACK};
     bool valid{false};
     bool hard_violation{false};
+    bool nominal_lag{false};
     std::size_t worst_joint{0};
     double max_error{0.0};
     double peak_velocity{0.0};
@@ -56,6 +57,29 @@ inline Assessment evaluate(const std::vector<double>& reference,
         if(error>=hard)result.hard_violation=true;
     }
     result.valid=true;
+    return result;
+}
+// Admittance intentionally separates the nominal path and the accepted virtual
+// reference. Track both gaps without treating its legitimate force displacement
+// as a motor following error or advancing path time behind a saturated governor
+inline Assessment evaluate_reference_layers(const std::vector<double>& requested,
+                                            const std::vector<double>& nominal,
+                                            const std::vector<double>& accepted,
+                                            const std::vector<double>& actual,
+                                            const std::vector<double>& velocity,
+                                            const std::vector<double>& max_velocity,
+                                            double pause_soft_ratio=1.0) {
+    auto following=evaluate(accepted,actual,velocity,max_velocity,pause_soft_ratio);
+    auto progress=evaluate(requested,nominal,std::vector<double>(velocity.size(),0.0),max_velocity,pause_soft_ratio);
+    if(!following.valid || !progress.valid)return Assessment{};
+    const double following_ratio=following.max_error/following.soft_limit[following.worst_joint];
+    const double progress_ratio=progress.max_error/progress.soft_limit[progress.worst_joint];
+    auto result=progress_ratio>following_ratio?progress:following;
+    result.nominal_lag=progress_ratio>following_ratio;
+    result.peak_velocity=following.peak_velocity;result.recovery_velocity_limit=following.recovery_velocity_limit;
+    result.hard_violation=following.hard_violation || progress.hard_violation;
+    result.state=following.state==State::PAUSE_FOR_FEEDBACK || progress.state==State::PAUSE_FOR_FEEDBACK?
+        State::PAUSE_FOR_FEEDBACK:State::FOLLOWING;
     return result;
 }
 // Slow the SEARCH trajectory before the soft following limit is reached

@@ -35,7 +35,7 @@ app.whenReady().then(async()=>{
    modelView.camera.position.set(1.1,-.8,.75);const camera=modelView.camera.position.toArray();
    const input=document.querySelector('[data-idim-locked]'),original=input;
    const field=document.getElementById('idim-validation');field.value='/tmp/my-independent-session';field.dispatchEvent(new Event('input',{bubbles:true}));
-   const task=document.querySelector('.workbench-task');task.scrollTop=180;const before=task.scrollTop;
+   const task=document.querySelector('.content.studio-content');task.scrollTop=180;const before=task.scrollTop;
    for(let i=0;i<5;++i)input.click();
    return{viewSame:modelView===window.__idimView,canvasSame:document.querySelector('#workbench-viewport canvas')===window.__idimCanvas,inputSame:input===document.querySelector('[data-idim-locked]'),cameraSame:JSON.stringify(camera)===JSON.stringify(modelView.camera.position.toArray()),scrollSame:task.scrollTop===before,textKept:document.getElementById('idim-validation').value==='/tmp/my-independent-session',selected:state.idimLocked.length,draft:document.getElementById('idim-draft-state').textContent};})()`);
   for(const key of ['viewSame','canvasSame','inputSame','cameraSame','scrollSame','textKept'])assert.equal(interaction[key],true,key);
@@ -48,10 +48,10 @@ app.whenReady().then(async()=>{
   assert.equal(await win.webContents.executeJavaScript(`document.getElementById('idim-export').disabled`),true,'unvalidated export enabled');
   await win.webContents.executeJavaScript(`document.getElementById('idim-report-export').click()`);await wait(900);
   assert.equal(calls.find(x=>x.method==='model_calibration_idim_export').params.report_only,true);
-  await win.webContents.executeJavaScript(`document.querySelector('.workbench-task').scrollTop=0`);await wait(100);
+  await win.webContents.executeJavaScript(`document.querySelector('.content.studio-content').scrollTop=0`);await wait(100);
   fs.writeFileSync(path.join(output,'workflow.png'),(await win.webContents.capturePage()).toPNG());
   await win.webContents.executeJavaScript(`document.getElementById('idim-results').scrollIntoView({block:'start',behavior:'instant'});`);await wait(700);
-  const resultPosition=await win.webContents.executeJavaScript(`(()=>{const task=document.querySelector('.workbench-task'),result=document.getElementById('idim-results');task.scrollTop+=result.getBoundingClientRect().top-task.getBoundingClientRect().top;return {top:result.getBoundingClientRect().top,taskTop:task.getBoundingClientRect().top,scroll:task.scrollTop};})()`);
+  const resultPosition=await win.webContents.executeJavaScript(`(()=>{const task=document.querySelector('.content.studio-content'),result=document.getElementById('idim-results');task.scrollTop+=result.getBoundingClientRect().top-task.getBoundingClientRect().top-85;return {top:result.getBoundingClientRect().top,taskTop:task.getBoundingClientRect().top,scroll:task.scrollTop};})()`);
   assert.ok(resultPosition.scroll>300,'result panel did not scroll');await wait(500);
   fs.writeFileSync(path.join(output,'results.png'),(await win.webContents.capturePage()).toPNG());
   assert.equal(errors.length,0,errors.join('\n'));

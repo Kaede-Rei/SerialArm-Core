@@ -8,6 +8,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <limits>
 #include <string>
 #include <thread>
@@ -60,6 +61,15 @@ struct ModelCalibrationMetadata {
     std::string core_fingerprint;
     std::string hardware_plugin_path;
     std::string hardware_plugin_file_fingerprint;
+    std::string hardware_config_path;
+    std::string hardware_fingerprint;
+    std::string hardware_effective_fingerprint;
+    std::string hardware_source_config;
+    std::string hardware_effective_config;
+    std::optional<std::string> hardware_serial_port_override;
+    std::optional<int> hardware_baudrate_override;
+    std::optional<std::string> hardware_bus_override;
+    std::string gravity_correction_fingerprint;
     std::string urdf_path;
     std::string urdf_fingerprint;
     std::vector<std::string> resource_paths;

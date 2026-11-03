@@ -30,6 +30,9 @@ from ._serial_arm import JointCtrllerCfg
 from ._serial_arm import JointCtrllerErr
 from ._serial_arm import JointCtrllerState
 from ._serial_arm import JointImpedanceGains
+from ._serial_arm import JointGainProfile
+from ._serial_arm import GainSource
+from ._serial_arm import HoldCompensationCfg
 from ._serial_arm import JointImpedanceMode
 from ._serial_arm import JointLimitCfg
 from ._serial_arm import JointPosCmd
@@ -48,6 +51,15 @@ from ._serial_arm import RobotFault
 from ._serial_arm import RobotCycleOutput
 from ._serial_arm import RobotSessionSnapshot
 from ._serial_arm import RobotState
+from ._serial_arm import ReferenceGovernorErr
+from ._serial_arm import ReferenceBehavior
+from ._serial_arm import AdmittanceCapabilityCfg
+from ._serial_arm import AdmittanceObserverCfg
+from ._serial_arm import AdmittanceControllerCfg
+from ._serial_arm import AdmittanceCalibrationCfg
+from ._serial_arm import AdmittanceObserverMode
+from ._serial_arm import FrictionResidualModelCfg
+from ._serial_arm import CapabilityCfg
 from ._serial_arm import RuntimeCfg
 from ._serial_arm import ShutdownCfg
 from ._serial_arm import Safety
@@ -84,7 +96,7 @@ _check_numpy_binding_compatibility()
 class RobotSession:
     """使用 C++ 工作线程维护控制周期的会话
 
-    Python 线程只提交阻抗模式、重力比例和位置目标并读取快照；200 Hz 控制周期始终在 C++ 工作线程中执行
+    Python 提交控制方式、增益用途和运动目标并读取快照，控制周期在 C++ 工作线程中执行
     ``runtime.write_enabled=true`` 时使用指定 Hardware Backend；false 时使用离线 mock 后端
     """
 
@@ -141,8 +153,32 @@ class RobotSession:
         self._session.return_to_fault_rigid_hold()
 
     def set_impedance_mode(self, mode: JointImpedanceMode) -> None:
-        """提交阻抗模式切换请求；请求由 C++ 工作线程串行应用"""
+        """选择保持、跟踪或拖拽任务；增益用途由 set_execution_gain_profile 选择"""
         self._session.set_impedance_mode(mode)
+
+    def set_servo_tracking_gains(self, gains: JointImpedanceGains) -> None:
+        """更新辨识与模型导纳共用的执行器伺服跟踪增益"""
+        self._session.set_servo_tracking_gains(gains)
+
+    def set_execution_gain_profile(self, profile: JointGainProfile) -> None:
+        """选择刚性、柔性、拖拽或伺服跟踪增益用途"""
+        self._session.set_execution_gain_profile(profile)
+
+    def clear_execution_gain_profile(self) -> None:
+        """恢复按控制方式和任务状态自动选择增益"""
+        self._session.clear_execution_gain_profile()
+
+    def set_hold_compensation_cfg(self, config: HoldCompensationCfg) -> None:
+        """设置原生刚性保持的受限积分补偿，其他用途不应用该补偿"""
+        self._session.set_hold_compensation_cfg(config)
+
+    def set_reference_behavior(self, behavior: ReferenceBehavior) -> None:
+        """在 INACTIVE 状态下选择原生阻抗或模型导纳"""
+        self._session.set_reference_behavior(behavior)
+
+    def set_admittance_cfg(self, config: AdmittanceCapabilityCfg) -> None:
+        """提交导纳配置并等待控制线程确认；运行中保留虚拟状态平滑调参"""
+        self._session.set_admittance_cfg(config)
 
     def set_model_feedforward_mode(self, mode: ModelFeedforwardMode) -> None:
         """在 INACTIVE 状态下设置模型前馈模式"""
@@ -220,6 +256,17 @@ class RobotSession:
 
 
 __all__ = [
+    "JointGainProfile", "GainSource", "HoldCompensationCfg",
+    "ReferenceGovernorErr",
+    "ReferenceBehavior",
+    "AdmittanceCapabilityCfg",
+    "AdmittanceObserverCfg",
+    "AdmittanceControllerCfg",
+    "AdmittanceCalibrationCfg",
+    "AdmittanceObserverMode",
+    "FrictionResidualModelCfg",
+    "CapabilityCfg",
+
     "ActuatorInfo",
     "ActuatorCtrlCmd",
     "ActuatorState",

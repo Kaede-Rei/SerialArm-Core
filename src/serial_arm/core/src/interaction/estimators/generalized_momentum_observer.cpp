@@ -56,7 +56,8 @@ GeneralizedMomentumObserver::update(const GeneralizedMomentumInput& input) {
         return tl::make_unexpected(GeneralizedMomentumObserverErr::INVALID_INPUT_SIZE);
     }
     if(!finite_vector(input.measured_torque) || !finite_vector(input.gravity) ||
-        !finite_vector(input.coriolis) || !finite_vector(input.velocity)) {
+        !finite_vector(input.coriolis) || !finite_vector(input.velocity) ||
+        (!input.known_residual.empty() && (input.known_residual.size()!=n || !finite_vector(input.known_residual)))) {
         return tl::make_unexpected(GeneralizedMomentumObserverErr::NON_FINITE_INPUT);
     }
     if(!std::isfinite(input.dt) || input.dt <= 0.0) {
@@ -91,11 +92,14 @@ GeneralizedMomentumObserver::update(const GeneralizedMomentumInput& input) {
 
     // p_dot = tau + tau_ext - g + C^T*dq,
     // C^T*dq = Mdot*dq - C*dq. The integral state predicts momentum using the
-    // previous residual; the current momentum error closes the observer loop
+    // current residual implicitly; the momentum error closes the observer loop
     for(std::size_t i = 0; i < n; ++i) {
         const double c_transpose_dq = mdot_times_dq[i] - input.coriolis[i];
-        const double known_momentum_rate = input.measured_torque[i] - input.gravity[i] + c_transpose_dq;
-        predicted_momentum_[i] += input.dt * (known_momentum_rate + residual_[i]);
+        const double known_residual = input.known_residual.empty()?0.0:input.known_residual[i];
+        const double known_momentum_rate = input.measured_torque[i] - input.gravity[i] + c_transpose_dq + known_residual;
+        // Implicit first-order observer: pole 1/(1+gain*dt), stable for every positive dt
+        predicted_momentum_[i] = (predicted_momentum_[i] + input.dt*known_momentum_rate +
+            input.dt*cfg_.gain[i]*momentum[i])/(1.0+input.dt*cfg_.gain[i]);
     }
 
     GeneralizedMomentumOutput output;

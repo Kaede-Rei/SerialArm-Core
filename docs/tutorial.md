@@ -1,75 +1,86 @@
-# 配置与机器人接入
+# 机械臂接入与配置
 
-通过 Description 建立模型事实，再由 Profile 维护硬件、控制与标定配置，外部机器人可以使用自己的资源包
+接入一台机械臂需要模型、执行器映射、控制参数与安全限制；这些资源通过 Robot Profile 关联
 
-<p align="center"><img src="images/launcher-new-arm.png" alt="从 URDF 导入新机械臂" width="92%" /></p>
-<p align="center"><sub>模型导入 · 控制链识别 · 初始化 Profile</sub></p>
+![从模型创建机械臂配置](images/launcher-new-arm.png)
 
-![机器人接入工作流程](images/workflow.svg)
+## 选择资源
 
-## Profile
-
-Profile 组合 Core、Hardware、模型、Controllers 与 MoveIt 资源
-
-内置配置位于 `src/robot_supports/profiles/config/robot_profiles.yaml`
+内置 Profile 位于 `src/robot_supports/profiles/config/robot_profiles.yaml`
 
 | Profile | Core YAML | MoveIt Package |
 | --- | --- | --- |
 | `dm_arm_gray` | `config/core/gray.yaml` | `dm_arm_no_gripper` |
 | `dm_arm_white` | `config/core/white.yaml` | `dm_arm_with_gripper` |
 
-资源通过 package 名和相对路径解析，机器人身份与标定参数由自己的 Profile 定义
+内置零位、比例和增益对应具体机械臂；新的实例需要自己的标定与限位
 
-下游机器人在自己的项目中维护 `robot_profiles.yaml`，不用合并到 Core 内置列表
+下游项目可独立维护 `robot_profiles.yaml`、模型、Hardware Backend、Controllers 与 MoveIt 资源
 
 ```bash
 ./install.sh --preset ros2 --robot none --without-moveit --yes
 export SERIAL_ARM_RESOURCE_PATH=/absolute/path/downstream/workspace
 ./.install/run serial_arm_terminal \
-  --robot-profile tomato_picker \
+  --robot-profile your_robot \
   --profile-file /absolute/path/downstream/robot_profiles.yaml
 ```
 
-以上安装只提供通用组件，下游 Hardware Backend 和资源包仍需自行构建并加载
+安装预设提供通用 Core 与 ROS2 Adapter，下游驱动和资源包需构建并加载
 
-## 配置位置
+## 创建与填写 Profile
 
-![Profile 参数配置](images/launcher-profile.png)
+在 GUI 导入 URDF、Xacro 或 Description 包，选择 Base 与 Tool 后检查主串联链和受控关节顺序
 
+`tool_frame` 使用实际末端坐标系，旁支夹爪不会自动加入主臂控制链
 
-| 内容 | 字段或文件 | 需要核对 |
+![参数配置](images/launcher-profile.png)
+
+| 内容 | 字段或文件 | 核对内容 |
 | --- | --- | --- |
-| 模型 | Core YAML 的 `model` | URDF、受控关节及顺序、base_frame、tool_frame |
-| 标定 | `calibration.joints` | 方向、位置和力矩比例、关节和执行器零位 |
-| 运行 | `control.runtime` | 频率、执行器写入、模型前馈与跟踪模式 |
-| 阻抗 | `control.controller` | 刚性、柔性、拖拽模式的 kp/kd |
-| 安全 | `safety_policy` | 状态和命令超时、限位、恢复策略 |
-| 停机 | `shutdown` | 停放目标与超时 |
-| 导纳 | `capability.admittance` | 观测器、标定、M/D/K 与限制 |
-| 硬件 | Hardware YAML | plugin、Bus、设备、执行器 ID 与能力 |
-| ROS2 | Profile 的 `controllers` | 控制器配置与关节匹配 |
+| 模型 | `model` | URDF、受控关节、顺序、Base/Tool、重力方向 |
+| 映射 | `calibration.joints` | 方向、位置与力矩比例、关节与执行器零位 |
+| 运行 | `control.runtime` | 周期、写入开关、前馈、默认跟踪用途 |
+| 执行器增益 | `control.controller` | 刚性、柔性、拖拽与伺服跟踪 Kp/Kd |
+| 保持补偿 | `control.hold_compensation` | 原生刚性保持的积分范围、变化率与冻结条件 |
+| 交互 | `capability.admittance` | 控制方式、观测器、M/D/K 与退让限制 |
+| 安全 | `safety_policy` | 反馈与命令超时、关节限位、力矩预算、恢复条件 |
+| 停放 | `shutdown` | 停放目标、路径速度、容差与超时 |
+| 硬件 | Hardware YAML | 驱动、总线、设备、执行器 ID 与型号 |
+| ROS2 | Profile 的 `controllers` | 控制器、接口与关节匹配 |
 | MoveIt | Profile 的 `moveit` | SRDF、规划关节与控制器匹配 |
 
-`tool_frame` 使用实际末端坐标系，不按自由度数量猜测最后一个 link 名
+参数页先显示缺项与具体位置；保存后返回准备页面重新检查
 
-Gray 与 White 的标定值只适用于对应实例，新机械臂需要自己的限位、标定和增益
+## 区分控制方式、增益用途与任务
 
-## 检查与启动
+| 选择 | 含义 |
+| --- | --- |
+| 原生阻抗 | 执行器按名义参考和 Kp/Kd 执行，前馈可关闭、仅重力或完整动力学 |
+| 模型导纳 | 外力估计驱动 M/D/K 虚拟模型，伺服增益跟随退让参考 |
+| 刚性、柔性、拖拽、伺服跟踪 | 四种执行器增益用途 |
+| 保持、移动、拖拽 | 当前任务状态 |
 
-先检查资源和权限，不连接执行器
+刚性与柔性分别保留保持和跟踪数值，模型导纳固定使用伺服跟踪增益；GUI 与 C++ Terminal 的普通示教临时使用原生阻抗和重力补偿，结束后恢复上下文
+
+Python 交互终端使用显式流程：停放失能 → 原生阻抗 → GRAVITY 与有效重力比例 → 使能 → 拖拽；结束后由用户在失能状态切回原控制方式
+
+ROS2 默认用途由 `control.runtime.tracking_gain_profile` 选择 `RIGID`、`COMPLIANT` 或 `SERVO_TRACKING`；旧配置省略该字段时从 `tracking_impedance_mode` 推导刚性或柔性用途
+
+增益标准字段为 `control.controller.servo_tracking`；旧 `identification_tracking` 兼容读取，保存时使用标准名称
+
+`capability.admittance.enabled` 开启外力观测与交互计算，`reference_behavior` 选择默认控制方式；启用观测但选择原生阻抗时，只观测外力，不产生导纳位移
+
+## 第一次连接
+
+先检查模型、驱动资源与设备权限
 
 ```bash
 ./launch.sh --doctor --profile dm_arm_gray
-```
-
-Python Terminal 还提供模型、配置与 Hardware capability 检查，不连接或写入真机
-
-```bash
 ./.install/run python3 src/serial_arm/core/app/serial_arm_terminal.py \
   --robot-profile dm_arm_gray --check-only
 ```
 
-Core YAML 中的写入开关
+写入开关位于 Core YAML
 
 ```yaml
 control:
@@ -77,11 +88,13 @@ control:
     write_enabled: false
 ```
 
-Terminal 在 false 时使用离线 mock 后端，在 true 时使用实际 Hardware Backend
+Terminal 在关闭写入时使用离线 mock；开启后使用实际 Hardware Backend，启动前核对实际值
 
-内置配置可能已经开启写入，启动前查看实际值，GUI 确认不会改变这个开关
+先确认机械支撑、急停或断电手段，再核对通信、ID、反馈方向、量纲、零位与限位；以小幅低速运动检查每个关节
 
-串口、波特率与 Bus 可以仅覆盖当前运行
+检查备注供操作者记录观察，连接和控制准入由当前配置、反馈与 Core 安全检查决定
+
+串口、波特率与 Bus 可以覆盖本次连接
 
 ```bash
 ./.install/run serial_arm_terminal \
@@ -91,16 +104,32 @@ Terminal 在 false 时使用离线 mock 后端，在 true 时使用实际 Hardwa
   --bus main_can
 ```
 
-## 控制与调参
+## 建立可用控制参数
 
-Tracking 模式需要持续刷新命令，保持与拖拽使用对应的阻抗模式
+先完成基础保持与低速跟踪；准备页的基础标定按“重力补偿验证 → 执行器增益自动标定”进行，再调试导纳交互
 
-关节阻抗参数 kp/kd 是关节侧刚度与阻尼，Backend 再转换为执行器命令
+专项标定包含重力模型校正、高级动力学辨识与几何标定，按任务需要选择
 
-关节导纳使用估计外力矩生成参考偏移，与内层阻抗增益分别配置
+增益标定按用途给出候选与独立验证，伺服跟踪同时验证原生阻抗与模型导纳；只部署与当前模型、映射及负载相符的结果
 
-调试顺序为模型与映射 → 安全约束 → 基础保持与跟踪 → 重力标定 → 阻抗 → 导纳
+模型导纳先设定目标退让与响应时间，再生成 M/D/K 草稿；实际响应通过交互记录检查，接触任务需按实际环境验证
 
-正常结束等待程序完成停放与清理，FAULT 或通信中断时软件不能保证保持力矩
+`K=0` 用于松手减速而不拉回原位置；原生刚性保持补偿与导纳分别配置，补偿只在对应保持条件下工作
 
-类型、模式、错误码和调用示例见 [API 参考](reference/api.md)
+## 预览、应用与保存
+
+控制页的滑条和数值框编辑同一组关节目标，青绿色虚影显示预览；点击“移动到目标”才启动运动
+
+“当前位置保持”捕获当前位置；普通模式交接保留原名义目标，受扰退让不会自动成为新保持点
+
+| 操作 | 结果 |
+| --- | --- |
+| 编辑配置 | 修改待保存值 |
+| 覆盖连接参数 | 只影响本次连接 |
+| 应用会话参数或候选 | 只影响当前运行环境 |
+| 预览差异并保存 | 写入选定配置文件，保留备份 |
+| 导出 URDF | 生成候选模型文件，按导出范围审核后采用 |
+
+正常断开等待停放与失能；立即失能前可靠支撑机械臂，FAULT 或通信中断时现场确认是否仍有保持力矩
+
+详细操作见 [桌面工作台](launcher.md)，接口与兼容字段见 [API 参考](reference/api.md)

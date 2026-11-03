@@ -5,6 +5,10 @@ import tempfile
 import threading
 import time
 import unittest
+import importlib.util
+import contextlib
+import io
+from unittest.mock import patch
 import yaml
 
 BUILD, PLUGIN, ROOT = sys.argv[1:4]
@@ -13,6 +17,39 @@ sys.path.insert(0, BUILD)
 import _serial_arm as arm
 
 class PythonRuntime(unittest.TestCase):
+    def test_python_terminal_selects_four_gain_uses(self):
+        spec=importlib.util.spec_from_file_location('serialarm_terminal_review',Path(ROOT)/'src/serial_arm/core/app/serial_arm_terminal.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory(prefix='serialarm-python-control-') as temporary:
+            folder=Path(temporary);source=Path(ROOT)/'src/robot_supports/robots/dm_arm/description/config/core/gray.yaml'
+            data=yaml.safe_load(source.read_text());names=data['model']['joint_names']
+            data['model']['urdf_path']=str((source.parent/data['model']['urdf_path']).resolve())
+            data['control']['runtime'].update(write_enabled=False,model_feedforward_mode='GRAVITY',tracking_gain_profile='SERVO_TRACKING')
+            data['capability']['admittance']['reference_behavior']='NATIVE_IMPEDANCE'
+            config=folder/'core.yaml';config.write_text(yaml.safe_dump(data,sort_keys=False))
+            hardware=folder/'hardware.yaml';hardware.write_text(yaml.safe_dump({'joints':names,'positions':[0.]*len(names)}))
+            session=arm._RobotSession();session.configure(str(config),PLUGIN,str(hardware))
+            self.assertEqual(session.config.runtime.tracking_gain_profile,arm.JointGainProfile.SERVO_TRACKING)
+            terminal=module.Terminal.__new__(module.Terminal)
+            terminal.session=session;terminal.serial_arm_module=arm;terminal.cfg=session.config
+            try:
+                session.start()
+                deadline=time.monotonic()+2
+                while not session.snapshot.valid and time.monotonic()<deadline:time.sleep(.01)
+                for choice,expected in [(1,arm.JointGainProfile.RIGID),(2,arm.JointGainProfile.COMPLIANT),
+                                        (3,arm.JointGainProfile.DRAG),(4,arm.JointGainProfile.SERVO_TRACKING)]:
+                    with patch('builtins.input',return_value=str(choice)),contextlib.redirect_stdout(io.StringIO()):
+                        terminal.set_impedance()
+                    deadline=time.monotonic()+2
+                    while time.monotonic()<deadline:
+                        snapshot=session.snapshot
+                        if snapshot.valid and snapshot.cycle.gain_profile==expected:break
+                        time.sleep(.01)
+                    self.assertTrue(snapshot.valid)
+                    self.assertEqual(snapshot.cycle.gain_profile,expected)
+                    self.assertEqual(snapshot.cycle.reference_behavior,arm.ReferenceBehavior.NATIVE_IMPEDANCE)
+            finally:session.stop()
+
     def test_offline_start_preserves_capabilities_without_using_hardware_state(self):
         with tempfile.TemporaryDirectory(prefix='serialarm-offline-session-') as temporary:
             folder=Path(temporary)
@@ -30,6 +67,8 @@ class PythonRuntime(unittest.TestCase):
             hardware.write_text(yaml.safe_dump({'joints':names,'positions':[1000.0]*len(names)}))
             config=folder/'core.yaml';config.write_text(yaml.safe_dump(data,sort_keys=False))
             session=arm._RobotSession();session.configure(str(config),PLUGIN,str(hardware))
+            session.set_reference_behavior(arm.ReferenceBehavior.NATIVE_IMPEDANCE)
+            self.assertEqual(session.config.capability.admittance.reference_behavior,arm.ReferenceBehavior.NATIVE_IMPEDANCE)
             limits=list(session.config.safety.limits.max_effort)
             for _ in range(2):
                 try:
@@ -39,6 +78,19 @@ class PythonRuntime(unittest.TestCase):
                         time.sleep(.01)
                     snapshot=session.snapshot
                     self.assertTrue(snapshot.valid,snapshot.last_error)
+                    self.assertGreater(snapshot.sequence,0)
+                    self.assertGreater(snapshot.monotonic_ns,0)
+                    self.assertEqual(snapshot.cycle.reference_behavior,arm.ReferenceBehavior.NATIVE_IMPEDANCE)
+                    self.assertEqual(len(snapshot.cycle.accepted_ref_pos),len(names))
+                    with self.assertRaises(Exception):
+                        session.set_reference_behavior(arm.ReferenceBehavior.MODEL_ADMITTANCE)
+                    update=session.config.capability.admittance
+                    update.controller.mass=[2.0]*len(names)
+                    session.set_admittance_cfg(update)
+                    self.assertEqual(list(session.config.capability.admittance.controller.mass),[2.0]*len(names))
+                    update.enabled=True
+                    with self.assertRaises(Exception):
+                        session.set_admittance_cfg(update)
                     self.assertEqual(snapshot.robot_state,arm.RobotState.ACTIVE)
                     self.assertTrue(all(abs(value)<1e-9 for value in snapshot.cycle.joint_state.pos))
                     self.assertFalse(session.config.runtime.write_enabled)

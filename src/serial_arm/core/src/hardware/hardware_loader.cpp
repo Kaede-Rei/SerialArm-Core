@@ -7,6 +7,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -238,6 +239,7 @@ tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> HardwareLoader::load(
     const std::string& plugin,
     const std::string& config_path,
     const HardwareConfigOverrides& overrides) {
+    source_config_.clear();effective_config_.clear();
     std::vector<std::string> candidates;
     candidates.push_back(plugin);
     if(plugin.find('/') == std::string::npos) {
@@ -269,6 +271,15 @@ tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> HardwareLoader::load(
         return tl::make_unexpected(HardwareLoaderErr::CREATE_FAILED);
     }
 
+    const auto read_config=[](const std::string& path) -> std::optional<std::string> {
+        std::ifstream input(path,std::ios::binary);
+        if(!input)return std::nullopt;
+        std::string text((std::istreambuf_iterator<char>(input)),{});
+        if(input.bad())return std::nullopt;
+        return text;
+    };
+    const auto source=read_config(config_path);
+    if(!source){raw.reset();close_handle(handle);return tl::make_unexpected(HardwareLoaderErr::CONFIG_OPEN_FAILED);}
     std::optional<std::filesystem::path> effective_config_path;
     std::string effective_config_string = config_path;
     if(has_overrides(overrides)) {
@@ -282,16 +293,23 @@ tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> HardwareLoader::load(
         effective_config_string = effective_config_path->string();
     }
 
+    const auto effective=read_config(effective_config_string);
+    if(!effective) {
+        if(effective_config_path){std::error_code ec;std::filesystem::remove(*effective_config_path,ec);}
+        raw.reset();close_handle(handle);return tl::make_unexpected(HardwareLoaderErr::CONFIG_OPEN_FAILED);
+    }
     const auto configured = raw->configure(effective_config_string);
+    const bool unchanged=read_config(config_path)==source && read_config(effective_config_string)==effective;
     if(effective_config_path) {
         std::error_code ec;
         std::filesystem::remove(*effective_config_path, ec);
     }
-    if(!configured) {
+    if(!configured || !unchanged) {
         raw.reset();
         close_handle(handle);
         return tl::make_unexpected(HardwareLoaderErr::CONFIGURE_FAILED);
     }
+    source_config_=*source;effective_config_=*effective;
 
     return std::unique_ptr<MotorBus>(std::make_unique<LoadedMotorBus>(handle, raw.release(), destroy));
 }

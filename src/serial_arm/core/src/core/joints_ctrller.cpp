@@ -93,6 +93,16 @@ tl::expected<void, JointCtrllerErr> JointCtrller::initialize(const JointState& s
     return {};
 }
 
+tl::expected<void, JointCtrllerErr> JointCtrller::set_servo_tracking_gains(const JointImpedanceGains& gains) {
+    auto candidate=cfg_;candidate.servo_tracking_gains=gains;
+    auto valid=validate_cfg(candidate);
+    if(valid!=JointCtrllerErr::OK) return tl::make_unexpected(valid);
+    cfg_=std::move(candidate);return {};
+}
+void JointCtrller::set_hold_position(const JointVector& position) {
+    hold_pos_=position;fallback_pos_=position;
+}
+
 void JointCtrller::reset() noexcept {
     if(state_ == JointCtrllerState::UNCONFIGURED) {
         return;
@@ -393,7 +403,8 @@ JointCtrllerErr JointCtrller::validate_cfg(const JointCtrllerCfg& cfg) const {
 
     if(!validate_gains(cfg.rigid_hold_gains) || !validate_gains(cfg.rigid_tracking_gains) ||
         !validate_gains(cfg.compliant_hold_gains) || !validate_gains(cfg.compliant_drag_gains) ||
-        !validate_gains(cfg.compliant_tracking_gains)) {
+        !validate_gains(cfg.compliant_tracking_gains) ||
+        ((!cfg.servo_tracking_gains.kp.empty()||!cfg.servo_tracking_gains.kd.empty())&&!validate_gains(cfg.servo_tracking_gains))) {
         return JointCtrllerErr::INVALID_CFG;
     }
 

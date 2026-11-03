@@ -15,7 +15,7 @@ import zipfile
 from persistence import load_model_calibration_summary, list_model_calibration_records
 
 KINDS = ('teaching', 'gain', 'gravity', 'dynamics')
-LABELS = {'teaching':'拖拽示教','gain':'自适应增益标定','gravity':'重力模型校正','dynamics':'高级动力学辨识'}
+LABELS = {'teaching':'拖拽示教','gain':'执行器增益自动标定','gravity':'重力模型校正','dynamics':'高级动力学辨识'}
 
 
 def _json(path):
@@ -93,10 +93,12 @@ def export_record(root, directory, kind):
     out=base/f'{folder.name}-{kind}-{int(time.time())}.zip'
     allowed={
         'teaching':{'metadata.json','trajectory.csv','trajectory.checkpoint.csv','source/model.urdf','source/core.yaml'},
-        'gain':{'metadata.json','trajectory.csv','gain-candidate.json','frames.csv','result.json','source/model.urdf','source/core.yaml'},
+        'gain':{'metadata.json','trajectory.csv','gain-candidate.json','frames.csv','result.json','source/model.urdf','source/core.yaml','source/hardware.yaml','source/hardware-effective.yaml','source/gravity-correction.yaml'},
         'gravity':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','recomputed-candidate.json','result.json','candidate-offline.urdf','source/model.urdf','source/core.yaml'},
         'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','idim-candidate.json','source/model.urdf','source/core.yaml'}
     }[kind]
+    if kind == 'gain':
+        allowed.update(path.name for path in folder.glob('servo-probe-*.csv') if path.is_file())
     included=[]
     with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
         for name in sorted(allowed):
@@ -147,10 +149,14 @@ def prepare_gain_candidate(directory):
     candidate=_json(path)
     if not candidate or candidate.get('schema')!='serial_arm_gain_candidate' or not candidate.get('validated'):
         raise ValueError('当前增益记录尚未通过完整控制质量验证，不能临时应用')
+    if candidate.get('task_id') != record.get('task_id'):
+        raise ValueError('增益候选与任务编号不一致，请重新选择完整任务目录')
     if candidate.get('urdf_fingerprint')!=(record.get('metadata') or {}).get('urdf_fingerprint'):
         raise ValueError('增益候选与记录的 URDF 指纹不一致')
     if candidate.get('joint_names')!=(record.get('metadata') or {}).get('joint_names'):
         raise ValueError('增益候选与记录的关节映射不一致')
+    from control_parameters import deployment_gain_groups
+    deployment_gain_groups(candidate)
     return {'kind':'gain','candidate_path':str(path),'task_id':record['task_id'],'temporary':True}
 
 

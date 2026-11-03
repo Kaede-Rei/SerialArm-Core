@@ -17,12 +17,14 @@ import yaml
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf
 from persistence import build_gravity_correction_payload, export_candidate_urdf, patch_text
 from workflow_registry import load
+from control_parameters import canonical_core, canonical_control_text, complete_mapping_values, deployment_gain_groups
 
-GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'identification_tracking', 'all'}
+GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking', 'identification_tracking', 'all'}
 GAIN_DESTINATIONS = {
-    'rigid_tracking': ('rigid_hold', 'rigid_tracking'),
-    'compliant_tracking': ('compliant_hold', 'compliant_tracking'),
-    'identification_tracking': ('identification_tracking',),
+    'rigid_tracking': ('rigid_tracking',),
+    'compliant_tracking': ('compliant_tracking',),
+    'compliant_drag': ('compliant_drag',),
+    'servo_tracking': ('servo_tracking',),
 }
 
 
@@ -48,32 +50,13 @@ def _snapshot(record):
     return folder,metadata,model,core,config
 
 
-def _replace_core(text, targets, *, include_identification=False):
+def _replace_core(text, targets, *, include_identification=False, hold_compensation=None):
     if include_identification:
-        cfg=yaml.safe_load(text)
-        controller=cfg.get('control',{}).get('controller',{})
-        if 'identification_tracking' not in controller:
-            lines=text.splitlines(keepends=True)
-            start=None
-            for i,line in enumerate(lines):
-                if re.match(r'^  controller:\s*(?:#.*)?$',line):
-                    start=i
-                    break
-            if start is None:raise ValueError('Core 配置缺少 control.controller')
-            insert=len(lines)
-            for j in range(start+1,len(lines)):
-                if lines[j].strip() and not lines[j].lstrip().startswith('#') and re.match(r'^[^ \t]|^  [^ \t]',lines[j]):
-                    insert=j
-                    break
-            seed=controller.get('rigid_tracking')
-            if not isinstance(seed,dict):raise ValueError('Core 缺少刚性跟踪增益')
-            new=['    # 辨识轨迹回放专用增益\n','    identification_tracking:\n']
-            for term in ('kp','kd'):
-                values=seed.get(term)
-                if not isinstance(values,dict):raise ValueError('Core 刚性跟踪增益格式错误')
-                new.append('      '+term+': '+ '{'+', '.join(f'{k}: {float(v):.12g}' for k,v in values.items())+'}'+'\n')
-            lines[insert:insert]=new
-            text=''.join(lines)
+        cfg = canonical_core(yaml.safe_load(text))
+        seed = cfg['control']['controller'].get('servo_tracking')
+        text = canonical_control_text(text, seed)
+    if hold_compensation is not None:
+        text = complete_mapping_values(text, ('control',), {'hold_compensation': hold_compensation})
     result=patch_text(text,targets)
     yaml.safe_load(result)
     return result
@@ -82,7 +65,7 @@ def _replace_core(text, targets, *, include_identification=False):
 def _gain_map(joints,values,limits=None):
     if len(joints)!=len(values):raise ValueError('关节增益数量与 Core 关节数量不一致')
     for i,value in enumerate(values):
-        if not isinstance(value,(float,int)) or not math.isfinite(value) or value<0:
+        if isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<0:
             raise ValueError(f'{joints[i]} 增益无效')
         if limits is not None and value>float(limits[joints[i]])+1e-9:
             raise ValueError(f'{joints[i]} 增益超过 Core 安全限制')
@@ -116,25 +99,13 @@ def _bundle_model(snapshot, metadata, dest, name='robot.urdf'):
     return out
 
 
-def _gain_export(record, dest):
-    folder, metadata, model, core, cfg = _snapshot(record)
-    gain = _read_json(folder / 'gain-candidate.json')
-    if gain.get('schema') != 'serial_arm_gain_candidate' or gain.get('validated') is not True:
-        raise ValueError('增益候选未通过独立轨迹验收，不能导出为运行配置')
-    if (gain.get('task_id') != metadata.get('task_id') or
-        gain.get('urdf_fingerprint') != metadata.get('urdf_fingerprint') or
-        gain.get('joint_names') != metadata.get('joint_names')):
-        raise ValueError('增益候选与任务源模型不一致')
+def gain_candidate_targets(gain, cfg, joints):
+    """Validate a candidate and return its exact deployment leaves."""
     category = gain.get('category')
-    if category not in GAIN_FIELDS:
-        raise ValueError('未知增益标定目标')
-    joints = metadata['joint_names']
     policy = cfg.get('safety_policy') or {}
-    groups = (gain.get('targets') or {}) if category == 'all' else {category: gain}
-    required = set(GAIN_DESTINATIONS) if category == 'all' else {category}
-    if set(groups) != required:
-        raise ValueError('增益候选缺少独立验证的标定目标')
+    groups = deployment_gain_groups(gain)
     targets = {}
+    hold_compensation = None
     for item, fields in groups.items():
         if not isinstance(fields, dict) or fields.get('validated') is not True:
             raise ValueError(f'{item} 尚未通过独立验证')
@@ -173,11 +144,72 @@ def _gain_export(record, dest):
             gain_map = _gain_map(joints, values, policy.get(limit_field))
             for destination in GAIN_DESTINATIONS[item]:
                 targets[('control', 'controller', destination, term)] = gain_map
+        if item in ('rigid_tracking', 'compliant_tracking'):
+            hold = fields.get('hold_gains')
+            verified = any((fields.get(key) or {}).get('validated') is True
+                           for key in ('hold_verification', 'hold_compensation_verification'))
+            if isinstance(hold, dict) and verified:
+                for term in ('kp', 'kd'):
+                    values = hold.get(term)
+                    if not isinstance(values, list): raise ValueError('保持验收缺少对应增益')
+                    targets[('control', 'controller', item.replace('_tracking', '_hold'), term)] = _gain_map(
+                        joints, values, policy.get('max_' + term + '_override'))
+            compensation = fields.get('hold_compensation')
+            if item == 'rigid_tracking':
+                # Older baseline candidates were also tested with compensation
+                # disabled; missing metadata must never revive an old trim
+                if compensation is None:
+                    compensation = {'enabled': False}
+                if not isinstance(compensation, dict) or not isinstance(compensation.get('enabled'), bool):
+                    raise ValueError('定位补偿参数不完整')
+                verification = 'hold_compensation_verification' if compensation['enabled'] else 'hold_verification'
+                if (fields.get(verification) or {}).get('validated') is not True:
+                    raise ValueError('定位补偿状态缺少对应的独立保持验收')
+                hold_compensation = {'enabled': compensation['enabled']}
+                for field in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
+                    values = compensation.get(field)
+                    if values is None and not compensation['enabled']: continue
+                    if not isinstance(values, list): raise ValueError('定位补偿缺少逐轴参数: ' + field)
+                    encoded = _gain_map(joints, values, policy.get('max_effort_override') if field == 'max_torque' else None)
+                    hold_compensation[field] = yaml.safe_load(encoded)
+                for field in ('velocity_threshold', 'error_threshold'):
+                    value = compensation.get(field)
+                    if value is None and not compensation['enabled']: continue
+                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                        raise ValueError('定位补偿阈值无效: ' + field)
+                    hold_compensation[field] = value
+                for key, value in hold_compensation.items():
+                    targets[('control', 'hold_compensation', key)] = yaml.safe_dump(value, default_flow_style=True).strip().removesuffix('\n...')
+    return targets, hold_compensation
+
+
+def _gain_export(record, dest):
+    folder, metadata, model, core, cfg = _snapshot(record)
+    gain = _read_json(folder / 'gain-candidate.json')
+    if gain.get('schema') != 'serial_arm_gain_candidate' or gain.get('validated') is not True:
+        raise ValueError('增益候选未通过独立轨迹验收，不能导出为运行配置')
+    if (gain.get('task_id') != metadata.get('task_id') or
+        gain.get('urdf_fingerprint') != metadata.get('urdf_fingerprint') or
+        gain.get('joint_names') != metadata.get('joint_names')):
+        raise ValueError('增益候选与任务源模型不一致')
+    category = gain.get('category')
+    if category == 'identification_tracking': category = 'servo_tracking'
+    if category not in GAIN_FIELDS:
+        raise ValueError('未知增益标定目标')
+    joints = metadata['joint_names']
+    targets, hold_compensation = gain_candidate_targets(gain, cfg, joints)
     result = _replace_core(core.read_text(encoding='utf-8'), targets,
-                           include_identification=True)
+                           include_identification=True, hold_compensation=hold_compensation)
     # Keep model.urdf_path unchanged because this artifact intentionally contains
     # only core.yaml; changing to a missing relative URDF would break deployment
     (dest / 'core.yaml').write_text(result, encoding='utf-8')
+    evidence = dest / 'evidence'; evidence.mkdir(exist_ok=True)
+    for source in [folder / 'metadata.json', folder / 'gain-candidate.json', *sorted(folder.glob('servo-probe-*.csv'))]:
+        if source.is_file() and not source.is_symlink(): shutil.copy2(source, evidence / source.name)
+    snapshots = evidence / 'source'; snapshots.mkdir(exist_ok=True)
+    for name in ('core.yaml', 'model.urdf', 'hardware.yaml', 'hardware-effective.yaml', 'gravity-correction.yaml'):
+        source = folder / 'source' / name
+        if source.is_file() and not source.is_symlink(): shutil.copy2(source, snapshots / name)
     return {'target': category, 'validated': True, 'files_only': ['core.yaml']}
 
 

@@ -59,6 +59,22 @@ def offline_task_home(directory, fallback_root):
     return Path(fallback_root).resolve()
 
 
+def runtime_parameter_snapshot(inspector, native, config, active_config, active_fingerprint):
+    if not active_config or native.status().get('state') != 'running':
+        raise ValueError('请先连接对应工作台，再保存当前会话参数')
+    info, active = inspector.inspect(config), inspector.inspect(active_config)
+    if (info['fingerprint'] != active_fingerprint or active['fingerprint'] != active_fingerprint or
+            Path(info['resources']['core']).resolve() != Path(active['resources']['core']).resolve() or
+            info.get('profile') != active.get('profile')):
+        raise ValueError('保存目标与当前工作台配置不一致，请重新连接后再保存')
+    snapshot = native.request('status', {}, timeout=8)
+    if ((snapshot.get('gravity_verification') or {}).get('active') or
+            (snapshot.get('model_calibration') or {}).get('phase', 'idle') not in
+            ('idle', 'complete', 'failed', 'cancelled')):
+        raise ValueError('标定或验证任务进行中不能保存临时试验参数')
+    return info, native.request('get_admittance', {}, timeout=8), snapshot
+
+
 from calibration_jobs import run_full_inertial_isolated, recompute_gravity_isolated
 
 
@@ -143,6 +159,35 @@ def verify_machine_admission(library, config, method, params, native):
             fault not in (None, '', 'NONE', 'OK')):
             raise ValueError('控制命令要求有效且未超时的真实反馈及无故障 ACTIVE 状态')
 
+    def require_gain_context(mode, *, playback=False, profile=None):
+        if mode not in ('RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_TRACKING', 'COMPLIANT_DRAG'):
+            raise ValueError('无效的任务状态')
+        runtime = native.request('get_admittance', {}, timeout=8)
+        if playback and 'reference_behavior' in params and params['reference_behavior'] not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
+            raise ValueError('无效的回放参考策略')
+        behavior = (params.get('reference_behavior') if playback else None) or runtime.get('reference_behavior') or status.get('reference_behavior') or 'NATIVE_IMPEDANCE'
+        if behavior not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
+            raise ValueError('无效的回放参考策略')
+        explicit = params.get('gain_profile') if profile is None else profile
+        purpose = explicit if explicit is not None else ('DRAG' if mode == 'COMPLIANT_DRAG' else
+                              'SERVO_TRACKING' if behavior == 'MODEL_ADMITTANCE' else
+                              'COMPLIANT' if mode.startswith('COMPLIANT') else 'RIGID')
+        if purpose not in ('RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'):
+            raise ValueError('无效的执行器增益用途')
+        if playback and (purpose == 'DRAG' or mode.endswith('_HOLD')):
+            raise ValueError('回放仅支持刚性、柔性或伺服跟踪用途')
+        if (purpose == 'DRAG') != (mode == 'COMPLIANT_DRAG'):
+            raise ValueError('拖拽用途与任务状态不一致')
+        if mode != 'COMPLIANT_DRAG' and behavior == 'MODEL_ADMITTANCE':
+            if purpose != 'SERVO_TRACKING' or runtime.get('enabled') is not True:
+                raise ValueError('模型导纳要求启用能力并使用伺服跟踪增益')
+        if 'gain_profile' in params and ((purpose in ('RIGID', 'SERVO_TRACKING') and not mode.startswith('RIGID')) or
+                         (purpose == 'COMPLIANT' and not mode.startswith('COMPLIANT'))):
+            raise ValueError('执行器增益用途与任务状态不一致')
+        required = 'SERVO_TRACKING' if purpose == 'SERVO_TRACKING' else mode
+        if not configured(required):
+            raise ValueError('目标增益用途缺失或超过 Safety 上限: ' + required)
+
     gravity_active = (status.get('gravity_verification') or {}).get('active') is True
     if gravity_active and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
         raise ValueError('重力验证期间不能执行其他运动或参数调整')
@@ -187,14 +232,23 @@ def verify_machine_admission(library, config, method, params, native):
         if robot_state != 'INACTIVE':
             raise ValueError('正常重力比例仅允许在 INACTIVE 状态调整')
         return
+    if method == 'set_reference_behavior':
+        behavior = params.get('behavior')
+        if behavior not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
+            raise ValueError('参考策略必须为 NATIVE_IMPEDANCE 或 MODEL_ADMITTANCE')
+        if robot_state != 'INACTIVE':
+            raise ValueError('请先停放并失能，再切换参考策略')
+        if ((status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled') or
+                (status.get('teach_replay') or {}).get('phase') in ('recording', 'playing')):
+            raise ValueError('请先退出标定或示教回放任务，再切换参考策略')
+        if behavior == 'MODEL_ADMITTANCE' and native.request('get_admittance', {}, timeout=8).get('enabled') is not True:
+            raise ValueError('当前 Profile 未启用模型导纳能力')
+        return
     if method == 'set_impedance_mode':
         require_feedback()
         mode = params.get('mode')
-        if not configured(mode):
-            raise ValueError('目标阻抗模式的 Kp/Kd 缺失或超过 Safety 上限')
+        require_gain_context(mode)
         if mode == 'COMPLIANT_DRAG':
-            if status.get('model_feedforward_mode') != 'GRAVITY':
-                raise ValueError('柔性拖拽需要启用 GRAVITY 前馈')
             scales = status.get('gravity_scale') or []
             if not scales or not any(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in scales):
                 raise ValueError('柔性拖拽需要非零的有效重力补偿')
@@ -202,8 +256,10 @@ def verify_machine_admission(library, config, method, params, native):
     if method in _TRACKING_MACHINE:
         require_feedback()
         mode = status.get('impedance_mode')
-        if mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING') or not configured(mode):
-            raise ValueError('请先进入已配置有效增益的跟踪模式')
+        tracking = {'RIGID_HOLD': 'RIGID_TRACKING', 'COMPLIANT_HOLD': 'COMPLIANT_TRACKING'}.get(mode, mode)
+        if tracking not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
+            raise ValueError('移动目标要求已配置的保持或跟踪状态，请先退出拖拽')
+        require_gain_context(tracking, profile=status.get('gain_profile'))
         speed = params.get('speed_scale', 1.0)
         if (not isinstance(speed, (int, float)) or isinstance(speed, bool) or
             not math.isfinite(speed) or not 0 < speed <= 1):
@@ -217,22 +273,26 @@ def verify_machine_admission(library, config, method, params, native):
         # Native Core enforces applicable URDF and Safety bounds, and any enabled continuity checks
         return
     if method == 'set_admittance':
-        require_feedback()
-        if status.get('impedance_mode') == 'COMPLIANT_DRAG':
+        if robot_state != 'INACTIVE':
+            require_feedback()
+        if robot_state == 'ACTIVE' and status.get('impedance_mode') == 'COMPLIANT_DRAG':
             raise ValueError('柔性拖拽时不允许修改导纳运行参数')
+        if status.get('reference_behavior') != 'MODEL_ADMITTANCE':
+            raise ValueError('在线导纳调整要求先选择 MODEL_ADMITTANCE 参考策略')
+        if (status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled'):
+            raise ValueError('标定任务进行中不能修改导纳运行参数')
         return
     if method.startswith('teach_replay_'):
         if method in ('teach_replay_record_begin', 'teach_replay_play'):
             require_feedback()
         if method == 'teach_replay_record_begin':
-            if status.get('model_feedforward_mode') != 'GRAVITY' or not configured('COMPLIANT_DRAG'):
-                raise ValueError('示教记录要求合法柔性拖拽增益及重力前馈')
+            if not configured('COMPLIANT_DRAG'):
+                raise ValueError('示教记录要求合法柔性拖拽增益')
         if method == 'teach_replay_play':
             selected_mode = params.get('mode')
             if selected_mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
                 raise ValueError('回放阻抗模式只能选择刚性跟踪或柔性跟踪')
-            if not configured(selected_mode):
-                raise ValueError('当前回放阻抗模式的增益尚未正确配置：' + selected_mode)
+            require_gain_context(selected_mode, playback=True)
         return
     if method.startswith(('model_calibration_', 'candidate_', 'calibration_',
                           'friction_', 'gain_')):
@@ -287,10 +347,12 @@ def main():
         for line in sys.stdin:
             request = {}
             try:
-                if len(line) > 1024 * 1024: raise ValueError('request too large')
+                if len(line) > 16 * 1024 * 1024: raise ValueError('request too large')
                 request = json.loads(line)
                 method, params = request['method'], request.get('params', {})
                 if not isinstance(params, dict): raise ValueError('params must be an object')
+                if len(line) > 1024 * 1024 and not (method == 'workbench_export' and isinstance(params.get('response_window'), dict)):
+                    raise ValueError('request too large')
                 if method == 'stop' and native.status().get('state') in ('running', 'stopping'):
                     method = 'workbench_stop'
                 if control_job and control_job.is_alive():
@@ -557,23 +619,38 @@ def main():
                         continue
                     result = disconnect()
                 elif method == 'workbench_config_preview':
-                    if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
-                        raise ValueError('重力验证进行中不得保存临时参数')
                     config = config_values(params.get('config', {}))
-                    info = inspector.inspect(config)
-                    runtime = native.request('get_admittance', {}, timeout=8)
-                    snapshot = native.request('status', {}, timeout=8)
+                    info, runtime, snapshot = runtime_parameter_snapshot(
+                        inspector, native, config, active_workbench_config, active_workbench_fingerprint)
                     result = preview_config(info['resources']['core'], snapshot['joint_names'], runtime, snapshot['gravity_scale'])
                 elif method == 'workbench_config_save':
-                    if (native.request('status', {}, timeout=8).get('gravity_verification') or {}).get('active'):
-                        raise ValueError('重力验证进行中不得保存临时参数')
                     config = config_values(params.get('config', {}))
-                    info = inspector.inspect(config)
-                    runtime = native.request('get_admittance', {}, timeout=8)
-                    snapshot = native.request('status', {}, timeout=8)
+                    info, runtime, snapshot = runtime_parameter_snapshot(
+                        inspector, native, config, active_workbench_config, active_workbench_fingerprint)
                     result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'], profile_home(info, ROOT))
+                    # The saved values came from this exact live session; refresh
+                    # its disk identity without making the next command stale
+                    active_workbench_fingerprint = inspector.inspect(active_workbench_config)['fingerprint']
                 elif method == 'workbench_export':
-                    result = export_telemetry(profile_home(inspector.inspect(active_workbench_config), ROOT) if active_workbench_config else ROOT, native.telemetry(), {'profile': params.get('profile', ''), 'core': params.get('core', '')})
+                    metadata = {'profile': params.get('profile', ''), 'core': params.get('core', '')}
+                    events = native.telemetry()
+                    response = params.get('response_window')
+                    if response is not None:
+                        if (not isinstance(response, dict) or response.get('recording') is not False or
+                                not isinstance(response.get('samples'), list) or not 1 <= len(response['samples']) <= 6000 or
+                                not isinstance(response.get('joint_names'), list) or
+                                response.get('source') != 'passive_native_cycle_snapshots'):
+                            raise ValueError('响应记录必须为已结束且包含有效快照的被动记录')
+                        # Preserve the operator's release annotation and source session,
+                        # including when the live session has since disconnected.
+                        json.dumps(response, allow_nan=False)
+                        from interaction_response import analyze_interaction_response
+                        response['execution_dynamics'] = analyze_interaction_response(response)
+                        metadata['response_window'] = {key: value for key, value in response.items() if key != 'samples'}
+                        events = [{'event': 'response_snapshot', 'data': sample} for sample in response['samples']]
+                    result = export_telemetry(profile_home(inspector.inspect(active_workbench_config), ROOT) if active_workbench_config else ROOT, events, metadata)
+                    if response is not None:
+                        result['interaction_response'] = response['execution_dynamics']
                 elif method == 'calibration_candidate_prepare':
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')

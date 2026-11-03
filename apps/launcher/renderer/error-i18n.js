@@ -3,13 +3,13 @@
 // "原始技术诊断" expandable section, and backend protocols remain stable.
 (function (root) {
     const explanations = [
-        [/replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING/i, '轨迹回放只支持刚性跟踪或柔性跟踪'],
+        [/replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING/i, '回放任务状态无效，请重新选择执行器增益用途'],
         [/replay requires valid ACTIVE feedback/i, '轨迹回放需要机械臂已使能并且实时反馈有效'],
         [/replay requires fresh control feedback/i, '轨迹回放的实际反馈已过期，请检查通信与控制周期'],
         [/robot is not aligned with selected trajectory endpoint/i, '当前关节姿态尚未对齐轨迹端点，请先安全返回对应起点或终点'],
         [/re-timed trajectory violates joint margins|interpolated playback would exceed URDF joint safety margins/i, '轨迹插值后的路径可能超过 URDF 关节安全范围，请重新示教并保留限位余量'],
-        [/drag teaching requires GRAVITY feedforward/i, '轨迹示教需要先在失能状态启用 GRAVITY 重力前馈，再使能执行柔性拖拽'],
-        [/drag teaching requires positive damping/i, '轨迹示教需要每个关节的柔性拖拽阻尼为正数'],
+        [/drag teaching requires GRAVITY feedforward/i, '轨迹示教需要先在失能状态启用 GRAVITY 重力前馈，再使能执行拖拽'],
+        [/drag teaching requires positive damping/i, '轨迹示教需要每个关节的拖拽阻尼为正数'],
         [/drag teaching requires nonzero gravity compensation/i, '轨迹示教需要有效且非零的重力补偿比例'],
         [/load or record a trajectory before replay/i, '请先录制或从轨迹管理中载入一条轨迹'],
         [/trajectory file unavailable|trajectory file not found/i, '轨迹数据文件不存在，请检查轨迹文件夹的位置与权限'],
@@ -44,6 +44,9 @@
         [/\bSTATE_TIMEOUT\b/i, '机械臂状态反馈已超时，已停止当前任务 请检查反馈连续性与控制调度，不会自动恢复示教'],
         [/failed to (?:return|switch|enter).*RIGID_HOLD/i, '任务结束时未能恢复刚性保持，请查看最初的机器人故障，故障未恢复前不会继续运动'],
         [/\bSAFETY_FAILED\b/i, '机器人安全检查未通过，请核对关节状态、反馈和控制限制'],
+        [/\bREFERENCE_GOVERNOR_FAILED\b.*\bINFEASIBLE\b/i, '运动限制与 PD / 前馈总力矩预算内找不到可执行参考，请检查轨迹、实测位置与增益'],
+        [/\bREFERENCE_GOVERNOR_FAILED\b.*\bINVALID_INPUT\b/i, '参考调节器输入无效，请检查参考运动与力矩预算参数'],
+        [/\bREFERENCE_GOVERNOR_FAILED\b/i, '参考调节器无法接受当前命令，请检查参考运动和总力矩预算'],
         [/trajectory replay soft following recovery timed out/i, '示教回放中关节未能在限定时间内追上参考轨迹，任务已停止 这不是触及硬安全限位 柔性跟踪可尝试降低回放速度或调整对应关节的跟踪增益'],
         [/trajectory replay hard following limit reached/i, '示教回放已触及硬跟踪误差保护，任务已中止 请检查控制增益、负载、摩擦和实际关节响应'],
         [/trajectory replay initial reference exceeds hard following limit/i, '当前实际姿态与轨迹起点偏差过大，已拒绝回放'],
@@ -87,8 +90,9 @@
         park: '停放', hold: '当前位置保持', fault_compliant: '柔性恢复',
         fault_rigid: '刚性恢复', set_impedance_mode: '切换阻抗模式',
         set_model_feedforward_mode: '切换模型前馈模式',
+        set_reference_behavior: '切换控制方式', set_admittance: '调整导纳参数',
     };
-    const codePattern = /\b(?:MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
+    const codePattern = /\b(?:MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|REFERENCE_GOVERNOR_FAILED|INFEASIBLE|INVALID_INPUT|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
     function translate(raw, lang = 'zh-CN') {
         const input = String(raw ?? '').trim();
         if (lang === 'en' || !input) return input;

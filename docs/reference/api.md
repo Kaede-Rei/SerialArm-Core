@@ -1,6 +1,6 @@
 # SerialArm-Core API Reference
 
-本文档用于查询 SerialArm-Core 的公共类型、配置结构、类、函数、生命周期接口、错误模型与扩展契约
+按任务查询公共配置、控制接口、数据结构与驱动扩展契约
 
 如果目标是第一次运行机械臂、配置 Robot Profile、调试 Dynamics / Impedance / Admittance、接入 ROS 2 / MoveIt 或新增机械臂，请先阅读 [配置教程](../tutorial.md)
 
@@ -18,7 +18,7 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | --- | --- | --- |
 | C++ 控制机械臂 | `RobotProfileCore`、`RobotCfg`、`Robot` | 第 3 → 4 章 |
 | Dynamics | `Dynamics` | 第 5 章 |
-| Impedance | `JointImpedanceMode`、`JointCtrller` | 第 6 章 |
+| 控制方式与增益用途 | `ReferenceBehavior`、`JointGainProfile`、`Robot` | 第 2 → 4 章 |
 | Admittance | `CapabilityCfg`、`Robot` Admittance API、`RobotCycleOutput` | 第 3 → 4 → 7 章 |
 | Interaction Observer | `MOMENTUM` / `FULL_ID` 外力估计接口 | Interaction 章节 |
 | Safety / FAULT | `Safety`、`RobotFault`、Fault Recovery API | 第 8 章 |
@@ -29,18 +29,7 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | CAN / Serial 扩展 | Transport API | 第 12 章 |
 | 错误码 | `RobotFault` 与各模块错误枚举 | 第 14 章 |
 
-普通应用不需要直接操作 `JointCtrller`、`Safety`、`JointActuatorMapper`、`MotorBus` 或 Transport，除非需要调试对应模块或开发扩展
-
-每个公共接口尽量保持以下说明顺序
-
-```text
-定义或签名
-作用
-参数
-返回值
-示例
-注意事项
-```
+应用从 `Robot` 或 `RobotSession` 入手；驱动开发与模块调试使用底层接口
 
 ---
 
@@ -58,7 +47,8 @@ API Reference 按工程使用顺序组织，普通应用优先从 Robot Profile�
 | `serial_arm/config/limit_resolver.hpp` | 最终 Safety limit 解析 |
 | `serial_arm/model/model_loader.hpp` | URDF Joint limit 读取 |
 | `serial_arm/core/joint_actuator_mapper.hpp` | Joint 与 Actuator 双向映射 |
-| `serial_arm/core/joints_ctrller.hpp` | 五种阻抗模式控制器 |
+| `serial_arm/core/joints_ctrller.hpp` | 保持、跟踪、拖拽任务与执行增益 |
+| `serial_arm/runtime/control_runtime.hpp` | 共享控制周期、命令提交与快照 |
 | `serial_arm/core/safety.hpp` | 状态与命令安全检查 |
 | `serial_arm/dynamics/dynamics.hpp` | Pinocchio Dynamics |
 | `serial_arm/interaction/admittance_observer_mode.hpp` | `FULL_ID / MOMENTUM` Observer 模式 |
@@ -222,9 +212,9 @@ struct JointState {
 
 | 字段 | 单位 | 含义 |
 | --- | --- | --- |
-| `pos` | rad | Joint 实测位置 |
-| `vel` | rad/s | Joint 实测速度 |
-| `tor` | N*m | Joint 实测或估算力矩 |
+| `pos` | rad 或 m | 旋转或移动关节的实测位置 |
+| `vel` | rad/s 或 m/s | 旋转或移动关节的实测速度 |
+| `tor` | N·m 或 N | 关节广义力反馈 |
 
 示例
 
@@ -257,6 +247,8 @@ struct ActuatorState {
     std::vector<std::uint8_t> online;
     std::vector<std::uint8_t> enabled;
     std::vector<int> err_code;
+    std::vector<std::uint64_t> feedback_received_ns;
+    std::vector<std::uint8_t> feedback_timing_valid;
 };
 ```
 
@@ -270,6 +262,8 @@ struct ActuatorState {
 | `online` | 执行器是否在线 |
 | `enabled` | 执行器是否使能 |
 | `err_code` | Backend 提供的执行器错误码 |
+| `feedback_received_ns` | 各轴 steady_clock 接收时间，纳秒；空数组表示未知 |
+| `feedback_timing_valid` | 各轴接收时序是否连续，可否参与速度差分 |
 
 `online`、`enabled` 和 `err_code` 会被 Safety 使用
 
@@ -518,6 +512,32 @@ MyBus::write(const serial_arm::ActuatorCtrlCmd& cmd) {
 ```
 
 应用层通常只会在 `RobotCycleOutput::actuator_cmd` 中读取它用于诊断
+
+---
+
+### 控制方式、增益用途与保持目标
+
+```cpp
+enum class ReferenceBehavior { NATIVE_IMPEDANCE, MODEL_ADMITTANCE };
+enum class JointGainProfile { RIGID, COMPLIANT, DRAG, SERVO_TRACKING };
+enum class GainSource {
+    CONFIGURED, CALIBRATION_OVERRIDE, PARK_OVERRIDE, FULL_COMMAND, TRANSITION
+};
+enum class HoldTargetPolicy { PRESERVE_NOMINAL, CAPTURE_MEASURED };
+```
+
+`ReferenceBehavior` 位于 `config/config.hpp`，其余类型位于 `core/types.hpp`
+
+| 类型 | 选择 |
+| --- | --- |
+| `ReferenceBehavior` | 原生阻抗直接执行名义参考；模型导纳根据外力生成虚拟参考 |
+| `JointGainProfile` | 刚性、柔性、拖拽、伺服跟踪四种执行器增益用途 |
+| `GainSource` | 当前增益来自配置、标定覆盖、停放覆盖、完整命令或过渡 |
+| `HoldTargetPolicy` | 保留名义目标，或显式捕获当前实测位置 |
+
+保持、跟踪与拖拽任务仍使用 `JointImpedanceMode` 的兼容枚举；`SERVO_TRACKING` 是增益用途，不能作为任务枚举传入
+
+模型导纳自动选择伺服增益；拖拽使用 `DRAG`；原生阻抗下可显式选择用途，未覆盖时按任务选择刚性或柔性
 
 ---
 
@@ -801,62 +821,45 @@ for(const auto& path : serial_arm::robot_profile_search_paths(options)) {
 
 ### `RuntimeCfg`
 
-定义
-
 ```cpp
 struct RuntimeCfg {
-    double ctrl_frequency_hz;
-    double joint_acc_filter_alpha;
-    bool write_enabled;
-    ModelFeedforwardMode model_feedforward_mode;
-    JointImpedanceMode tracking_impedance_mode;
+    double ctrl_frequency_hz{ 200.0 };                 ///< 控制循环频率
+    double joint_acc_filter_alpha{ 0.2 };              ///< 关节加速度低通滤波系数
+    bool write_enabled{ false };                       ///< 是否允许下发执行器命令
+    ModelFeedforwardMode model_feedforward_mode{       ///< 模型前馈策略
+        ModelFeedforwardMode::NONE
+    };
+    JointImpedanceMode tracking_impedance_mode{    ///< 跟踪阻抗模式
+        JointImpedanceMode::RIGID_TRACKING
+    };
+    std::optional<JointGainProfile> tracking_gain_profile; ///< ROS 默认增益用途；未设置时兼容 tracking_impedance_mode
+    JointGainProfile native_tracking_gain_profile() const noexcept {
+        return tracking_gain_profile.value_or(tracking_impedance_mode==JointImpedanceMode::COMPLIANT_TRACKING ?
+            JointGainProfile::COMPLIANT : JointGainProfile::RIGID);
+    }
 };
 ```
 
-#### `ctrl_frequency_hz`
+| 字段 | 含义 |
+| --- | --- |
+| `ctrl_frequency_hz` | 目标周期频率，首周期 dt 使用其倒数 |
+| `joint_acc_filter_alpha` | 实测关节加速度差分低通系数 |
+| `write_enabled` | 允许真实写入；直接调用 Robot 时关闭会使 `activate()` 返回 `WRITE_DISABLED` |
+| `model_feedforward_mode` | 原生阻抗前馈：关闭、重力或完整逆动力学 |
+| `tracking_gain_profile` | 原生 ROS2 跟踪默认用途，支持 RIGID、COMPLIANT、SERVO_TRACKING |
+| `tracking_impedance_mode` | 旧默认任务配置，省略新用途字段时据此推导刚性或柔性 |
 
-Robot 目标控制频率
-
-`cycle()` 第一个周期使用
-
-```text
-1 / ctrl_frequency_hz
-```
-
-作为 nominal dt
-
-#### `joint_acc_filter_alpha`
-
-Robot 内部关节加速度估计低通系数，FULL_ID 外力估计显式使用 qdd，MOMENTUM 不显式使用 qdd
-
-#### `write_enabled`
-
-是否允许 `Robot::activate()`
-
-`false` 时 `activate()` 返回 `RobotErr::WRITE_DISABLED`
-
-#### `model_feedforward_mode`
-
-模型前馈策略
-
-#### `tracking_impedance_mode`
-
-配置层默认 tracking mode
-
-具体 Adapter 或 Session 可以读取它作为默认策略
-
-#### 示例
+`tracking_gain_profile` 是 `std::optional`；`native_tracking_gain_profile()` 返回显式用途，或旧模式推导的用途；模型导纳实际执行使用伺服增益
 
 ```cpp
 serial_arm::RuntimeCfg runtime;
 runtime.ctrl_frequency_hz = 200.0;
-runtime.joint_acc_filter_alpha = 0.2;
 runtime.write_enabled = false;
 runtime.model_feedforward_mode = serial_arm::ModelFeedforwardMode::GRAVITY;
-runtime.tracking_impedance_mode = serial_arm::JointImpedanceMode::COMPLIANT_TRACKING;
+runtime.tracking_gain_profile = serial_arm::JointGainProfile::SERVO_TRACKING;
 ```
 
-真机首次检查阶段应保持 `write_enabled=false`，完成配置与模型验证后再显式开启
+Terminal 和 Python Session 在写入关闭时可使用自己的 mock 后端；直接 `Robot` 接口没有自动 mock 替换
 
 ---
 
@@ -971,14 +974,16 @@ dynamics.configure(dynamics_cfg);
 
 ```cpp
 struct RobotCfg {
-    std::vector<std::string> joint_names;
-    RuntimeCfg runtime;
-    CapabilityCfg capability;
-    ShutdownCfg shutdown;
-    JointCtrllerCfg ctrller;
-    JointActuatorMapCfg mapper;
-    SafetyCfg safety;
-    DynamicsCfg dynamics;
+    HoldCompensationCfg hold_compensation;
+    std::vector<std::string> joint_names;  ///< 固定的 Joint 顺序
+    RuntimeCfg runtime;                    ///< Robot 运行参数
+    CapabilityCfg capability;              ///< 可选高级能力
+    ShutdownCfg shutdown;                  ///< 正常停机参数
+    JointCtrllerCfg ctrller;               ///< Joint 控制器参数
+    JointActuatorMapCfg mapper;            ///< Joint/Actuator 映射
+    SafetyCfg safety;                      ///< Joint/Actuator 安全配置
+    DynamicsCfg dynamics;                  ///< 动力学参数
+    std::optional<SafetyLimitSource> safety_limit_source; ///< 保留策略来源，以实际硬件能力重新解析
 };
 ```
 
@@ -1010,7 +1015,7 @@ std::cout << cfg.runtime.ctrl_frequency_hz << "\n";
 
 #### `CapabilityCfg` 与关节空间导纳
 
-`capability` 保存可选高级能力；当前公开配置包含固定 M / D / K 关节空间导纳
+`capability.admittance` 保存外力观测与交互计算开关、控制方式和 M/D/K 参数
 
 ```cpp
 struct AdmittanceObserverCfg {
@@ -1034,6 +1039,7 @@ struct AdmittanceControllerCfg {
 
 struct AdmittanceCapabilityCfg {
     bool enabled;
+    ReferenceBehavior reference_behavior;
     std::vector<std::uint8_t> joint_enabled;
     AdmittanceObserverCfg observer;
     AdmittanceCalibrationCfg calibration;
@@ -1080,13 +1086,44 @@ MOMENTUM 使用 generalized momentum observer，不显式使用实测 qdd
 momentum_gain > 0
 torque_threshold >= 0
 mass > 0
-damping > 0
-stiffness > 0
+damping >= 0
+stiffness >= 0
 max_delta_q > 0
 max_delta_q_dot > 0
 ```
 
 `friction.enabled=true` 时还要求完整双向 Coulomb + viscous 参数和 `velocity_transition > 0`
+
+YAML 的 `reference_behavior` 可显式选择原生阻抗或模型导纳；兼容配置未填写时，`enabled=true` 推导模型导纳，关闭时推导原生阻抗
+
+`K=0` 时没有弹簧回位；同一虚拟响应的实际效果还受执行器响应与总力矩约束影响
+
+#### `HoldCompensationCfg`
+
+```cpp
+struct HoldCompensationCfg {
+    bool enabled{false};
+    JointVector integral_gain;
+    JointVector max_torque;
+    JointVector max_rate;
+    JointVector contact_threshold;
+    double velocity_threshold{0.02};
+    double error_threshold{0.03};
+};
+```
+
+YAML 位于 `control.hold_compensation`，省略时关闭；提供简写节点时，未填写的逐关节项默认 `integral_gain=0.15`、`max_torque=0.15`、`max_rate=0.05`、`contact_threshold=0.2`
+
+补偿只用于原生阻抗、刚性用途的 `RIGID_HOLD`；有效观测、低速、小误差且外力小于冻结阈值时积分，受补偿上限、变化率与总力矩预算限制
+
+模式切换、失能及故障清理积分状态；模型导纳、柔性保持、拖拽和完整命令不使用该补偿
+
+#### 执行增益配置
+
+`control.controller` 保留 `rigid_hold`、`rigid_tracking`、`compliant_hold`、`compliant_tracking`、`compliant_drag` 与 `servo_tracking`
+
+保持与跟踪分别保存，伺服用途共用 `servo_tracking`；旧 `identification_tracking` 是兼容别名，省略两者时从刚性跟踪增益初始化；GUI 拒绝两字段不一致的配置，Core 加载优先使用 `servo_tracking`；建议只保留标准字段
+
 ---
 
 ### `load_robot_cfg()`
@@ -1903,6 +1940,33 @@ for(const auto& joint : resolved.joints) {
 
 ## 4 Robot 控制闭环
 
+### `ControlRuntime`
+
+头文件 `serial_arm/runtime/control_runtime.hpp`
+
+```cpp
+void run(Robot& robot, double frequency_hz, double max_dt_s, const RuntimeHooks& hooks);
+RuntimeSnapshot step(Robot& robot, Robot::TimePoint now = Robot::Clock::now());
+RuntimeSnapshot snapshot() const;
+tl::expected<void, RobotFault> submit_reference(
+    Robot& robot, JointCmd command, Robot::TimePoint received_at,
+    MotionSource source = MotionSource::EXTERNAL);
+tl::expected<void, RobotFault> set_impedance_mode(
+    Robot& robot, JointImpedanceMode mode,
+    Robot::TimePoint now = Robot::Clock::now(),
+    HoldTargetPolicy target_policy = HoldTargetPolicy::PRESERVE_NOMINAL);
+void clear_commands();
+MotionSource source() const;
+```
+
+以上为类成员签名；Terminal、Python 和 ROS2 共享此执行器，`run()` 管理周期，`step()` 由外部周期推进，二者不能并发执行同一 Robot
+
+`RuntimeSnapshot` 保存序号、单调时刻、生命周期、运动来源、可选周期与故障，以及故障保持状态；`RuntimeHooks` 在同一串行上下文执行周期前后回调
+
+运动来源为 `NONE/EXTERNAL/STREAM/REPLAY/CALIBRATION/PARK`，提交冲突由当前来源与任务规则处理
+
+---
+
 本章是 Native C++ 应用最主要的 API，覆盖 `configure → activate → command → cycle → deactivate` 控制生命周期
 
 ### `Robot`
@@ -1995,25 +2059,11 @@ configure(
 - 保存可选 Interaction model state 函数
 - 进入 `INACTIVE`
 
-注意
+模型回调要求
 
-以下情况会要求模型回调
-
-```text
-cfg.runtime.model_feedforward_mode != NONE
-或
-cfg.capability.admittance.enabled == true
-```
-
-此时必须提供 `model_feedforward`
-
-如果启用导纳并选择
-
-```text
-observer.mode == MOMENTUM
-```
-
-还必须提供 `interaction_model_state`，用于提供 gravity、coriolis 和 mass matrix
+- 原生前馈不是 `NONE` 时提供 `model_feedforward`
+- 启用外力观测/导纳或保持补偿时提供 `interaction_model_state`
+- `interaction_model_state` 对两种 Observer 都提供实测状态下的重力、科氏项与质量矩阵，独立于执行前馈
 
 完整示例见文档末尾的功能示例 A
 
@@ -2025,8 +2075,8 @@ observer.mode == MOMENTUM
 
 - `cfg` 为完整 Robot 配置
 - `motor_bus` 为已被 HardwareLoader configure 的 Backend
-- `model_feedforward` 为模型前馈 / 导纳 FULL-ID 模型力矩回调
-- `interaction_model_state` 为 Momentum Observer 使用的模型状态回调
+- `model_feedforward` 为原生阻抗的模型前馈回调
+- `interaction_model_state` 为外力观测与模型导纳使用的实测动力学回调
 
 返回值
 
@@ -2056,23 +2106,9 @@ assert(robot.get_state() == serial_arm::RobotState::INACTIVE);
 
 - configure 会接管 `motor_bus`，调用后不要继续使用原 unique_ptr
 - 非 NONE 前馈模式必须提供有效 `model_feedforward`
-- 导纳启用时必须提供有效 `model_feedforward`
-- 导纳使用 `MOMENTUM` observer 时必须额外提供 `interaction_model_state`
+- 外力观测、导纳及保持补偿使用 `interaction_model_state` 实测模型快照
 
-`InteractionModelStateFn` 的数据结构为
-
-```cpp
-struct InteractionModelState {
-    JointVector gravity;
-    JointVector coriolis;
-    std::vector<JointVector> mass_matrix;
-};
-
-using InteractionModelStateFn =
-    std::function<tl::expected<InteractionModelState, ModelFeedforwardErr>(
-        const JointState&,
-        double)>;
-```
+`MeasuredDynamicsSnapshot` 与 `InteractionModelStateFn` 的定义见本章模型回调部分
 
 ---
 
@@ -2254,6 +2290,7 @@ set_full_cmd(
 - ACTIVE
 - tracking mode
 - `allow_full_cmd=true`
+- 当前实际控制方式为 `NATIVE_IMPEDANCE`
 
 用途
 
@@ -2303,72 +2340,75 @@ if(result) {
 
 使用注意
 
-- 必须先在配置中设置 `allow_full_cmd=true`
+- 模型导纳拒绝完整执行器命令；原生方式使用前先设置 `allow_full_cmd=true`
 
 ---
 
 ### `Robot::set_impedance_mode()`
 
-签名
-
 ```cpp
-tl::expected<void, RobotFault>
-set_impedance_mode(
+tl::expected<void, RobotFault> set_impedance_mode(
     JointImpedanceMode mode,
-    TimePoint now = Clock::now());
+    TimePoint now = Clock::now(),
+    HoldTargetPolicy target_policy = HoldTargetPolicy::PRESERVE_NOMINAL);
 ```
 
-要求
+要求 ACTIVE、有效实测状态和不回退的时间戳；成功切换后清除旧跟踪命令、临时执行用途及保持积分，执行增益和命令力矩平滑交接
 
-- ACTIVE
-- 已有合法 state
-- 时间戳不回退
+| 保持策略 | 行为 |
+| --- | --- |
+| `PRESERVE_NOMINAL`，默认 | 保留原名义保持目标；从跟踪转入保持时使用已有名义目标 |
+| `CAPTURE_MEASURED` | 捕获当前实测位置，清除旧导纳偏移，开始保持此位置 |
 
-切换模式后 Robot 会
-
-- 用当前实测状态重建 reference
-- 重置 Safety command history
-- 清除 external command 状态
-- 重置 joint reference acceleration
-- 清空 Interaction observer、`delta_q` 与 `delta_q_dot` 状态
-
-因此切换到 tracking 后应重新发送目标
-
-#### 接口说明
-
-切换 Robot 正常运行时的阻抗模式，并自动把 reference 与 Safety history 对齐到当前实测状态
-
-参数
-
-- `mode` 为目标模式
-- `now` 为单调时间点
-
-返回值
-
-成功返回空 `expected`，非 ACTIVE 或时间回退返回 `RobotFault`
-
-具体使用示例
+普通交接不会把受扰退让位置改成新名义目标；显式“当前位置保持”使用捕获策略
 
 ```cpp
-const auto mode_result = robot.set_impedance_mode(
-    serial_arm::JointImpedanceMode::COMPLIANT_DRAG);
-
-if(!mode_result) {
-    return 1;
-}
-
-while(running) {
-    auto cycle_result = robot.cycle();
-    if(!cycle_result) {
-        break;
-    }
-}
+auto held = robot.set_impedance_mode(
+    serial_arm::JointImpedanceMode::RIGID_HOLD,
+    serial_arm::Robot::Clock::now(),
+    serial_arm::HoldTargetPolicy::CAPTURE_MEASURED);
+if(!held) return 1;
 ```
 
-使用注意
+`COMPLIANT_DRAG` 不接收 `set_cmd()`；切换到跟踪后需重新提交命令
 
-- `COMPLIANT_DRAG` 不接受 set_cmd
-- 切换到 tracking 后旧命令会被清除，必须重新提交目标
+### 执行增益与保持补偿接口
+
+```cpp
+tl::expected<void, RobotFault> set_execution_gain_profile(JointGainProfile profile);
+void clear_execution_gain_profile();
+JointGainProfile get_gain_profile() const noexcept;
+tl::expected<void, RobotFault> set_servo_tracking_gains(const JointImpedanceGains& gains);
+tl::expected<void, RobotFault> set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
+const HoldCompensationCfg& get_hold_compensation_cfg() const noexcept;
+const JointVector& get_hold_target() const noexcept;
+```
+
+执行用途可在 ACTIVE 或 INACTIVE 设置，清除后回到按任务选择；模型导纳与拖拽的用途优先于显式覆盖
+
+伺服增益与保持补偿更新须通过维度、有限值和安全上限检查；ACTIVE 更新平滑交接，FAULT 中只允许恢复合法配置，不恢复执行
+
+模式切换会清除用途覆盖，调用方按需要在切换后选择用途
+
+```cpp
+auto mode = robot.set_impedance_mode(serial_arm::JointImpedanceMode::RIGID_TRACKING);
+if(!mode) return 1;
+auto gains = robot.set_execution_gain_profile(serial_arm::JointGainProfile::SERVO_TRACKING);
+if(!gains) return 1;
+```
+
+### 临时标定控制上下文
+
+```cpp
+tl::expected<void, RobotFault> set_calibration_reference_behavior(ReferenceBehavior behavior);
+void clear_calibration_reference_behavior();
+tl::expected<void, RobotFault> set_calibration_model_feedforward_mode(ModelFeedforwardMode mode);
+void clear_calibration_model_feedforward_mode();
+```
+
+供在线标定事务临时覆盖策略与前馈；参考策略试验要求有效实测动力学回调，可在持久化导纳关闭时独立验证模型导纳
+
+调用方在完成、取消及异常路径清除覆盖并恢复原会话；普通应用使用失能状态下的 `set_reference_behavior()`
 
 ---
 
@@ -2433,92 +2473,29 @@ robot.activate();
 
 ### `Robot::cycle()`
 
-签名
-
 ```cpp
-tl::expected<
-    RobotCycleOutput,
-    RobotFault
->
-cycle(
-    TimePoint now = Clock::now());
+tl::expected<RobotCycleOutput, RobotFault> cycle(TimePoint now = Clock::now());
 ```
 
-一次完整周期包括
+本周期按顺序读取带接收时刻的执行器反馈、映射关节状态、检查状态与命令时效、更新名义参考、计算外力和虚拟参考、加入前馈与保持补偿、完成交接及总力矩约束、检查安全命令并写入硬件
 
-```text
-read ActuatorState
-    ->
-map to JointState
-    ->
-Safety state check
-    ->
-command timeout check
-    ->
-estimate joint acceleration
-    ->
-JointCtrller update
-    ->
-estimate reference acceleration
-    ->
-model feedforward
-    ->
-optional interaction observer / admittance correction
-    ->
-Safety command check
-    ->
-map to ActuatorCtrlCmd
-    ->
-MotorBus write
-```
+直接 Robot 调用由应用维护周期；Terminal、Python 与 ROS2 使用共享 `ControlRuntime`
 
-调用者负责循环频率
-
-Robot 本身不会创建控制线程
-
-#### 接口说明
-
-执行一帧完整控制闭环，包括读状态、映射、状态 Safety、控制器、模型前馈、可选 Interaction / Admittance、命令 Safety 和硬件写入
-
-参数
-
-- `now` 为本周期时间点，必须单调不回退
-
-返回值
-
-成功返回完整 `RobotCycleOutput`，任一环节失败返回 `RobotFault` 并可能触发 FAULT
-
-具体使用示例
+成功返回 `RobotCycleOutput`，失败返回 `RobotFault`；时间戳单调，反馈和命令超时使用真实经过时间
 
 ```cpp
 const auto period = std::chrono::microseconds(5000);
-
 auto next = serial_arm::Robot::Clock::now();
 while(running) {
     next += period;
-    const auto now = serial_arm::Robot::Clock::now();
-
-    auto output = robot.cycle(now);
-    if(!output) {
-        std::cerr << "cycle RobotErr="
-                  << static_cast<int>(output.error().code) << "\n";
-        break;
-    }
-
-    std::cout << "dt=" << output->dt
-              << " q0=" << output->joint_state.pos[0]
-              << " tau_ff0=" << output->model_feedforward[0]
-              << "\n";
-
+    const auto result = robot.cycle(serial_arm::Robot::Clock::now());
+    if(!result) break;
+    record(result.value());
     std::this_thread::sleep_until(next);
 }
 ```
 
-使用注意
-
-- Robot 不自己创建控制线程，C++ 调用者必须维护周期
-- 导纳只在 `capability.admittance.enabled=true`、未 suspended 且当前模式不是 `COMPLIANT_DRAG` 时参与命令修正
-- 导纳位置/速度修正会先根据 Safety 剩余位置与速度空间收窄，最终命令仍必须经过统一 Safety command check
+模型导纳在能力启用、策略为 `MODEL_ADMITTANCE`、未挂起且非拖拽时参与；新测量有效性决定观测推进，实际参与状态读 `admittance_active`
 
 ---
 
@@ -2528,47 +2505,65 @@ while(running) {
 
 ```cpp
 struct RobotCycleOutput {
-    ActuatorState actuator_state;
-    JointState joint_state;
-    JointVector joint_acc;
-    JointVector joint_ref_acc;
-    JointVector model_feedforward;
-    JointCtrlCmd joint_cmd;
-    ActuatorCtrlCmd actuator_cmd;
-    double dt;
+    ActuatorState actuator_state;     ///< 本周期执行器状态
+    JointState joint_state;           ///< 本周期关节状态
+    JointVector joint_acc;            ///< 本周期关节加速度估计
+    JointVector joint_ref_acc;        ///< 本周期关节参考加速度
+    JointVector model_feedforward;    ///< 本周期模型前馈力矩
+    JointCtrlCmd joint_cmd;           ///< Safety 检查后的关节命令
+    ActuatorCtrlCmd actuator_cmd;      ///< 实际发送的执行器命令
+    bool joint_acc_valid{ false };
+    double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };
+    double dt{ 0.0 };                 ///< 本周期使用的时间步长
 
-    bool admittance_active;
-    JointVector residual_raw;
-    JointVector full_id_residual_raw;
-    JointVector residual_filtered;
-    JointVector bias_compensated;
-    JointVector friction_residual_hat;
-    JointVector friction_compensated;
-    JointVector tau_ext_hat;
-    JointVector delta_q;
-    JointVector delta_q_dot;
-    std::vector<std::uint8_t> torque_threshold_active;
-    std::vector<std::uint8_t> delta_q_limited;
-    std::vector<std::uint8_t> delta_q_dot_limited;
-    std::vector<std::uint8_t> safety_position_margin_active;
-    std::vector<std::uint8_t> safety_velocity_margin_active;
+    JointGainProfile gain_profile{JointGainProfile::RIGID};
+    GainSource gain_source{GainSource::CONFIGURED};
+    JointVector effective_kp,effective_kd,hold_target_pos,hold_integral_torque;
+    bool hold_integrator_frozen{true};
+    ReferenceBehavior reference_behavior{ ReferenceBehavior::NATIVE_IMPEDANCE };
+    double parameter_update_progress{ 1.0 };
+    bool observer_valid{ false };
+    bool new_measurement{ false };
+    double measurement_dt{ 0.0 };
+    double feedback_skew_ms{ std::numeric_limits<double>::quiet_NaN() };
+    JointVector nominal_ref_pos, nominal_ref_vel, nominal_ref_acc;
+    JointVector virtual_ref_pos, virtual_ref_vel, virtual_ref_acc;
+    JointVector accepted_ref_pos, accepted_ref_vel, accepted_ref_acc;
+    JointVector predicted_total_torque;
+    std::vector<std::uint8_t> reference_limited, torque_limited;
+    JointVector delta_q_ddot;
+    bool admittance_active{ false };                       ///< 本周期导纳是否真正参与控制
+    InteractionState interaction_state;                       ///< Interaction runtime state
+    JointVector residual_raw;                              ///< 正式 observer 的 raw residual
+    JointVector full_id_residual_raw;                      ///< FULL-ID 对照 residual，仅诊断
+    JointVector residual_filtered;                         ///< 兼容字段，当前与 residual_raw 相同
+    JointVector bias_compensated;                          ///< residual_filtered - torque_bias
+    JointVector friction_residual_hat;                      ///< 速度相关摩擦 residual 预测
+    JointVector friction_compensated;                       ///< bias 后减去摩擦 residual
+    JointVector tau_ext_hat;                               ///< threshold 后外力矩估计
+    JointVector delta_q;                                   ///< 导纳位置修正
+    JointVector delta_q_dot;                               ///< 导纳速度修正
+    std::vector<std::uint8_t> torque_threshold_active;     ///< deadband 正在抑制小 residual 的标志
+    std::vector<std::uint8_t> delta_q_limited;             ///< 导纳位置限幅标志
+    std::vector<std::uint8_t> delta_q_dot_limited;         ///< 导纳速度限幅标志
+    std::vector<std::uint8_t> safety_position_margin_active; ///< Safety 剩余位置空间收窄标志
+    std::vector<std::uint8_t> safety_velocity_margin_active; ///< Safety 剩余速度空间收窄标志
 };
 ```
 
-用途
+一次获取本周期的反馈、参考链路、实际增益、限制状态和发送命令
 
-一次获取本周期从状态到最终命令的全部关键数据
+| 字段组 | 使用方式 |
+| --- | --- |
+| `feedback_age_ms`、`feedback_skew_ms`、`new_measurement`、`measurement_dt` | 检查接收时刻、各轴同步和测量连续性 |
+| `joint_acc_valid`、`observer_valid` | 决定加速度与外力估计是否可用于当前分析 |
+| `nominal_ref_*`、`virtual_ref_*`、`accepted_ref_*` | 分别记录名义、导纳虚拟及最终接受参考 |
+| `gain_profile`、`gain_source`、`effective_kp/kd` | 当前执行用途、来源与实际增益 |
+| `hold_target_pos`、`hold_integral_torque`、`hold_integrator_frozen` | 原保持目标及有界补偿状态 |
+| `predicted_total_torque`、`reference_limited`、`torque_limited` | PD 与前馈总预算及限制原因 |
+| `reference_behavior`、`admittance_active`、`parameter_update_progress` | 实际策略、导纳参与与调参过渡进度 |
 
-非常适合
-
-- 日志
-- 数据集采集
-- 控制调试
-- Safety 诊断
-- Interaction / Admittance 诊断
-- Backend 对比
-
-`residual_filtered` 当前只作为兼容字段保留，与 `residual_raw` 相同
+`residual_filtered` 为兼容字段，与 `residual_raw` 相同；读取外力先检查 `observer_valid`，读取 FULL_ID 加速度先检查 `joint_acc_valid`
 
 #### 示例
 
@@ -2592,7 +2587,7 @@ if(out.admittance_active) {
 }
 ```
 
-导纳未参与本周期时 `admittance_active=false`，导纳专用 telemetry 不应被当作有效控制结果读取
+原生阻抗可运行外力观测，因此 `admittance_active=false` 时外力估计仍可能有效；以 `observer_valid` 和对应字段判断
 
 如果要定位导纳链问题，建议按以下顺序记录
 
@@ -2855,58 +2850,6 @@ reference joint acceleration
 dt
 ```
 
-一个标准 Dynamics 实现
-
-```cpp
-ModelFeedforwardFn feedforward =
-    [&dynamics, joints_count](
-        ModelFeedforwardMode mode,
-        const JointState& state,
-        const JointVector& acc,
-        const JointVector& ref_acc,
-        double)
-        -> tl::expected<
-            JointVector,
-            ModelFeedforwardErr>
-    {
-        if(mode ==
-            ModelFeedforwardMode::NONE)
-        {
-            return JointVector(
-                joints_count,
-                0.0);
-        }
-
-        auto result =
-            dynamics.update(
-                state,
-                acc,
-                ref_acc);
-
-        if(!result) {
-            return tl::make_unexpected(
-                ModelFeedforwardErr::COMPUTE_FAILED);
-        }
-
-        if(mode ==
-            ModelFeedforwardMode::GRAVITY)
-        {
-            return
-                dynamics.get_gravity_compensation();
-        }
-
-        if(mode ==
-            ModelFeedforwardMode::FULL_INVERSE_DYNAMICS)
-        {
-            return
-                dynamics.get_inverse_dynamics();
-        }
-
-        return tl::make_unexpected(
-            ModelFeedforwardErr::INVALID_MODE);
-    };
-```
-
 #### 接口说明
 
 把外部 Dynamics 或其他模型计算器接入 Robot，使 Robot 根据当前前馈模式请求一帧 Joint 侧模型力矩
@@ -2964,6 +2907,25 @@ serial_arm::ModelFeedforwardFn model_feedforward =
 使用注意
 
 - 回调捕获的 Dynamics 生命周期必须覆盖 Robot 使用回调的整个时间
+
+---
+
+### `MeasuredDynamicsSnapshot` / `InteractionModelStateFn`
+
+```cpp
+struct MeasuredDynamicsSnapshot {
+    JointVector gravity;
+    JointVector coriolis;
+    std::vector<JointVector> mass_matrix;
+};
+using InteractionModelState = MeasuredDynamicsSnapshot;
+using InteractionModelStateFn = std::function<
+    tl::expected<InteractionModelState, ModelFeedforwardErr>(const JointState&, double)>;
+```
+
+回调以实测关节位置与速度计算 g、C 和 M，矩阵为 n×n；外力观测和模型导纳使用此独立快照，不依赖当前前馈是否开启或是否有有效加速度
+
+FULL_ID 在有效加速度上构造完整模型残差；模型导纳利用同一快照和虚拟参考加速度生成前馈；回调捕获的模型需覆盖 Robot 使用周期
 
 ---
 
@@ -3720,7 +3682,7 @@ std::cout << "g0=" << g[0]
 
 ## 6 Impedance 与 JointCtrller
 
-本章覆盖五种阻抗模式及底层 `JointCtrller` 接口，普通应用优先通过 `Robot` 使用这些能力
+本章描述兼容任务枚举与底层 `JointCtrller`；上层控制方式、用途覆盖和保持目标策略由 `Robot` 管理
 
 ### `JointImpedanceGains`
 
@@ -3735,14 +3697,14 @@ struct JointImpedanceGains {
 
 单位
 
-```text
-kp N*m/rad
-kd N*m*s/rad
-```
+| 关节类型 | Kp | Kd |
+| --- | --- | --- |
+| 旋转／连续 | N·m/rad | N·m·s/rad |
+| 移动 | N/m | N·s/m |
 
 用途
 
-为五种阻抗模式分别提供 Joint 侧刚度与阻尼
+提供关节侧执行器刚度与阻尼；刚性、柔性分别保存保持与跟踪，拖拽和伺服跟踪各保存一组
 
 约束
 
@@ -3784,9 +3746,9 @@ enum class JointImpedanceMode {
 
 #### `RIGID_HOLD`
 
-进入模式时记录当前实测位置
+底层 `JointCtrller` 进入时捕获实测位置；通过 Robot 进入保持时由 `HoldTargetPolicy` 决定目标，默认保留名义目标
 
-之后保持该位置并使用 `rigid_hold_gains`
+原生刚性用途使用 `rigid_hold_gains`，模型导纳使用伺服增益
 
 不接受 `set_cmd()`
 
@@ -3799,7 +3761,7 @@ robot.set_impedance_mode(
 
 #### `RIGID_TRACKING`
 
-使用上层 `set_cmd()` 目标并使用 `rigid_tracking_gains`
+接收上层 `set_cmd()` 目标；原生默认使用 `rigid_tracking_gains`，显式伺服用途或模型导纳使用伺服增益
 
 典型调用
 
@@ -3813,9 +3775,9 @@ robot.set_cmd(
 
 #### `COMPLIANT_HOLD`
 
-进入模式时记录当前实测位置
+底层 `JointCtrller` 捕获实测位置；Robot 按 `HoldTargetPolicy` 选择保持目标
 
-使用低刚度 `compliant_hold_gains`
+原生默认使用 `compliant_hold_gains`，模型导纳使用伺服增益
 
 不接受 `set_cmd()`
 
@@ -3907,6 +3869,7 @@ struct JointCtrllerCfg {
     JointImpedanceGains compliant_hold_gains;
     JointImpedanceGains compliant_drag_gains;
     JointImpedanceGains compliant_tracking_gains;
+    JointImpedanceGains servo_tracking_gains;
 
     bool allow_full_cmd;
 };
@@ -3926,10 +3889,11 @@ controller_cfg.rigid_tracking_gains = cfg.ctrller.rigid_tracking_gains;
 controller_cfg.compliant_hold_gains = cfg.ctrller.compliant_hold_gains;
 controller_cfg.compliant_drag_gains = cfg.ctrller.compliant_drag_gains;
 controller_cfg.compliant_tracking_gains = cfg.ctrller.compliant_tracking_gains;
+controller_cfg.servo_tracking_gains = cfg.ctrller.servo_tracking_gains;
 controller_cfg.allow_full_cmd = false;
 ```
 
-五套 gains 都必须完整提供，不能只配置当前计划使用的一种模式
+五组任务增益需完整提供；伺服增益为空时底层控制器兼容使用刚性跟踪增益，YAML 加载会生成标准 `servo_tracking` 配置
 
 ---
 
@@ -3953,7 +3917,7 @@ CONFIGURED
 
 #### 接口说明
 
-加载五套阻抗增益和完整命令权限，完成控制器静态配置
+加载任务增益、伺服增益与完整命令权限
 
 参数
 
@@ -4455,7 +4419,7 @@ struct AdmittanceObserverCfg {
 };
 ```
 
-`momentum_gain` 单位 rad/s，只参与 MOMENTUM Observer
+`momentum_gain` 单位 s⁻¹，只参与 MOMENTUM Observer
 
 公开 RobotCfg 要求每项大于 0 且长度与 Joint 数量一致
 
@@ -4512,7 +4476,7 @@ struct AdmittanceControllerCfg {
 M * delta_q_ddot + D * delta_q_dot + K * delta_q = tau_ext_hat
 ```
 
-公开 RobotCfg 中五组数组都必须与 `joint_names` 等长且每项大于 0
+五组数组与 `joint_names` 等长；M、位置与速度限制为正，D 和 K 非负，K=0 时无弹簧回位
 
 ---
 
@@ -4523,6 +4487,7 @@ M * delta_q_ddot + D * delta_q_dot + K * delta_q = tau_ext_hat
 ```cpp
 struct AdmittanceCapabilityCfg {
     bool enabled;
+    ReferenceBehavior reference_behavior;
     std::vector<std::uint8_t> joint_enabled;
     AdmittanceObserverCfg observer;
     AdmittanceCalibrationCfg calibration;
@@ -4597,6 +4562,7 @@ struct JointAdmittanceOutput {
     JointVector delta_q_dot;
     std::vector<std::uint8_t> delta_q_limited;
     std::vector<std::uint8_t> delta_q_dot_limited;
+    JointVector delta_q_ddot;
 };
 ```
 
@@ -4674,24 +4640,26 @@ if(metrics) {
 
 ### `Robot::set_admittance_cfg()`
 
-签名
-
 ```cpp
-tl::expected<void, RobotFault>
-set_admittance_cfg(
-    const AdmittanceCapabilityCfg& cfg);
+tl::expected<void, RobotFault> set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
 ```
 
-用途
+要求已配置且不在 FAULT；启用观测与导纳需要实测动力学回调
 
-运行时替换当前导纳配置；配置成功后会重建 Interaction Controller，并清空 observer、`delta_q` 和 `delta_q_dot` 等内部状态
+INACTIVE 可切换开关和策略；ACTIVE 只允许同开关、同策略内调参，保留虚拟状态并平滑过渡 M/D/K，实际进度读 `parameter_update_progress`
 
-要求
+参数变化只写入当前 Robot 配置，持久化由应用执行
 
-- Robot 已 configure
-- 当前不在 `FAULT`
-- 启用导纳时 configure 阶段已经提供 `model_feedforward`
-- `MOMENTUM` observer 还要求已经提供 `interaction_model_state`
+### `Robot::set_reference_behavior()` / `get_reference_behavior()`
+
+```cpp
+tl::expected<void, RobotFault> set_reference_behavior(ReferenceBehavior behavior);
+ReferenceBehavior get_reference_behavior() const noexcept;
+```
+
+在 INACTIVE 选择策略，模型导纳要求有效实测模型回调；选择值保存在 `get_admittance_cfg().reference_behavior`
+
+`get_reference_behavior()` 返回实际策略，能力关闭或临时挂起时为原生阻抗；模型导纳实际参与情况以周期输出为准
 
 ---
 
@@ -4710,18 +4678,27 @@ get_admittance_cfg() const noexcept;
 
 ### `Robot::set_admittance_suspended()` / `Robot::is_admittance_suspended()`
 
-签名
-
 ```cpp
 void set_admittance_suspended(bool suspended);
 bool is_admittance_suspended() const noexcept;
 ```
 
-用途
+临时挂起模型导纳推进，保留原名义目标与已接受的位移偏移，速度归零；恢复后仍围绕原名义目标计算退让，不把偏移合并为新目标
 
-临时旁路或恢复导纳运行时修正，不改变静态配置中的 `enabled`
+该操作保留配置 `enabled` 与所选策略，查询实际行为使用周期输出；挂起和恢复同时清理保持积分
 
-挂起和恢复都会清空 Interaction Controller 内部状态，避免 observer 或导纳积分状态跨越任务边界
+### `JointAdmittanceController` 状态更新
+
+```cpp
+tl::expected<void, JointAdmittanceControllerErr> reconfigure(const JointAdmittanceControllerCfg& cfg);
+tl::expected<void, JointAdmittanceControllerErr> accept(const JointVector& position, const JointVector& velocity);
+void reset();
+bool is_configured() const noexcept;
+double parameter_update_progress() const noexcept;
+void advance_parameters(double dt);
+```
+
+`update()` 使用后向 Euler 推进虚拟状态，`reconfigure()` 保留状态并设置参数过渡，`accept()` 回写最终限制后的位移和速度；`reset()` 清空积分，`parameter_update_progress()` 返回过渡比例
 
 ---
 
@@ -5972,23 +5949,21 @@ Python Binding 提供配置解析、Dynamics、底层组件以及 `RobotSession`
 
 ### Python Binding 安装方式
 
-Standalone 使用 wheel
+```bash
+./install.sh --preset python --yes
+source .install/setup.bash
+python -c 'import serial_arm; print(serial_arm.__file__)'
+```
+
+ROS2 工作区使用 `colcon build --symlink-install` 后加载 `install/setup.bash`；Python Binding 默认参与构建，Profile launch 依赖其 C++ 资源解析
+
+单独构建 wheel 时，在已准备 CMake 系统依赖的环境执行
 
 ```bash
 cd src/serial_arm/core/python
 python -m build --wheel
 python -m pip install --force-reinstall dist/serial_arm-*.whl
 ```
-
-ROS 2 / colcon 使用 ament 安装，不需要额外 pip 安装当前 workspace
-
-```bash
-colcon build --symlink-install
-source install/setup.bash
-python3 -c "import serial_arm; print(serial_arm.__file__)"
-```
-
-ROS 2 `robot_profile` launch 通过 Python binding 调用 C++ `load_robot_profile_core()`，因此显式关闭 `SERIAL_ARM_BUILD_PYTHON` 后这类 launch 不可用
 
 ### Python 错误模型
 
@@ -6438,13 +6413,11 @@ mapper = serial_arm.JointActuatorMapper()
 
 mapper.configure(cfg.mapper)
 
-joint_state =
-    mapper.to_joint_state(
+joint_state = mapper.to_joint_state(
         actuator_state
     )
 
-actuator_cmd =
-    mapper.to_actuator_cmd(
+actuator_cmd = mapper.to_actuator_cmd(
         joint_cmd
     )
 
@@ -6502,8 +6475,7 @@ safety.check_state(
     state_age_s,
 )
 
-safe_cmd =
-    safety.check_joint_cmd(
+safe_cmd = safety.check_joint_cmd(
         joint_state,
         joint_cmd,
         dt,
@@ -6689,40 +6661,43 @@ assert not session.running
 ### `RobotSession.set_impedance_mode()`
 
 ```python
-session.set_impedance_mode(
-    serial_arm.JointImpedanceMode.COMPLIANT_DRAG
-)
+session.set_impedance_mode(serial_arm.JointImpedanceMode.RIGID_HOLD)
 ```
 
-请求由 C++ 工作线程串行应用
+会话运行且 ACTIVE 时提交任务切换，C++ 工作线程串行应用；普通保持默认保留名义目标，显式捕获当前位置使用 `hold_current()`
 
-#### 接口说明
+任务切换清除旧目标和用途覆盖，需特定执行用途时在切换后调用 `set_execution_gain_profile()`
 
-向 C++ 工作线程提交阻抗模式切换请求，由工作线程在控制序列中串行应用
+### `RobotSession` 控制方式、用途与参数
 
-参数
-
-- `mode` 为 `JointImpedanceMode`
-
-返回值
-
-会话未运行时抛 `SerialArmError`
-
-具体使用示例
+控制方式在会话已配置、未启动且机器人 INACTIVE 时选择；原生伺服跟踪示例
 
 ```python
+session.set_reference_behavior(serial_arm.ReferenceBehavior.NATIVE_IMPEDANCE)
 session.start()
-
-session.set_impedance_mode(
-    serial_arm.JointImpedanceMode.COMPLIANT_DRAG
-)
-
-# C++ worker 继续维持控制周期
-for _ in range(10):
-    snap = session.snapshot
-    if snap.valid:
-        print(snap.cycle.joint_state.pos)
+try:
+    session.set_impedance_mode(serial_arm.JointImpedanceMode.RIGID_TRACKING)
+    session.set_execution_gain_profile(serial_arm.JointGainProfile.SERVO_TRACKING)
+    # 此处提交任务命令并读取快照
+finally:
+    session.stop()
 ```
+
+模型导纳在启动前选择 `ReferenceBehavior.MODEL_ADMITTANCE`，并在配置中开启交互计算；实际使用伺服跟踪，拖拽使用拖拽用途
+
+`session.clear_execution_gain_profile()` 清除显式覆盖；同一模型导纳下选择刚性用途不会替换伺服增益
+
+```python
+session.set_servo_tracking_gains(gains)       # JointImpedanceGains
+session.set_hold_compensation_cfg(hold_cfg)  # HoldCompensationCfg
+session.set_admittance_cfg(admittance_cfg)   # AdmittanceCapabilityCfg
+```
+
+参数调用等待工作线程结果；未启动的会话直接更新已配置 Robot，运行中执行用途及参数更新要求 ACTIVE
+
+控制方式在停止的 INACTIVE 会话切换；运行中 `set_admittance_cfg()` 仅调同策略参数，变化按控制周期平滑过渡
+
+`session.snapshot.cycle` 提供与 C++ 周期相同的实际用途、增益、三级参考与有效性字段；应用先检查 `snapshot.valid`，再检查具体测量标志
 
 ---
 
@@ -6811,71 +6786,39 @@ print("requested gravity scale", scale)
 
 ### `RobotSession.move_to()`
 
-签名
-
 ```python
-session.move_to(
-    pos,
-    speed_scale=0.3,
-)
+session.move_to(pos, speed_scale=0.3)
 ```
 
-要求
+要求会话运行、ACTIVE、有限的一维目标且长度等于关节数，速度比例在 `(0, 1]`；目标先检查 Safety 软限位
 
-- `pos` 为一维 float64 NumPy 数组
-- 长度等于受控 Joint 数
-- `speed_scale` 由 Session 轨迹逻辑使用
-
-示例
+从保持提交合法目标时，工作线程转入对应跟踪，保留显式伺服用途；拖拽状态需先退出再移动，无效目标不改变任务状态
 
 ```python
-target = session.snapshot.cycle.joint_state.pos.copy()
+import time
+import numpy as np
 
+snap = session.snapshot
+if not snap.valid:
+    raise RuntimeError("No valid joint feedback")
+target = np.array(snap.cycle.joint_state.pos, dtype=np.float64, copy=True)
 target[0] += 0.05
-
-session.move_to(
-    target,
-    speed_scale=0.15,
-)
-```
-
-#### 接口说明
-
-提交一个绝对 Joint 位置目标，由 C++ worker 生成连续梯形位置速度 reference
-
-参数
-
-- `pos` 为目标 Joint 位置
-- `speed_scale` 有效范围 (0, 1]
-
-返回值
-
-要求会话运行且当前请求模式为 RIGID_TRACKING 或 COMPLIANT_TRACKING
-
-具体使用示例
-
-```python
-session.start()
-session.set_impedance_mode(
-    serial_arm.JointImpedanceMode.RIGID_TRACKING
-)
-
-target = session.snapshot.cycle.joint_state.pos.copy()
-target[0] += 0.05
-
 session.move_to(target, speed_scale=0.15)
 
-while True:
+deadline = time.monotonic() + 5.0
+while time.monotonic() < deadline:
     snap = session.snapshot
-    if snap.valid:
-        error = abs(snap.cycle.joint_state.pos[0] - target[0])
-        if error < 0.01:
-            break
+    if snap.robot_state == serial_arm.RobotState.FAULT:
+        raise RuntimeError(snap.last_error)
+    if snap.valid and abs(snap.cycle.joint_state.pos[0] - target[0]) < 0.01:
+        break
+    time.sleep(0.02)
+else:
+    session.hold_current()
+    raise TimeoutError("Motion did not settle within 5 s")
 ```
 
-使用注意
-
-- 目标会在 Session 侧先检查 Safety soft position limit
+此例阈值仅演示结果等待，实际到位条件按关节类型、任务及外部测量设置
 
 ---
 
@@ -7184,6 +7127,19 @@ RobotState::INACTIVE
 接口语义
 
 显式授权后连接真机、初始化命令缓存并启动控制线程
+
+原生控制读取 `cfg.runtime.native_tracking_gain_profile()`，选择刚性、柔性或伺服用途；COMPLIANT 对应 `COMPLIANT_TRACKING`，其余用途以 `RIGID_TRACKING` 承载；模型导纳固定选择 SERVO_TRACKING
+
+示例 Core YAML 字段
+
+```yaml
+control:
+  runtime:
+    tracking_gain_profile: SERVO_TRACKING
+```
+
+该片段用于已有完整配置；省略新字段时从旧 `tracking_impedance_mode` 推导，停止与停放使用各自临时上下文
+
 
 参数
 
@@ -8462,12 +8418,16 @@ int main() {
 
     InteractionModelStateFn interaction_model_state =
         [&dynamics, n](
-            const JointState&,
+            const JointState& measured,
             double)
             -> tl::expected<
                 InteractionModelState,
                 ModelFeedforwardErr>
         {
+            const JointVector zero(n, 0.0);
+            if(!dynamics.update(measured, zero, zero)) {
+                return tl::make_unexpected(ModelFeedforwardErr::COMPUTE_FAILED);
+            }
             InteractionModelState state;
             state.gravity = dynamics.get_gravity_compensation();
             state.coriolis = dynamics.get_coriolis();

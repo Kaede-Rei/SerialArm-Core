@@ -17,6 +17,7 @@ import sys
 import yaml
 
 from profiles import config_values, read_yaml, text
+from control_parameters import canonical_core, effective_hardware
 
 
 def _sha(path):
@@ -114,8 +115,17 @@ class ProfileLibrary:
     _STAGES = ('model_check', 'bringup', 'mapping_calibration', 'geometry_calibration',
                'gravity_verification', 'dynamics_calibration', 'validation')
     _MODES = ('RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD',
-              'COMPLIANT_DRAG', 'COMPLIANT_TRACKING', 'IDENTIFICATION_TRACKING')
+              'COMPLIANT_DRAG', 'COMPLIANT_TRACKING', 'SERVO_TRACKING')
     _MODE_KEYS = {name: name.lower() for name in _MODES}
+    _GAIN_PURPOSES = {
+        'RIGID': ('刚性', ('rigid_hold', 'rigid_tracking'), ('tracking', 'hold', 'hold_compensation')),
+        'COMPLIANT': ('柔性', ('compliant_hold', 'compliant_tracking'), ('tracking', 'hold')),
+        'DRAG': ('拖拽', ('compliant_drag',), ('drag',)),
+        'SERVO_TRACKING': ('伺服跟踪', ('servo_tracking',), ('native_tracking', 'admittance_tracking')),
+    }
+    _GAIN_CHECK_LABELS = {'tracking': '轨迹跟踪', 'hold': '定位保持',
+        'hold_compensation': '保持补偿状态', 'drag': '拖拽稳定性',
+        'native_tracking': '原生阻抗跟踪', 'admittance_tracking': '模型导纳跟踪'}
 
     @staticmethod
     def _native_file_fingerprint(path):
@@ -135,6 +145,7 @@ class ProfileLibrary:
                                          separators=(',', ':'), default=str).encode()).hexdigest()
 
     def _dependencies(self, info, core, hardware):
+        core = canonical_core(core)
         model = core.get('model') or {}
         description_path = Path(info['resources'].get('description', ''))
         urdf_path = (Path(info['resources']['core']).parent / model.get('urdf_path', '')).resolve()
@@ -150,7 +161,7 @@ class ProfileLibrary:
         controller = (core.get('control') or {}).get('controller') or {}
         shutdown = core.get('shutdown') or {}
         capability = core.get('capability') or {}
-        hardware_hash = self._digest(info.get('hardware_plugin'), hardware, info.get('devices'))
+        hardware_hash = self._digest(info.get('hardware_plugin'), effective_hardware(hardware, info.get('connection_overrides')), info.get('devices'))
         model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path')}
         model_hash = self._digest(source, model_chain)
         startup_hash = self._digest(model_hash, hardware_hash, calibration,
@@ -164,7 +175,7 @@ class ProfileLibrary:
                                     model.get('gravity_correction_path'), correction_sha,
                                     controller.get('compliant_drag'), controller.get('rigid_hold'))
         dynamics_hash = self._digest(model_hash, mapping_hash, model.get('gravity'),
-                                     controller.get('identification_tracking'), capability)
+                                     controller.get('servo_tracking', controller.get('identification_tracking')), capability)
         scopes = {
             'model_check': model_hash, 'bringup': self._digest(hardware_hash, runtime, safety),
             'mapping_calibration': mapping_hash, 'geometry_calibration': geometry_hash,
@@ -175,7 +186,16 @@ class ProfileLibrary:
         }
         scopes['modes'] = {name: self._digest(model_hash, mapping_hash,
             safety.get('max_kp_override'), safety.get('max_kd_override'),
-            controller.get(self._MODE_KEYS[name])) for name in self._MODES}
+            (controller.get('servo_tracking', controller.get('identification_tracking', controller.get('rigid_tracking')))
+             if name == 'SERVO_TRACKING' else controller.get(self._MODE_KEYS[name]))) for name in self._MODES}
+        scopes['gain_purposes'] = {purpose: self._digest(model_hash, mapping_hash, gravity_hash,
+            {key: runtime.get(key) for key in ('model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha')},
+            self._gain_interaction_context(core, purpose),
+            safety.get('max_kp_override'), safety.get('max_kd_override'),
+            safety.get('max_effort_override'),
+            {name: controller.get(name) for name in gain_keys},
+            (core.get('control') or {}).get('hold_compensation', {'enabled': False}) if purpose == 'RIGID' else None)
+            for purpose, (_, gain_keys, _) in self._GAIN_PURPOSES.items()}
         return scopes
 
     def _readiness_meta(self, info):
@@ -208,7 +228,13 @@ class ProfileLibrary:
             return {'state': 'configuring', 'next_stage': 'profile_setup', 'checks': {},
                     'modes': {}, 'reason': str(error), 'fingerprint': ''}
         checks = {item['name']: bool(item['ok']) for item in info.get('checks', [])}
-        core = read_yaml(info['resources']['core']) if checks.get('core') else {}
+        try:
+            core = canonical_core(read_yaml(info['resources']['core'])) if checks.get('core') else {}
+        except (ValueError, TypeError, KeyError) as error:
+            return {'state': 'configuring', 'verification_state': 'pending', 'next_stage': 'profile_setup',
+                    'checks': {}, 'modes': {}, 'gain_purposes': {}, 'control_available': False,
+                    'reason': str(error), 'setup_issues': [self._field_issue(str(error))],
+                    'next_actions': [self._field_issue(str(error))['action']], 'fingerprint': info.get('fingerprint', '')}
         hardware = read_yaml(info['resources']['hardware']) if checks.get('hardware') else {}
         model = core.get('model') or {}
         joints = model.get('joint_names') or []
@@ -239,6 +265,7 @@ class ProfileLibrary:
             except (ValueError, KeyError, TypeError, OSError, yaml.YAMLError) as error:
                 profile_setup = False
                 reason = str(error)
+                setup_issues.append(self._field_issue(reason))
         scopes = self._dependencies(info, core, hardware) if checks.get('core') else {}
         _, meta = self._readiness_meta(info)
         stages = meta.get('stages') or {}
@@ -280,7 +307,8 @@ class ProfileLibrary:
         safety = core.get('safety_policy') or {}
         for name in self._MODES:
             key = self._MODE_KEYS[name]
-            gains = controller.get(key) or {}
+            gains = (controller.get('servo_tracking', controller.get('identification_tracking', controller.get('rigid_tracking')))
+                     if name == 'SERVO_TRACKING' else controller.get(key)) or {}
             valid = (bool(joints) and all(
                 isinstance(gains.get(axis), dict) and set(gains[axis]) == set(joints)
                 and all(isinstance(gains[axis][j], (int, float)) and not isinstance(gains[axis][j], bool)
@@ -309,7 +337,13 @@ class ProfileLibrary:
             profile_setup = False
             values['profile_setup'] = 'pending'
             reason = 'Safety 必须为各关节配置正值 max_acc，才能启用真实硬件'
-        state = ('needs_revalidation' if stale else 'pending_validation' if missing else 'ready') if profile_setup else 'configuring'
+        verification_state = ('stale' if stale else 'verified' if not missing else
+                              'partial' if any(v in ('recorded', 'verified', 'partial') for k, v in values.items() if k in self._STAGES) else 'pending')
+        state = 'ready' if profile_setup else 'configuring'
+        gain_purposes = self._gain_purpose_status(core, meta, scopes, mode_states)
+        next_actions = [issue['action'] for issue in setup_issues]
+        if not next_actions:
+            next_actions = [{'page': 'workbench', 'label': '进入控制工作台'}] if profile_setup else [{'page': 'profile_setup', 'label': '补齐机器人配置'}]
         urdf_limits = {}
         if profile_setup:
             try:
@@ -337,15 +371,60 @@ class ProfileLibrary:
             'fault_recovery': dict(safety.get('fault_recovery') or {}),
             'urdf_limits': urdf_limits,
         }
-        return {'state': state, 'next_stage': 'profile_setup' if not profile_setup else (missing[0] if missing else 'ready'),
+        return {'state': state, 'verification_state': verification_state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'reason': reason,
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
-                'setup_issues': setup_issues,
+                'setup_issues': setup_issues, 'next_actions': next_actions, 'gain_purposes': gain_purposes,
                 'source_trusted': self._is_official_profile(info),
                 'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', ''),
                                  'observations': v.get('observations') or {}}
                              for k, v in stages.items() if isinstance(v, dict)}}
+
+    @staticmethod
+    def _field_issue(message):
+        import re
+        match = re.search(r'(?<![A-Za-z_])((?:core\.)?(?:model|control|calibration|capability|safety_policy|shutdown)\.[A-Za-z0-9_.-]+|hardware\.[A-Za-z0-9_.-]+|profile(?:_entry)?\.hardware\.plugin)', message)
+        path = match.group(1) if match else ''
+        if path and not path.startswith(('core.', 'hardware.', 'profile')): path = 'core.' + path
+        key = path.removeprefix('core.').split('.')[0]
+        group = {'model': 'model', 'control': 'motion', 'capability': 'motion',
+                 'calibration': 'mapping', 'safety_policy': 'safety', 'shutdown': 'shutdown'}.get(key, 'hardware' if path.startswith(('hardware.', 'profile')) else 'model')
+        return {'group': group, 'path': path, 'message': message,
+                'action': {'page': 'profile_setup', 'group': group, 'field': path, 'label': '检查配置'}}
+
+    def _gain_purpose_status(self, core, meta, scopes, mode_states):
+        result = {}
+        stored = meta.get('gain_purposes') or {}
+        legacy = meta.get('modes') or {}
+        for purpose, (label, gain_keys, check_keys) in self._GAIN_PURPOSES.items():
+            configured = all(mode_states.get(key.upper()) in ('configured', 'verified', 'stale') for key in gain_keys)
+            entry = stored.get(purpose)
+            if not isinstance(entry, dict): entry = None
+            state = 'pending'
+            if isinstance(entry, dict) and entry.get('kind') == 'validated_gain_purpose' and entry.get('result') == 'passed':
+                source = Path(entry.get('candidate_path') or '/missing')
+                context = entry.get('context_files')
+                same_source = source.is_file() and _sha(source) == entry.get('candidate_sha256')
+                same_source = same_source and isinstance(context, dict) and bool(context) and all(Path(path).is_file() and _sha(Path(path)) == digest for path, digest in context.items())
+                state = 'verified' if entry.get('scope') == scopes.get('gain_purposes', {}).get(purpose) and same_source else 'stale'
+                if not isinstance(context, dict) or not context: state = 'historical'
+            else:
+                old = [legacy.get(key.upper()) for key in gain_keys]
+                if any(isinstance(item, dict) and item.get('result') in ('passed', 'recorded') for item in old):
+                    state = 'historical'
+                    entry = next(item for item in old if isinstance(item, dict))
+            checks = [{'id': key, 'label': self._GAIN_CHECK_LABELS[key],
+                       'status': state if state != 'verified' or (entry.get('checks') or {}).get(key) is True else 'pending'} for key in check_keys]
+            # A historical tracking-only record is not proof of the new joint qualification
+            if state == 'historical':
+                for check in checks:
+                    if check['id'] not in ('tracking', 'drag'): check['status'] = 'pending'
+            result[purpose] = {'label': label, 'configured': configured,
+                'evidence_status': state, 'checks': checks,
+                'candidate_path': (entry or {}).get('candidate_path', ''),
+                'action': {'page': 'calibration', 'entry': 'gain', 'label': '执行器增益自动标定'}}
+        return result
 
     def _builtin_readiness(self, config):
         # A bundled configuration is trusted as a source, never as proof of this machine's tests
@@ -445,39 +524,137 @@ class ProfileLibrary:
         _atomic_yaml(path, data)
         return self._readiness(config)
 
+    @staticmethod
+    def _gain_interaction_context(core, purpose):
+        admittance = ((core.get('capability') or {}).get('admittance') or {})
+        if purpose == 'SERVO_TRACKING':
+            return {key: admittance.get(key) for key in ('joint_enabled', 'observer', 'calibration', 'controller')}
+        if purpose == 'RIGID' and ((core.get('control') or {}).get('hold_compensation') or {}).get('enabled'):
+            return {key: admittance.get(key) for key in ('observer', 'calibration')}
+        return None
+
+    def _gain_binding(self, folder, info, core, hardware, purposes):
+        from model_calibration_source import matches_recorded_fingerprint
+        folder = Path(folder)
+        metadata_path = folder / 'metadata.json'
+        metadata = json.loads(metadata_path.read_text())
+        if not metadata.get('profile') or metadata['profile'] != info['profile']:
+            raise ValueError('增益记录属于其他机器人或未记录机器人名称；可查看历史数据，本机验证需要重新标定')
+        recorded_core = folder / 'source/core.yaml'
+        if not matches_recorded_fingerprint(recorded_core, metadata.get('core_fingerprint')):
+            raise ValueError('增益记录缺少可信 Core 快照；可查看历史数据，请重新标定后导入本机验证')
+        original = canonical_core(read_yaml(recorded_core))
+        if original.get('calibration') != core.get('calibration'):
+            raise ValueError('core.calibration.joints 当前映射与增益标定时不同，请重新标定本机增益')
+        for field in ('joint_names', 'base_frame', 'tool_frame', 'gravity', 'gravity_scale'):
+            if (original.get('model') or {}).get(field) != core['model'].get(field):
+                raise ValueError('core.model.' + field + ' 与增益标定时不同，请重新标定本机增益')
+        for field in ('model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha'):
+            if original['control']['runtime'].get(field) != core['control']['runtime'].get(field):
+                raise ValueError('core.control.runtime.' + field + ' 与增益标定时不同，请重新验证当前控制设置')
+        for purpose in purposes:
+            expected = self._gain_interaction_context(core, purpose)
+            if expected is not None:
+                recorded = ((original.get('capability') or {}).get('admittance') or {})
+                if {key: recorded.get(key) for key in expected} != expected:
+                    raise ValueError('core.capability.admittance 与增益验收使用的观测或导纳参数不同，请重新验证当前设置')
+        files = [metadata_path, recorded_core]
+        correction = (original.get('model') or {}).get('gravity_correction_path')
+        current_correction = core['model'].get('gravity_correction_path')
+        if bool(correction) != bool(current_correction):
+            raise ValueError('core.model.gravity_correction_path 与增益标定时不同，请重新标定')
+        if correction:
+            snapshot = folder / 'source/gravity-correction.yaml'
+            expected = metadata.get('gravity_correction_fingerprint')
+            current = (Path(info['resources']['core']).parent / current_correction).resolve()
+            if not matches_recorded_fingerprint(snapshot, expected) or not matches_recorded_fingerprint(current, expected):
+                raise ValueError('core.model.gravity_correction_path 缺少与本机一致的标定快照，请重新标定')
+            files.append(snapshot)
+        recorded_hardware = folder / 'source/hardware.yaml'
+        overrides = metadata.get('hardware_overrides')
+        if not isinstance(overrides, dict) or not matches_recorded_fingerprint(recorded_hardware, metadata.get('hardware_fingerprint')):
+            raise ValueError('历史增益记录未保存硬件配置与连接覆盖值；可查看或载入候选，请重新验证本机增益后导入')
+        before_hardware = effective_hardware(read_yaml(recorded_hardware), overrides)
+        current_hardware = effective_hardware(hardware, info.get('connection_overrides'))
+        if before_hardware != current_hardware:
+            raise ValueError('硬件配置与增益标定时不同，请检查执行器、总线及连接覆盖值后重新标定')
+        plugin = (metadata.get('runtime_provenance') or {}).get('hardware_plugin_file_path')
+        def plugin_name(value):
+            name = Path(str(value or '')).name
+            if name.startswith('lib'): name = name[3:]
+            return name.split('.so', 1)[0]
+        if not plugin or plugin_name(plugin) != plugin_name(info.get('hardware_plugin')):
+            raise ValueError('增益标定使用的硬件驱动与当前机器人不同或未记录，请重新标定')
+        files.append(recorded_hardware)
+        effective = folder / 'source/hardware-effective.yaml'
+        if effective.is_file() or metadata.get('hardware_effective_fingerprint'):
+            if not matches_recorded_fingerprint(effective, metadata.get('hardware_effective_fingerprint')):
+                raise ValueError('增益标定的实际硬件配置快照已变化，请恢复原始任务文件')
+            if effective_hardware(read_yaml(effective)) != before_hardware:
+                raise ValueError('实际硬件配置快照与标定连接覆盖值不一致，请检查原始任务')
+            files.append(effective)
+        return {str(path.resolve()): _sha(path) for path in files}
+
     def approve_gain_mode(self, config, mode, path, native=None):
-        if mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
-            raise ValueError('该模式尚无可用的独立增益验收流程')
-        current = self._readiness(config)
-        info = self.inspector.inspect(config)
         from workflow_registry import prepare_gain_candidate
-        candidate_info = prepare_gain_candidate(str(Path(path).expanduser().resolve().parent))
+        from control_parameters import deployment_gain_groups
+        from artifact_exports import gain_candidate_targets
+        source = Path(path).expanduser().resolve()
+        if not source.is_dir() and (not source.is_file() or source.name != 'gain-candidate.json'):
+            raise ValueError('请选择标定任务中的 gain-candidate.json，或直接选择该任务目录')
+        folder = source if source.is_dir() else source.parent
+        candidate_info = prepare_gain_candidate(str(folder))
         candidate_path = Path(candidate_info['candidate_path'])
         candidate = json.loads(candidate_path.read_text())
-        targets = candidate.get('targets') or {}
-        target = mode.lower()
-        selected = targets.get(target) if candidate.get('category') == 'all' else candidate if candidate.get('category') == target else None
-        if not isinstance(selected, dict) or selected.get('validated', True) is not True:
-            raise ValueError('候选中没有经独立验证的对应控制模式')
-        core = read_yaml(info['resources']['core']); hw = read_yaml(info['resources']['hardware'])
-        urdf_path = (Path(info['resources']['core']).parent / core['model']['urdf_path']).resolve()
-        if not urdf_path.is_file() or candidate.get('urdf_fingerprint') != self._native_file_fingerprint(urdf_path):
-            raise ValueError('增益验收候选与当前 URDF 不一致')
-        joints = core['model']['joint_names']
-        gains = core['control']['controller'][target]
-        for axis in ('kp', 'kd'):
-            vector = selected.get(axis)
-            if not isinstance(vector, list) or len(vector) != len(joints):
-                raise ValueError('候选参数的关节维度不一致')
-            if any(abs(gains[axis][joint] - float(value)) > 1e-5 for joint, value in zip(joints, vector)):
-                raise ValueError('当前 Core 增益与通过验证的候选不一致，请先保存已验证增益')
-        scopes = self._dependencies(info, core, hw)
+        groups = deployment_gain_groups(candidate)
+        requested = str(mode or '').upper()
+        aliases = {key.upper(): purpose for purpose, (_, keys, _) in self._GAIN_PURPOSES.items() for key in keys}
+        aliases.update({purpose: purpose for purpose in self._GAIN_PURPOSES})
+        available = {aliases[key.upper()]: key for key in groups}
+        if requested in ('', 'ALL'):
+            selected = available
+        elif requested in aliases and aliases[requested] in available:
+            selected = {aliases[requested]: available[aliases[requested]]}
+        else:
+            raise ValueError('候选未包含所选增益用途，请选择对应候选或导入候选中的全部用途')
+        info = self.inspector.inspect(config)
+        core = canonical_core(read_yaml(info['resources']['core']))
+        hardware = read_yaml(info['resources']['hardware'])
+        urdf = (Path(info['resources']['core']).parent / core['model']['urdf_path']).resolve()
+        if not urdf.is_file() or candidate.get('urdf_fingerprint') != self._native_file_fingerprint(urdf):
+            raise ValueError('增益验收候选与当前 URDF 不一致，请选择当前模型的标定任务')
+        if candidate.get('joint_names') != core['model']['joint_names']:
+            raise ValueError('增益候选的关节顺序与当前配置不一致')
+        context_files = self._gain_binding(folder, info, core, hardware, selected)
+        targets, _ = gain_candidate_targets(candidate, core, core['model']['joint_names'])
+        def same(actual, expected):
+            if isinstance(expected, dict): return isinstance(actual, dict) and set(actual) == set(expected) and all(same(actual[k], v) for k, v in expected.items())
+            if isinstance(expected, bool): return isinstance(actual, bool) and actual is expected
+            return isinstance(actual, (float, int)) and not isinstance(actual, bool) and math.isfinite(actual) and math.isclose(actual, expected, rel_tol=1e-7, abs_tol=1e-5)
+        for purpose in selected:
+            keys = self._GAIN_PURPOSES[purpose][1]
+            for key, encoded in targets.items():
+                relevant = key[:2] == ('control', 'controller') and key[2] in keys
+                relevant |= purpose == 'RIGID' and key[:2] == ('control', 'hold_compensation')
+                if not relevant: continue
+                actual = core
+                for part in key: actual = actual.get(part) if isinstance(actual, dict) else None
+                expected = yaml.safe_load(encoded)
+                if key == ('control', 'hold_compensation', 'enabled') and actual is None: actual = False
+                if not same(actual, expected):
+                    raise ValueError('当前配置与已验收候选不一致：core.' + '.'.join(key) + '；请先应用并保存该候选，再导入验收记录')
+        scopes = self._dependencies(info, core, hardware)
         meta_path, meta = self._readiness_meta(info)
-        meta.setdefault('modes', {})[mode] = {
-            'result': 'passed', 'scope': scopes['modes'][mode], 'kind': 'validated_gain_candidate',
-            'candidate_sha256': _sha(candidate_path), 'candidate_path': str(candidate_path), 'note': '增益候选已通过独立验证且与当前 Core 增益一致',
-            'recorded_at': time.time(),
-        }
+        for purpose, group in selected.items():
+            checks = {name: True for name in self._GAIN_PURPOSES[purpose][2]}
+            proof = {'result': 'passed', 'kind': 'validated_gain_purpose',
+                     'candidate_sha256': _sha(candidate_path), 'candidate_path': str(candidate_path),
+                     'checks': checks, 'context_files': context_files, 'recorded_at': time.time()}
+            meta.setdefault('gain_purposes', {})[purpose] = {**proof, 'scope': scopes['gain_purposes'][purpose]}
+            for gain_key in self._GAIN_PURPOSES[purpose][1]:
+                key = gain_key.upper()
+                mode_scope = scopes['startup_hold'] if key == 'RIGID_HOLD' else scopes['modes'][key]
+                meta.setdefault('modes', {})[key] = {**proof, 'scope': mode_scope}
         _atomic_yaml(meta_path, meta)
         return self._readiness(config)
 
@@ -681,10 +858,10 @@ class ProfileLibrary:
             core={
               'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
               'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
-              'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'identification_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
+              'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING','tracking_gain_profile':'COMPLIANT'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'servo_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
               'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_kp_override':self._joint_map(joints,50.0),'max_kd_override':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
               'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
-              'capability':{'admittance':{'enabled':False,'joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
+              'capability':{'admittance':{'enabled':False,'reference_behavior':'NATIVE_IMPEDANCE','joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
             }
             # If the Description already supplies a robot-specific Core config,
             # use it as the authoritative profile configuration. In particular,
@@ -750,7 +927,8 @@ class ProfileLibrary:
         # Report concrete missing/invalid fields before invoking the native driver
         issues = []
         def issue(group, path, message):
-            issues.append({'group': group, 'path': path, 'message': message})
+            issues.append({'group': group, 'path': path, 'message': message,
+                           'action': {'page': 'profile_setup', 'group': group, 'field': path, 'label': '检查' + message}})
         names = ((core.get('model') or {}).get('joint_names') or [])
         plugin = ((entry.get('hardware') or {}).get('plugin') or '').strip()
         if not plugin:
@@ -795,7 +973,23 @@ class ProfileLibrary:
             if extra: issue('hardware', 'hardware.damiao.actuators', f'执行器列表含未受控的关节 {", ".join(sorted(extra))}')
             ids = [a.get('motor_id') for j,a in actuators.items() if j in names and isinstance(a,dict) and isinstance(a.get('motor_id'),int)]
             if len(set(ids)) < len(ids): issue('hardware','hardware.damiao.actuators','同一总线上的电机 ID 不能重复')
+        calibration = (core.get('calibration') or {}).get('joints') or {}
+        for joint in names:
+            values = calibration.get(joint) or {}
+            for key in ('direction', 'pos_ratio', 'tor_ratio', 'joint_zero_offset', 'actuator_zero_offset'):
+                value = values.get(key)
+                valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+                valid = valid and (value in (-1, 1) if key == 'direction' else value != 0 if key in ('pos_ratio', 'tor_ratio') else True)
+                if not valid:
+                    issue('mapping', f'core.calibration.joints.{joint}.{key}',
+                          f'{joint} 的映射参数 {key} ' + ('必须为 1 或 -1' if key == 'direction' else '必须为非零数值' if key in ('pos_ratio', 'tor_ratio') else '必须为有限数值'))
         safety = core.get('safety_policy') or {}
+        for key in ('position_margin', 'max_dt_s', 'state_timeout_s', 'cmd_timeout_s', 'cmd_vel_scale', 'state_vel_scale'):
+            value = safety.get(key)
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+            valid = valid and (value >= 0 if key == 'position_margin' else value > 0)
+            if key.endswith('vel_scale'): valid = valid and value <= 1
+            if not valid: issue('safety', 'core.safety_policy.' + key, f'安全参数 {key} ' + ('必须在 0 到 1 之间且大于零' if key.endswith('vel_scale') else '缺失或无效'))
         acceleration = safety.get('max_acc') or {}
         if not isinstance(acceleration, dict) or set(acceleration) != set(names):
             issue('safety','core.safety_policy.max_acc','Safety 必须为全部受控关节提供最大加速度 max_acc')
@@ -808,7 +1002,10 @@ class ProfileLibrary:
 
     def profile_editor_load(self, config):
         info, core_path, hardware_path, profile_path = self._profile_config_paths(config)
-        core = read_yaml(core_path)
+        core = canonical_core(read_yaml(core_path))
+        admittance = (core.get('capability') or {}).get('admittance')
+        if isinstance(admittance, dict):
+            admittance.setdefault('reference_behavior', 'MODEL_ADMITTANCE' if admittance.get('enabled') is True else 'NATIVE_IMPEDANCE')
         hardware = read_yaml(hardware_path) if hardware_path.is_file() else {}
         profile = read_yaml(profile_path)['profiles'][info['profile']]
         joints = (core.get('model') or {}).get('joint_names') or []
@@ -833,6 +1030,7 @@ class ProfileLibrary:
         return {
             'profile': info['profile'], 'core_path': str(core_path),
             'hardware_path': str(hardware_path), 'profile_path': str(profile_path),
+            'urdf_path': str((core_path.parent / core['model']['urdf_path']).resolve()),
             'core_sha': _sha(core_path),
             'hardware_sha': _sha(hardware_path) if hardware_path.is_file() else '',
             'profile_sha': _sha(profile_path),
@@ -879,6 +1077,7 @@ class ProfileLibrary:
             raise ValueError(f'{path} 不支持此参数类型')
 
     def _validate_core_profile(self, core, hardware, entry, core_path, old_core, allow_hardware_draft=False):
+        core, old_core = canonical_core(core), canonical_core(old_core)
         names = core['model']['joint_names']
         original_names = old_core['model']['joint_names']
         if names != original_names or not isinstance(names, list) or not names or len(set(names)) != len(names):
@@ -953,10 +1152,23 @@ class ProfileLibrary:
             raise ValueError('control.runtime.model_feedforward_mode 无效')
         if runtime['tracking_impedance_mode'] not in ('RIGID_TRACKING','COMPLIANT_TRACKING'):
             raise ValueError('control.runtime.tracking_impedance_mode 无效')
+        if runtime.get('tracking_gain_profile') not in ('RIGID', 'COMPLIANT', 'SERVO_TRACKING'):
+            raise ValueError('control.runtime.tracking_gain_profile 请选择刚性、柔性或伺服跟踪')
         controller = section('control.controller')
-        for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','identification_tracking'):
-            if mode == 'identification_tracking' and mode not in controller: continue
+        for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','servo_tracking'):
+            if mode == 'servo_tracking' and mode not in controller: continue
             for axis in ('kp','kd'): joint_map(f'control.controller.{mode}.{axis}',0)
+        hold = core['control'].get('hold_compensation')
+        if hold is not None:
+            if not isinstance(hold, dict) or not isinstance(hold.get('enabled'), bool):
+                raise ValueError('control.hold_compensation.enabled 必须为布尔值')
+            if set(hold) - {'enabled', 'integral_gain', 'max_torque', 'max_rate',
+                            'velocity_threshold', 'error_threshold', 'contact_threshold'}:
+                raise ValueError('control.hold_compensation 含未知参数')
+            for field in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
+                joint_map('control.hold_compensation.' + field, 0)
+            for field in ('velocity_threshold', 'error_threshold'):
+                scalar('control.hold_compensation.' + field, 1e-9)
         safety = section('safety_policy')
         for key in ('position_margin', 'max_dt_s','state_timeout_s','cmd_timeout_s'):
             scalar('safety_policy.'+key, 0 if key=='position_margin' else 1e-7)
@@ -972,12 +1184,16 @@ class ProfileLibrary:
             joint_map('safety_policy.fault_recovery.compliant_recovery.'+field,0)
         scalar('safety_policy.fault_recovery.compliant_recovery.effort_scale',0,1)
         for name in names:
-            for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','identification_tracking'):
+            for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','servo_tracking'):
                 for axis in ('kp','kd'):
                     if mode not in controller: continue
                     limit = safety.get('max_'+axis+'_override',{}).get(name)
                     if limit is not None and controller[mode][axis][name] > limit:
                         raise ValueError(f'control.controller.{mode}.{axis}.{name} 超出 safety_policy.max_{axis}_override')
+            if hold is not None:
+                effort = safety.get('max_effort_override', {}).get(name)
+                if effort is not None and hold['max_torque'][name] > effort:
+                    raise ValueError(f'control.hold_compensation.max_torque.{name} 超出总力矩预算')
         shut = section('shutdown')
         joint_map('shutdown.park_pos')
         for key in ('speed_scale','compliant_phase_ratio'):
@@ -993,6 +1209,8 @@ class ProfileLibrary:
                     raise ValueError(f'shutdown.park_pos.{name} 超出 URDF 有效限位')
         admittance = section('capability.admittance')
         if not isinstance(admittance['enabled'],bool): raise ValueError('capability.admittance.enabled 必须为布尔值')
+        if admittance.get('reference_behavior', 'NATIVE_IMPEDANCE') not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
+            raise ValueError('capability.admittance.reference_behavior 无效')
         flags = admittance['joint_enabled']
         if not isinstance(flags,dict) or set(flags)!=set(names) or any(not isinstance(v,bool) for v in flags.values()):
             raise ValueError('capability.admittance.joint_enabled 与关节名称不一致')
@@ -1052,11 +1270,11 @@ class ProfileLibrary:
             current_sha = _sha(path) if path.is_file() else ''
             if current_sha != payload.get(field):
                 raise ValueError(f'{path.name} 已被外部修改，请重新加载参数后再保存')
-        before_core = read_yaml(core_path)
+        before_core = canonical_core(read_yaml(core_path))
         before_hw = read_yaml(hw_path) if hw_path.is_file() else {}
         profile_data = read_yaml(profile_path)
         original_entry = profile_data['profiles'][info['profile']]
-        core = payload.get('core')
+        core = canonical_core(payload['core']) if isinstance(payload.get('core'), dict) else payload.get('core')
         hardware = payload.get('hardware')
         entry = payload.get('profile_entry')
         if not isinstance(core,dict) or not isinstance(hardware,dict) or not isinstance(entry,dict):
@@ -1071,14 +1289,12 @@ class ProfileLibrary:
             if not extra.issubset(allowed):
                 raise ValueError(f'{section} 不支持新增字段 {sorted(extra)}')
         for section in ('calibration','control','capability'):
-            if set(core[section]) != set(before_core[section]):
+            extra = set(core[section]) - set(before_core[section])
+            if extra - ({'hold_compensation'} if section == 'control' else set()):
                 raise ValueError(f'{section} 不允许新增未知字段')
         new_modes = set(core['control']['controller']) - set(before_core['control']['controller'])
-        if not new_modes.issubset({'identification_tracking'}):
+        if not new_modes.issubset({'servo_tracking'}):
             raise ValueError('control.controller 不允许新增未知控制模式')
-        if (core['capability']['admittance']['enabled'] and
-            not before_core['capability']['admittance']['enabled']):
-            raise ValueError('capability.admittance.enabled 需要后续标定和验证后才能启用')
         original_gravity_trusted = before_core['safety_policy']['fault_recovery']['gravity_model_validated']
         requested_gravity_trusted = core['safety_policy']['fault_recovery']['gravity_model_validated']
         # Explicit operator acknowledgment is required for a false -> true trust transition

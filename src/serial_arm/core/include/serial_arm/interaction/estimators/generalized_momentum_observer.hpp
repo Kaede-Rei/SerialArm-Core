@@ -20,7 +20,7 @@ enum class GeneralizedMomentumObserverErr {
 
 struct GeneralizedMomentumObserverCfg {
     std::size_t joints_count{ 0 };
-    JointVector gain; ///< rad/s；observer 一阶收敛带宽
+    JointVector gain; ///< s^-1；observer 一阶收敛带宽
     JointVector initial_residual; ///< 可选初始 residual；用于用已标定 torque_bias 无冲击启动
 };
 
@@ -31,6 +31,7 @@ struct GeneralizedMomentumInput {
     std::vector<JointVector> mass_matrix;    ///< M(q)，N×N
     JointVector velocity;                    ///< dq rad/s
     double dt{ 0.0 };
+    JointVector known_residual; ///< bias + friction residual, observation only
 };
 
 struct GeneralizedMomentumOutput {

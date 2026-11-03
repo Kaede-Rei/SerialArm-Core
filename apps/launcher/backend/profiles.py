@@ -397,5 +397,6 @@ class Inspector:
                 'checks': checks, 'available': available, 'write_enabled': write_enabled,
                 'devices': devices, 'default_port': default_port, 'default_baudrate': selected.get('baudrate', ''),
                 'joint_units': joint_units, 'bus': bus_name, 'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
+                'connection_overrides': {key: c[key] for key in ('serial_port', 'baudrate', 'bus') if c[key]},
                 'controllers': (profile.get('controllers') or {}).get('spawn', ['joint_state_broadcaster', 'joint_trajectory_controller']),
                 'moveit_package': moveit_package, 'resource_paths': c['resource_paths']}

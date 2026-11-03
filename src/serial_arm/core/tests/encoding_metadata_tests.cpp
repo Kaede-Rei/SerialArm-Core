@@ -13,12 +13,21 @@ int main() {
     try {
         ModelCalibrationMetadata metadata;
         metadata.task_id="metadata-limits-test";metadata.joint_names={"joint-b","joint-a"};
+        metadata.hardware_config_path="/profile/hardware.yaml";
+        metadata.hardware_source_config="buses: {main: {device: /dev/original}}\n";
+        metadata.hardware_effective_config="buses: {main: {device: /dev/override, baudrate: 115200}}\n";
+        metadata.hardware_serial_port_override="/dev/override";metadata.hardware_baudrate_override=115200;metadata.hardware_bus_override="main";
         metadata.actuator_capabilities_source="hardware_backend_after_successful_activate";
         metadata.actuator_capabilities={{"motor-b",-6.25,6.25,16,12,500,5,"joint-b"},
                                         {"motor-a",-12.5,12.5,10,28,500,5,"joint-a"}};
         ModelCalibrationRecorder recorder;
         require(bool(recorder.start(root/"resolved",metadata)),"start resolved recorder");recorder.stop();
         auto data=YAML::LoadFile((root/"resolved/metadata.json").string());
+        require(data["hardware_config_path"].as<std::string>()==metadata.hardware_config_path,"hardware source path missing");
+        require(data["hardware_fingerprint"].as<std::string>()==model_calibration_file_fingerprint((root/"resolved/source/hardware.yaml").string()),"hardware snapshot fingerprint mismatch");
+        require(data["hardware_effective_fingerprint"].as<std::string>()==model_calibration_file_fingerprint((root/"resolved/source/hardware-effective.yaml").string()),"effective hardware fingerprint mismatch");
+        require(data["hardware_overrides"]["serial_port"].as<std::string>()=="/dev/override" &&
+                data["hardware_overrides"]["baudrate"].as<int>()==115200 && data["hardware_overrides"]["bus"].as<std::string>()=="main","effective connection overrides lost");
         const auto record=data["actuator_capabilities"];
         require(record["source"].as<std::string>()==metadata.actuator_capabilities_source,"readback provenance lost");
         require(record["scope"].as<std::string>().find("not_joint_safety_limits")!=std::string::npos,"scope overstates joint safety");

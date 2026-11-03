@@ -95,9 +95,8 @@
                 menu.style.top = below >= Math.min(height, menu.scrollHeight) || below >= above
                     ? `${rect.bottom + 5}px` : `${Math.max(8, rect.top - menu.offsetHeight - 5)}px`;
             }
-            function open() {
-                update(); if (trigger.disabled) return;
-                if (menu.matches(':popover-open')) { menu.hidePopover(); return; }
+            function prepareOptions() {
+                update();
                 menu.replaceChildren();
                 const searchable = select.options.length > 8;
                 let search;
@@ -130,11 +129,20 @@
                 if (search) search.oninput = () => {
                     for (const option of scroll.children) option.hidden = !option.textContent.toLowerCase().includes(search.value.toLowerCase());
                 };
-                menu.showPopover(); position(); trigger.setAttribute('aria-expanded', 'true');
-                (search || scroll.querySelector('[aria-selected="true"]:not(:disabled)') || scroll.querySelector('button:not(:disabled)'))?.focus();
             }
-            trigger.onclick = open;
-            trigger.onkeydown = event => { if (['ArrowDown', 'ArrowUp'].includes(event.key)) { event.preventDefault(); open(); } };
+            // The browser treats the invoker as part of its popover. A manual
+            // onclick toggle races auto light-dismiss on a second pointer click.
+            trigger.popoverTargetElement = menu;
+            trigger.popoverTargetAction = 'toggle';
+            menu.addEventListener('beforetoggle', event => {
+                if (event.newState === 'open') prepareOptions();
+            });
+            trigger.onkeydown = event => {
+                if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+                event.preventDefault();
+                if (!menu.matches(':popover-open')) trigger.click();
+                else menu.querySelector('[aria-selected="true"]:not(:disabled),button:not(:disabled)')?.focus();
+            };
             menu.onkeydown = event => {
                 const options = [...menu.querySelectorAll('[role="option"]')].filter(option => !option.disabled && !option.hidden);
                 const current = options.indexOf(document.activeElement);
@@ -146,7 +154,12 @@
                 }
             };
             menu.addEventListener('toggle', event => {
-                if (event.newState === 'closed') { trigger.setAttribute('aria-expanded', 'false'); if (menu.contains(document.activeElement)) trigger.focus(); }
+                const open = event.newState === 'open';
+                trigger.setAttribute('aria-expanded', String(open));
+                if (open) {
+                    position();
+                    (menu.querySelector('input') || menu.querySelector('[aria-selected="true"]:not(:disabled)') || menu.querySelector('button:not(:disabled)'))?.focus();
+                } else if (menu.contains(document.activeElement)) trigger.focus();
             });
             select.addEventListener('change', update);
             for (const label of select.labels || []) label.addEventListener('click', event => {
@@ -171,3 +184,11 @@
     document.addEventListener('scroll', closeMenus, true);
     window.serialArmStudio = {enhanceSelects};
 })();
+
+// Workspace pages scroll as one document, including over their sticky model.
+// Explicit Ctrl/Meta wheel remains available for camera zoom; Model Viewer
+// keeps its ordinary wheel zoom because it is not in a workbench layout.
+document.addEventListener('wheel', event => {
+    if (event.ctrlKey || event.metaKey || !(event.target instanceof Element)) return;
+    if (event.target.closest('.workbench-layout #workbench-viewport')) event.stopPropagation();
+}, {capture: true, passive: true});

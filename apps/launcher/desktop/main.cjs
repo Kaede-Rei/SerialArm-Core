@@ -1,4 +1,4 @@
-const {app, BrowserWindow, dialog, ipcMain, clipboard, Menu} = require('electron');
+const {app, BrowserWindow, dialog, ipcMain, clipboard, Menu, shell} = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const {pathToFileURL} = require('node:url');
@@ -187,6 +187,15 @@ async function start() {
   ipcMain.handle('launcher:prefs', event => { trusted(event); return {...readPrefs(), language: readPrefs().language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en')}; });
   ipcMain.handle('launcher:save-prefs', (event, values) => { trusted(event); return savePrefs(values); });
   ipcMain.handle('launcher:select-profile', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'Robot Profiles', extensions: ['yaml', 'yml']}]}); return result.canceled ? '' : result.filePaths[0]; });
+  ipcMain.handle('launcher:select-gain-candidate', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'Gain candidate', extensions: ['json']}]}); return result.canceled ? '' : result.filePaths[0]; });
+  ipcMain.handle('launcher:reveal-file', (event, file) => {
+    trusted(event);
+    if (typeof file !== 'string' || file.length > 8192 || !path.isAbsolute(file) || /[\0\n]/.test(file)) throw new Error('Invalid file path');
+    const resolved = fs.realpathSync(file);
+    if (!fs.statSync(resolved).isFile()) throw new Error('Source file is unavailable');
+    shell.showItemInFolder(resolved);
+    return true;
+  });
   ipcMain.handle('launcher:select-trajectory', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'SerialArm trajectory', extensions: ['zip']}]}); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('launcher:select-description', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openFile'], filters: [{name: 'SerialArm Description', extensions: ['zip', 'urdf', 'xacro']}]}); return result.canceled ? '' : result.filePaths[0]; });
   ipcMain.handle('launcher:select-profile-package', async event => { trusted(event); const result = await dialog.showOpenDialog(win, {properties: ['openDirectory']}); return result.canceled ? '' : result.filePaths[0]; });

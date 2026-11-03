@@ -77,6 +77,8 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
         return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_DT);
     }
 
+    advance_parameters(input.dt);
+
     const bool has_dynamic_limits = !input.min_delta_q.empty() || !input.max_delta_q.empty() ||
         !input.min_delta_q_dot.empty() || !input.max_delta_q_dot.empty();
     if(has_dynamic_limits) {
@@ -92,6 +94,7 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
         }
     }
 
+    JointVector acceleration(cfg_.joints_count, 0.0);
     std::vector<std::uint8_t> delta_q_limited(cfg_.joints_count, 0);
     std::vector<std::uint8_t> delta_q_dot_limited(cfg_.joints_count, 0);
 
@@ -120,13 +123,15 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
             }
         }
 
-        const double delta_q_ddot = (input.tau_ext_hat[i] -
-            cfg_.damping[i] * delta_q_dot_[i] -
-            cfg_.stiffness[i] * delta_q_[i]) / cfg_.mass[i];
-
-        const double unclamped_delta_q_dot = delta_q_dot_[i] + delta_q_ddot * input.dt;
-        delta_q_dot_[i] = std::clamp(unclamped_delta_q_dot, min_delta_q_dot, max_delta_q_dot);
-        if(delta_q_dot_[i] != unclamped_delta_q_dot) delta_q_dot_limited[i] = 1;
+        // Backward Euler solves the dissipative virtual dynamics implicitly
+        // M(v1-v0)/dt + D*v1 + K*(x0+dt*v1) = tau
+        const double old_velocity = delta_q_dot_[i];
+        const double denominator = cfg_.mass[i] + cfg_.damping[i]*input.dt +
+            cfg_.stiffness[i]*input.dt*input.dt;
+        const double unconstrained_velocity = (cfg_.mass[i]*old_velocity +
+            input.dt*(input.tau_ext_hat[i]-cfg_.stiffness[i]*delta_q_[i]))/denominator;
+        delta_q_dot_[i] = std::clamp(unconstrained_velocity, min_delta_q_dot, max_delta_q_dot);
+        if(delta_q_dot_[i] != unconstrained_velocity) delta_q_dot_limited[i] = 1;
 
         const double unclamped_delta_q = delta_q_[i] + delta_q_dot_[i] * input.dt;
         delta_q_[i] = std::clamp(unclamped_delta_q, min_delta_q, max_delta_q);
@@ -139,6 +144,7 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
             delta_q_dot_[i] = 0.0;
         }
 
+        acceleration[i] = (delta_q_dot_[i]-old_velocity)/input.dt;
         if(!std::isfinite(delta_q_[i]) || !std::isfinite(delta_q_dot_[i])) {
             return tl::make_unexpected(JointAdmittanceControllerErr::NON_FINITE_INPUT);
         }
@@ -149,6 +155,7 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
         delta_q_dot_,
         std::move(delta_q_limited),
         std::move(delta_q_dot_limited),
+        std::move(acceleration),
     };
 }
 
@@ -167,12 +174,61 @@ JointAdmittanceController::hold(const JointVector& lower, const JointVector& upp
         limited[i]=delta_q_[i]!=previous;
         delta_q_dot_[i]=0.0;
     }
-    return JointAdmittanceOutput{delta_q_,delta_q_dot_,std::move(limited),std::vector<std::uint8_t>(n,0)};
+    return JointAdmittanceOutput{delta_q_,delta_q_dot_,std::move(limited),std::vector<std::uint8_t>(n,0),JointVector(n,0.0)};
+}
+
+tl::expected<void, JointAdmittanceControllerErr>
+JointAdmittanceController::reconfigure(const JointAdmittanceControllerCfg& cfg) {
+    JointAdmittanceController validated;
+    const auto result=validated.configure(cfg);
+    if(!result) return result;
+    if(is_configured_ && cfg.joints_count!=cfg_.joints_count)
+        return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_CFG);
+    if(!is_configured_) { *this=std::move(validated); return {}; }
+    ramp_source_=cfg_;
+    ramp_target_=cfg;
+    cfg_=cfg;
+    cfg_.mass=ramp_source_.mass;
+    cfg_.damping=ramp_source_.damping;
+    cfg_.stiffness=ramp_source_.stiffness;
+    parameter_elapsed_s_=0.0;
+    // A parameter transaction never resets displacement or velocity
+    return {};
+}
+
+tl::expected<void, JointAdmittanceControllerErr>
+JointAdmittanceController::accept(const JointVector& position, const JointVector& velocity) {
+    if(!is_configured_) return tl::make_unexpected(JointAdmittanceControllerErr::NOT_CONFIGURED);
+    if(position.size()!=cfg_.joints_count || velocity.size()!=cfg_.joints_count ||
+        !finite_vector(position) || !finite_vector(velocity))
+        return tl::make_unexpected(JointAdmittanceControllerErr::INVALID_INPUT_SIZE);
+    delta_q_=position;
+    delta_q_dot_=velocity;
+    return {};
 }
 
 void JointAdmittanceController::reset() {
     std::fill(delta_q_.begin(), delta_q_.end(), 0.0);
     std::fill(delta_q_dot_.begin(), delta_q_dot_.end(), 0.0);
+}
+
+void JointAdmittanceController::advance_parameters(double dt) {
+    if(!std::isfinite(dt) || dt<=0.0) return;
+    if(parameter_elapsed_s_<0.3) {
+        parameter_elapsed_s_=std::min(0.3,parameter_elapsed_s_+dt);
+        const double x=parameter_elapsed_s_/0.3;
+        const double blend=x*x*(3.0-2.0*x);
+        for(std::size_t i=0;i<cfg_.joints_count;++i) {
+            cfg_.mass[i]=ramp_source_.mass[i]+blend*(ramp_target_.mass[i]-ramp_source_.mass[i]);
+            cfg_.damping[i]=ramp_source_.damping[i]+blend*(ramp_target_.damping[i]-ramp_source_.damping[i]);
+            cfg_.stiffness[i]=ramp_source_.stiffness[i]+blend*(ramp_target_.stiffness[i]-ramp_source_.stiffness[i]);
+        }
+    }
+
+}
+
+double JointAdmittanceController::parameter_update_progress() const noexcept {
+    return std::clamp(parameter_elapsed_s_/0.3,0.0,1.0);
 }
 
 bool JointAdmittanceController::is_configured() const noexcept {

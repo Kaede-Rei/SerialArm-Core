@@ -214,6 +214,15 @@ JointImpedanceMode load_tracking_impedance_mode(const YAML::Node& runtime) {
     throw ConfigLoadException(ConfigErr::INVALID_VALUE, "runtime.tracking_impedance_mode must be RIGID_TRACKING or COMPLIANT_TRACKING");
 }
 
+std::optional<JointGainProfile> load_tracking_gain_profile(const YAML::Node& runtime) {
+    if(!runtime["tracking_gain_profile"]) return std::nullopt;
+    const auto value=require_as<std::string>(runtime,"tracking_gain_profile","runtime");
+    if(value=="RIGID")return JointGainProfile::RIGID;
+    if(value=="COMPLIANT")return JointGainProfile::COMPLIANT;
+    if(value=="SERVO_TRACKING")return JointGainProfile::SERVO_TRACKING;
+    throw ConfigLoadException(ConfigErr::INVALID_VALUE,"runtime.tracking_gain_profile must be RIGID, COMPLIANT or SERVO_TRACKING");
+}
+
 /**
  * @brief 解析 FAULT 默认恢复模式
  */
@@ -256,7 +265,7 @@ std::array<const JointImpedanceGains*, 6> all_gains(const JointCtrllerCfg& cfg) 
         &cfg.compliant_hold_gains,
         &cfg.compliant_drag_gains,
         &cfg.compliant_tracking_gains,
-        &cfg.identification_tracking_gains,
+        &cfg.servo_tracking_gains,
     };
 }
 
@@ -297,6 +306,22 @@ AdmittanceObserverMode load_admittance_observer_mode(const YAML::Node& observer)
 /**
  * @brief 加载可选的导纳能力配置
  */
+void load_hold_compensation(const YAML::Node& node,const std::vector<std::string>& joints,HoldCompensationCfg& cfg) {
+    if(!node) return;
+    if(!node.IsMap()) throw ConfigLoadException(ConfigErr::INVALID_VALUE,"hold_compensation must be a map");
+    reject_unknown_keys(node,"hold_compensation",{"enabled","integral_gain","max_torque","max_rate","contact_threshold","velocity_threshold","error_threshold"});
+    cfg.enabled=node["enabled"]?node["enabled"].as<bool>():false;
+    const auto values=[&](const char* key,double value) {
+        return node[key]?load_named_joint_vector(node[key],joints,key):JointVector(joints.size(),value);
+    };
+    cfg.integral_gain=values("integral_gain",.15);
+    cfg.max_torque=values("max_torque",.15);
+    cfg.max_rate=values("max_rate",.05);
+    cfg.contact_threshold=values("contact_threshold",.2);
+    if(node["velocity_threshold"])cfg.velocity_threshold=node["velocity_threshold"].as<double>();
+    if(node["error_threshold"])cfg.error_threshold=node["error_threshold"].as<double>();
+}
+
 void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<std::string>& joint_names, CapabilityCfg& capability) {
     const YAML::Node capability_node = root["capability"];
     if(!capability_node) return;
@@ -308,11 +333,18 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 
     const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
     reject_unknown_keys(admittance, "capability.admittance", {
-        "enabled", "joint_enabled", "observer", "calibration", "controller"
+        "enabled", "reference_behavior", "joint_enabled", "observer", "calibration", "controller"
     });
 
     auto& cfg = capability.admittance;
     cfg.enabled = require_as<bool>(admittance, "enabled", "capability.admittance");
+    cfg.reference_behavior=cfg.enabled?ReferenceBehavior::MODEL_ADMITTANCE:ReferenceBehavior::NATIVE_IMPEDANCE;
+    if(admittance["reference_behavior"]) {
+        const auto behavior=admittance["reference_behavior"].as<std::string>();
+        if(behavior=="NATIVE_IMPEDANCE") cfg.reference_behavior=ReferenceBehavior::NATIVE_IMPEDANCE;
+        else if(behavior=="MODEL_ADMITTANCE") cfg.reference_behavior=ReferenceBehavior::MODEL_ADMITTANCE;
+        else throw std::runtime_error("capability.admittance.reference_behavior must be NATIVE_IMPEDANCE or MODEL_ADMITTANCE");
+    }
     cfg.joint_enabled = load_named_joint_enabled(
         require_map(admittance, "joint_enabled", "capability.admittance"),
         joint_names, "capability.admittance.joint_enabled");
@@ -431,6 +463,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.runtime.write_enabled = require_as<bool>(runtime, "write_enabled", "runtime");
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
         cfg.runtime.tracking_impedance_mode = load_tracking_impedance_mode(runtime);
+        cfg.runtime.tracking_gain_profile = load_tracking_gain_profile(runtime);
 
         cfg.shutdown.park_pos.assign(cfg.joint_names.size(), 0.0);
         const YAML::Node shutdown = root["shutdown"];
@@ -479,6 +512,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.mapper.joint_zero_offset = require_as<JointVector>(mapping, "joint_zero_offset", "mapping");
         cfg.mapper.actuator_zero_offset = require_as<ActuatorVector>(mapping, "actuator_zero_offset", "mapping");
 
+        load_hold_compensation(root["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(root, "controller", "root");
         cfg.ctrller.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", "controller");
         cfg.ctrller.rigid_hold_gains = load_gains(controller, "rigid_hold");
@@ -486,8 +520,8 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.ctrller.compliant_hold_gains = load_gains(controller, "compliant_hold");
         cfg.ctrller.compliant_drag_gains = load_gains(controller, "compliant_drag");
         cfg.ctrller.compliant_tracking_gains = load_gains(controller, "compliant_tracking");
-        cfg.ctrller.identification_tracking_gains = controller["identification_tracking"] ?
-            load_gains(controller, "identification_tracking") : cfg.ctrller.rigid_tracking_gains;
+        cfg.ctrller.servo_tracking_gains = controller["servo_tracking"] ? load_gains(controller,"servo_tracking") :
+            (controller["identification_tracking"] ? load_gains(controller, "identification_tracking") : cfg.ctrller.rigid_tracking_gains);
 
 
         const YAML::Node dynamics = require_map(root, "dynamics", "root");
@@ -671,7 +705,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const YAML::Node shutdown_node = require_map(root, "shutdown", "root");
         reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path" });
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
-        reject_unknown_keys(control_node, "control", { "runtime", "controller" });
+        reject_unknown_keys(control_node, "control", { "runtime", "controller", "hold_compensation" });
         reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
         reject_unknown_keys(shutdown_node, "shutdown", { "park_before_disable", "park_pos", "speed_scale", "position_tolerance", "velocity_tolerance", "settle_time_s", "relaxed_tolerance_ratio", "compliant_phase_ratio", "timeout_s" });
 
@@ -695,19 +729,22 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         load_admittance_capability_cfg(root, cfg.joint_names, cfg.capability);
 
         const YAML::Node runtime = require_map(control_node, "runtime", "control");
-        reject_unknown_keys(runtime, "control.runtime", { "ctrl_frequency_hz", "joint_acc_filter_alpha", "write_enabled", "model_feedforward_mode", "tracking_impedance_mode" });
+        reject_unknown_keys(runtime, "control.runtime", { "ctrl_frequency_hz", "joint_acc_filter_alpha", "write_enabled", "model_feedforward_mode", "tracking_impedance_mode", "tracking_gain_profile" });
         cfg.runtime.ctrl_frequency_hz = require_as<double>(runtime, "ctrl_frequency_hz", "runtime");
         cfg.runtime.joint_acc_filter_alpha = runtime["joint_acc_filter_alpha"] ? require_as<double>(runtime, "joint_acc_filter_alpha", "runtime") : 0.2;
         cfg.runtime.write_enabled = require_as<bool>(runtime, "write_enabled", "runtime");
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
         cfg.runtime.tracking_impedance_mode = load_tracking_impedance_mode(runtime);
+        cfg.runtime.tracking_gain_profile = load_tracking_gain_profile(runtime);
+        load_hold_compensation(control_node["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(control_node, "controller", "control");
-        reject_unknown_keys(controller, "control.controller", { "allow_full_cmd", "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking" });
+        reject_unknown_keys(controller, "control.controller", { "allow_full_cmd", "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking", "servo_tracking" });
         reject_unknown_keys(require_map(controller, "rigid_hold", "controller"), "controller.rigid_hold", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "rigid_tracking", "controller"), "controller.rigid_tracking", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_hold", "controller"), "controller.compliant_hold", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_drag", "controller"), "controller.compliant_drag", { "kp", "kd" });
         reject_unknown_keys(require_map(controller, "compliant_tracking", "controller"), "controller.compliant_tracking", { "kp", "kd" });
+        if(controller["servo_tracking"]) reject_unknown_keys(require_map(controller,"servo_tracking","controller"),"controller.servo_tracking",{"kp","kd"});
         if(controller["identification_tracking"])
             reject_unknown_keys(require_map(controller, "identification_tracking", "controller"), "controller.identification_tracking", { "kp", "kd" });
         cfg.ctrller.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", "controller");
@@ -721,11 +758,13 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.ctrller.compliant_drag_gains.kd = load_named_joint_vector(require_map(controller, "compliant_drag", "controller")["kd"], cfg.joint_names, "controller.compliant_drag.kd");
         cfg.ctrller.compliant_tracking_gains.kp = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kp"], cfg.joint_names, "controller.compliant_tracking.kp");
         cfg.ctrller.compliant_tracking_gains.kd = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kd"], cfg.joint_names, "controller.compliant_tracking.kd");
-        cfg.ctrller.identification_tracking_gains = cfg.ctrller.rigid_tracking_gains;
-        if(controller["identification_tracking"]) {
-            const auto id_tracking = require_map(controller, "identification_tracking", "controller");
-            cfg.ctrller.identification_tracking_gains.kp = load_named_joint_vector(id_tracking["kp"], cfg.joint_names, "controller.identification_tracking.kp");
-            cfg.ctrller.identification_tracking_gains.kd = load_named_joint_vector(id_tracking["kd"], cfg.joint_names, "controller.identification_tracking.kd");
+        cfg.ctrller.servo_tracking_gains = cfg.ctrller.rigid_tracking_gains;
+        if(controller["servo_tracking"] || controller["identification_tracking"]) {
+            const char* key=controller["servo_tracking"] ? "servo_tracking" : "identification_tracking";
+            const auto tracking = require_map(controller,key,"controller");
+            const auto kp_context=std::string("controller.")+key+".kp",kd_context=std::string("controller.")+key+".kd";
+            cfg.ctrller.servo_tracking_gains.kp = load_named_joint_vector(tracking["kp"], cfg.joint_names, kp_context.c_str());
+            cfg.ctrller.servo_tracking_gains.kd = load_named_joint_vector(tracking["kd"], cfg.joint_names, kd_context.c_str());
         }
 
         const YAML::Node joints = require_map(calibration_node, "joints", "calibration");
@@ -844,18 +883,32 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         cfg.runtime.tracking_impedance_mode != JointImpedanceMode::COMPLIANT_TRACKING) {
         return fail(ConfigErr::INVALID_VALUE, "runtime.tracking_impedance_mode must be a tracking mode");
     }
+    if(cfg.runtime.tracking_gain_profile && *cfg.runtime.tracking_gain_profile!=JointGainProfile::RIGID &&
+       *cfg.runtime.tracking_gain_profile!=JointGainProfile::COMPLIANT && *cfg.runtime.tracking_gain_profile!=JointGainProfile::SERVO_TRACKING)
+        return fail(ConfigErr::INVALID_VALUE,"runtime.tracking_gain_profile must be RIGID, COMPLIANT or SERVO_TRACKING");
 
+    const auto& hold=cfg.hold_compensation;
+    if(hold.enabled) {
+        if(!std::isfinite(hold.velocity_threshold)||hold.velocity_threshold<=0 || !std::isfinite(hold.error_threshold)||hold.error_threshold<=0)
+            return fail(ConfigErr::INVALID_VALUE,"invalid hold_compensation thresholds");
+        for(const auto* values:{&hold.integral_gain,&hold.max_torque,&hold.max_rate,&hold.contact_threshold})
+            if(values->size()!=n || !finite_vector(*values) || std::any_of(values->begin(),values->end(),[](double v){return v<0;}))
+                return fail(ConfigErr::INVALID_VALUE,"invalid hold_compensation joint values");
+    }
     const auto& admittance = cfg.capability.admittance;
     const auto& observer = admittance.observer;
     const auto& calibration = admittance.calibration;
     const auto& friction = calibration.friction;
     const auto& controller = admittance.controller;
+    if(admittance.reference_behavior!=ReferenceBehavior::NATIVE_IMPEDANCE &&
+       admittance.reference_behavior!=ReferenceBehavior::MODEL_ADMITTANCE)
+        return fail(ConfigErr::INVALID_VALUE,"invalid capability.admittance.reference_behavior");
     const bool has_admittance_parameters = !admittance.joint_enabled.empty() ||
         !observer.momentum_gain.empty() || !calibration.torque_bias.empty() ||
         !calibration.torque_threshold.empty() || !controller.mass.empty() ||
         !controller.damping.empty() || !controller.stiffness.empty() ||
         !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
-    if(admittance.enabled || has_admittance_parameters) {
+    if(admittance.enabled || hold.enabled || has_admittance_parameters) {
         if(admittance.joint_enabled.size() != n || observer.momentum_gain.size() != n ||
             calibration.torque_bias.size() != n || calibration.torque_threshold.size() != n ||
             controller.mass.size() != n || controller.damping.size() != n ||
@@ -890,8 +943,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
 
         for(std::size_t i = 0; i < n; ++i) {
             if(observer.momentum_gain[i] <= 0.0 || calibration.torque_threshold[i] < 0.0 ||
-                controller.mass[i] <= 0.0 || controller.damping[i] <= 0.0 ||
-                controller.stiffness[i] <= 0.0 || controller.max_delta_q[i] <= 0.0 ||
+                controller.mass[i] <= 0.0 || controller.damping[i] < 0.0 ||
+                controller.stiffness[i] < 0.0 || controller.max_delta_q[i] <= 0.0 ||
                 controller.max_delta_q_dot[i] <= 0.0) {
                 return fail(ConfigErr::INVALID_VALUE,
                     "invalid capability.admittance parameter at index " + std::to_string(i));
@@ -1024,13 +1077,13 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs->mapper.direction != rhs->mapper.direction || lhs->mapper.joint_zero_offset != rhs->mapper.joint_zero_offset ||
         lhs->mapper.actuator_zero_offset != rhs->mapper.actuator_zero_offset) add("mapping");
     if(lhs->runtime.ctrl_frequency_hz != rhs->runtime.ctrl_frequency_hz) add("runtime.ctrl_frequency_hz");
-    if(lhs->runtime.tracking_impedance_mode != rhs->runtime.tracking_impedance_mode) add("runtime.tracking_impedance_mode");
+    if(lhs->runtime.native_tracking_gain_profile() != rhs->runtime.native_tracking_gain_profile()) add("runtime.tracking_gain_profile");
     if(lhs->ctrller.rigid_hold_gains.kp != rhs->ctrller.rigid_hold_gains.kp || lhs->ctrller.rigid_hold_gains.kd != rhs->ctrller.rigid_hold_gains.kd ||
         lhs->ctrller.rigid_tracking_gains.kp != rhs->ctrller.rigid_tracking_gains.kp || lhs->ctrller.rigid_tracking_gains.kd != rhs->ctrller.rigid_tracking_gains.kd ||
         lhs->ctrller.compliant_hold_gains.kp != rhs->ctrller.compliant_hold_gains.kp || lhs->ctrller.compliant_hold_gains.kd != rhs->ctrller.compliant_hold_gains.kd ||
         lhs->ctrller.compliant_drag_gains.kp != rhs->ctrller.compliant_drag_gains.kp || lhs->ctrller.compliant_drag_gains.kd != rhs->ctrller.compliant_drag_gains.kd ||
         lhs->ctrller.compliant_tracking_gains.kp != rhs->ctrller.compliant_tracking_gains.kp || lhs->ctrller.compliant_tracking_gains.kd != rhs->ctrller.compliant_tracking_gains.kd ||
-        lhs->ctrller.identification_tracking_gains.kp != rhs->ctrller.identification_tracking_gains.kp || lhs->ctrller.identification_tracking_gains.kd != rhs->ctrller.identification_tracking_gains.kd) add("controller.impedance_gains");
+        lhs->ctrller.servo_tracking_gains.kp != rhs->ctrller.servo_tracking_gains.kp || lhs->ctrller.servo_tracking_gains.kd != rhs->ctrller.servo_tracking_gains.kd) add("controller.impedance_gains");
     if(lhs->safety.limits.min_pos != rhs->safety.limits.min_pos || lhs->safety.limits.max_pos != rhs->safety.limits.max_pos) add("limits.position");
     if(lhs->safety.limits.max_vel != rhs->safety.limits.max_vel) add("limits.max_cmd_vel_or_state_base");
     if(lhs->safety.limits.max_acc != rhs->safety.limits.max_acc) add("limits.max_acc");
@@ -1039,9 +1092,14 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs->safety.limits.max_kd != rhs->safety.limits.max_kd) add("limits.max_kd");
     if(lhs->safety.cmd_timeout_s != rhs->safety.cmd_timeout_s || lhs->safety.state_timeout_s != rhs->safety.state_timeout_s || lhs->safety.max_dt_s != rhs->safety.max_dt_s) add("safety.timeout");
     if(lhs->dynamics.urdf_path != rhs->dynamics.urdf_path) add("dynamics.urdf_path");
+    if(lhs->hold_compensation.enabled!=rhs->hold_compensation.enabled || lhs->hold_compensation.integral_gain!=rhs->hold_compensation.integral_gain ||
+       lhs->hold_compensation.max_torque!=rhs->hold_compensation.max_torque || lhs->hold_compensation.max_rate!=rhs->hold_compensation.max_rate ||
+       lhs->hold_compensation.contact_threshold!=rhs->hold_compensation.contact_threshold || lhs->hold_compensation.velocity_threshold!=rhs->hold_compensation.velocity_threshold ||
+       lhs->hold_compensation.error_threshold!=rhs->hold_compensation.error_threshold) add("hold_compensation");
     const auto& lhs_adm = lhs->capability.admittance;
     const auto& rhs_adm = rhs->capability.admittance;
-    if(lhs_adm.enabled != rhs_adm.enabled || lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
+    if(lhs_adm.enabled != rhs_adm.enabled ||
+        lhs_adm.reference_behavior != rhs_adm.reference_behavior || lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
         lhs_adm.observer.mode != rhs_adm.observer.mode ||
         lhs_adm.observer.momentum_gain != rhs_adm.observer.momentum_gain ||
         lhs_adm.calibration.torque_bias != rhs_adm.calibration.torque_bias ||

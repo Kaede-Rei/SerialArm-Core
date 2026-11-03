@@ -4,7 +4,7 @@
 
 **面向自研串联机械臂的动力学标定与控制内核**
 
-从机器人模型与硬件接入，到动力学校正、安全控制和上层框架集成
+配置模型与驱动，标定动力学与增益，通过 C++、Python 或 ROS2 控制机械臂
 
 <p>
   <a href="https://github.com/Kaede-Rei/SerialArm-Core/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Kaede-Rei/SerialArm-Core?style=flat-square&amp;label=License" alt="许可证" /></a>
@@ -27,7 +27,7 @@ SerialArm-Core 面向需要自行配置硬件与运动学模型的串联机械�
 
 用户可以从已有 URDF 或 Description 创建机器人实例，完成硬件映射、参数配置与动力学验证，再通过 C++、Python 或 ROS2 / MoveIt 接入上层应用
 
-图形界面与命令行共享底层 C++ Core，配置与标定结果由机器人 Profile 管理，不要求将下游机器人的专用资源合并到本仓库
+图形界面、Terminal、Python 与 ROS2 共享 C++ Core；下游机械臂在自己的 Profile 中维护模型、驱动和标定结果
 
 <p align="center">
   <img src="docs/images/launcher-new-arm.png" alt="新机械臂导入页面展示三维模型、控制链与配置步骤" width="94%" />
@@ -75,12 +75,16 @@ SerialArm-Core 面向需要自行配置硬件与运动学模型的串联机械�
 | :--- | :--- |
 | 机器人接入 | Description / URDF / Xacro 导入、Profile 创建与资源管理 |
 | 模型与动力学 | 正运动学、Jacobian、质量矩阵、逆动力学与重力项计算 |
-| 真机控制 | 关节阻抗、关节导纳、动力学前馈、示教与轨迹回放 |
-| 动力学校正 | 重力模型校正、静态采样、摩擦验证、候选与独立验证 |
+| 真机控制 | 原生阻抗、模型导纳、动力学前馈、示教与轨迹回放 |
+| 标定 | 执行器增益自动标定、重力校正、几何实验与完整动力学辨识 |
 | 硬件抽象 | 关节与执行器映射、Backend、CAN / Serial Transport |
 | 运行安全 | 状态检查、限位、故障处理、控制准入与安全退出 |
 | 上层接入 | 原生 C++、Python Binding、ROS2 ros2_control 与 MoveIt 2 |
 | 桌面工作台 | Profile 配置、模型预览、控制、标定与诊断 |
+
+控制页分别选择控制方式、执行器增益用途与运动目标；增益用途包括刚性、柔性、拖拽和伺服跟踪，模型导纳使用伺服增益跟随虚拟参考
+
+关节滑条与数值框共用一组目标，青绿色半透明模型用于预览，确认移动后才发送命令；交互调试和示教回放使用同一控制上下文
 
 ## 系统架构
 
@@ -88,7 +92,7 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 ![SerialArm-Core 系统架构](docs/images/architecture.svg)
 
-新机械臂从模型导入到正常使用遵循可检查的准备流程，标定候选须经验证后才能应用
+准备页面分别显示连接前配置、运行检查、基础标定、专项标定与检查记录；控制权限由当前配置、反馈和 Core 安全检查决定
 
 ![新机械臂接入工作流程](docs/images/workflow.svg)
 
@@ -113,10 +117,6 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 ### Linux 发行包构建
 
 `build_linux.sh` 生成包含 Core、Terminal、Python Binding、DM-Arm、ROS2 Adapter、MoveIt 配置及 GUI 的完整发行包
-
-构建目标对应安装向导中的 `ROS2 控制与规划 / ROS2 + MoveIt` 用途
-
-打包优先使用已安装的 Electron 运行时，避免重复下载 Electron 发行文件
 
 ```bash
 ./build_linux.sh

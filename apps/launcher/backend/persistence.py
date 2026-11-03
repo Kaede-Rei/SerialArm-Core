@@ -16,6 +16,7 @@ import tempfile
 import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
+from control_parameters import add_mapping_value, canonical_control_text, canonical_core, complete_mapping_values
 
 
 def sha256_file(path):
@@ -31,7 +32,7 @@ def _map(joint_names, values):
 
 def _targets(joints, runtime, gravity_scale):
     friction = runtime.get('friction') or {}
-    return {
+    targets = {
         ('model', 'gravity_scale'): _map(joints, gravity_scale),
         ('capability', 'admittance', 'observer', 'mode'): str(runtime['observer_mode']),
         ('capability', 'admittance', 'observer', 'momentum_gain'): _map(joints, runtime['momentum_gain']),
@@ -49,6 +50,76 @@ def _targets(joints, runtime, gravity_scale):
         ('capability', 'admittance', 'controller', 'max_delta_q'): _map(joints, runtime['max_delta_q']),
         ('capability', 'admittance', 'controller', 'max_delta_q_dot'): _map(joints, runtime['max_delta_q_dot']),
     }
+    if 'reference_behavior' in runtime:
+        if runtime['reference_behavior'] not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
+            raise ValueError('无效的参考运动策略')
+        targets[('capability', 'admittance', 'reference_behavior')] = runtime['reference_behavior']
+    if 'enabled' in runtime:
+        if not isinstance(runtime['enabled'], bool): raise ValueError('能力开关必须为布尔值')
+        targets[('capability', 'admittance', 'enabled')] = 'true' if runtime['enabled'] else 'false'
+    if 'joint_enabled' in runtime:
+        flags = runtime['joint_enabled']
+        if len(flags) != len(joints) or any(value not in (0, 1, False, True) for value in flags):
+            raise ValueError('参与导纳的关节设置无效')
+        targets[('capability', 'admittance', 'joint_enabled')] = yaml.safe_dump(
+            dict(zip(joints, map(bool, flags))), default_flow_style=True).strip()
+    for purpose, gains in (runtime.get('execution_gains') or {}).items():
+        if purpose not in ('rigid_hold', 'rigid_tracking', 'compliant_hold', 'compliant_tracking',
+                            'compliant_drag', 'servo_tracking'):
+            raise ValueError('未知执行增益用途: ' + purpose)
+        for term in ('kp', 'kd'):
+            values = gains.get(term)
+            if (not isinstance(values, list) or len(values) != len(joints) or
+                    any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                        not math.isfinite(v) or v < 0 for v in values)):
+                raise ValueError('执行增益必须为有限非负关节数组')
+            targets[('control', 'controller', purpose, term)] = _map(joints, values)
+    if 'hold_compensation' in runtime:
+        hold = runtime['hold_compensation']
+        if not isinstance(hold, dict) or not isinstance(hold.get('enabled'), bool):
+            raise ValueError('定位保持补偿配置无效')
+        targets[('control', 'hold_compensation', 'enabled')] = 'true' if hold['enabled'] else 'false'
+        for term in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
+            values = hold.get(term)
+            if (not isinstance(values, list) or len(values) != len(joints) or
+                    any(isinstance(v, bool) or not isinstance(v, (int, float)) or
+                        not math.isfinite(v) or v < 0 for v in values)):
+                raise ValueError('定位保持补偿必须为有限非负关节数组')
+            targets[('control', 'hold_compensation', term)] = _map(joints, values)
+        for term in ('velocity_threshold', 'error_threshold'):
+            value = hold.get(term)
+            if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                    not math.isfinite(value) or value <= 0):
+                raise ValueError('定位保持补偿阈值必须为有限正数')
+            targets[('control', 'hold_compensation', term)] = repr(float(value))
+    return targets
+
+
+def _runtime_text(text, joints, runtime, gravity_scale):
+    targets = _targets(joints, runtime, gravity_scale)
+    original = yaml.safe_load(text)
+    canonical = canonical_core(original)
+    defaults = (canonical.get('capability') or {}).get('admittance')
+    if defaults is not None and 'admittance' not in (original.get('capability') or {}):
+        if 'capability' not in original:
+            text = add_mapping_value(text, (), 'capability', {'admittance': defaults})
+        else:
+            text = add_mapping_value(text, ('capability',), 'admittance', defaults)
+    servo_values = (runtime.get('execution_gains') or {}).get('servo_tracking')
+    servo = ({term: dict(zip(joints, servo_values[term])) for term in ('kp', 'kd')}
+             if servo_values is not None else None)
+    # Canonicalize the alias only when this session actually supplies its gains
+    if servo is not None:
+        text = canonical_control_text(text, servo)
+    if 'reference_behavior' in runtime:
+        text = add_mapping_value(text, ('capability', 'admittance'), 'reference_behavior',
+                                 runtime['reference_behavior'])
+    if 'hold_compensation' in runtime:
+        hold = runtime['hold_compensation']
+        value = {key: dict(zip(joints, item)) if isinstance(item, list) else item
+                 for key, item in hold.items()}
+        text = complete_mapping_values(text, ('control',), {'hold_compensation': value})
+    return patch_text(text, targets)
 
 
 def patch_text(text, targets):
@@ -66,6 +137,11 @@ def patch_text(text, targets):
     if not isinstance(original, dict) or not isinstance(root, MappingNode):
         raise ValueError('Core YAML 根节点必须是映射')
     expected = copy.deepcopy(original)
+
+    def replace(data, path, value):
+        result = dict(data)
+        result[path[0]] = replace(data[path[0]], path[1:], value) if len(path) > 1 else value
+        return result
     edits = []
     for path, value in targets.items():
         if not isinstance(path, tuple) or not path:
@@ -90,25 +166,21 @@ def patch_text(text, targets):
                 children = [v for k, v in node.value if isinstance(k, ScalarNode) and k.value == name]
                 if len(children) != 1 or not isinstance(children[0], ScalarNode):
                     raise ValueError('Core 关节字段无效: ' + '.'.join(path + (str(name),)))
-                if not isinstance(new_value, (int, float)) or isinstance(new_value, bool) or not math.isfinite(float(new_value)):
+                valid = (isinstance(new_value, bool) if isinstance(data[name], bool) else
+                         isinstance(new_value, (int, float)) and not isinstance(new_value, bool) and math.isfinite(float(new_value)))
+                if not valid:
                     raise ValueError('Core 关节候选参数非有限数值: ' + '.'.join(path + (str(name),)))
                 leaf = children[0]
                 # Replace the numeric token, never the preceding indentation,
                 # newline, trailing comment, or following mapping entry
-                raw = repr(float(new_value))
+                raw = ('true' if new_value else 'false') if isinstance(new_value, bool) else repr(float(new_value))
                 edits.append((leaf.start_mark.index, leaf.end_mark.index, raw))
-            parent = expected
-            for key in path[:-1]:
-                parent = parent[key]
-            parent[path[-1]] = replacement
+            expected = replace(expected, path, replacement)
         elif isinstance(node, ScalarNode) and not isinstance(replacement, (dict, list)):
             if isinstance(replacement, float) and not math.isfinite(replacement):
                 raise ValueError('Core 候选参数非有限数值: ' + '.'.join(path))
             edits.append((node.start_mark.index, node.end_mark.index, str(value)))
-            parent = expected
-            for key in path[:-1]:
-                parent = parent[key]
-            parent[path[-1]] = replacement
+            expected = replace(expected, path, replacement)
         else:
             raise ValueError('Core 参数类型不匹配: ' + '.'.join(path))
     edits.sort()
@@ -129,7 +201,7 @@ def patch_text(text, targets):
 def preview(path, joints, runtime, gravity_scale):
     path = Path(path).resolve()
     before = path.read_text()
-    after = patch_text(before, _targets(joints, runtime, gravity_scale))
+    after = _runtime_text(before, joints, runtime, gravity_scale)
     changed = []
     for line in difflib.ndiff(before.splitlines(), after.splitlines()):
         if line.startswith(('- ', '+ ')):
@@ -144,7 +216,7 @@ def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
     if current != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
     before = path.read_text()
-    after = patch_text(before, _targets(joints, runtime, gravity_scale))
+    after = _runtime_text(before, joints, runtime, gravity_scale)
     yaml.safe_load(after)
     if before == after:
         return {'path': str(path), 'sha256': current, 'backup': '', 'changed': False}

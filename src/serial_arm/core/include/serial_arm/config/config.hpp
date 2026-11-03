@@ -35,6 +35,21 @@ struct RuntimeCfg {
     JointImpedanceMode tracking_impedance_mode{    ///< 跟踪阻抗模式
         JointImpedanceMode::RIGID_TRACKING
     };
+    std::optional<JointGainProfile> tracking_gain_profile; ///< ROS 默认增益用途；未设置时兼容 tracking_impedance_mode
+    JointGainProfile native_tracking_gain_profile() const noexcept {
+        return tracking_gain_profile.value_or(tracking_impedance_mode==JointImpedanceMode::COMPLIANT_TRACKING ?
+            JointGainProfile::COMPLIANT : JointGainProfile::RIGID);
+    }
+};
+
+struct HoldCompensationCfg {
+    bool enabled{false};
+    JointVector integral_gain;
+    JointVector max_torque;
+    JointVector max_rate;
+    JointVector contact_threshold;
+    double velocity_threshold{0.02};
+    double error_threshold{0.03};
 };
 
 /**
@@ -42,7 +57,7 @@ struct RuntimeCfg {
  */
 struct AdmittanceObserverCfg {
     AdmittanceObserverMode mode{ AdmittanceObserverMode::FULL_ID }; ///< FULL_ID 或 MOMENTUM 外力估计模式
-    JointVector momentum_gain;                  ///< momentum observer 一阶增益 rad/s
+    JointVector momentum_gain;                  ///< momentum observer 一阶增益 s^-1
 };
 
 /**
@@ -71,8 +86,18 @@ struct AdmittanceControllerCfg {
 /**
  * @brief 关节空间导纳能力的公开配置
  */
+enum class ReferenceBehavior {
+    NATIVE_IMPEDANCE,
+    MODEL_ADMITTANCE,
+};
+
+inline JointGainProfile resolve_tracking_gain_profile(const RuntimeCfg& runtime,ReferenceBehavior behavior) noexcept {
+    return behavior==ReferenceBehavior::MODEL_ADMITTANCE ? JointGainProfile::SERVO_TRACKING : runtime.native_tracking_gain_profile();
+}
+
 struct AdmittanceCapabilityCfg {
     bool enabled{ false };                       ///< 导纳能力总开关
+    ReferenceBehavior reference_behavior{ ReferenceBehavior::MODEL_ADMITTANCE };
     std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
     AdmittanceObserverCfg observer;              ///< 外力估计
     AdmittanceCalibrationCfg calibration;        ///< 本机标定结果
@@ -124,6 +149,7 @@ struct SafetyLimitSource {
 
 /** @brief SerialArm 机器人完整静态配置 */
 struct RobotCfg {
+    HoldCompensationCfg hold_compensation;
     std::vector<std::string> joint_names;  ///< 固定的 Joint 顺序
     RuntimeCfg runtime;                    ///< Robot 运行参数
     CapabilityCfg capability;              ///< 可选高级能力

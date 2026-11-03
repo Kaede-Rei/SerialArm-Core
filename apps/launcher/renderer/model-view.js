@@ -470,7 +470,10 @@ export class SerialArmModelView {
     this.container.appendChild(this.cameraTools);
     const hint = document.createElement('div');
     hint.className = 'model-camera-hint';
-    hint.textContent = en ? 'Left: orbit · Right / Shift: pan · Wheel: zoom' : '左键旋转 · 右键 / Shift 平移 · 滚轮缩放';
+    const workspace = !!this.container.closest('.workbench-layout');
+    hint.textContent = en
+      ? `Left: orbit · Right / Shift: pan · ${workspace ? 'Ctrl / ⌘ + wheel: zoom' : 'Wheel: zoom'}`
+      : `左键旋转 · 右键 / Shift 平移 · ${workspace ? 'Ctrl / ⌘ + 滚轮缩放' : '滚轮缩放'}`;
     this.cameraHint = hint;
     this.container.appendChild(hint);
   }

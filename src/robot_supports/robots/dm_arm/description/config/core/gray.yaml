@@ -37,7 +37,7 @@ control:
     joint_acc_filter_alpha: 0.2                         # 实测关节加速度低通系数；FULL_ID 对 qdd 敏感，MOMENTUM 不显式使用 qdd
     write_enabled: true                                 # 是否允许向真实执行器写入控制命令
     model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
-    tracking_impedance_mode: COMPLIANT_TRACKING         # 跟踪模式默认阻抗：RIGID_TRACKING / COMPLIANT_TRACKING
+    tracking_gain_profile: COMPLIANT                   # ROS 原生跟踪默认增益：RIGID / COMPLIANT / SERVO_TRACKING；模型导纳固定使用伺服增益
   controller:
     allow_full_cmd: false                               # 是否允许外部发送完整 MIT 风格 JointCtrlCmd
     # 刚性保持：较高 kp/kd，使关节稳定保持切换模式时的位置
@@ -61,8 +61,8 @@ control:
       kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节跟踪位置刚度
       kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
 
-    # 辨识回放专用增益，不影响普通刚性和柔性跟踪
-    identification_tracking:
+    # 辨识与模型导纳共用的伺服跟踪增益，独立于刚性、柔性和拖拽用途
+    servo_tracking:
       kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}
       kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}
 
@@ -114,8 +114,9 @@ shutdown:
 # 06 capability
 capability:
   admittance:
-    # 导纳能力总开关，false 时整条导纳链旁路
+    # 启用外力观测与模型交互计算；实际控制方式由 reference_behavior 选择
     enabled: true
+    reference_behavior: MODEL_ADMITTANCE
     # 指定每个关节是否参与导纳位置退让
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
     # 观测器配置

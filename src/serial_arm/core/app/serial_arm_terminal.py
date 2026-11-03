@@ -229,7 +229,7 @@ class Terminal:
         print("\n------------ 主菜单 ------------")
         print(" 1. 状态查看")
         print(" 2. 使能 / 失能 / 故障")
-        print(" 3. 模式与补偿")
+        print(" 3. 控制方式与执行增益")
         print(" 4. 运动与命令")
         print(" 5. 动力学与配置")
         print(" 6. 工具与监视")
@@ -310,12 +310,15 @@ class Terminal:
         )
 
     def mode_menu(self) -> None:
+        self.control_context()
         self.run_submenu(
-            "模式与补偿",
+            "控制方式与执行增益",
             [
-                (1, "切换阻抗模式", self.set_impedance),
-                (2, "切换模型前馈模式（仅 INACTIVE）", self.set_model_mode),
-                (3, "设置重力补偿比例", self.set_gravity_scale),
+                (1, "选择控制方式（失能后切换）", self.set_reference_behavior),
+                (2, "选择增益用途 / 进入拖拽", self.set_impedance),
+                (3, "当前位置保持", self.hold),
+                (4, "选择模型前馈（失能后切换）", self.set_model_mode),
+                (5, "设置重力补偿比例", self.set_gravity_scale),
             ],
         )
 
@@ -325,7 +328,7 @@ class Terminal:
             [
                 (1, "梯形参考移动到绝对位置", self.move_absolute),
                 (2, "梯形参考执行相对移动", self.move_relative),
-                (3, "取消目标并切换当前位置刚性保持", self.hold),
+                (3, "停止移动并保持当前位置", self.hold),
             ],
         )
 
@@ -483,22 +486,52 @@ class Terminal:
         print(f"FaultHoldMode           : {enum_name(self.session.fault_hold_mode)}")
 
     def set_impedance(self) -> None:
-        print(
-            "\n1 RIGID_HOLD\n2 RIGID_TRACKING\n3 COMPLIANT_HOLD\n4 COMPLIANT_DRAG\n5 COMPLIANT_TRACKING"
-        )
-        modes = {
-            1: self.serial_arm_module.JointImpedanceMode.RIGID_HOLD,
-            2: self.serial_arm_module.JointImpedanceMode.RIGID_TRACKING,
-            3: self.serial_arm_module.JointImpedanceMode.COMPLIANT_HOLD,
-            4: self.serial_arm_module.JointImpedanceMode.COMPLIANT_DRAG,
-            5: self.serial_arm_module.JointImpedanceMode.COMPLIANT_TRACKING,
-        }
-        mode = modes.get(read_int("模式: "))
-        if mode is None:
-            print("模式输入无效")
+        arm=self.serial_arm_module
+        print("\n1 刚性\n2 柔性\n3 拖拽\n4 伺服跟踪（辨识与导纳共用）")
+        choice=read_int("增益用途: ")
+        purposes={1:arm.JointGainProfile.RIGID,2:arm.JointGainProfile.COMPLIANT,
+                  3:arm.JointGainProfile.DRAG,4:arm.JointGainProfile.SERVO_TRACKING}
+        purpose=purposes.get(choice)
+        if purpose is None:
+            print("增益用途输入无效")
             return
+        cfg=self.session.config
+        model=cfg.capability.admittance.enabled and cfg.capability.admittance.reference_behavior==arm.ReferenceBehavior.MODEL_ADMITTANCE
+        if model and purpose!=arm.JointGainProfile.SERVO_TRACKING:
+            print("模型导纳使用伺服跟踪增益；选择其他用途前请先停放失能并切换原生阻抗")
+            return
+        if purpose==arm.JointGainProfile.DRAG:
+            kd=vector(cfg.ctrller.compliant_drag_gains.kd)
+            if not kd.size or not np.all(np.isfinite(kd)) or np.any(kd<=0):
+                print("拖拽需要各关节配置正值阻尼")
+                return
+            if cfg.runtime.model_feedforward_mode!=arm.ModelFeedforwardMode.GRAVITY or not np.any(vector(cfg.dynamics.gravity_scale)>0):
+                print("拖拽需要重力补偿；请先停放失能，选择 GRAVITY 并设置有效重力比例")
+                return
+        mode=arm.JointImpedanceMode.COMPLIANT_DRAG if purpose==arm.JointGainProfile.DRAG else (
+            arm.JointImpedanceMode.COMPLIANT_HOLD if purpose==arm.JointGainProfile.COMPLIANT else arm.JointImpedanceMode.RIGID_HOLD)
         self.session.set_impedance_mode(mode)
-        print(f"已请求切换为 {enum_name(mode)}")
+        self.session.set_execution_gain_profile(purpose)
+        print(f"已选择增益用途 {enum_name(purpose)}")
+
+    def control_context(self) -> None:
+        cfg=self.session.config
+        behavior=cfg.capability.admittance.reference_behavior if cfg.capability.admittance.enabled else self.serial_arm_module.ReferenceBehavior.NATIVE_IMPEDANCE
+        snapshot=self.session.snapshot
+        purpose=enum_name(snapshot.cycle.gain_profile) if snapshot.valid else "—"
+        print(f"控制方式: {enum_name(behavior)} | 增益用途: {purpose}")
+
+    def set_reference_behavior(self) -> None:
+        print("\n1 原生阻抗\n2 模型导纳")
+        choices={1:self.serial_arm_module.ReferenceBehavior.NATIVE_IMPEDANCE,
+                 2:self.serial_arm_module.ReferenceBehavior.MODEL_ADMITTANCE}
+        behavior=choices.get(read_int("控制方式: "))
+        if behavior is None:
+            print("控制方式输入无效")
+            return
+        self.session.set_reference_behavior(behavior)
+        self.cfg=self.session.config
+        self.control_context()
 
     def set_model_mode(self) -> None:
         print("\n1 NONE\n2 GRAVITY\n3 FULL_INVERSE_DYNAMICS")
@@ -549,11 +582,12 @@ class Terminal:
 
     def hold(self) -> None:
         self.session.hold_current()
-        print("已取消目标并请求 RIGID_HOLD")
+        print("已停止移动并请求保持当前位置")
 
     def summary(self) -> None:
         snapshot = self.session.snapshot
         print(f"RobotState             : {enum_name(self.session.state)}")
+        self.control_context()
         print(f"FaultHoldMode          : {enum_name(self.session.fault_hold_mode)}")
         print(f"configured             : {self.session.configured}")
         print(f"running                : {self.session.running}")
@@ -697,14 +731,14 @@ class Terminal:
         print("gravity_scale 已提交；不会回写 YAML")
 
     def show_config(self) -> None:
-        cfg = self.cfg
+        cfg = self.session.config
         print(f"ctrl_frequency_hz       : {cfg.runtime.ctrl_frequency_hz}")
         print(f"write_enabled           : {cfg.runtime.write_enabled}")
         print(
             f"model_feedforward_mode  : {enum_name(cfg.runtime.model_feedforward_mode)}"
         )
         print(
-            f"tracking_mode           : {enum_name(cfg.runtime.tracking_impedance_mode)}"
+            f"tracking_gain_profile   : {enum_name(cfg.runtime.tracking_gain_profile) if cfg.runtime.tracking_gain_profile is not None else enum_name(cfg.runtime.tracking_impedance_mode)}"
         )
         print(f"park_before_disable     : {cfg.shutdown.park_before_disable}")
         print_vector("park_pos", cfg.shutdown.park_pos)

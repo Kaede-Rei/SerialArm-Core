@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('serialArm', {
   prefs: () => ipcRenderer.invoke('launcher:prefs'),
   savePrefs: values => ipcRenderer.invoke('launcher:save-prefs', values),
   selectProfile: () => ipcRenderer.invoke('launcher:select-profile'),
+  selectGainCandidate: () => ipcRenderer.invoke('launcher:select-gain-candidate'),
+  revealFile: file => ipcRenderer.invoke('launcher:reveal-file', file),
   selectTrajectory: () => ipcRenderer.invoke('launcher:select-trajectory'),
   selectDescription: () => ipcRenderer.invoke('launcher:select-description'),
   selectProfilePackage: () => ipcRenderer.invoke('launcher:select-profile-package'),

@@ -1,435 +1,172 @@
 # 系统架构
 
-![Core 与上层适配、机器人配置及硬件驱动的关系](images/architecture.svg)
+![Core、上层适配、机器人配置与硬件驱动](images/architecture.svg)
 
-## 设计原则
+SerialArm-Core 以同一 C++ Core 提供控制、动力学、交互和安全检查；GUI、Terminal、Python 与 ROS2 负责各自的输入和展示
 
-SerialArm-Core 将机械臂从 Description 接入到正常控制视为一条连续生命周期，而不是一组互相独立的工具页面
+## 模块职责
 
-Launcher 负责引导、资源管理、检查与工作流组织，Core 负责真正的控制、动力学、安全与结构化任务
-
-GUI 与非 GUI 入口复用同一套 Profile、Core 和机器接口，GUI 不是能力唯一入口
-
-## 1 总体分层
-
-| 层级 | 职责 | 主要位置 |
+| 模块 | 职责 | 位置 |
 | --- | --- | --- |
-| Core | 生命周期、关节控制、安全、动力学、交互、标定任务 | `src/serial_arm/core/` |
-| Adapter | 将 ROS2 输入与状态映射到 Core | `src/serial_arm/bringup/ros2_control/` |
-| Profile | 组合 Core、Hardware、Description、Controllers 与 MoveIt | `src/robot_supports/profiles/` 与外部 Profile 包 |
-| Robot Support | 机器人模型、硬件资源、控制配置与规划资源 | `src/robot_supports/robots/` 或外部工作区 |
-| Hardware Backend | 将统一执行器语义转换为厂商命令 | `src/robot_supports/hardware/` |
-| Protocol / Transport | 协议编解码、总线共享与事务仲裁 | `src/robot_supports/protocol/` 与 Core transport |
-| Launcher | 生命周期引导、Profile Library、模型检查、控制工作台与进程管理 | `apps/launcher/` |
+| Core | 生命周期、关节控制、动力学、交互、安全与标定 | `src/serial_arm/core/` |
+| ControlRuntime | 周期执行、命令收取、运动来源与快照 | `src/serial_arm/core/include/serial_arm/runtime/` |
+| ROS2 Adapter | 将 ros2_control 的命令、状态和生命周期接入 Core | `src/serial_arm/bringup/ros2_control/` |
+| Profile | 组合模型、Core、硬件、Controllers 与 MoveIt 资源 | `src/robot_supports/profiles/` 或下游包 |
+| Hardware Backend | 将统一执行器语义转换为厂商协议 | `src/robot_supports/hardware/` |
+| Protocol / Transport | 编解码、通信时间戳、共享总线与事务 | `src/robot_supports/protocol/` 与 Core transport |
+| Launcher | 模型导入、配置、任务组织、可视化与进程管理 | `apps/launcher/` |
 
-## 2 Description 与 Profile 的边界
+## Description 与 Profile
 
-### SerialArm Description
+Description 保存模型事实：URDF/Xacro、连杆与关节、网格、惯性、限位、固定坐标系及 ros2_control 模型资源
 
-Description 只描述机器人模型事实
+Profile 保存这台机械臂的使用配置：受控关节顺序、Base/Tool Frame、驱动、执行器映射、总线、方向、比例、零位、增益、安全限制、停放目标、标定参数和上层资源引用
 
-典型内容包括
+Profile 引用可解析的 Description；下游机械臂可以在自己的项目中维护两者
 
-- URDF 或 Xacro
-- Link 与 Joint 拓扑
-- Visual 与 Collision
-- Mesh
-- Inertial
-- Joint limit
-- 固定 Frame
-- ros2_control Xacro 等与模型直接相关的资源
+Profile Library 只管理这些引用，移除列表项保留磁盘文件；同名 Profile 通过独立列表标识区分
 
-Description 不负责保存某台机器人在 SerialArm-Core 中的实际使用状态
+## 配置与连接
 
-### SerialArm Profile
+导入 Description 后，用户选择 Base 与 Tool，工作台推导连续串联链；固定关节留在模型中，非固定且非 mimic 的链上关节进入 Core 的 `joint_names`
 
-Profile 描述 SerialArm-Core 如何使用这台机器人
+旁支夹爪和其他机构保留在模型中，需要单独的驱动与状态接口
 
-典型内容包括
+新 Profile 默认关闭执行器写入、摩擦补偿和导纳，方向、比例、零位与增益为接入初值；实际映射、停放路径和参数由对应机械臂检查后使用
 
-- 受控串联关节与顺序
-- Base Frame 与 Tool Frame
-- Hardware Backend 与执行器映射
-- 总线与连接配置
-- direction、ratio、zero offset
-- 控制与安全参数
-- park pose
-- 重力、残差、摩擦与导纳配置
-- Controllers 与 MoveIt 资源引用
+机械臂准备页面分别组织
 
-Description 可以独立存在
-
-Profile 必须引用一个可解析的 Description
-
-## 3 Launcher 启动入口
-
-Launcher 第一次打开时不直接展示 Model、Control、Terminal、ROS2 或 MoveIt
-
-主界面只询问用户当前从哪里开始，并保留 UI Settings
-
-```text
-SerialArm Workspace
-
-准备从哪里开始
-
-├─ 新的机械臂
-│  └─ 从 Description 包、URDF 或 Xacro 创建 Profile
-│
-├─ 继续配置机械臂
-│  └─ 打开配置中、待验证或需要重新验证的 Profile
-│
-└─ 使用机械臂
-   └─ 打开已经完成验证的 Profile
-```
-
-UI Settings 独立于机械臂工作流，只负责语言、主题和界面偏好
-
-## 4 Profile Library
-
-Profile Library 是 Launcher 对多个机械臂 Profile 的统一入口
-
-Profile Library 管理的是引用，不复制 Profile 内容，也不把所有机器人配置重新合并到一个巨型 YAML 中
-
-用户级集成 YAML 保存
-
-```yaml
-profiles:
-  tomato_picker:
-    profile_file: /path/to/tomato_picker/robot_profiles.yaml
-    profile: tomato_picker
-    resource_paths: /path/to/tomato_picker
-```
-
-实际机器人配置仍保存在各自 Profile 包中
-
-Profile Library 支持
-
-- 从 Description 创建 Profile 后直接注册
-- 导入外部 Profile 包目录
-- 导入外部 `robot_profiles.yaml`
-- 相同 Profile 名称以独立 Library 标识并存
-- 更新 Library 引用
-- 从 Library 移除
-- 重新导入
-
-从 Library 移除只删除注册引用，不删除磁盘上的 Profile 包
-
-磁盘文件删除不属于普通 Profile Library 操作
-
-内置 Profile 与外部 Profile 在 Launcher 中采用同一选择体验
-
-## 5 新机械臂接入向导
-
-新的 Description 入口采用下列顺序
-
-```text
-Description 导入
-    ↓
-模型解析
-    ↓
-选择 Base Frame 与 Tool Frame
-    ↓
-推导串联控制链
-    ↓
-选择受控关节
-    ↓
-配置 Hardware Mapping
-    ↓
-生成 初始 Profile 包
-    ↓
-选择是否加入 Profile Library
-    ↓
-进入 Readiness Dashboard
-```
-
-### 5.1 Description 导入
-
-支持 Description ZIP、Description 目录、URDF 与 Xacro 入口
-
-导入阶段只读取模型，不连接执行器
-
-Launcher 检查
-
-- URDF 是否可解析
-- Link / Joint 树是否连通
-- Mesh 是否可解析
-- Inertial 格式是否合法
-- Joint limit 是否存在
-- 根 Link 与叶 Link
-- 固定 Frame 与末端候选
-
-Three.js 直接显示导入模型，用户不需要先创建 Profile 才能检查模型结构
-
-### 5.2 控制链选择
-
-用户选择 Base Frame 与 Tool Frame
-
-Launcher 根据 URDF Tree 推导两者之间唯一的后代链
-
-固定 Joint 保留在模型链中但不进入 Core `joint_names`
-
-非主串联链上的夹爪、末端机构和其他 Joint 不会被自动加入主机械臂控制链
-
-### 5.3 Hardware Mapping
-
-向导将受控 Joint 映射到执行器
-
-对于当前已支持的 Hardware Backend，GUI 提供对应结构化配置
-
-DAMIÃO 映射包含
-
-- Bus
-- Device
-- Baudrate
-- Joint → Actuator
-- Motor ID
-- Master ID
-- Motor Type
-
-硬件信息不完整时仍可生成 初始 Profile，但 Profile 保持配置中状态，不能被视为可正常控制
-
-### 5.4 初始 Profile
-
-Launcher 生成的新 Profile 默认采用保守、安全的初始化值
-
-- `write_enabled` 默认关闭
-- 关节 direction 与 ratio 使用中性初值
-- zero offset 使用零初值
-- 重力模型未验证
-- 摩擦补偿不自动启用
-- 导纳默认关闭
-- 控制增益采用保守初值
-- park pose 需要后续验证
-
-这些值只是 bring-up 初值，不表示已经完成真机标定
-
-## 6 Readiness Dashboard
-
-Profile 创建或导入后首先进入 Readiness Dashboard，而不是直接进入 Control
-
-生命周期固定为
-
-```text
-Description
-    ↓
-Profile Setup
-    ↓
-Model Check
-    ↓
-Hardware Bring-up
-    ↓
-Mapping Calibration
-    ↓
-Geometry Calibration
-    ↓
-Dynamics Calibration
-    ↓
-Validation
-    ↓
-Ready
-```
-
-### 6.1 状态
-
-Profile 使用四种顶层状态
-
-- 配置中
-- 待验证
-- 需要重新验证
-- 可使用
-
-Ready 不作为一个永久布尔值写进集成 Profile YAML
-
-Launcher 根据当前 Profile 内容、资源检查与验证证据动态计算状态
-
-需要人工确认的阶段保存当前 Profile 指纹
-
-Profile、Core、Hardware 或模型文件发生变化后，旧确认会自动变为需要重新验证
-
-### 6.2 阶段职责
-
-| 阶段 | 目标 |
+| 信息 | 来源与用途 |
 | --- | --- |
-| Description | 模型资源能够正确解析 |
-| Profile Setup | 控制链、Frame、Hardware Mapping 与基础配置完整 |
-| Model Check | 用户确认 URDF Tree、Joint Axis、limit、Visual、Collision、Frame 与 inertial |
-| Hardware Bring-up | 确认通信、在线状态、反馈与设备映射 |
-| Mapping Calibration | 校准 direction、ratio、zero offset 与执行器对应关系 |
-| Geometry Calibration | 检查 Joint origin、Joint axis、TCP 与其他几何 Frame，需要外部修改时生成候选 Description 后重新验证 |
-| Dynamics Calibration | 校准重力、COM、residual、friction 与需要的交互参数 |
-| Validation | 使用独立数据或受控真机流程验证候选模型与 Profile |
-| Ready | 所有必需阶段满足后进入正常控制 |
+| 连接前配置 | 资源解析及配置检查，指出可修正的文件和字段 |
+| 运行检查 | 连接后的反馈、执行器状态与故障 |
+| 基础标定 | 重力补偿验证与执行器增益自动标定，按此顺序建立基础参数 |
+| 专项标定 | 重力模型校正、高级动力学辨识与几何标定 |
+| 检查记录 | 人工观察与验证结果，随来源指纹保存 |
 
-## 7 Profile Setup 工作区
+人工自查不授予控制权限，也不阻止合法配置运行；连接、使能与每次命令由资源、硬件反馈、生命周期和 Core 安全检查共同约束
 
-Profile Setup 用于查看和修改 SerialArm-Core 自身的机器人使用配置
+文件或参数变化后，原记录的来源与当前配置分别显示，需在对应范围重新核对
 
-当前 GUI 直接提供
+## 控制方式、用途与任务
 
-- 执行器写入开关
-- Bus
-- Device
-- Baudrate
-- direction
-- pos_ratio
-- tor_ratio
-- joint_zero_offset
-- actuator_zero_offset
-- Motor ID
-- Motor Type
+三者分别决定参考如何生成、执行器用哪组增益、机器人正在做什么
 
-执行器写入在新建 Profile 中默认关闭
+| 维度 | 值 | 作用 |
+| --- | --- | --- |
+| 控制方式 `ReferenceBehavior` | 原生阻抗、模型导纳 | 选择直接执行名义参考或根据外力生成虚拟参考 |
+| 增益用途 `JointGainProfile` | 刚性、柔性、拖拽、伺服跟踪 | 选择关节侧 Kp/Kd |
+| 任务 `JointImpedanceMode` | 保持、跟踪、拖拽对应的兼容枚举 | 管理目标、连续命令与拖拽行为 |
 
-用户应先完成通信、映射、方向、零位和限位检查，再明确开启执行器写入
+刚性和柔性分别保留保持、跟踪参数，拖拽使用低刚度阻尼参数，伺服跟踪为辨识和导纳共用的执行增益
 
-## 8 Model Check 与候选模型
+`control.runtime.tracking_gain_profile` 设置默认跟踪用途，支持 `RIGID`、`COMPLIANT`、`SERVO_TRACKING`；省略时从旧 `tracking_impedance_mode` 推导
 
-Model Workspace 继续作为完整的只读模型检查工具
+模型导纳的保持与跟踪统一使用伺服增益，交互特性由 M/D/K 决定；GUI 和 C++ Terminal 的普通示教临时使用原生阻抗与重力补偿，结束后恢复原上下文
 
-它负责
+Python 交互终端要求用户先停放失能、显式选择原生阻抗与重力补偿，再使能拖拽，结束后按需要显式切回原控制方式
 
-- Visual / Collision
-- Link Frame
-- Joint Axis
-- COM
-- Inertia
-- Joint Preview
-- URDF 字段检查
-- Core 约简动力学信息
+旧任务枚举和 `identification_tracking` 配置仍兼容，标准配置与新候选使用 `servo_tracking`
 
-候选模型采用统一 Candidate 语义
+## 一次控制周期
 
 ```text
-Current
-    ↓ 修改与校准
-Candidate
-    ↓ 独立验证
-Adopt / Reject
+上层目标
+  → 名义参考及速度/加速度约束
+  → 原生阻抗直接执行，或模型导纳生成虚拟参考
+  → 动力学前馈、执行器增益和模式交接
+  → 位置、速度、加速度与 PD+前馈总力矩约束
+  → Safety 检查
+  → Joint/Actuator 映射
+  → Backend 写入
 ```
 
-候选模型预览不发送执行器命令
+Terminal、Python Session 和 ROS2 Adapter 共享 `ControlRuntime` 的执行与快照契约；调用方负责提交命令，不能并发驱动同一个 Robot
 
-重力模型校正只覆盖已经声明和验证的重力范围，不静默替换完整动力学
+ROS2 从 Core 配置读取默认任务与增益用途；停止、故障恢复和停放按各自生命周期执行
 
-全局离线重力辨识先根据静态训练姿态分析可辨识的质量与一阶质量矩组合，消除每关节恒定力矩偏置后使用 SVD 确定有效子空间，再进行带质量和质心联合约束的求解；未观测方向保留源模型先验
+### 原生阻抗
 
-自动回放的静态停止点按多关节重力回归信息矩阵的增益选取，只沿已示教并通过安全检查的路径运动；动态轨迹辅助拟合不应替代独立的未示教姿态验证
-
-## 9 Hardware Bring-up 与正常控制边界
-
-新机械臂第一次连接真机时应先完成 Bring-up，而不是直接执行正常控制任务
-
-Bring-up 关注
-
-- 通信是否建立
-- 执行器是否在线
-- Joint 与 Motor ID 是否对应
-- 反馈方向是否正确
-- 反馈单位是否合理
-- 零位是否一致
-- 软限位与 URDF limit 是否匹配
-- 低速运动是否符合模型方向
-
-只有 Ready Profile 才默认进入正常 Control Workspace
-
-未完成 Profile 仍可以由专业用户打开专业工具，但 Launcher 必须持续显示其准备状态
-
-## 10 专业工具层
-
-生命周期是默认导航
-
-已有专业工具继续保留
-
-- Model
-- Control Workspace
-- Tuning
-- Calibration
-- Diagnostics
-- Terminal
-- ROS2
-- MoveIt
-
-专业工具不再承担告诉新用户下一步做什么的职责
-
-Readiness Dashboard 负责决定下一步，专业工具负责完成具体技术工作
-
-## 11 GUI 与非 GUI 能力一致性
-
-GUI 只是结构化前端，不建立第二套机器人控制逻辑
-
-在线控制与标定继续复用 `serial_arm_terminal --machine` 和同一个 `TerminalApp`
-
-交互式 Terminal 保留完整的控制、标定和模型校正入口
-
-离线重算、候选保存、候选 URDF 导出与配置恢复由命令行工具复用同一持久化与校验实现
-
-Profile 生命周期配置同样提供 `tools/profile_workspace_cli.py`，覆盖 Description 检查、初始 Profile 创建、Profile Library 导入与移除、Readiness 查询和阶段证据记录
-
-因此
+执行器按关节位置、速度误差及前馈执行 MIT 命令
 
 ```text
-GUI
-   ┐
-Terminal ├─> Core / TerminalApp / Dynamics / Calibration
-CLI      ┘
+tau = Kp * (q_ref - q) + Kd * (dq_ref - dq) + tau_ff
 ```
 
-GUI 可以提供额外的 Three.js 可视化，但不得成为某项核心控制或标定能力的唯一入口
+前馈可选择关闭、重力或完整逆动力学；保持、跟踪和拖拽使用对应用途的增益
 
-## 12 资源与安全边界
+### 模型导纳
 
-Renderer 无 Node 权限
-
-Electron 主进程只暴露明确允许的文件选择和 IPC 方法
-
-Python 后端负责 Profile Library、只读检查、路径解析、候选文件与持久化操作
-
-控制循环、硬件生命周期和安全状态仍由 C++ Core 负责
-
-Launcher 不通过 Terminal 菜单数字自动化控制机器人
-
-Profile Library 删除操作不删除外部文件
-
-Description 导入不打开 Hardware
-
-候选模型预览不连接执行器
-
-需要运动的阶段必须经过明确的硬件确认和 Core 安全检查
-
-## 13 Tomato Picker 验收路径
-
-`tomato-picker-desc.zip` 用于验证新的 Description 入口
+观测器估计外力矩，虚拟模型生成相对名义目标的退让
 
 ```text
-tomato-picker-desc.zip
-    ↓
-导入 Description
-    ↓
-base_link → tool0
-    ↓
-自动得到 joint1 → joint6 主控制链
-    ↓
-配置 DAMIÃO Hardware Mapping
-    ↓
-生成 tomato_picker Profile 包
-    ↓
-加入 Profile Library
-    ↓
-Model Check
-    ↓
-Hardware Bring-up
-    ↓
-Mapping / Geometry / Dynamics Calibration
-    ↓
-Candidate Validation
-    ↓
-Ready
-    ↓
-正常控制
+M_v * delta_q_ddot + D_v * delta_q_dot + K_v * delta_q = tau_ext_hat
+q_virtual = q_nominal + delta_q
 ```
 
-已经存在的 `tomato_picker` Profile 包用于验证第二入口
+内层伺服跟随虚拟参考，前馈使用实测状态下的质量矩阵、科氏项和重力，结合虚拟参考加速度及外力估计计算；最终参考仍受总力矩预算约束
 
-完整验证后的 `tomato_picker` Profile 用于验证第三入口
+虚拟模型用后向 Euler 离散积分，限制后的接受状态回写积分器；运行中同策略调参按控制周期过渡
 
-这三个真实案例分别覆盖从 Description 开始、继续完善 Profile、直接使用 Ready Profile 的完整产品路径
+M 必须为正，D、K 可为零；K 为零时没有弹簧回位；控制方式在失能时切换
+
+### 反馈与外力观测
+
+Backend 将接收时间与连续性随帧传入 Core，反馈年龄取接收时间，观测器只在有效的新测量上推进
+
+`MOMENTUM` 使用动量观测；`FULL_ID` 使用完整逆动力学残差，额外要求有效实测加速度；无效值与过期反馈分别标记
+
+观测器零偏、摩擦残差和死区用于外力估计；残差零偏不加入执行器动力学前馈
+
+## 保持、受扰与回位
+
+普通保持交接默认保留名义目标 `PRESERVE_NOMINAL`，显式“当前位置保持”使用 `CAPTURE_MEASURED`；导纳偏移与原名义目标分别保存
+
+`control.hold_compensation` 是原生刚性保持的有界积分补偿，低速、小误差且观测器有效时工作；接触、限幅、模式变化与故障按条件冻结或清理，模型导纳和柔性保持不使用它
+
+轨迹误差比较最终参考与实际位置，名义目标与虚拟退让另行记录；回位验证同时检查原目标保持、关节误差和独立外部测量
+
+## 标定与候选
+
+执行器增益自动标定分别验证四种用途，保持与跟踪独立记分；伺服候选同时通过原生跟踪和模型导纳跟踪
+
+候选携带采样姿态范围、负载、响应估计、验证指标及保持补偿状态；局部无接触试验给出的范围用于后续调参，接触和末端精度由对应实测验证
+
+在线静态重力校正与离线完整辨识分别保存候选，临时应用、写入配置和导出是独立动作
+
+重力覆盖只替换重力项；导出 URDF 的质量或质心变化会影响完整动力学，需在对应工况重新验证
+
+离线重算读取保存的源快照、训练与留出数据；局部辨识从构造系统开始固定可信连杆，未观测方向保留先验；完整方法见 [静态重力](reference/offline-gravity.md) 与 [完整动力学](reference/dynamic-identification.md)
+
+## 工作台与持久化
+
+控制页集中管理生命周期、控制方式、增益用途与目标；示教回放管理轨迹；交互调试管理会话参数与响应记录；运行监视只读展示链路
+
+关节滑条与数值框共享一个目标草稿，青绿色虚影预览目标；只有发送动作会启动运动
+
+| 参数来源 | 生命周期 |
+| --- | --- |
+| Profile 默认 | 从对应配置文件加载，显式保存后持久化 |
+| 连接覆盖 | 本次连接，保留原文件 |
+| 会话调参 | 当前工作台，保存需预览差异与确认 |
+| 标定或停放临时参数 | 对应任务，结束或故障按任务契约恢复 |
+
+保存核对目标文件和来源指纹，保留备份并原子替换；历史任务与候选使用自己的源快照，导出不读取另一台在线机械臂的临时参数
+
+## 硬件与资源边界
+
+Renderer 无 Node 权限，Electron 主进程只提供允许的文件选择与 IPC，Python 负责配置、路径、文件和离线任务，C++ 负责硬件生命周期与控制安全
+
+诊断、Description 导入和候选预览不打开执行器；运动需要明确的硬件连接与当前 Core 检查
+
+GUI 按设备路径独占连接；直接使用底层入口需自行保证设备独占
+
+停放失败保留连接，强制结束仅停止进程，现场应确认执行器状态
+
+## 外部机械臂示例
+
+`tomato_picker` 可从 Description 导入或直接加载外部 `robot_profiles.yaml`；模型中 `base_link → tool0` 对应的 joint1 到 joint6 作为主链，夹爪由自己的驱动提供状态
+
+外部资源构建和加载后，使用与内置机械臂相同的配置检查、控制、标定与导出入口
+
+GUI 的 Three.js 展示属于可视化；交互式 Terminal、Python 和离线 CLI 使用相同的 Core 数据与任务结果

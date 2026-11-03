@@ -4,6 +4,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/robot.hpp"
+#include "serial_arm/runtime/control_runtime.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -46,6 +47,8 @@ struct RobotSessionActuatorInfo {
  */
 struct RobotSessionSnapshot {
     RobotState robot_state{ RobotState::UNCONFIGURED };  ///< Robot 生命周期状态
+    std::uint64_t sequence{0};
+    std::uint64_t monotonic_ns{0};
     RobotCycleOutput cycle;                              ///< 最近一次完整控制周期输出
     DynamicsState dynamics;                              ///< 最近一次动力学缓存
     bool valid{ false };                                 ///< 是否已经存在合法周期快照
@@ -108,6 +111,12 @@ public:
      * @param mode 目标阻抗模式
      */
     void set_impedance_mode(JointImpedanceMode mode);
+    void set_reference_behavior(ReferenceBehavior behavior);
+    void set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
+    void set_servo_tracking_gains(const JointImpedanceGains& gains);
+    void set_execution_gain_profile(JointGainProfile profile);
+    void clear_execution_gain_profile();
+    void set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
     /**
      * @brief 请求切换模型前馈模式
      * @param mode 目标模型前馈模式
@@ -196,6 +205,7 @@ private:
      * @param dt 当前参考生成周期
      */
     void update_reference(double dt);
+    void submit_execution_update(std::function<tl::expected<void,RobotFault>()> update);
     /**
      * @brief 校验关节向量大小和有限性
      * @param values 待检查向量
@@ -217,11 +227,16 @@ private:
     RobotCfg cfg_;                                      ///< 完整静态配置
     std::unique_ptr<Dynamics> dynamics_;                ///< 动力学模型
     HardwareLoader hardware_loader_;                    ///< Hardware Backend 动态库加载器
+    ControlRuntime runtime_;
     std::unique_ptr<Robot> robot_;                      ///< Robot 闭环
     std::vector<RobotSessionActuatorInfo> actuator_info_;     ///< 执行器静态信息
 
     mutable std::recursive_mutex lifecycle_mutex_;      ///< 串行化配置与启停
     mutable std::mutex mutex_;                          ///< 请求与快照互斥锁
+    std::mutex admittance_update_mutex_;
+    std::optional<AdmittanceCapabilityCfg> pending_admittance_;
+    std::uint64_t admittance_sequence_{0},completed_admittance_sequence_{0};
+    std::string admittance_error_;
     std::condition_variable fault_recovery_cv_;          ///< 在线 FAULT 恢复请求完成通知
     RobotSessionSnapshot snapshot_;                     ///< 最近一次完整快照
     JointVector goal_pos_;                              ///< 当前绝对位置目标
@@ -229,6 +244,8 @@ private:
     JointVector ref_vel_;                               ///< 当前连续速度参考
     JointVector requested_gravity_scale_;               ///< 待应用重力补偿比例
 
+    std::optional<JointGainProfile> requested_execution_profile_;
+    HoldTargetPolicy requested_hold_policy_{HoldTargetPolicy::PRESERVE_NOMINAL};
     JointImpedanceMode requested_impedance_mode_{ JointImpedanceMode::RIGID_HOLD };       ///< 待应用阻抗模式
     double speed_scale_{ 0.3 };                         ///< 梯形参考速度比例
 
@@ -239,6 +256,9 @@ private:
     std::uint64_t completed_fault_recovery_sequence_{ 0 }; ///< 已完成 FAULT 恢复请求序号
     std::string fault_recovery_error_;                   ///< 最近一次 FAULT 恢复请求错误
     FaultHoldMode fault_hold_mode_cache_{ FaultHoldMode::RIGID_HOLD }; ///< 线程安全的 FAULT 模式缓存
+    std::function<tl::expected<void,RobotFault>()> pending_execution_update_;
+    std::uint64_t execution_sequence_{0},completed_execution_sequence_{0};
+    std::string execution_error_;
     bool has_goal_{ false };                            ///< 是否存在位置目标
     std::atomic<bool> configured_{ false };                          ///< 会话是否已完成配置
 

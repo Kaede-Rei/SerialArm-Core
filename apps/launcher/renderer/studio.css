@@ -120,11 +120,15 @@ textarea { font-family: inherit; }
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page { flex: 1 0 auto; overflow: visible; }
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page-body { overflow: visible; }
 .studio-content > .terminal-card { flex: none; margin: 0 22px 18px; }
+/* Workspaces have one page scroller, shared with the optional runtime panel. */
+.studio-content:has(.workbench-layout) { scroll-behavior: auto; }
+.studio-page:has(.workbench-layout) { flex: 1 0 auto; overflow: visible; }
+.studio-page:has(.workbench-layout) > .page-head { position: sticky; top: 0; z-index: 10; }
+.studio-page-body:has(.workbench-layout) { flex: none; overflow: visible; }
 .model-workspace { grid-template-columns: 180px minmax(240px,1fr) 260px; min-height: 580px; border-radius: 8px; }
 .model-center { background: var(--bg); }
 .model-toolbar { border-radius: 8px; }
-.workbench-layout { grid-template-columns: minmax(280px,.9fr) minmax(340px,1.1fr); min-height: 580px; border-radius: 8px; }
-.workbench-model { min-height: 580px; }
+.workbench-layout { grid-template-columns: minmax(280px,.9fr) minmax(340px,1.1fr); border-radius: 8px; }
 .workspace-status { border-radius: 8px; font-size: 11px; }
 .workspace-status span { font-size: 11px; }
 :root.light #terminal { background: #fbfbfc; }
@@ -207,7 +211,7 @@ dialog[open]:not(.priority-error-overlay), .priority-error-overlay[open] .priori
 }
 @media(max-width:900px) {
   .workbench-layout { grid-template-columns: 1fr; }
-  .workbench-model { min-height: 400px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .workbench-model { position: relative; top: auto; height: clamp(260px,42dvh,400px); border-right: 0; border-bottom: 1px solid var(--line); }
   .model-workspace { grid-template-columns: 154px minmax(0,1fr); }
   .model-inspector { grid-column: 1/-1; border-left: 0; border-top: 1px solid var(--line); }
   .grid, .description-layout { grid-template-columns: 1fr; }

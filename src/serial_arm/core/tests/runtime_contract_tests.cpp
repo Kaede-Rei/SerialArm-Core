@@ -251,6 +251,42 @@ void profile_error(const fs::path& temp) {
     RobotProfileLoadOptions options;options.profile_file=file.string();
     require(!load_robot_profile_core("arm",options),"invalid Profile returns expected error");
 }
+void tracking_gain_configuration(const fs::path& temp) {
+    RuntimeCfg runtime;
+    require(runtime.native_tracking_gain_profile()==JointGainProfile::RIGID,"legacy rigid tracking default");
+    runtime.tracking_impedance_mode=JointImpedanceMode::COMPLIANT_TRACKING;
+    require(runtime.native_tracking_gain_profile()==JointGainProfile::COMPLIANT,"legacy compliant tracking default");
+    require(resolve_tracking_gain_profile(runtime,ReferenceBehavior::MODEL_ADMITTANCE)==JointGainProfile::SERVO_TRACKING,"model admittance overrides legacy compliant gains");
+    require(resolve_tracking_gain_profile(runtime,ReferenceBehavior::NATIVE_IMPEDANCE)==JointGainProfile::COMPLIANT,"native tracking retains legacy compliant gains");
+    runtime.tracking_gain_profile=JointGainProfile::SERVO_TRACKING;
+    require(runtime.native_tracking_gain_profile()==JointGainProfile::SERVO_TRACKING,"explicit servo tracking overrides legacy mode");
+    auto cfg=fixture();
+    FakeBus bus(cfg);
+    cfg.runtime.tracking_gain_profile=JointGainProfile::DRAG;
+    require(!validate_robot_core_cfg(cfg),"drag cannot be a trajectory tracking default");
+    const auto source=fs::path(SERIAL_ARM_REPO)/"src/robot_supports/robots/dm_arm/description/config/core/gray.yaml";
+    std::ifstream stream(source);std::string text((std::istreambuf_iterator<char>(stream)),{});
+    const auto urdf=(source.parent_path()/"../../model/gray/urdf/dm_arm_no_gripper.urdf").lexically_normal().string();
+    const auto first=text.find("../../model/gray/urdf/dm_arm_no_gripper.urdf");require(first!=std::string::npos,"fixture urdf path");
+    text.replace(first,std::string("../../model/gray/urdf/dm_arm_no_gripper.urdf").size(),urdf);
+    const auto field=text.find("tracking_gain_profile: COMPLIANT");require(field!=std::string::npos,"fixture canonical tracking field");
+    text.replace(field,std::string("tracking_gain_profile: COMPLIANT").size(),"tracking_gain_profile: SERVO_TRACKING");
+    const auto path=temp/"servo-runtime.yaml";std::ofstream(path)<<text;
+    auto loaded=load_robot_cfg(path.string(),bus.caps);require(bool(loaded),"canonical servo runtime config loads");
+    require(loaded->runtime.native_tracking_gain_profile()==JointGainProfile::SERVO_TRACKING,"canonical servo runtime config preserved");
+    const auto servo=text.find("tracking_gain_profile: SERVO_TRACKING");
+    text.replace(servo,std::string("tracking_gain_profile: SERVO_TRACKING").size(),"tracking_impedance_mode: COMPLIANT_TRACKING");
+    std::ofstream(path)<<text;loaded=load_robot_cfg(path.string(),bus.caps);
+    require(bool(loaded)&&!loaded->runtime.tracking_gain_profile,"legacy config remains readable");
+    require(loaded->runtime.native_tracking_gain_profile()==JointGainProfile::COMPLIANT,"legacy compliant gains remain selected");
+    const auto legacy=text.find("tracking_impedance_mode: COMPLIANT_TRACKING");
+    auto canonical=text;canonical.replace(legacy,std::string("tracking_impedance_mode: COMPLIANT_TRACKING").size(),"tracking_gain_profile: COMPLIANT");
+    const auto canonical_path=temp/"canonical-compliant.yaml";std::ofstream(canonical_path)<<canonical;
+    const auto comparison=compare_robot_cfg(path.string(),canonical_path.string(),bus.caps);
+    require(bool(comparison)&&comparison->empty(),"equivalent legacy and canonical tracking defaults compare equally");
+    text.replace(legacy,std::string("tracking_impedance_mode: COMPLIANT_TRACKING").size(),"tracking_gain_profile: DRAG");
+    std::ofstream(path)<<text;require(!load_robot_cfg(path.string(),bus.caps),"drag default rejected at parse boundary");
+}
 void serial_exclusion() {
     const int master=::posix_openpt(O_RDWR|O_NOCTTY);
     require(master>=0 && ::grantpt(master)==0 && ::unlockpt(master)==0,"create PTY");
@@ -388,7 +424,7 @@ void full_id_validity() {
 int main() {
     const auto temp=fs::temp_directory_path()/("serialarm-contract-"+std::to_string(::getpid()));fs::create_directories(temp);
     try {
-        recording_roundtrip(temp);paired_static_recording(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();activation_preserves_running_fault();connected_limits_follow_policy();first_hold_limits();continuous_and_correction(temp);profile_error(temp);serial_exclusion();
+        recording_roundtrip(temp);paired_static_recording(temp);feedback_age_is_not_control_gap();sampled_acceleration();full_id_validity();limits_and_identity();named_permutation();fault_shutdown();failed_startup_disable_retry();activation_preserves_running_fault();connected_limits_follow_policy();first_hold_limits();continuous_and_correction(temp);profile_error(temp);tracking_gain_configuration(temp);serial_exclusion();
         fs::remove_all(temp);std::cout<<"runtime contracts passed\n";return 0;
     } catch(const std::exception& error) {fs::remove_all(temp);std::cerr<<error.what()<<'\n';return 1;}
 }

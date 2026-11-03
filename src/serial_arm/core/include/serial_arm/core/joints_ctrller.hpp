@@ -54,7 +54,7 @@ struct JointCtrllerCfg {
     JointImpedanceGains compliant_hold_gains;            ///< 柔性保持模式增益
     JointImpedanceGains compliant_drag_gains;            ///< 柔性拖拽模式增益
     JointImpedanceGains compliant_tracking_gains;        ///< 柔性跟踪模式增益
-    JointImpedanceGains identification_tracking_gains;   ///< 辨识轨迹回放专用增益
+    JointImpedanceGains servo_tracking_gains;   ///< 辨识与模型导纳共用的伺服跟踪增益
 
     bool allow_full_cmd{ false };                         ///< 是否允许直接设置关节完整控制命令
 };
@@ -146,6 +146,8 @@ public:
      * @return JointImpedanceMode 当前关节阻抗模式
      */
     JointImpedanceMode get_impedance_mode() const noexcept;
+    tl::expected<void, JointCtrllerErr> set_servo_tracking_gains(const JointImpedanceGains& gains);
+    void set_hold_position(const JointVector& position);
 
 private:
     /**

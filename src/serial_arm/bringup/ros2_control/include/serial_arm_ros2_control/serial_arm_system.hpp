@@ -4,6 +4,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/hardware/hardware_loader.hpp"
 #include "serial_arm/robot.hpp"
+#include "serial_arm/runtime/control_runtime.hpp"
 #include "serial_arm_ros2_control/status_types.hpp"
 
 #include <hardware_interface/handle.hpp>
@@ -140,6 +141,7 @@ private:
     std::string make_robot_error(const char* action, const serial_arm::RobotFault& fault) const;
 
 private:
+    serial_arm::ControlRuntime runtime_;
     serial_arm::RobotCfg cfg_;                         ///< Core 完整配置
     serial_arm::HardwareLoader hardware_loader_;       ///< Hardware Backend 动态库加载器
     std::unique_ptr<serial_arm::Robot> robot_;         ///< 后台线程独占的 Robot 实例

@@ -21,9 +21,7 @@ source install/setup.bash
 
 在下游 ROS2 工作区中也可以直接运行 `colcon build`，Python Binding 默认参与构建
 
-CMake 始终使用源码仓库内置的 pybind11 构建依赖，不会在构建过程中联网获取，也不会回退到系统中不兼容的旧版本
-
-Python Binding 默认启用，普通 `colcon build` 可直接使用仓库内置依赖，仍需预先满足 ROS2、Pinocchio、Eigen 和 Python 开发环境等系统依赖
+Python Binding 默认启用，使用仓库内置 pybind11；构建前准备 ROS2、Pinocchio、Eigen 和 Python 开发环境
 
 源码位于 `src/`，GUI 位于 `apps/launcher/`，安装逻辑位于 `tools/install/`
 
@@ -31,11 +29,9 @@ Python Binding 默认启用，普通 `colcon build` 可直接使用仓库内置�
 
 分发仓库包含可复现的控制、安全、模型与设备独占契约测试，使用 `BUILD_TESTING=ON` 构建后执行 `ctest --output-on-failure`
 
-代码修改应先在完整开发环境完成单元与集成测试，随后在目标 Ubuntu、ROS2 与达妙电机上按安全规程进行真机验收
+控制修改先完成编译、单元与集成测试，再在目标系统和机械臂上验证轨迹、力矩观测与安全停止
 
 常规使用仍从仓库根目录执行 `./install.sh`，Developer 用途会构建选中的工程组件并执行随源码提供的契约测试
-
-静态检查不能代替完整 C++ 构建、机械臂轨迹跟踪验证与实际力矩观测验证
 
 ## 文档约定
 

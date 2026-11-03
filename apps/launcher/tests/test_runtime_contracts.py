@@ -61,11 +61,14 @@ class RuntimeContracts(unittest.TestCase):
     def test_inertia_requires_physical_principal_moments(self):
         self.assertFalse(self.inspector._inertia_valid([[1,0,0],[0,1,0],[0,0,3]], 1)[0])
         self.assertTrue(self.inspector._inertia_valid([[1,0,0],[0,1,0],[0,0,1]], 1)[0])
-    def test_builtin_without_evidence_is_not_ready(self):
+    def test_builtin_configuration_is_usable_without_research_evidence(self):
         with mock.patch.dict(os.environ, {'XDG_DATA_HOME':str(self.path),'SERIAL_ARM_PROFILE_LIBRARY':str(self.path/'library.yaml')}):
             result = self.library._readiness({'profile':'dm_arm_gray'})
-        self.assertEqual(result['state'], 'pending_validation')
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(result['verification_state'], 'pending')
+        self.assertTrue(all(item['evidence_status'] == 'pending' for item in result['gain_purposes'].values()))
         self.assertTrue(result['control_available'])
+        self.assertIn(result['modes']['SERVO_TRACKING'], ('configured', 'verified', 'stale'))
     def test_gravity_basis_preserves_observable_subspace(self):
         import numpy as np
         matrix=np.array([[0.,0.,1.],[1.,0.,1.],[2.,0.,1.],[3.,0.,1.]])
