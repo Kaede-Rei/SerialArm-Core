@@ -78,7 +78,13 @@ Electron 复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时
 ./build_linux.sh --with-ros2
 ```
 
-构建需要 Ubuntu 22.04 x86_64、Node.js 20+、npm 和系统 Python；只有选择 `--with-ros2` 才需要构建机安装 ROS2 Humble 与 MoveIt
+构建需要 Ubuntu 22.04 x86_64、Node.js 20+、npm、系统 Python 和 `flock`（`util-linux` 包）；发布校验还需要 `dpkg-deb`（`dpkg` 包）与 `unsquashfs`（`squashfs-tools` 包），脚本会在安装或构建前检查这些命令
+
+```bash
+sudo apt install dpkg squashfs-tools util-linux
+```
+
+只有选择 `--with-ros2` 才需要构建机安装 ROS2 Humble 与 MoveIt
 
 两个产物及校验文件输出到 `dist/`
 

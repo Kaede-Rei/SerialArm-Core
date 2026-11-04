@@ -51,6 +51,8 @@ if (( WITH_ROS2 )); then
     [[ -f /opt/ros/humble/setup.bash ]] || fail 'ROS2 adapters need /opt/ros/humble; omit --with-ros2 for a standalone release'
 fi
 for c in node npm python3 flock; do command -v "$c" >/dev/null 2>&1 || fail "Missing command: $c"; done
+command -v dpkg-deb >/dev/null 2>&1 || fail 'Missing command: dpkg-deb; install the Release build dependency with: sudo apt install dpkg'
+command -v unsquashfs >/dev/null 2>&1 || fail 'Missing command: unsquashfs; install the Release build dependency with: sudo apt install squashfs-tools'
 [[ "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 20 ]] || fail 'Node.js 20+ is required'
 [[ -x /usr/bin/python3 ]] || fail 'System Python /usr/bin/python3 is required'
 
@@ -63,9 +65,9 @@ if (( FORCE_REBUILD )) || ! /usr/bin/python3 "$PKG/stage.py" --root "$ROOT" --ch
         fail 'The selected native installation is unavailable'
     fi
     if (( WITH_ROS2 )); then
-        "$ROOT/install.sh" --preset ros2 --robot dm_arm --with-gui --with-python --with-terminal --with-moveit --without-tests --ros-distro humble --jobs 1 --yes
+        "$ROOT/install.sh" --preset ros2 --robot dm_arm --with-gui --with-python --with-terminal --with-moveit --ros-distro humble --jobs 1 --yes
     else
-        "$ROOT/install.sh" --preset standalone --robot dm_arm --with-python --without-tests --jobs 1 --yes
+        "$ROOT/install.sh" --preset standalone --robot dm_arm --with-python --jobs 1 --yes
     fi
 else
     echo '[SerialArm] Reusing the verified selected installation'
@@ -112,9 +114,7 @@ DEB='SerialArm-Core-linux-amd64.deb'
 for name in "$APPIMAGE" "$DEB"; do
     [[ -s "$STAGING/output/$name" ]] || fail "Missing or empty release asset: $name"
 done
-if command -v dpkg-deb >/dev/null 2>&1; then
-    dpkg-deb --field "$STAGING/output/$DEB" >/dev/null || fail 'Invalid deb metadata'
-fi
+dpkg-deb --field "$STAGING/output/$DEB" >/dev/null || fail 'Invalid deb metadata'
 /usr/bin/python3 "$PKG/verify.py" --root "$ROOT" \
     --deb "$STAGING/output/$DEB" --appimage "$STAGING/output/$APPIMAGE" "${STAGE_ARGS[@]}" \
     || fail 'Release payload verification failed'

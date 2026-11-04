@@ -331,13 +331,15 @@ def release_evidence(root, payload, manifest):
     for source_file in sorted((root / 'packaging/linux/licenses').glob('*.txt')):
         shutil.copy2(source_file, licenses / source_file.name)
     for name in ('pinocchio', 'coal', 'eigenpy', 'boost'):
+        bundled = licenses / (name + '.txt')
         found = []
         for base in (Path('/opt/openrobots/share'), Path('/usr/share/doc')):
             for directory in sorted(set(base.glob('*' + name + '*')) | set((base / 'doc').glob('*' + name + '*'))):
                 if not directory.is_dir(): continue
-                found.extend(p for p in directory.rglob('*') if p.is_file() and
+                found.extend(p for p in directory.rglob('*') if p.is_file() and p.stat().st_size and
                     any(word in p.name.lower() for word in ('license', 'copying', 'copyright')))
-        if not found and name in ('pinocchio', 'coal'):
+        if (not found and not (bundled.is_file() and bundled.read_bytes().strip())
+                and name in ('pinocchio', 'coal')):
             fail('Missing dependency license material: ' + name)
         for index, source_file in enumerate(found):
             shutil.copy2(source_file, licenses / (name + '-' + str(index) + '-' + source_file.name))
