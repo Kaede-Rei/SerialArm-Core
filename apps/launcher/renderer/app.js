@@ -1428,14 +1428,92 @@ function refreshGraphicsPanels() {
     if (body) { body.innerHTML = graphicsSettingsBodyHtml(); bindGraphicsActions(body); }
     if (graphicsState.current?.fault || graphicsState.effectiveMode === 'rescue') showGraphicsFailure(graphicsState.current);
 }
+function graphicsDiagnosticsHtml(status = {}) {
+    const d = status.diagnostics || {}, gpu = d.gpuInfo || {}, reports = d.rendererReports || [], latest = reports.at(-1);
+    const gl = latest?.diagnostics || {}, unknown = busyText('未获取', 'Not available');
+    const value = item => item === null || item === undefined || item === '' ? unknown : String(item);
+    const cell = item => esc(value(item));
+    const yesNo = item => item === true ? busyText('是', 'Yes') : item === false ? busyText('否', 'No') : unknown;
+    const stamp = item => item && Number.isFinite(Date.parse(item)) ? new Date(item).toLocaleString(state.language === 'en' ? 'en-GB' : 'zh-CN') : value(item);
+    const badge = (label, tone = 'neutral') => '<span class="graphics-diagnostic-status is-' + tone + '">' + esc(label) + '</span>';
+    const kv = rows => '<dl class="graphics-diagnostic-kv">' + rows.map(([label, item]) => '<dt>' + esc(label) + '</dt><dd>' + cell(item) + '</dd>').join('') + '</dl>';
+    const empty = label => '<p class="graphics-diagnostic-empty">' + esc(label) + '</p>';
+    const table = (headings, rows) => '<div class="graphics-diagnostic-table-wrap"><table class="graphics-diagnostic-table"><thead><tr>' + headings.map(label => '<th scope="col">' + esc(label) + '</th>').join('') + '</tr></thead><tbody>' + rows.map(row => '<tr>' + row.map(item => '<td>' + item + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+    const section = (title, body, folded = false) => folded
+        ? '<details class="graphics-diagnostic-section"><summary>' + esc(title) + '</summary>' + body + '</details>'
+        : '<section class="graphics-diagnostic-section"><h4>' + esc(title) + '</h4>' + body + '</section>';
+    const result = report => {
+        if (!report) return badge(busyText('尚无预览记录', 'No preview recorded'));
+        const labels = {ready: report.modelLoaded && report.drawCount > 0 ? busyText('模型已绘制', 'Model rendered') : busyText('渲染器已就绪', 'Renderer ready'), initializing: busyText('正在初始化', 'Initializing'), failed: busyText('预览失败', 'Preview failed'), lost: busyText('图形上下文丢失', 'Graphics context lost'), disposed: busyText('预览已关闭', 'Preview closed')};
+        return badge(labels[report.status] || busyText('未完成绘制', 'Rendering incomplete'), ['failed', 'lost'].includes(report.status) ? 'error' : report.status === 'ready' ? 'ok' : 'neutral');
+    };
+    const pageLabel = page => ({model: t('model'), description: t('descriptionImport'), workbench: t('workbenchNav'), geometry: t('geometryNav'), calibration: t('calibrationNav')})[page] || value(page);
+    const errorText = report => typeof report?.error === 'string' ? report.error : report?.error?.message || '';
+    const summary = [
+        [busyText('当前模式', 'Current mode'), esc(graphicsModeLabel(status.effectiveMode || 'normal'))],
+        [busyText('最近一次预览', 'Latest preview'), result(latest)],
+        [busyText('兼容模式运行库', 'Software 3D runtime'), status.compatibilityAvailable === true ? badge(busyText('文件齐全', 'Files present'), 'ok') : status.compatibilityAvailable === false ? badge(busyText('文件缺失', 'Files missing'), 'error') : badge(unknown)],
+        [busyText('设置生效状态', 'Settings status'), status.requiresRestart ? badge(busyText('等待重启', 'Restart required'), 'warning') : badge(busyText('无需重启', 'No restart required'))]
+    ];
+    let html = '<div class="graphics-diagnostic-summary">' + summary.map(([label, item]) => '<div><span>' + esc(label) + '</span><strong>' + item + '</strong></div>').join('') + '</div>';
+    const blocked = {SOFTWARE_RUNTIME_MISSING: busyText('兼容模式运行库不完整，已进入无三维救援模式', 'Software 3D files are missing; rescue mode is active'), SOFTWARE_CONSENT_REQUIRED: busyText('尚未确认软件渲染的安全影响，已进入无三维救援模式', 'Software rendering consent is missing; rescue mode is active')};
+    const modeRows = [[busyText('已选模式', 'Selected mode'), graphicsModeLabel(status.requestedMode || 'normal')],
+        [busyText('启动时指定模式', 'Startup override'), status.launchOverride ? graphicsModeLabel(status.launchOverride) : busyText('未指定，使用已保存设置', 'None; using saved settings')],
+        [busyText('软件 WebGL 安全降级', 'Reduced software WebGL security'), status.unsafeSoftware === true ? busyText('已启用', 'Enabled') : status.unsafeSoftware === false ? busyText('未启用', 'Not enabled') : unknown]];
+    html += section(busyText('渲染设置', 'Rendering settings'), kv(modeRows) + (status.blockedReason ? '<p class="graphics-diagnostic-note">' + cell(blocked[status.blockedReason] || status.blockedReason) + '</p>' : ''));
+    html += section(busyText('最近一次三维预览', 'Latest 3D preview'), latest ? kv([
+        [busyText('记录时间', 'Recorded at'), stamp(latest.time)], [busyText('所在页面', 'Page'), pageLabel(latest.page)],
+        [busyText('预览模式', 'Preview mode'), latest.mode ? graphicsModeLabel(latest.mode) : unknown],
+        [busyText('实际渲染后端', 'Actual renderer'), gl.unmaskedRenderer || gl.renderer],
+        [busyText('渲染厂商', 'Rendering vendor'), gl.unmaskedVendor || gl.vendor],
+        ['WebGL2', gl.webgl2 === true ? busyText('已创建', 'Created') : gl.webgl2 === false ? busyText('未创建', 'Not created') : unknown],
+        [busyText('WebGL 版本', 'WebGL version'), gl.version],
+        [busyText('抗锯齿', 'Antialiasing'), yesNo(gl.attributes?.antialias)],
+        [busyText('像素比例', 'Pixel ratio'), gl.pixelRatio],
+        [busyText('绘图缓冲区', 'Drawing buffer'), Array.isArray(gl.drawingBuffer) ? gl.drawingBuffer.join(' × ') : null],
+        [busyText('模型网格数', 'Model meshes'), latest.meshCount], [busyText('绘制次数', 'Draw count'), latest.drawCount],
+        [busyText('单帧绘制调用', 'Draw calls per frame'), latest.renderCalls], [busyText('单帧三角形数', 'Triangles per frame'), latest.triangles],
+        ...(errorText(latest) ? [[busyText('错误原因', 'Error'), errorText(latest)]] : []),
+        ...(gl.creationErrors?.length ? [[busyText('上下文创建错误', 'Context creation errors'), gl.creationErrors.join('\n')]] : [])
+    ]) : empty(busyText('尚未创建三维预览；打开模型或标定页面后，可在这里查看实际绘制结果', 'No 3D preview has been created yet. Open a model or calibration page to record an actual rendering result')));
+    const devices = gpu.gpuDevice || [], aux = gpu.auxAttributes || {};
+    const hex = item => Number.isInteger(item) ? '0x' + item.toString(16) : value(item);
+    html += section(busyText('显卡与驱动', 'GPU and driver'), (d.gpuInfoWaitTimedOut || d.gpuInfoPending || d.gpuInfoError ? '<p class="graphics-diagnostic-note">' + cell(d.gpuInfoError || (d.gpuInfoWaitTimedOut ? busyText('显卡信息读取超时；已获取的信息显示如下', 'GPU information timed out; available information is shown below') : busyText('显卡信息仍在读取', 'GPU information is still loading'))) + '</p>' : '') +
+        (devices.length ? table([busyText('设备', 'Device'), busyText('PCI 标识', 'PCI ID'), busyText('驱动', 'Driver'), busyText('Chromium 活动设备', 'Active in Chromium')], devices.map((device, index) => [cell(device.deviceString || device.driverVendor || 'GPU ' + (index + 1)), cell(hex(device.vendorId) + ' / ' + hex(device.deviceId)), cell([device.driverVendor, device.driverVersion, device.driverDate].filter(Boolean).join(' · ')), cell(yesNo(device.active))])) : empty(busyText('未获取到显卡设备信息', 'GPU device information is unavailable'))) +
+        kv([[busyText('系统图形实现', 'System graphics implementation'), aux.glImplementationParts], [busyText('系统渲染器', 'System renderer'), aux.glRenderer], [busyText('系统图形版本', 'System graphics version'), aux.glVersion]]));
+    const featureLabels = {webgl:'WebGL', webgl2:'WebGL2', opengl:'OpenGL', vulkan:'Vulkan', webgpu:'WebGPU', gpu_compositing:busyText('GPU 合成', 'GPU compositing'), rasterization:busyText('光栅化', 'Rasterization'), '2d_canvas':'2D Canvas', video_decode:busyText('视频解码', 'Video decoding'), video_encode:busyText('视频编码', 'Video encoding')};
+    const featureRows = Object.entries(d.gpuFeatureStatus || {}).map(([key, feature]) => {
+        const enabled = /^enabled(?:_|$)/.test(feature), software = /software/.test(feature), disabled = /^disabled(?:_|$)/.test(feature);
+        const label = software ? busyText('软件处理', 'Software') : enabled ? busyText('已启用', 'Enabled') : disabled ? busyText('未启用', 'Disabled') : feature;
+        return [cell(featureLabels[key] || key.replaceAll('_', ' ')), badge(label, enabled ? 'ok' : 'neutral'), cell(feature)];
+    });
+    html += section(busyText('Chromium 图形功能', 'Chromium graphics features'), featureRows.length ? table([busyText('功能', 'Feature'), busyText('状态', 'Status'), busyText('状态代码', 'Status code')], featureRows) : empty(unknown), true);
+    const resources = d.softwareRuntime || [];
+    html += section(busyText('兼容模式运行库', 'Software 3D runtime'), resources.length ? table([busyText('文件', 'File'), busyText('状态', 'Status'), busyText('位置', 'Location')], resources.map(file => [cell(file.name), file.present === true ? badge(busyText('存在', 'Present'), 'ok') : file.present === false ? badge(busyText('缺失', 'Missing'), 'error') : badge(unknown), cell(file.path)])) : empty(unknown), true);
+    const versions = d.versions || {}, switches = Object.entries(d.chromiumSwitches || {}), environment = Object.entries(d.environment || {});
+    html += section(busyText('应用与启动环境', 'Application and startup'), kv([
+        [busyText('操作系统', 'Operating system'), [d.platform, d.arch].filter(Boolean).join(' · ')],
+        ['Electron', versions.electron], ['Chromium', versions.chrome], ['Three.js', gl.threeRevision ? 'r' + gl.threeRevision : null], ['Node.js', versions.node],
+        [busyText('应用启动时间', 'Application started'), stamp(d.startedAt)]
+    ]) + '<h4>' + busyText('图形启动选项', 'Graphics launch switches') + '</h4>' + (switches.length ? kv(switches.map(([key, item]) => ['--' + key, item === '' ? busyText('已启用', 'Enabled') : item])) : empty(busyText('未设置额外图形选项', 'No additional graphics switches'))) +
+        '<h4>' + busyText('图形环境变量', 'Graphics environment') + '</h4>' + (environment.length ? kv(environment) : empty(busyText('未设置相关环境变量', 'No relevant environment variables'))) +
+        '<h4>' + busyText('启动命令参数', 'Launch arguments') + '</h4><ul>' + (d.commandLine || []).map(arg => '<li><code>' + cell(arg) + '</code></li>').join('') + '</ul>', true);
+    html += section(busyText('预览记录', 'Preview history') + ' · ' + reports.length, reports.length ? table([busyText('时间', 'Time'), busyText('页面', 'Page'), busyText('模式', 'Mode'), busyText('结果', 'Result'), busyText('错误', 'Error')], [...reports].reverse().map(report => [cell(stamp(report.time)), cell(pageLabel(report.page)), cell(report.mode ? graphicsModeLabel(report.mode) : unknown), result(report), esc(errorText(report))])) : empty(busyText('尚无预览记录', 'No preview recorded')), true);
+    const logs = d.logs || [], native = d.nativeLog || {};
+    const events = logs.map(log => '<article>' + kv([[busyText('时间', 'Time'), stamp(log.time)], [busyText('来源', 'Source'), log.source], ...(log.detail && typeof log.detail === 'object' ? Object.entries(log.detail).filter(([, item]) => item === null || typeof item !== 'object') : [[busyText('内容', 'Message'), log.detail]])]) + '</article>').join('');
+    html += section(busyText('图形日志', 'Graphics logs'), (events || empty(busyText('没有应用图形事件记录', 'No application graphics events recorded'))) +
+        '<h4>Chromium</h4>' + kv([[busyText('日志文件', 'Log file'), native.path]]) + (native.tail ? '<pre class="graphics-diagnostic-log">' + esc(native.tail) + '</pre>' : empty(native.unavailable ? busyText('日志暂不可读', 'Log unavailable') + ' · ' + native.unavailable : busyText('日志为空', 'Log is empty'))), true);
+    return html;
+}
 async function showGraphicsDiagnostics() {
     try {
         await refreshGraphicsStatus();
         let dialog = $('graphics-diagnostics');
         if (!dialog) { dialog = document.createElement('dialog'); dialog.id = 'graphics-diagnostics'; dialog.className = 'studio-dialog graphics-dialog'; document.body.append(dialog); }
-        dialog.innerHTML = '<h3>' + busyText('图形诊断', 'Graphics diagnostics') + '</h3><pre>' + esc(JSON.stringify(graphicsState.status, null, 2)) +
-            '</pre><div class="actions"><button type="button" class="button" data-graphics-export>' + busyText('导出诊断', 'Export diagnostics') +
-            '</button><button type="button" class="button" data-graphics-close>' + t('close') + '</button></div>';
+        dialog.setAttribute('aria-labelledby', 'graphics-diagnostics-title');
+        dialog.innerHTML = '<header class="graphics-dialog-head">' + icon('diagnostics') + '<div><h3 id="graphics-diagnostics-title">' + busyText('图形诊断', 'Graphics diagnostics') + '</h3><p>' + busyText('查看渲染结果和图形环境；导出文件保留完整诊断数据', 'Inspect rendering results and the graphics environment; the export includes complete diagnostic data') + '</p></div></header><div class="graphics-dialog-body">' + graphicsDiagnosticsHtml(graphicsState.status) +
+            '</div><footer class="graphics-dialog-footer"><button type="button" class="button" data-graphics-export>' + busyText('导出诊断文件', 'Export diagnostic file') +
+            '</button><button type="button" class="button primary" data-graphics-close>' + busyText('关闭', 'Close') + '</button></footer>';
         bindGraphicsActions(dialog); if (!dialog.open) dialog.showModal();
     } catch (error) { graphicsState.actionError = error.message; refreshGraphicsPanels(); }
 }

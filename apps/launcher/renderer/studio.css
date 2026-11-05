@@ -401,10 +401,53 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 .graphics-failure p, .graphics-settings p { line-height: 1.7; }
 .graphics-failure details { margin: 18px 0; }
 .graphics-failure summary { cursor: pointer; }
-.graphics-failure pre, .graphics-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; font-size: 12px; }
+.graphics-failure pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; font-size: 12px; }
 .graphics-failure .workspace-actions { flex-wrap: wrap; gap: 10px; }
 .graphics-settings { grid-column: 1 / -1; }
-.graphics-dialog { width: min(900px, 90vw); max-height: 85vh; }
+.graphics-dialog { box-sizing: border-box; width: min(960px, calc(100vw - 40px)); max-height: calc(100dvh - 48px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--card); color: var(--text); }
+.graphics-dialog[open] { display: flex; flex-direction: column; }
+.graphics-dialog-head, .graphics-dialog-footer { flex: none; padding: 20px 24px; }
+.graphics-dialog-head { display: flex; align-items: flex-start; gap: 12px; border-bottom: 1px solid var(--line); }
+.graphics-dialog-head > svg { flex: none; width: 22px; height: 22px; margin-top: 3px; color: var(--dim); }
+.graphics-dialog-head h3 { margin: 0; }
+.graphics-dialog-head p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.graphics-dialog-body { flex: 1 1 auto; min-height: 0; min-width: 0; padding: 20px 24px; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.graphics-dialog-footer, .graphics-dialog .actions.graphics-dialog-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 0; border-top: 1px solid var(--line); }
+.graphics-diagnostic-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.graphics-diagnostic-summary > div > span { color: var(--muted); font-size: 11px; }
+.graphics-diagnostic-summary > div { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 9px; background: var(--subtle); }
+.graphics-diagnostic-summary strong { display: block; margin: 7px 0; font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.graphics-diagnostic-summary p, .graphics-diagnostic-summary small { display: block; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.graphics-diagnostic-section { min-width: 0; margin: 0 0 14px; padding: 18px; border: 1px solid var(--line); border-radius: 9px; }
+.graphics-diagnostic-section:last-child { margin-bottom: 0; }
+.graphics-diagnostic-section h4 { margin: 0 0 14px; font-size: 13px; font-weight: 550; }
+details.graphics-diagnostic-section > summary { cursor: pointer; font-size: 13px; font-weight: 550; line-height: 1.6; overflow-wrap: anywhere; }
+details.graphics-diagnostic-section > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 2px; }
+details.graphics-diagnostic-section[open] > summary { margin-bottom: 14px; }
+.graphics-diagnostic-kv { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 10px 18px; margin: 0; font-size: 12px; line-height: 1.7; }
+.graphics-diagnostic-kv dt { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+.graphics-diagnostic-kv dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.graphics-diagnostic-status { display: inline-flex; align-items: center; max-width: 100%; min-height: 24px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: var(--subtle); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.graphics-diagnostic-status.is-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 30%, var(--line)); background: color-mix(in srgb, var(--green) 7%, var(--card)); }
+.graphics-diagnostic-status.is-warning { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, var(--line)); background: var(--tint); }
+.graphics-diagnostic-status.is-error { color: var(--red); border-color: color-mix(in srgb, var(--red) 30%, var(--line)); background: color-mix(in srgb, var(--red) 7%, var(--card)); }
+.graphics-diagnostic-status.is-neutral { color: var(--muted); }
+.graphics-diagnostic-table-wrap { max-width: 100%; overflow-x: auto; }
+.graphics-diagnostic-table { width: 100%; border-collapse: collapse; font-size: 11px; line-height: 1.7; text-align: left; }
+.graphics-diagnostic-table th, .graphics-diagnostic-table td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+.graphics-diagnostic-table th { color: var(--muted); font-weight: 500; background: var(--subtle); }
+.graphics-diagnostic-table td { min-width: 100px; }
+.graphics-diagnostic-table tbody tr:last-child td { border-bottom: 0; }
+.graphics-dialog .graphics-diagnostic-log { margin: 12px 0 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--subtle); color: var(--muted); font: 11px/1.8 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.graphics-dialog .graphics-diagnostic-empty, .graphics-dialog .graphics-diagnostic-note { margin: 10px 0 0; color: var(--muted); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.graphics-dialog .graphics-diagnostic-empty:first-child, .graphics-dialog .graphics-diagnostic-note:first-child { margin-top: 0; }
+@media(max-width:720px) {
+  .graphics-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 24px); }
+  .graphics-dialog-head, .graphics-dialog-body, .graphics-dialog-footer { padding: 16px; }
+  .graphics-diagnostic-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .graphics-diagnostic-summary > div, .graphics-diagnostic-section { padding: 14px; }
+  .graphics-diagnostic-kv { grid-template-columns: minmax(90px, 120px) minmax(0, 1fr); gap: 8px 12px; font-size: 11px; }
+}
 .graphics-current-mode { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; color: var(--muted); font-size: 12px; }
 .graphics-current-mode strong { font-weight: 550; color: var(--text); }
 .graphics-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
