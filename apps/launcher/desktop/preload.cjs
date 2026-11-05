@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('serialArm', {
     }
     return result;
   },
+  graphics: {
+    status: () => ipcRenderer.invoke('launcher:graphics-status'),
+    report: report => ipcRenderer.invoke('launcher:graphics-report', report),
+    exportDiagnostics: () => ipcRenderer.invoke('launcher:graphics-export'),
+    setMode: (mode, options = {}) => ipcRenderer.invoke('launcher:graphics-mode', mode, options),
+  },
   prefs: () => ipcRenderer.invoke('launcher:prefs'),
   savePrefs: values => ipcRenderer.invoke('launcher:save-prefs', values),
   selectProfile: () => ipcRenderer.invoke('launcher:select-profile'),

@@ -184,11 +184,3 @@
     document.addEventListener('scroll', closeMenus, true);
     window.serialArmStudio = {enhanceSelects};
 })();
-
-// Workspace pages scroll as one document, including over their sticky model.
-// Explicit Ctrl/Meta wheel remains available for camera zoom; Model Viewer
-// keeps its ordinary wheel zoom because it is not in a workbench layout.
-document.addEventListener('wheel', event => {
-    if (event.ctrlKey || event.metaKey || !(event.target instanceof Element)) return;
-    if (event.target.closest('.workbench-layout #workbench-viewport')) event.stopPropagation();
-}, {capture: true, passive: true});

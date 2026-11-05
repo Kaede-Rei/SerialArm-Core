@@ -52,7 +52,7 @@ const associationArtwork = (className = '') => `<img class="association-mark ${c
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', compact: false, mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationObjective: 'bias_separated', modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'all', idimReport: null, idimAudit: null, idimScope: 'global', idimLocked: [], idimPreview: true, idimLoadDescription: '', idimEstimator: 'WLS', idimCutoff: 5, idimValidationDirectory: '', idimFixedJointText: '', advancedTarget: 'mass_com', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayBehavior: null, teachGainPurpose: 'RIGID', teachPreviewDirection: null, teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryReplayBehavior: null, geometryGainPurpose: 'RIGID', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { load_description: '', mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationObjective: 'bias_separated', modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'all', idimReport: null, idimAudit: null, idimScope: 'global', idimLocked: [], idimPreview: true, idimLoadDescription: '', idimEstimator: 'WLS', idimCutoff: 5, idimValidationDirectory: '', idimFixedJointText: '', advancedTarget: 'mass_com', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayBehavior: null, teachGainPurpose: 'RIGID', teachPreviewDirection: null, teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryReplayBehavior: null, geometryGainPurpose: 'RIGID', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { load_description: '', mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 Object.assign(state, {speedInputRaw:null, speedInputError:'', pendingMotionId:null, modelIdentity:null, calibrationHistoryPages:{}, calibrationCandidateRounds:{}, calibrationCandidateSelection:{}, geometryTcpPreview:null, responseTolerances:{}});
 Object.assign(state, {driverInspection:null,controlSettingsOpen:false,teachPreviewFraction:0,teachPosePreview:null,readinessSections:{}});
 const profileWorkspaceDefaults = structuredClone(state);
@@ -258,7 +258,7 @@ const card = (title, sub, ico, body) => `<section class="card"><div class="card-
 function pageHead(title, desc, action = '') { return `<header class="page-head"><div><div class="eyebrow">SERIALARM · WORKSPACE</div><h2>${t(title)}</h2><p>${t(desc)}</p></div>${action}</header>`; }
 function configField(key, label, placeholder = '') { return `<div class="field"><label for="${key}">${t(label)}</label><input id="${key}" value="${esc(state.config[key])}" placeholder="${esc(placeholder)}" autocomplete="off"></div>`; }
 function active() { return ['running', 'stopping'].includes(state.session.state); }
-async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language, compact: state.compact }); }
+async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language }); }
 function themeIsLight(theme = state.theme) { return theme === 'light' || (theme === 'system' && matchMedia('(prefers-color-scheme: light)').matches); }
 function applyTheme() {
     const theme = themeIsLight() ? 'light' : 'dark';
@@ -320,7 +320,7 @@ function shell() {
     const body = onboarding
         ? `<div class="onboarding-body"><main class="content onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div>`
         : `<div class="body"><aside class="sidebar"><button id="profile-picker-open" class="sidebar-project project-picker-trigger" aria-label="${t('manageProfiles')}" aria-haspopup="dialog">${robotArtwork()}<span>${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}</span>${icon('chevron')}</button>${navigation}<div class="sidebar-spacer"></div><button id="back-home" class="nav-item" title="${t('backHome')}" aria-label="${t('backHome')}">${icon('folder')}<span>${t('backHome')}</span></button><button id="settings-nav" class="nav-item" data-page="settings" title="${t('settings')}" aria-label="${t('settings')}">${icon('settings')}<span>${t('settings')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></aside><section class="content-wrap"><div class="studio-location top-status"><span class="studio-route breadcrumb" id="breadcrumb"></span><div class="studio-location-end"><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div></div><main class="content"><div class="page" id="page"></div>${runtimePanel}</main></section></div>`;
-    $('app').innerHTML = `<div class="shell app atil-shell ${state.compact ? 'compact' : ''} ${onboarding ? 'onboarding-shell' : ''}">${titlebar}${body}</div>${overlays}`;
+    $('app').innerHTML = `<div class="shell app atil-shell ${onboarding ? 'onboarding-shell' : ''}">${titlebar}${body}</div>${overlays}`;
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => b.dataset.page === 'settings' ? openSettings() : navigate(b.dataset.page));
     ['min', 'max', 'close'].forEach((n, i) => { const node = $('win-' + n); if (node) node.onclick = () => api.window(['minimize', 'maximize', 'close'][i]); });
     $('settings-quick').onclick = openSettings;
@@ -415,7 +415,8 @@ function statusUI() {
 }
 
 function resetProfileWorkspaceState() {
-    const preserve = new Set(['page','previousPage','language','theme','compact','mode','source','entryIntent','libraryQuery','libraryFilter','library','libraryPath','activeLibraryId','config','status','profiles','session','busy','blockingBusy','backendError','inspecting','workbenchEpoch']);
+    graphicsState.records.clear(); graphicsState.current = null; graphicsState.ghostKey = '';
+    const preserve = new Set(['page','previousPage','language','theme','mode','source','entryIntent','libraryQuery','libraryFilter','library','libraryPath','activeLibraryId','config','status','profiles','session','busy','blockingBusy','backendError','inspecting','workbenchEpoch']);
     for (const [key,value] of Object.entries(profileWorkspaceDefaults)) if (!preserve.has(key)) state[key]=structuredClone(value);
     state.profileMissingTarget=null;
     state.workbenchEpoch=(state.workbenchEpoch || 0)+1;
@@ -1290,29 +1291,196 @@ async function loadModelData(positions = null) {
     try { const data = await api.request('model', { config: state.config, positions: positions || undefined }); state.modelData = data; state.modelPositions = data.native.state.positions.slice(); if (!state.modelSelection) state.modelSelection = data.model.links[0]?.name || ''; }
     finally { state.modelLoading = false; }
 }
+// Graphics readiness belongs to the preview, independently of native robot state.
+const graphicsState = {effectiveMode: 'normal', requestedMode: 'normal', requiresRestart: false, records: new Map(), current: null, ghostKey: '', status: null, actionError: ''};
+function graphicsModeLabel(mode) {
+    return ({normal: busyText('正常 GPU 三维', 'Normal GPU 3D'), compatibility: busyText('兼容三维', 'Compatibility 3D'), rescue: busyText('无三维救援', 'Rescue without 3D')})[mode] || mode;
+}
+function previewSlot() {
+    return state.page === 'description' ? 'description' : state.page === 'model' ? 'model' : 'workspace';
+}
+function previewRecord(host, payload) {
+    const key = previewSlot();
+    let record = graphicsState.records.get(key);
+    if (!record || record.payload !== payload) {
+        record = {key, payload, host, viewState: null, fault: null, report: null};
+        graphicsState.records.set(key, record);
+    }
+    record.host = host; graphicsState.current = record;
+    return record;
+}
+function disposeModelPreview() {
+    if (!modelView) return;
+    const record = graphicsState.current;
+    if (record?.payload === modelView.payload) record.viewState = modelView.captureViewState?.() || record.viewState;
+    const old = modelView; modelView = null; graphicsState.ghostKey = '';
+    old.dispose();
+}
+function graphicsAvailabilityProblem(requireGhost = false) {
+    const report = modelView?.getRenderState?.();
+    if (graphicsState.effectiveMode === 'rescue' || report?.status !== 'ready' || !report.modelLoaded || modelView?.gl?.isContextLost())
+        return busyText('三维预览不可用，请先恢复预览，再确认目标或路径', 'Restore the 3D preview before confirming a target or path');
+    const targetChanged = state.page === 'workbench' && state.workbenchTab === 'control' && !state.ghostRequestKey?.endsWith(':' + JSON.stringify(state.workbenchTargets));
+    if (requireGhost && (targetChanged || !graphicsState.ghostKey || graphicsState.ghostKey !== state.ghostRequestKey))
+        return busyText('正在绘制所选目标，请等待预览完成', 'Wait for the selected target preview to finish drawing');
+    return '';
+}
+function refreshGraphicsDependentActions() {
+    if ($('target-move')) $('target-move').disabled = !workbenchTargetMayMove();
+    if ($('target-draft-hint')) refreshWorkbenchTargetFields();
+    if ($('teach-play')) refreshTeachEndpointState();
+    if (state.page === 'calibration') { refreshCalibrationActionControls(); updateModelCalibrationTaskOverlay(); const resume = $('model-calibration-resume'); if (resume) resume.disabled = !!graphicsAvailabilityProblem(); }
+    if (state.page === 'geometry') updateWorkbenchLive();
+    const replay = $('model-calibration-replay-confirm');
+    if (replay && graphicsAvailabilityProblem()) replay.disabled = true;
+    for (const id of ['geometry-repeat-play', 'geometry-repeat-return']) { const node = $(id); if (node && graphicsAvailabilityProblem()) node.disabled = true; }
+}
+function graphicsActionsHtml() {
+    const descriptions = {
+        normal: busyText('使用显卡绘制，日常使用首选', 'Use the GPU for everyday model previews'),
+        compatibility: busyText('使用 CPU 软件绘制，适合显卡预览异常时使用；画质与刷新率较低', 'Use CPU software rendering if GPU previews fail, at lower resolution and frame rate'),
+        rescue: busyText('关闭三维预览，继续配置、查看数值和导出记录', 'Turn off 3D previews and keep configuration, numeric status and record export')
+    };
+    return '<div class="graphics-mode-options" role="group" aria-label="' + busyText('选择三维渲染方式', 'Choose a 3D rendering mode') + '">' +
+        ['normal', 'compatibility', 'rescue'].map(mode => '<button type="button" class="graphics-mode-option' + (graphicsState.requestedMode === mode ? ' active' : '') + '" data-graphics-mode="' + mode + '" aria-pressed="' + (graphicsState.requestedMode === mode) + '"><span class="graphics-mode-title"><strong>' + graphicsModeLabel(mode) + '</strong><span class="graphics-mode-check">' + icon('check') + '</span></span><span class="graphics-mode-description">' + descriptions[mode] + '</span></button>').join('') + '</div>' +
+        '<p class="hint graphics-security-note">' + busyText('兼容三维需确认软件 WebGL 的安全降级，渲染器沙箱仍保留；更换图形后端需要重启应用', 'Compatibility 3D requires confirmation of reduced software WebGL security; the renderer sandbox stays enabled. Changing the graphics backend requires an app restart') + '</p>' +
+        (graphicsState.requiresRestart ? '<div class="graphics-pending" role="status"><div><strong>' + busyText('待重启生效', 'Restart required') + ' · ' + graphicsModeLabel(graphicsState.requestedMode) + '</strong><p class="hint">' + busyText('当前仍使用', 'Still using') + ' ' + graphicsModeLabel(graphicsState.effectiveMode) + busyText('；请先结束运行会话，再手动重启应用', '; end the runtime session before restarting the app') + '</p></div><button type="button" class="button primary" data-graphics-restart ' + (active() || state.blockingBusy ? 'disabled' : '') + '>' + busyText('重启并使用', 'Restart with') + ' ' + graphicsModeLabel(graphicsState.requestedMode) + '</button></div>' : '') +
+        (graphicsState.actionError ? '<p class="parameter-error" role="alert">' + esc(graphicsState.actionError) + '</p>' : '');
+}
+function graphicsFailureHtml(record) {
+    const rescue = graphicsState.effectiveMode === 'rescue';
+    const title = rescue ? busyText('无三维救援模式', 'Rescue mode without 3D') : busyText('三维预览不可用', '3D preview unavailable');
+    const detail = record?.fault?.message || busyText('当前不创建三维渲染器', 'The 3D renderer is disabled');
+    return '<section class="graphics-failure" data-graphics-panel role="region" aria-label="' + title + '"><h3>' + title + '</h3><p>' +
+        busyText('配置、数值状态、记录和导出仍可使用；需要目标或路径预览的执行确认，请先恢复三维', 'Configuration, numeric status, records and exports remain available. Restore 3D before confirming motions that require a target or path preview') +
+        '</p><details><summary>' + busyText('错误详情', 'Error details') + '</summary><pre>' + esc(detail) + '</pre></details>' +
+        '<div class="workspace-actions"><button type="button" class="button" data-graphics-retry>' + busyText('重试三维预览', 'Retry 3D preview') + '</button><button type="button" class="button" data-graphics-diagnostics>' + busyText('查看图形诊断', 'View graphics diagnostics') +
+        '</button><button type="button" class="button" data-graphics-export>' + busyText('导出诊断', 'Export diagnostics') + '</button></div>' + graphicsActionsHtml() + '</section>';
+}
+function showGraphicsFailure(record) {
+    if (!record?.host?.isConnected) return;
+    record.host.innerHTML = graphicsFailureHtml(record);
+    bindGraphicsActions(record.host);
+    refreshGraphicsDependentActions();
+}
+function reportPreviewState(record, view, report) {
+    record.report = report;
+    if (report.status === 'ready' && report.modelLoaded) {
+        record.fault = null;
+        api.graphics?.report({...report, page: state.page}).catch(() => {});
+        refreshGraphicsDependentActions();
+    } else if (['failed', 'lost'].includes(report.status)) {
+        record.viewState = view?.captureViewState?.() || record.viewState;
+        record.fault = {message: report.error?.message || report.error || busyText('WebGL 图形上下文已失效', 'The WebGL context is unavailable'), category: 'graphics'};
+        api.graphics?.report({...report, page: state.page}).catch(() => {});
+        queueMicrotask(() => {
+            if (modelView !== view || graphicsState.current !== record) return;
+            disposeModelPreview(); showGraphicsFailure(record);
+        });
+    }
+}
+function failModelPreview(record, error, view, phase) {
+    record.viewState = view?.captureViewState?.() || record.viewState;
+    if (modelView === view) modelView = null;
+    view?.dispose(); graphicsState.ghostKey = '';
+    record.fault = {message: error.message || String(error), category: error.category || (phase === 'renderer' ? 'graphics' : 'model')};
+    api.graphics?.report({status: 'failed', page: state.page, phase, error: record.fault, diagnostics: error.diagnostics}).catch(() => {});
+    showGraphicsFailure(record);
+}
+async function refreshGraphicsStatus() {
+    if (!api.graphics?.status) return;
+    const status = await api.graphics.status();
+    graphicsState.status = status;
+    for (const key of ['effectiveMode', 'requestedMode', 'requiresRestart']) if (status[key] !== undefined) graphicsState[key] = status[key];
+    return status;
+}
+function mountCurrentPreview() {
+    if (state.page === 'model') return mountModelView();
+    if (state.page === 'description') return mountDescriptionView();
+    if (['workbench', 'geometry', 'calibration'].includes(state.page)) return mountWorkbenchView();
+}
+async function retryModelPreview() {
+    if (graphicsState.effectiveMode === 'rescue') return changeGraphicsMode(graphicsState.status?.backendMode || 'normal');
+    const record = graphicsState.current;
+    if (record) record.fault = null;
+    pageModelMount = null; workspaceMount = null; disposeModelPreview();
+    await mountCurrentPreview();
+}
+async function changeGraphicsMode(mode, restart = false) {
+    graphicsState.actionError = '';
+    try {
+        if (!api.graphics?.setMode) throw new Error(busyText('图形设置接口不可用，请使用完整应用启动', 'Graphics settings require the complete desktop application'));
+        if (restart && (active() || state.blockingBusy)) throw new Error(busyText('请先手动结束运行会话，再重启应用', 'End the running session manually before restarting'));
+        const result = await api.graphics.setMode(mode, {restart});
+        if (result?.canceled) return;
+        const previous = graphicsState.effectiveMode;
+        await refreshGraphicsStatus();
+        if (previous !== graphicsState.effectiveMode) {
+            pageModelMount = null; workspaceMount = null; disposeModelPreview();
+            if (graphicsState.current) graphicsState.current.fault = null;
+            await mountCurrentPreview();
+        }
+    } catch (error) { graphicsState.actionError = error.message; }
+    refreshGraphicsPanels();
+}
+function refreshGraphicsPanels() {
+    const body = $('graphics-settings-body');
+    if (body) { body.innerHTML = graphicsSettingsBodyHtml(); bindGraphicsActions(body); }
+    if (graphicsState.current?.fault || graphicsState.effectiveMode === 'rescue') showGraphicsFailure(graphicsState.current);
+}
+async function showGraphicsDiagnostics() {
+    try {
+        await refreshGraphicsStatus();
+        let dialog = $('graphics-diagnostics');
+        if (!dialog) { dialog = document.createElement('dialog'); dialog.id = 'graphics-diagnostics'; dialog.className = 'studio-dialog graphics-dialog'; document.body.append(dialog); }
+        dialog.innerHTML = '<h3>' + busyText('图形诊断', 'Graphics diagnostics') + '</h3><pre>' + esc(JSON.stringify(graphicsState.status, null, 2)) +
+            '</pre><div class="actions"><button type="button" class="button" data-graphics-export>' + busyText('导出诊断', 'Export diagnostics') +
+            '</button><button type="button" class="button" data-graphics-close>' + t('close') + '</button></div>';
+        bindGraphicsActions(dialog); if (!dialog.open) dialog.showModal();
+    } catch (error) { graphicsState.actionError = error.message; refreshGraphicsPanels(); }
+}
+function bindGraphicsActions(root = document) {
+    root.querySelectorAll('[data-graphics-mode]').forEach(button => button.onclick = () => changeGraphicsMode(button.dataset.graphicsMode));
+    root.querySelectorAll('[data-graphics-retry]').forEach(button => button.onclick = () => retryModelPreview());
+    root.querySelectorAll('[data-graphics-restart]').forEach(button => button.onclick = () => changeGraphicsMode(graphicsState.requestedMode, true));
+    root.querySelectorAll('[data-graphics-diagnostics]').forEach(button => button.onclick = showGraphicsDiagnostics);
+    root.querySelectorAll('[data-graphics-close]').forEach(button => button.onclick = () => button.closest('dialog').close());
+    root.querySelectorAll('[data-graphics-export]').forEach(button => button.onclick = async () => {
+        try { await api.graphics.exportDiagnostics(); }
+        catch (error) { graphicsState.actionError = error.message; refreshGraphicsPanels(); }
+    });
+}
+function graphicsSettingsBodyHtml() {
+    return '<p class="graphics-current-mode">' + busyText('当前使用', 'Currently using') + '<strong>' + graphicsModeLabel(graphicsState.effectiveMode) + '</strong></p>' + graphicsActionsHtml() +
+        '<div class="graphics-diagnostics-row"><div><h4>' + busyText('排查显示问题', 'Troubleshoot display issues') + '</h4><p class="hint">' + busyText('查看显卡、渲染后端和错误日志，或导出 JSON 诊断文件', 'Inspect the GPU, rendering backend and error logs, or export a JSON diagnostic file') + '</p></div><div class="workspace-actions"><button type="button" class="button" data-graphics-diagnostics>' + icon('diagnostics') + busyText('查看图形诊断', 'View graphics diagnostics') + '</button><button type="button" class="button" data-graphics-export>' + busyText('导出诊断文件', 'Export diagnostic file') + '</button></div></div>';
+}
 let pageModelMount = null;
 async function mountPageModelView(page, hostId, getPayload, configure) {
     const host = $(hostId), payload = getPayload();
     if (state.page !== page || !payload || !host) return;
     if (pageModelMount?.host === host && pageModelMount.payload === payload) return pageModelMount.promise;
     if (modelView?.container === host && modelView.payload === payload) return;
+    const record = previewRecord(host, payload);
+    if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
     const request = {host, payload}; pageModelMount = request;
     request.promise = (async () => {
-        let view;
+        let view, phase = 'renderer';
         const current = () => pageModelMount === request && state.page === page && $(hostId) === host && getPayload() === payload;
         try {
             if (!modelModule) modelModule = await import('./model-view.js');
             if (!current()) return;
-            modelView?.dispose();
-            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language);
+            disposeModelPreview();
+            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language, {mode: graphicsState.effectiveMode, onStatus: report => reportPreviewState(record, view, report)});
             modelView = view;
+            phase = 'model';
             await view.setModel(payload);
             if (!current() || modelView !== view) { view.dispose(); return; }
             configure(view);
+            if (record.viewState) view.restoreViewState(record.viewState);
+            view.renderOnce();
         } catch (error) {
-            view?.dispose();
-            if (modelView === view) modelView = null;
-            if (current()) toast('Model: ' + error.message, true);
+            if (current()) failModelPreview(record, error, view, phase);
+            else view?.dispose();
         } finally { if (pageModelMount === request) pageModelMount = null; }
     })();
     return request.promise;
@@ -1450,7 +1618,7 @@ function workbenchTargetProblem() {
 }
 function workbenchTargetMayMove() {
     const x = state.telemetry || {};
-    return workbenchTargetFeedbackReady() && !workbenchTargetProblem() && x.robot_state === 'ACTIVE'
+    return workbenchTargetFeedbackReady() && !workbenchTargetProblem() && !graphicsAvailabilityProblem(true) && x.robot_state === 'ACTIVE'
         && !workbenchRecoveryRequired() && !modelCalibrationActive() && x.gravity_verification?.active !== true
         && !['recording', 'playing'].includes(x.teach_replay?.phase)
         && ['RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_TRACKING'].includes(x.impedance_mode)
@@ -1477,7 +1645,7 @@ function refreshWorkbenchTargetFields(writeInputs = false) {
             if ((writeInputs || initialized) && document.activeElement !== input && Number.isFinite(value)) input.value = (value * spec.factor).toFixed(3);
         }
     }
-    const problem = workbenchTargetProblem();
+    const problem = workbenchTargetProblem() || graphicsAvailabilityProblem(true);
     if ($('target-draft-hint')) $('target-draft-hint').textContent = problem || (state.workbenchTargetDirty
         ? busyText('目标草稿已编辑 · 青绿色虚影仅预览，点击移动才执行', 'Target draft edited · the teal ghost is preview only; Move sends the command')
         : busyText('拖动滑条预览，点击“移动到目标”执行', 'Target anchored to live feedback · telemetry leaves the draft unchanged; disconnect clears it'));
@@ -2769,7 +2937,7 @@ function refreshCalibrationActionControls() {
         en ? 'Requires an active robot and idle calibration' : '需要机械臂已使能且当前无运行中的标定任务');
     setButton('model-calibration-alignment-begin', connected && active && live && phase === 'waiting_replay_confirmation',
         en ? 'Requires an active robot and pending replay' : '需要机械臂已使能并等待轨迹回放确认');
-    setButton('model-calibration-replay-confirm', connected && active && live && phase === 'waiting_replay_confirmation'
+    setButton('model-calibration-replay-confirm', connected && active && live && !graphicsAvailabilityProblem() && phase === 'waiting_replay_confirmation'
         && (!state.telemetry?.model_calibration?.source_task_id || calibrationAlignment(state.telemetry.model_calibration).aligned),
         en ? 'Check robot activation and replay alignment first' : '请先使能机械臂并检查回放起点对齐状态');
     setButton('model-calibration-apply', connected && inactive && live && !modelCalibrationActive(),
@@ -3030,6 +3198,7 @@ function replayStartProblem(direction=state.teachDirection) {
     if (!endpoint.available) return busyText('轨迹端点数据不完整，请重新读取轨迹', 'The trajectory endpoints are incomplete; read the trajectory again');
     if (!endpoint.fresh) return busyText('等待新鲜反馈后检查起点对齐', 'Wait for fresh feedback to check starting alignment');
     if (!endpoint.aligned) return busyText('尚未对齐起点，请填入目标草稿后到控制页移动', 'The starting endpoint is not aligned; fill the target draft and move in Control');
+    if (graphicsAvailabilityProblem(true)) return graphicsAvailabilityProblem(true);
     return '';
 }
 function replayMayStart(direction=state.teachDirection) {
@@ -3150,6 +3319,7 @@ function teachNameDialog(title, initial, handler) {
     $('teach-name-okay').onclick = () => { const name = $('teach-name-input').value.trim(); if (!name) return; dialog.close(); blockingOperation(busyText('正在保存轨迹...', 'Saving trajectory...'), () => handler(name)); };
 }
 function teachSafetyConfirm(direction) {
+    if (graphicsAvailabilityProblem(true)) return;
     const dialog=$('confirm-dialog');if(!dialog||dialog.open)return;
     const problem=replayInputProblem(direction);
     if(problem)return toast(problem,true);
@@ -3265,11 +3435,16 @@ async function updateStartGhost(force = false) {
     const key = q ? `${state.config.profile}:${state.page}:${state.workbenchTab}:${state.calibrationEntry}:${epoch}:${JSON.stringify(q)}` : '';
     if (!force && key === state.ghostRequestKey) return;
     state.ghostRequestKey = key;
+    graphicsState.ghostKey = '';
     const request = ++ghostGeneration;
     if (!q) { modelView.clearGhostPose?.(); return; }
     try {
         const native = await api.request('model_preview', { config: state.config, positions: q });
-        if (request === ghostGeneration && modelView === view && epoch === state.workbenchEpoch) modelView.setGhostPose?.(native);
+        if (request === ghostGeneration && modelView === view && epoch === state.workbenchEpoch) {
+            modelView.setGhostPose?.(native);
+            if (view.renderOnce?.()) graphicsState.ghostKey = key;
+            refreshGraphicsDependentActions();
+        }
     } catch (error) { if (request === ghostGeneration) modelView?.clearGhostPose?.(); }
 }
 
@@ -3515,23 +3690,26 @@ function wireGeometry() {
     };
     wireReplaySelection('geometry', () => refreshGeometryPanel());
     if ($('geometry-repeat-return')) $('geometry-repeat-return').onclick = async () => {
+        if (graphicsAvailabilityProblem()) return;
         const status = state.telemetry?.teach_replay || state.teachRuntime || {};
         if (!replayTrajectoryAvailable(status)) return toast(tr('请先完成或加载轨迹', 'Record or load a trajectory first'), true);
         if (!state.geometryContactReady) return toast(tr('请先完成触点到安全点的示教', 'Record a contact-to-safe trajectory first'), true);
         if (!await safetyConfirmation(tr('沿示教轨迹撤离到安全点 A', 'Withdraw to safe point A'),
             tr('此操作仅用于机械臂当前停在触点 B 时，将从 B 正放到安全点 A，请确认当前位置在 B 附近、路径无碰撞且人员远离', 'Use only if the arm is currently at contact B: the taught path will play forward to safe point A. Confirm clear motion and an empty workspace'))) return;
         await blockingOperation(tr('正在撤离到安全点', 'Withdrawing to safe point'), async () => {
+            if (graphicsAvailabilityProblem()) return;
             const response = await geometryRepeatRequest('play', { kind: 'withdraw', rate: state.geometryRate, ...replaySelection('geometry'), confirmed: true });
             state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; refreshGeometryPanel();
         });
     };
     if ($('geometry-repeat-play')) $('geometry-repeat-play').onclick = async () => {
+        if (graphicsAvailabilityProblem()) return;
         for (const [id, key, min, max] of limits) { const el = $(id); const value = Number(el.value); if (!Number.isFinite(value) || value < min || value > max || (key === 'geometryCycles' && !Number.isInteger(value))) { toast(tr('测试参数无效', 'Invalid test parameter'), true); el.focus(); return; } state[key] = value; }
         const status = state.telemetry?.teach_replay || state.teachRuntime || {};
         if (!replayTrajectoryAvailable(status) || !state.geometryContactReady) return toast(tr('请先录制或加载触点到安全点的轨迹', 'Record or load a contact-to-safe trajectory first'), true);
         if (!await safetyConfirmation(tr('确认自动重复到位测试', 'Confirm automatic repeatability test'),
             tr('机械臂将自动往返运动，请确保整条轨迹已在低速下验证，并确认 B 点不会对刚性针尖产生危险压力，周围没有人员，系统不会自动识别碰撞', 'The robot will travel forward and back automatically; verify the full path and safe clearance at B, keep all people outside the workspace, and note that collision detection is unavailable'))) return;
-        await blockingOperation(tr('正在开始重复测试', 'Starting repeatability test'), async () => { const response = await geometryRepeatRequest('play', { kind: 'cycle', cycles: state.geometryCycles, rate: state.geometryRate, ...replaySelection('geometry'), endpoint_dwell_s: state.geometryDwell, confirmed: true }); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; refreshGeometryPanel(); });
+        await blockingOperation(tr('正在开始重复测试', 'Starting repeatability test'), async () => { if (graphicsAvailabilityProblem()) return; const response = await geometryRepeatRequest('play', { kind: 'cycle', cycles: state.geometryCycles, rate: state.geometryRate, ...replaySelection('geometry'), endpoint_dwell_s: state.geometryDwell, confirmed: true }); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; refreshGeometryPanel(); });
     };
     btn('geometry-repeat-stop', async () => {
         const response = await geometryRepeatRequest('stop'); state.teachRuntime = response; if (state.telemetry) state.telemetry.teach_replay = response; refreshGeometryPanel();
@@ -3635,25 +3813,28 @@ async function mountWorkbenchView() {
     if (!['workbench', 'geometry', 'calibration'].includes(page) || !payload || !host) return;
     if (workspaceMount?.host === host && workspaceMount.payload === payload) return workspaceMount.promise;
     if (modelView?.container === host && modelView.payload === payload) return;
+    const record = previewRecord(host, payload);
+    if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
     const request = {host, payload}; workspaceMount = request;
     request.promise = (async () => {
-        let view;
+        let view, phase = 'renderer';
         const current = () => workspaceMount === request && $('workbench-viewport') === host && state.modelData === payload && state.page === page;
         try {
             if (!modelModule) modelModule = await import('./model-view.js');
             if (!current()) return;
-            modelView?.dispose();
-            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language);
+            disposeModelPreview();
+            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language, {mode: graphicsState.effectiveMode, onStatus: report => reportPreviewState(record, view, report)});
             modelView = view;
+            phase = 'model';
             await view.setModel(payload);
             if (!current() || modelView !== view) { view.dispose(); return; }
             view.setLayers({visual:true, collision:false, linkFrames:false, jointAxes:false, com:false, inertia:false, labels:false});
+            if (record.viewState) view.restoreViewState(record.viewState);
+            view.renderOnce();
             updateWorkbenchModel(); updateModelCalibrationComparison(); updateStartGhost(true);
         } catch (error) {
-            if (current()) {
-                if (modelView === view) {view?.dispose(); modelView = null;}
-                toast((state.language === 'en' ? 'Workspace model: ' : '工作台模型: ') + error.message, true);
-            }
+            if (current()) failModelPreview(record, error, view, phase);
+            else view?.dispose();
         } finally { if (workspaceMount === request) workspaceMount = null; }
     })();
     return request.promise;
@@ -3733,8 +3914,8 @@ function updateWorkbenchLive() {
         update('geometry-repeat-mark', phase === 'recording' && state.geometryRepeatSupported === true);
         update('geometry-load-traj', connected && !running && !!state.geometrySelectedId && state.geometryRepeatSupported === true);
         update('geometry-save-traj', connected && phase === 'ready' && state.geometryContactReady && state.geometryRepeatSupported === true);
-        update('geometry-repeat-return', active && replayTrajectoryAvailable(x.teach_replay) && state.geometryContactReady && state.geometryRepeatSupported === true);
-        update('geometry-repeat-play', active && replayTrajectoryAvailable(x.teach_replay) && state.geometryContactReady && state.geometryRepeatSupported === true);
+        update('geometry-repeat-return', active && !graphicsAvailabilityProblem() && replayTrajectoryAvailable(x.teach_replay) && state.geometryContactReady && state.geometryRepeatSupported === true);
+        update('geometry-repeat-play', active && !graphicsAvailabilityProblem() && replayTrajectoryAvailable(x.teach_replay) && state.geometryContactReady && state.geometryRepeatSupported === true);
         update('geometry-repeat-stop', phase === 'playing' && state.geometryRepeatSupported === true);
         if (state.geometryTab === 'repeat') {
             refreshReplaySelection('geometry', x.teach_replay);
@@ -3838,7 +4019,7 @@ function updateModelCalibrationLive() {
         const body = $('model-calibration-align-rows');
         if (body) body.innerHTML = calibrationAlignmentRowsHtml(aligned);
         const start = $('model-calibration-replay-confirm');
-        if (start) start.disabled = !aligned.aligned;
+        if (start) start.disabled = !aligned.aligned || !!graphicsAvailabilityProblem();
     }
     updateModelCalibrationComparison();
 }
@@ -3867,6 +4048,7 @@ function updateModelCalibrationTaskOverlay() {
     $('model-calibration-task-stop-teach').hidden = status.phase !== 'teaching';
     $('model-calibration-task-pause').hidden = !['gain_adaptation', 'static_reverse', 'static_forward', 'gravity_fitting', 'friction_reverse_slow', 'friction_forward_slow', 'friction_reverse_fast', 'friction_forward_fast', 'friction_fitting'].includes(status.phase);
     $('model-calibration-task-resume').hidden = status.phase !== 'paused';
+    $('model-calibration-task-resume').disabled = !!graphicsAvailabilityProblem();
     $('model-calibration-task-hold').disabled = state.telemetry?.robot_state !== 'ACTIVE';
     $('model-calibration-task-disable').disabled = state.telemetry?.robot_state === 'INACTIVE';
 }
@@ -4030,6 +4212,7 @@ function captureModelCalibrationOptions({ validate = true } = {}) {
     return { ...state.modelCalibrationOptions };
 }
 function modelCalibrationReplayConfirm() {
+    if (graphicsAvailabilityProblem()) return;
     const dialog = $('confirm-dialog');
     const plan = currentModelCalibration() || {};
     if (plan.source_task_id && !calibrationAlignment(plan).aligned) { showPriorityError(state.language === 'en' ? 'Replay start not aligned. Use guided alignment and wait for fresh feedback.' : '当前姿态与回放起点不匹配：请先完成引导对齐，并等待新鲜的关节反馈'); return; }
@@ -4047,15 +4230,16 @@ function modelCalibrationReplayConfirm() {
         ? `${state.language === 'en' ? 'Native plan' : '原生计划'} · ${esc(gainPurposeLabel(state.gainMode === 'all' ? (state.language === 'en' ? 'All four uses' : '全部四用途') : state.gainMode))} · ${oneWay.toFixed(1)} s ${state.language === 'en' ? 'trajectory traversal' : '轨迹单程'}`
         : `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 8 × ${oneWay.toFixed(1)} + 2 × 1.15 × ${poses} + 2`;
     dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Automatic actuator gain calibration' : '执行器增益自动标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? 'The native task probes actuator response, searches candidates and validates each selected gain use. No-contact tracking, hold stability and external-interaction qualification are reported separately' : '原生任务先探测执行器响应，再搜索候选并逐项验收所选增益用途；无接触跟踪、保持稳定性与外部交互资格分别记录') : (state.language === 'en' ? 'Six traversals: reverse/forward static holds, then reverse/forward at half speed and full planned speed' : '六次遍历：双向静态保持，随后半速双向、计划速度双向；控制限幅和取消路径保持启用')}</p><div class="callout"><b>${state.language === 'en' ? gainPlan ? 'Planned automatic-stage upper bound' : 'Estimated automatic stage' : gainPlan ? '自动阶段计划上限估时' : '预计自动阶段'}：${estimate > 0 ? estimate.toFixed(1) + ' s' : (state.language === 'en' ? 'Updated by the native plan after starting' : '开始后由原生计划更新')} · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${estimate > 0 ? totalEstimate.toFixed(1) : teaching.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'The native estimate includes the planned probe and validation stages; feedback waiting and settling can extend actual duration' : '估时来自原生任务计划，覆盖探测与验收阶段；实际反馈等待与停稳可能延长耗时'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
-    dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked; $('model-calibration-confirm-cancel').onclick = () => dialog.close();
-    $('model-calibration-confirm-start').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode, ...(state.calibrationEntry === 'gain' && state.gainRequirements ? {gain_requirements:readGainRequirements()} : {}) })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
+    dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked || !!graphicsAvailabilityProblem(); $('model-calibration-confirm-cancel').onclick = () => dialog.close();
+    $('model-calibration-confirm-start').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode, ...(state.calibrationEntry === 'gain' && state.gainRequirements ? {gain_requirements:readGainRequirements()} : {}) })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
 }
 async function resumeModelCalibrationWithConfirmation() {
+    if (graphicsAvailabilityProblem()) return null;
     try {
         const result = await workbenchRequest('model_calibration_resume', modelCalibrationTaskParams({ confirmed: false })); if (state.telemetry) state.telemetry.model_calibration = result; updateModelCalibrationTaskOverlay(); return result;
     } catch (error) {
         if (!String(error.message).includes('explicit resume confirmation')) { toast(error, true); return null; }
-        const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('resumeTask')}</h3><p>${state.language === 'en' ? 'The robot moved while paused; confirm the current position is safely consistent with the paused path before continuing' : '暂停期间机械臂位置发生变化，请确认当前位置与暂停路径安全一致后继续'}</p><div class="actions"><button id="model-cal-resume-cancel" class="button">${t('cancel')}</button><button id="model-cal-resume-confirm" class="button danger">${state.language === 'en' ? 'Confirm and continue' : '确认继续'}</button></div>`; dialog.showModal(); $('model-cal-resume-cancel').onclick = () => dialog.close(); $('model-cal-resume-confirm').onclick = () => { dialog.close(); modelCalibrationQuick('model_calibration_resume', { confirmed: true }); };
+        const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('resumeTask')}</h3><p>${state.language === 'en' ? 'The robot moved while paused; confirm the current position is safely consistent with the paused path before continuing' : '暂停期间机械臂位置发生变化，请确认当前位置与暂停路径安全一致后继续'}</p><div class="actions"><button id="model-cal-resume-cancel" class="button">${t('cancel')}</button><button id="model-cal-resume-confirm" class="button danger">${state.language === 'en' ? 'Confirm and continue' : '确认继续'}</button></div>`; dialog.showModal(); $('model-cal-resume-cancel').onclick = () => dialog.close(); $('model-cal-resume-confirm').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); modelCalibrationQuick('model_calibration_resume', { confirmed: true }); };
         return null;
     }
 }
@@ -4073,8 +4257,7 @@ function diagnosticsPage() {
 
 }
 function settingsPage() {
-    const layout = `<section class="card"><div class="card-head">${icon('workbench')}<h3>${busyText('布局', 'Layout')}</h3></div><div class="card-body"><label class="toggle"><input id="compact-layout" type="checkbox" ${state.compact ? 'checked' : ''}>${busyText('紧凑布局', 'Compact layout')}</label></div></section>`;
-    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid">${card('appearance', 'appearanceSub', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div>`)}${card('language', 'languageSub', 'settings', `<div class="segmented"><button data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}${layout}</div><div class="callout">${t('prefsNote')}</div>`;
+    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid">${card('appearance', 'appearanceSub', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div>`)}${card('language', 'languageSub', 'settings', `<div class="segmented"><button data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}<section class="card graphics-settings"><div class="card-head">${icon('model')}<div><h3>${busyText('三维渲染', '3D rendering')}</h3><p>${busyText('选择模型预览的渲染方式', 'Choose how model previews are rendered')}</p></div></div><div class="card-body" id="graphics-settings-body">${graphicsSettingsBodyHtml()}</div></section></div><div class="callout">${t('prefsNote')}</div>`;
 }
 
 async function mountDescriptionView() {
@@ -4338,7 +4521,7 @@ function render() {
     if (renderedPage === state.page && refreshWorkspacePanel()) return;
     workspaceMount = null;
     pageModelMount = null;
-    if (modelView) { modelView.dispose(); modelView = null; }
+    disposeModelPreview();
     const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, geometry: geometryPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
     const factory = pages[state.page] || startPage;
     const pageChanged = renderedPage !== state.page;
@@ -4428,7 +4611,7 @@ async function refreshProfiles() {
 function adoptInspectionInfo(info) {
     const identity=info.model_identity || null;
     if(identity && state.modelIdentity && JSON.stringify(identity)!==JSON.stringify(state.modelIdentity)) {
-        pageModelMount=null;workspaceMount=null;modelView?.dispose();modelView=null;
+        pageModelMount=null;workspaceMount=null;disposeModelPreview();graphicsState.records.clear();graphicsState.current=null;
         state.modelData=null;state.modelPositions=[];state.modelSelection='';state.modelVisibility={links:{},linkFrames:{},joints:{}};
         state.workbenchTargets=[];state.workbenchTargetEpoch=null;state.pendingTarget=null;state.pendingMotionId=null;
         state.modelCalibrationPreviewAlignment=null;state.modelCalibrationComparisonKey='';state.ghostRequestKey='';
@@ -4483,6 +4666,7 @@ async function navigate(page) {
     }
 }
 function bindPage() {
+    bindGraphicsActions();
     document.querySelectorAll('[data-start-intent]').forEach(button => button.onclick = () => operation(() => startIntent(button.dataset.startIntent)));
     bindProfileManager($('page'));
     if ($('library-home')) $('library-home').onclick = () => operation(resetToStart);
@@ -4736,8 +4920,9 @@ function bindPage() {
             state.commandState = 'edited'; state.pendingTarget = null; state.pendingMotionId = null; refreshWorkbenchTargetFields(true); queueWorkbenchTargetGhost();
         };
         if ($('target-move')) $('target-move').onclick = () => blockingOperation(busyText('正在移动到目标', 'Moving to the target'), async () => {
+            if (graphicsAvailabilityProblem(true)) return;
             updateWorkbenchSpeed($('workbench-speed')?.value ?? state.speedScale);
-            if (!workbenchTargetMayMove()) throw new Error(workbenchTargetProblem() || busyText('请先使能并进入合法跟踪状态', 'Activate and enter a configured tracking state first'));
+            if (!workbenchTargetMayMove()) throw new Error(workbenchTargetProblem() || graphicsAvailabilityProblem(true) || busyText('请先使能并进入合法跟踪状态', 'Activate and enter a configured tracking state first'));
             const epoch = state.workbenchEpoch, target = state.workbenchTargets.slice();
             state.commandState = 'submitting'; refreshWorkbenchTargetFields();
             try {
@@ -5036,12 +5221,12 @@ function bindPage() {
         if ($('model-calibration-restore-config')) $('model-calibration-restore-config').onclick = () => blockingOperation(busyText('正在恢复保存前配置...', 'Restoring pre-save configuration...'), async () => { const directory = state.modelCalibrationDirectory || currentModelCalibration()?.directory; if (!directory) throw new Error('model calibration task directory is missing'); const result = await api.request('model_calibration_restore_config', { config: state.config, directory }); state.modelCalibrationSaved = null; state.modelCalibrationSavePreview = null; toast(`Restored ${result.core_path}`); render(); });
         if (state.page === 'diagnostics') setTimeout(drawWorkbenchChart, 0);
         setTimeout(updateWorkbenchControlState, 0);
+        refreshGraphicsDependentActions();
     }
     document.querySelectorAll('[data-mode]').forEach(b => { b.disabled = active(); b.onclick = () => { if (active()) return; state.mode = b.dataset.mode; operation(save); render(); }; });
     if (['robot', 'diagnostics'].includes(state.page) && active()) document.querySelectorAll('#page input,#page select,#source-builtin,#source-external,#browse-profile,#refresh-profiles,#add-root').forEach(e => e.disabled = true);
     if ($('launch-session')) { $('launch-session').disabled = state.busy || active() || !state.info?.available?.[state.mode]; $('launch-session').onclick = () => blockingOperation(busyText('正在检查启动条件...', 'Checking launch conditions...'), async () => { await inspect(); if (!state.info?.available?.[state.mode]) throw new Error(t('modeMissing')); hardwareConfirm(); }); }
     if ($('check-now')) $('check-now').onclick = () => blockingOperation(busyText('正在检查环境与资源...', 'Checking environment and resources...'), async () => { await inspect(); render(); });
-    if ($('compact-layout')) $('compact-layout').onchange = () => operation(async () => { state.compact = $('compact-layout').checked; document.querySelector('.app').classList.toggle('compact', state.compact); await save(); });
     document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
 }
@@ -5312,8 +5497,9 @@ function onEvent(event) {
 async function boot() {
     if (!api) { $('app').innerHTML = '<div class="empty-state">请通过 ./launch.sh 启动桌面应用 / Start the desktop application using ./launch.sh</div>'; return; }
     try {
-        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.compact = prefs.compact === true; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
+        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
         state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; state.source = 'builtin'; state.page = 'start';
+        await refreshGraphicsStatus();
         applyTheme(); document.documentElement.lang = state.language; shell();
         $('priority-error-ack').onclick = acknowledgePriorityError;
         api.onEvent(onEvent);
@@ -5322,6 +5508,7 @@ async function boot() {
     } catch (error) { state.backendError = error.message; if ($('page')) { render(); toast(error, true); } }
 }
 window.addEventListener('resize', () => { if (state.page === 'run') { try { fit?.fit(); } catch { } } if (['model', 'workbench', 'geometry', 'calibration'].includes(state.page)) modelView?.resize(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) updateStartGhost(true); });
 setInterval(refreshTelemetryFreshness, 200);
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme());
 boot();

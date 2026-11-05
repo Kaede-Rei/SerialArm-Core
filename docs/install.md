@@ -67,6 +67,8 @@ DM-Arm 支持包含达妙驱动与配套机械臂示例；自己的机械臂按 
 
 Electron 复用 `apps/launcher/node_modules/electron/dist` 已安装的运行时，不重复下载
 
+正常 GPU 与兼容三维使用同一份 Electron 运行时；安装检查和打包前检查会核对 ANGLE 与 SwiftShader 所需文件，打包时完整保留 Electron 自带的图形运行库，不要求另外安装 Mesa 软件渲染包
+
 ```bash
 # 只复用与源码一致的独立安装，不自动重建
 ./build_linux.sh --reuse-install
@@ -127,6 +129,27 @@ sudo apt install ros-humble-ros2-control ros-humble-ros2-controllers \
 ```
 
 Release 前在不含 ROS2 的 Ubuntu 22.04 环境检查 GUI、模型、Profile、Terminal 和 Python；若发布适配层，再单独检查 ROS2 与 MoveIt
+
+## 图形启动与诊断
+
+GUI 默认走正常 GPU 路径，不附加兼容后端参数；源码启动可显式选择图形模式
+
+```bash
+./launch.sh --graphics-mode=normal
+# 主动接受较低的软件 WebGL 安全保证，使用兼容三维
+./launch.sh --graphics-mode=compatibility
+./launch.sh --graphics-mode=rescue
+```
+
+兼容模式使用 Electron 自带的 ANGLE SwiftShader 软件后端，启用 Chromium 的 `enable-unsafe-swiftshader` 会降低软件 WebGL 在 GPU 进程中的安全保证，Renderer 沙箱仍启用；应用内切换时需要确认该影响，命令行显式选择 `--graphics-mode=compatibility` 也视为主动同意
+
+无三维救援模式用于保留配置、数值状态、记录与导出，不能替代姿态预览确认
+
+应用内也可从设置或预览故障面板切换模式；图形后端改变后需重启，有运行会话时不会自动退出或提交停放命令
+
+WebGL 初始化失败时先在预览区域打开图形诊断，可查看并导出 WebGL2、GPU、驱动、后端、启动参数、运行库与日志信息，再尝试重试或兼容模式；详细操作见 [三维兼容与恢复](launcher.md#三维兼容与恢复)
+
+后台模型数据检查通过只表示模型能加载；图形启动检查还需实际创建渲染器、加载模型并完成绘制，模拟初始化失败与实际图形后端检查分别记录
 
 ## sudo 与日志
 

@@ -79,50 +79,185 @@ function material(rgba, collision=false) {
   });
 }
 
+function disposeObject(object, {geometry = true, textures = true} = {}) {
+  const geometries = new Set(), materials = new Set(), images = new Set();
+  object?.traverse(node => {
+    if (geometry && node.geometry) geometries.add(node.geometry);
+    for (const item of (Array.isArray(node.material) ? node.material : [node.material])) {
+      if (!item) continue;
+      materials.add(item);
+      if (textures) for (const value of Object.values(item)) if (value?.isTexture) images.add(value);
+    }
+    if (textures && node.userData?.texture) images.add(node.userData.texture);
+  });
+  for (const value of geometries) value.dispose();
+  for (const value of materials) value.dispose();
+  for (const value of images) value.dispose();
+}
+
+function contextDiagnostics(gl) {
+  const debug = gl.getExtension('WEBGL_debug_renderer_info');
+  return {
+    webgl2: typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext,
+    vendor: gl.getParameter(gl.VENDOR), renderer: gl.getParameter(gl.RENDERER),
+    unmaskedVendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : null,
+    unmaskedRenderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : null,
+    version: gl.getParameter(gl.VERSION), shadingLanguageVersion: gl.getParameter(gl.SHADING_LANGUAGE_VERSION),
+    attributes: gl.getContextAttributes(), maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+  };
+}
+
 export class SerialArmModelView {
-  constructor(container, resourceReader, language = 'zh') {
+  constructor(container, resourceReader, language = 'zh', {mode = 'normal', onStatus} = {}) {
     this.container = container;
     this.resourceReader = resourceReader;
     this.language = language;
+    this.mode = mode === 'compatibility' ? 'compatibility' : 'normal';
+    this.onStatus = onStatus;
+    this.disposed = false; this.running = true; this.needsRender = true;
+    this.modelGeneration = 0; this.drawCount = 0; this.modelLoaded = false;
+    this.status = 'initializing'; this.error = null; this.suspended = false;
+    this.diagnostics = {threeRevision: THREE.REVISION, mode: this.mode, creationErrors: []};
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(42, 1, 0.002, 100);
     // URDF and the robot workspace use Z-up; OrbitControls defaults to Y-up
     this.camera.up.set(0, 0, 1);
     this.camera.position.set(1.2, -0.9, 0.8);
-    this.renderer = new THREE.WebGLRenderer({antialias:true, alpha:true, powerPreference:'high-performance'});
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.setClearColor(0x000000, 0);
-    Object.assign(this.renderer.domElement.style,{display:'block',width:'100%',height:'100%',maxWidth:'100%',maxHeight:'100%'});
-    container.replaceChildren(this.renderer.domElement);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true;
-    this.controls.dampingFactor = 0.09;
-    this.controls.enableRotate = true;
-    this.controls.enablePan = true;
-    this.controls.enableZoom = true;
-    this.controls.screenSpacePanning = true;
-    this.controls.zoomToCursor = true;
-    this.controls.minPolarAngle = 0.001;
-    this.controls.maxPolarAngle = Math.PI - 0.001;
-    this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
-    this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
-    this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
-    this.controls.target.set(0,0,0.2);
-    this.smoothZoom = new SmoothModelZoom(this.controls);
-    this.cameraTransition = new ModelCameraTransition(this.controls);
-    this.installCameraTools();
-    this.root = new THREE.Group();
-    this.scene.add(this.root);
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x29313a, 2.3));
-    const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2,2,3); this.scene.add(key);
-    this.grid = new THREE.GridHelper(2.5, 25, 0x6b7280, 0x343841); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
-    this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
-    this.comGroup = new THREE.Group(); this.root.add(this.comGroup);
-    this.layers = {visual:true, collision:false, linkFrames:false, jointAxes:true, com:false, inertia:false, labels:false};
-    this.inertiaSource = 'urdf';
-    this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
-    this.running = true; this.animate();
+    this.canvas = document.createElement('canvas');
+    this.onCreationError = event => this.diagnostics.creationErrors.push(String(event.statusMessage || 'WebGL context creation failed'));
+    this.onContextLost = event => {
+      event.preventDefault();
+      if (!this.disposed) this.failGraphics(new Error(event.statusMessage || 'WebGL context lost'), 'context', 'lost');
+    };
+    this.canvas.addEventListener('webglcontextcreationerror', this.onCreationError);
+    this.canvas.addEventListener('webglcontextlost', this.onContextLost);
+    try {
+      const attributes = {antialias: this.mode !== 'compatibility', alpha: true};
+      this.diagnostics.requestedAttributes = attributes;
+      // One explicit WebGL2 request records the browser's creation error and avoids
+      // Three.js trying a second context with different attributes after failure.
+      this.gl = this.canvas.getContext('webgl2', attributes);
+      if (!this.gl) throw new Error('WebGL2 context creation failed');
+      Object.assign(this.diagnostics, contextDiagnostics(this.gl));
+      this.renderer = new THREE.WebGLRenderer({canvas: this.canvas, context: this.gl, ...attributes});
+      this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, this.mode === 'compatibility' ? 1 : 2));
+      this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      this.renderer.setClearColor(0x000000, 0);
+      Object.assign(this.renderer.domElement.style,{display:'block',width:'100%',height:'100%',maxWidth:'100%',maxHeight:'100%'});
+      container.replaceChildren(this.renderer.domElement);
+      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+      this.controls.enableDamping = true;
+      this.controls.dampingFactor = 0.09;
+      this.controls.enableRotate = true;
+      this.controls.enablePan = true;
+      this.controls.enableZoom = true;
+      this.controls.screenSpacePanning = true;
+      this.controls.zoomToCursor = true;
+      this.controls.minPolarAngle = 0.001;
+      this.controls.maxPolarAngle = Math.PI - 0.001;
+      this.controls.mouseButtons.LEFT = THREE.MOUSE.ROTATE;
+      this.controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
+      this.controls.mouseButtons.RIGHT = THREE.MOUSE.PAN;
+      this.controls.target.set(0,0,0.2);
+      this.smoothZoom = new SmoothModelZoom(this.controls);
+      this.cameraTransition = new ModelCameraTransition(this.controls);
+      this.installCameraTools();
+      this.root = new THREE.Group();
+      this.scene.add(this.root);
+      this.scene.add(new THREE.HemisphereLight(0xffffff, 0x29313a, 2.3));
+      const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2,2,3); this.scene.add(key);
+      this.grid = new THREE.GridHelper(2.5, 25, 0x6b7280, 0x343841); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
+      this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
+      this.comGroup = new THREE.Group(); this.root.add(this.comGroup);
+      this.layers = {visual:true, collision:false, linkFrames:false, jointAxes:true, com:false, inertia:false, labels:false};
+      this.inertiaSource = 'urdf';
+      this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
+      this.onControlsChange = () => this.requestRender();
+      this.controls.addEventListener('change', this.onControlsChange);
+      this.controls.addEventListener('start', this.onControlsChange);
+      this.controls.addEventListener('end', this.onControlsChange);
+      this.controls.addEventListener('zoom-input', this.onControlsChange);
+      this.onVisibilityChange = () => {
+        if (document.hidden) this.stopScheduledDraw();
+        else this.lastFrameTime = undefined;
+        this.requestRender();
+      };
+      document.addEventListener('visibilitychange', this.onVisibilityChange);
+      if (globalThis.IntersectionObserver) {
+        this.intersectionObserver = new IntersectionObserver(entries => {
+          this.offscreen = !entries[0]?.isIntersecting;
+          if (this.offscreen) this.stopScheduledDraw();
+          this.requestRender();
+        });
+        this.intersectionObserver.observe(container);
+      }
+      this.resize();
+    } catch (cause) {
+      const failure = new Error(cause?.message || String(cause), {cause});
+      failure.name = 'GraphicsError'; failure.category = 'graphics'; failure.code = 'GRAPHICS_INITIALIZATION_FAILED';
+      this.failGraphics(failure, 'initialization');
+      failure.diagnostics = structuredClone(this.diagnostics);
+      this.releaseResources();
+      throw failure;
+    }
+  }
+
+  getRenderState() {
+    let meshCount = 0;
+    this.root?.traverse(node => { if (node.isMesh && node.userData.layer === 'visual') meshCount++; });
+    return {status: this.status, mode: this.mode, drawCount: this.drawCount, modelLoaded: this.modelLoaded,
+      meshCount, renderCalls: this.renderer?.info.render.calls || 0, triangles: this.renderer?.info.render.triangles || 0,
+      suspended: this.suspended, error: this.error ? {...this.error} : null,
+      diagnostics: structuredClone(this.diagnostics)};
+  }
+
+  emitStatus() {
+    try { this.onStatus?.(this.getRenderState()); }
+    catch (error) { console.error('Model view status handler failed', error); }
+  }
+
+  failGraphics(error, phase = 'render', status = 'failed') {
+    if (this.disposed || ['failed', 'lost'].includes(this.status)) return;
+    this.status = status; this.running = false;
+    this.error = {name: error?.name || 'GraphicsError', message: error?.message || String(error),
+      category: 'graphics', code: phase === 'initialization' ? 'GRAPHICS_INITIALIZATION_FAILED' : status === 'lost' ? 'GRAPHICS_CONTEXT_LOST' : 'GRAPHICS_RENDER_FAILED', phase};
+    this.stopScheduledDraw();
+    if (this.controls) this.controls.enabled = false;
+    this.smoothZoom?.cancel(); this.cameraTransition?.cancel();
+    this.emitStatus();
+  }
+
+  captureViewState() {
+    if (!this.camera || !this.controls) return null;
+    return {camera: {position: this.camera.position.toArray(), quaternion: this.camera.quaternion.toArray(),
+      up: this.camera.up.toArray(), near: this.camera.near, far: this.camera.far, fov: this.camera.fov, zoom: this.camera.zoom},
+      target: this.controls.target.toArray(), minDistance: this.controls.minDistance, maxDistance: this.controls.maxDistance,
+      layers: {...this.layers}, objectVisibility: Object.fromEntries(Object.entries(this.objectVisibility).map(([key, values]) => [key, [...values]])),
+      inertiaSource: this.inertiaSource, selection: this.selection || '', hasFramedModel: !!this.hasFramedModel};
+  }
+
+  restoreViewState(state) {
+    if (!state || this.disposed || !this.controls) return;
+    const vector = (value, size) => Array.isArray(value) && value.length === size && value.every(Number.isFinite);
+    this.smoothZoom.cancel(); this.cameraTransition.cancel();
+    const damping = this.controls.enableDamping;
+    this.controls.enableDamping = false; this.controls.update(); this.controls.enableDamping = damping;
+    if (vector(state.camera?.position, 3)) this.camera.position.fromArray(state.camera.position);
+    if (vector(state.camera?.up, 3)) this.camera.up.fromArray(state.camera.up);
+    if (vector(state.target, 3)) this.controls.target.fromArray(state.target);
+    for (const key of ['near', 'far', 'fov', 'zoom']) if (Number.isFinite(state.camera?.[key]) && state.camera[key] > 0) this.camera[key] = state.camera[key];
+    for (const key of ['minDistance', 'maxDistance']) if (Number.isFinite(state[key]) && state[key] > 0) this.controls[key] = state[key];
+    this.camera.updateProjectionMatrix(); this.controls.update();
+    if (vector(state.camera?.quaternion, 4)) this.camera.quaternion.fromArray(state.camera.quaternion);
+    if (state.layers) this.layers = {...this.layers, ...state.layers};
+    for (const [kind, values] of Object.entries(state.objectVisibility || {})) {
+      if (!this.objectVisibility[kind] || !Array.isArray(values)) continue;
+      for (const item of values) if (Array.isArray(item) && typeof item[0] === 'string') this.objectVisibility[kind].set(item[0], item[1] !== false);
+    }
+    if (['urdf', 'core'].includes(state.inertiaSource)) this.inertiaSource = state.inertiaSource;
+    this.hasFramedModel = state.hasFramedModel === true;
+    this.select(state.selection || '');
+    this.camera.updateMatrixWorld(); this.requestRender();
   }
 
   makeLabel(text, position=[0,0,0], layers=['labels']) {
@@ -138,15 +273,24 @@ export class SerialArmModelView {
   }
 
   async setModel(payload) {
+    if (this.disposed || !this.running) return false;
     this.disposeRoot();
+    const generation = this.modelGeneration;
     this.payload = payload;
+    this.modelLoaded = false;
     const frames = new Map((payload.native?.state?.frames || []).map(x => [x.name, x]));
     for (const link of payload.model?.links || []) {
       const group = new THREE.Group(); group.name = link.name; group.userData.kind='link'; group.userData.name=link.name; group.userData.ownerKind='links'; group.userData.ownerName=link.name; this.objectVisibility.links.set(link.name,true);
       const frame = frames.get(link.name); if (frame) group.matrix.copy(frameMatrix(frame));
       group.matrixAutoUpdate = false; this.root.add(group); this.linkGroups.set(link.name, group);
-      for (const item of link.visuals || []) await this.addGeometry(group, item, false);
-      for (const item of link.collisions || []) await this.addGeometry(group, item, true);
+      for (const item of link.visuals || []) {
+        await this.addGeometry(group, item, false, generation);
+        if (this.disposed || !this.running || generation !== this.modelGeneration) return false;
+      }
+      for (const item of link.collisions || []) {
+        await this.addGeometry(group, item, true, generation);
+        if (this.disposed || !this.running || generation !== this.modelGeneration) return false;
+      }
       if (link.inertial?.valid) this.addInertia(group, link.inertial);
       const linkLabel=this.makeLabel(link.name,[0,0,0.045]); linkLabel.userData.ownerKind='links'; linkLabel.userData.ownerName=link.name; group.add(linkLabel);
     }
@@ -161,10 +305,13 @@ export class SerialArmModelView {
     this.updateCenterOfMass(payload.native);
     this.setLayers(this.layers); this.refreshVisibility();
     this.resetView({immediate: !this.hasFramedModel}); this.hasFramedModel = true;
+    this.modelLoaded = true; this.modelStatusPending = true; this.requestRender();
+    return true;
   }
 
-  async addGeometry(group, item, collision) {
-    if (item.error || !item.geometry) return;
+  async addGeometry(group, item, collision, generation = this.modelGeneration) {
+    const current = () => !this.disposed && this.running && generation === this.modelGeneration;
+    if (!current() || item.error || !item.geometry) return;
     const holder = new THREE.Group(); holder.userData.layer = collision ? 'collision' : 'visual'; holder.matrix.copy(originMatrix(item.origin)); holder.matrixAutoUpdate=false;
     const g = item.geometry; let object;
     if (g.type === 'box') object = new THREE.Mesh(new THREE.BoxGeometry(...g.size), material(item.rgba, collision));
@@ -172,18 +319,26 @@ export class SerialArmModelView {
     else if (g.type === 'sphere') object = new THREE.Mesh(new THREE.SphereGeometry(g.radius, 32, 18), material(item.rgba, collision));
     else if (g.type === 'mesh') {
       try {
-        const resource = await this.resourceReader(g.path); const data = decode(resource.data);
+        const resource = await this.resourceReader(g.path);
+        if (!current()) return;
+        const data = decode(resource.data);
         if (resource.extension === '.stl') {
           const geometry = new STLLoader().parse(data); object = new THREE.Mesh(geometry, material(item.rgba, collision));
         } else {
           const gltf = await new Promise((resolve,reject)=>new GLTFLoader().parse(data, '', resolve, reject)); object = gltf.scene;
-          object.traverse(node => { if (node.isMesh) { node.material = material(item.rgba, collision); } });
+          if (!current()) { disposeObject(object); return; }
+          // The URDF material owns the display appearance; release the imported
+          // materials/textures before replacing them instead of retaining them.
+          disposeObject(object, {geometry: false});
+          object.traverse(node => { if (node.isMesh) node.material = material(item.rgba, collision); });
         }
         object.scale.set(...(g.scale || [1,1,1]));
       } catch (error) {
+        disposeObject(object);
         holder.userData.loadError = error.message; return;
       }
     }
+    if (!current()) { disposeObject(object); return; }
     if (object) { const layer=collision?'collision':'visual'; holder.userData.ownerKind='links'; holder.userData.ownerName=group.name; object.traverse?.(node=>{if(node.isMesh){node.userData.layer=layer;node.userData.ownerKind='links';node.userData.ownerName=group.name;}}); object.userData.layer=layer; holder.add(object); group.add(holder); }
   }
 
@@ -269,7 +424,8 @@ export class SerialArmModelView {
   }
 
   updateCenterOfMass(native){
-    while(this.comGroup.children.length){const child=this.comGroup.children[0];this.comGroup.remove(child);child.geometry?.dispose?.();child.material?.dispose?.();child.userData?.texture?.dispose?.();}
+    while(this.comGroup.children.length){const child=this.comGroup.children[0];this.comGroup.remove(child);disposeObject(child);const index=this.labels.indexOf(child);if(index>=0)this.labels.splice(index,1);}
+    this.requestRender();
     const com=native?.state?.center_of_mass;if(!Array.isArray(com)||com.length!==3)return;
     const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(...com)]),new THREE.LineBasicMaterial({color:0x22d3a6,transparent:true,opacity:0.95,depthTest:false}));line.userData.layer='com';this.comGroup.add(line);
     const point=new THREE.Mesh(new THREE.SphereGeometry(0.014,16,12),new THREE.MeshBasicMaterial({color:0x22d3a6,depthTest:false}));point.position.set(...com);point.userData.layer='com';this.comGroup.add(point);
@@ -281,14 +437,15 @@ export class SerialArmModelView {
   clearGhostPose() {
     if(!this.ghostRoot)return;
     this.scene.remove(this.ghostRoot);
-    this.ghostRoot.traverse(node=>{if(node.isMesh){
-      const mats=Array.isArray(node.material)?node.material:[node.material];
-      for(const material of mats)material?.dispose?.();
-    }});
+    // Ghosts share the measured model's geometries and textures, but own their
+    // cloned materials. Never release the shared model buffers here.
+    disposeObject(this.ghostRoot, {geometry:false, textures:false});
     this.ghostRoot=null;
+    this.requestRender();
   }
 
   setGhostPose(native) {
+    if (this.disposed || !this.running) return;
     this.clearGhostPose();
     const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
     if(!frames.size)return;
@@ -309,10 +466,11 @@ export class SerialArmModelView {
       }
       ghosts.add(group);
     }
-    if(count){this.ghostRoot=ghosts;this.scene.add(ghosts);}
+    if(count){this.ghostRoot=ghosts;this.scene.add(ghosts);this.requestRender();}
   }
 
   updatePose(native) {
+    if (this.disposed || !this.running) return;
     const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
     for(const [name,group] of this.linkGroups){const frame=frames.get(name);if(frame)group.matrix.copy(frameMatrix(frame));}
     for(const [name,helper] of this.frameHelpers){const frame=frames.get(name);if(frame)helper.matrix.copy(frameMatrix(frame));}
@@ -324,9 +482,10 @@ export class SerialArmModelView {
   clearGravityComparison() {
     for (const group of this.comparisonGroups) {
       group.parent?.remove(group);
-      group.traverse(node=>{node.geometry?.dispose?.();if(node.material){const list=Array.isArray(node.material)?node.material:[node.material];for(const material of list)material.dispose?.();}node.userData?.texture?.dispose?.();});
+      disposeObject(group);
     }
     this.comparisonGroups=[];
+    this.requestRender();
   }
 
   makeComparisonLabel(text, position) {
@@ -345,6 +504,7 @@ export class SerialArmModelView {
   }
 
   setGravityComparison(result, options = {}) {
+    if (this.disposed || !this.running) return;
     this.clearGravityComparison();
     if (!this.payload || !result?.first_moments?.length) return;
     const scale=options.displayScale??1;
@@ -400,9 +560,11 @@ export class SerialArmModelView {
     this.objectVisibility.linkFrames.set(name,next);
     const helper=this.frameHelpers.get(name);
     if(helper)helper.visible=!!this.layers.linkFrames&&next;
+    this.requestRender();
   }
 
   refreshVisibility() {
+    if (this.disposed || !this.root) return;
     this.root.traverse(node => {
       const requiredLayers=Array.isArray(node.userData?.layers) ? node.userData.layers : (node.userData?.layer ? [node.userData.layer] : []);
       let visible=requiredLayers.every(layer => !(layer in this.layers) || !!this.layers[layer]);
@@ -414,9 +576,11 @@ export class SerialArmModelView {
       node.visible=visible;
     });
     for(const [name,helper] of this.frameHelpers)helper.visible=!!this.layers.linkFrames&&this.objectVisibility.linkFrames.get(name)!==false;
+    this.requestRender();
   }
 
   select(name) {
+    if (this.disposed) return;
     this.selection=name||'';
     const selectedJoint=(this.payload?.model?.joints||[]).find(j=>j.name===name);
     const selectedLinks=new Set(selectedJoint?[selectedJoint.parent,selectedJoint.child]:[name]);
@@ -470,15 +634,15 @@ export class SerialArmModelView {
     this.container.appendChild(this.cameraTools);
     const hint = document.createElement('div');
     hint.className = 'model-camera-hint';
-    const workspace = !!this.container.closest('.workbench-layout');
     hint.textContent = en
-      ? `Left: orbit · Right / Shift: pan · ${workspace ? 'Ctrl / ⌘ + wheel: zoom' : 'Wheel: zoom'}`
-      : `左键旋转 · 右键 / Shift 平移 · ${workspace ? 'Ctrl / ⌘ + 滚轮缩放' : '滚轮缩放'}`;
+      ? 'Left: orbit · Right / Shift: pan · Wheel: zoom'
+      : '左键旋转 · 右键 / Shift 平移 · 滚轮缩放';
     this.cameraHint = hint;
     this.container.appendChild(hint);
   }
 
   setCameraView(view, distance = null, {target = this.controls.target, immediate = false} = {}) {
+    if (this.disposed || !this.running) return;
     const directions = {
       isometric: [1.25, -1.35, 0.95],
       front: [0, -1, 0], back: [0, 1, 0],
@@ -492,9 +656,11 @@ export class SerialArmModelView {
     const current = this.camera.position.distanceTo(target);
     const length = Number.isFinite(distance) && distance > 0 ? distance : Math.max(current, 0.05);
     this.cameraTransition.move(new THREE.Vector3(...direction), length, target, immediate);
+    this.requestRender();
   }
 
   resetView({immediate = false} = {}) {
+    if (this.disposed || !this.running) return;
     this.root.updateMatrixWorld(true);
     const box = new THREE.Box3();
     this.root.traverse(node => {
@@ -519,26 +685,118 @@ export class SerialArmModelView {
   }
 
   resize() {
+    if (this.disposed || !this.running || !this.renderer) return;
     this.smoothZoom.cancel();
-    const width=Math.max(this.container.clientWidth,1), height=Math.max(this.container.clientHeight,1); this.renderer.setSize(width,height,false); this.camera.aspect=width/height; this.camera.updateProjectionMatrix();
+    const width=this.container.clientWidth, height=this.container.clientHeight;
+    if (width <= 0 || height <= 0) { this.suspended = true; this.stopScheduledDraw(); return; }
+    try {
+      this.renderer.setSize(width,height,false); this.camera.aspect=width/height; this.camera.updateProjectionMatrix();
+      this.requestRender();
+    } catch (error) { this.failGraphics(error, 'resize'); }
+  }
+
+  stopScheduledDraw() {
+    if (this.animationFrame != null) cancelAnimationFrame(this.animationFrame);
+    if (this.frameTimer != null) clearTimeout(this.frameTimer);
+    this.animationFrame = null; this.frameTimer = null;
+    this.lastFrameTime = undefined;
+  }
+
+  drawable() {
+    return !document.hidden && !this.offscreen && this.container.isConnected &&
+      this.container.clientWidth > 0 && this.container.clientHeight > 0;
+  }
+
+  requestRender() {
+    if (this.disposed || !this.running) return;
+    this.needsRender = true;
+    this.suspended = !this.drawable();
+    if (this.suspended || this.animationFrame != null || this.frameTimer != null || this.drawing) return;
+    this.animationFrame = requestAnimationFrame(next => this.animate(next));
+  }
+
+  drawScene() {
+    if (this.gl.isContextLost()) throw new Error('WebGL context lost');
+    this.renderer.render(this.scene, this.camera);
+    if (this.gl.isContextLost()) throw new Error('WebGL context lost during drawing');
+    this.drawCount++; this.needsRender = false;
+    if (this.status !== 'ready' || this.modelStatusPending) {
+      this.status = 'ready'; this.modelStatusPending = false;
+      this.diagnostics.pixelRatio = this.renderer.getPixelRatio();
+      this.diagnostics.drawingBuffer = [this.canvas.width, this.canvas.height];
+      this.emitStatus();
+    }
+    return true;
+  }
+
+  renderOnce() {
+    if (this.disposed || !this.running || !this.drawable()) return false;
+    try { return this.drawScene(); }
+    catch (error) {
+      this.failGraphics(error, 'render', this.gl?.isContextLost() ? 'lost' : 'failed');
+      return false;
+    }
   }
 
   animate(time = performance.now()) {
-    if (!this.running) return;
-    const seconds = this.lastFrameTime === undefined ? 0 : Math.max(0, (time - this.lastFrameTime) / 1000);
+    this.animationFrame = null;
+    if (this.disposed || !this.running) return;
+    if (!this.drawable()) { this.suspended = true; this.lastFrameTime = undefined; return; }
+    this.suspended = false;
+    const interval = this.mode === 'compatibility' ? 1000 / 30 : 0;
+    const elapsed = this.lastFrameTime === undefined ? interval : time - this.lastFrameTime;
+    if (elapsed + 0.1 < interval) {
+      this.frameTimer = setTimeout(() => { this.frameTimer = null; this.requestRender(); }, interval - elapsed);
+      return;
+    }
+    const seconds = this.lastFrameTime === undefined ? 1 / 60 : Math.max(0, Math.min(0.1, elapsed / 1000));
     this.lastFrameTime = time;
-    this.animationFrame = requestAnimationFrame(next => this.animate(next));
-    this.controls.update(seconds);
-    this.cameraTransition.update(seconds);
-    this.smoothZoom.update(seconds);
-    this.renderer.render(this.scene, this.camera);
+    this.drawing = true;
+    try {
+      let changed = this.controls.update(seconds);
+      changed = this.cameraTransition.update(seconds) || changed;
+      changed = this.smoothZoom.update(seconds) || changed;
+      if (this.needsRender || changed) this.drawScene();
+      this.drawing = false;
+      // A change event wakes the next frame until OrbitControls' damping is
+      // settled; an unchanged scene has no permanently running animation loop.
+      if (changed || this.cameraTransition.active || this.smoothZoom.active || this.needsRender) this.requestRender();
+    } catch (error) {
+      this.drawing = false;
+      this.failGraphics(error, 'render', this.gl?.isContextLost() ? 'lost' : 'failed');
+    }
   }
 
   disposeRoot() {
+    this.modelGeneration++;
     this.clearGhostPose();
-    this.root.traverse(node=>{if(node.geometry)node.geometry.dispose?.();if(node.material){const list=Array.isArray(node.material)?node.material:[node.material];for(const m of list)m.dispose?.();}node.userData?.texture?.dispose?.();});
+    disposeObject(this.root);
     this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
 
-  dispose() { this.running=false; cancelAnimationFrame(this.animationFrame); this.smoothZoom.dispose(); this.cameraTransition.dispose(); this.resizeObserver.disconnect(); this.cameraTools?.remove(); this.cameraHint?.remove(); this.disposeRoot(); this.controls.dispose(); this.renderer.dispose(); }
+  releaseResources() {
+    this.stopScheduledDraw(); this.modelGeneration++;
+    this.resizeObserver?.disconnect(); this.intersectionObserver?.disconnect();
+    if (this.onVisibilityChange) document.removeEventListener('visibilitychange', this.onVisibilityChange);
+    this.smoothZoom?.dispose(); this.cameraTransition?.dispose();
+    if (this.controls && this.onControlsChange) for (const event of ['change','start','end','zoom-input']) this.controls.removeEventListener(event, this.onControlsChange);
+    this.controls?.dispose(); this.cameraTools?.remove(); this.cameraHint?.remove();
+    this.canvas?.removeEventListener('webglcontextcreationerror', this.onCreationError);
+    this.canvas?.removeEventListener('webglcontextlost', this.onContextLost);
+    this.clearGhostPose(); disposeObject(this.scene); this.scene?.clear();
+    this.root?.clear(); this.linkGroups?.clear(); this.frameHelpers?.clear();
+    this.jointAxes = []; this.effectiveGroups = []; this.labels = []; this.comparisonGroups = [];
+    this.modelLoaded = false; this.payload = null;
+    this.renderer?.dispose();
+    // Detaching the canvas does not release its context immediately. Release
+    // it explicitly so repeated retry/navigation cannot exhaust WebGL contexts.
+    this.gl?.getExtension('WEBGL_lose_context')?.loseContext();
+    this.canvas?.remove();
+  }
+
+  dispose() {
+    if (this.disposed) return;
+    this.running = false; this.disposed = true; this.status = 'disposed';
+    this.releaseResources();
+  }
 }

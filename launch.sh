@@ -3,8 +3,13 @@ set -eo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 export PYTHONDONTWRITEBYTECODE=1
+usage() {
+    echo 'Usage: ./launch.sh [--graphics-mode=normal|compatibility|rescue]'
+    echo '       ./launch.sh --doctor [--profile NAME] [--profile-file FILE] [--resource-paths ROOTS]'
+    echo 'compatibility explicitly opts in to the lower-isolation SwiftShader WebGL backend; the renderer sandbox remains enabled'
+}
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-    echo 'Usage: ./launch.sh [--doctor [--profile NAME] [--profile-file FILE] [--resource-paths ROOTS]]'
+    usage
     exit 0
 fi
 if [[ "${1:-}" == "--doctor" ]]; then
@@ -25,8 +30,13 @@ if (result.error) process.stderr.write(result.error.message + '\n');
 process.exit(result.status ?? 1);
 JS
 fi
+GRAPHICS_ARGS=()
+if [[ $# -eq 1 && "$1" =~ ^--graphics-mode=(normal|compatibility|rescue)$ ]]; then
+    GRAPHICS_ARGS=("$1")
+    shift
+fi
 if [[ $# -ne 0 ]]; then
-    echo 'Usage: ./launch.sh [--doctor [--profile NAME] [--profile-file FILE] [--resource-paths ROOTS]]' >&2
+    usage >&2
     exit 2
 fi
 ELECTRON="$ROOT_DIR/apps/launcher/node_modules/electron/dist/electron"
@@ -54,4 +64,4 @@ if ! BACKEND_ERROR="$("$SERIAL_ARM_LAUNCHER_PYTHON" -u "$BACKEND" --check 2>&1 >
     echo '可先执行 ./install.sh --gui-only --yes 修复 GUI Python 依赖' >&2
     exit 1
 fi
-exec "$ELECTRON" "$ROOT_DIR/apps/launcher"
+exec "$ELECTRON" "$ROOT_DIR/apps/launcher" "${GRAPHICS_ARGS[@]}"

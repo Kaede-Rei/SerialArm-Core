@@ -289,10 +289,6 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 .settings-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .toggle { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
 .toggle input { width: 16px; height: 16px; margin: 0; }
-.compact .content:not(.studio-content) { padding: 22px; }
-.compact .card-body { padding: 16px; }
-.compact .card-head { padding: 15px 16px; }
-.compact .studio-page-body { padding: 14px 16px; }
 .app.atil-shell .sidebar .nav-item span { overflow: hidden; text-overflow: ellipsis; }
 @media(max-width:900px) { .settings-grid { grid-template-columns: 1fr; } }
 
@@ -398,3 +394,37 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
   .readiness-joint-check .kv { grid-template-columns: minmax(100px,1fr) minmax(0,1.25fr); }
 }
 @media(prefers-reduced-motion:reduce) { .readiness-fold > summary::before { transition: none; } }
+
+/* A graphics fault stays inside its preview, independent of robot operation. */
+.graphics-failure { box-sizing: border-box; width: 100%; min-height: 100%; max-height: 100%; padding: 28px; overflow: auto; background: var(--card); color: var(--text); position: relative; z-index: 4; }
+.graphics-failure h3 { margin: 0 0 14px; }
+.graphics-failure p, .graphics-settings p { line-height: 1.7; }
+.graphics-failure details { margin: 18px 0; }
+.graphics-failure summary { cursor: pointer; }
+.graphics-failure pre, .graphics-dialog pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 45vh; overflow: auto; font-size: 12px; }
+.graphics-failure .workspace-actions { flex-wrap: wrap; gap: 10px; }
+.graphics-settings { grid-column: 1 / -1; }
+.graphics-dialog { width: min(900px, 90vw); max-height: 85vh; }
+.graphics-current-mode { display: flex; align-items: center; gap: 10px; margin: 0 0 16px; color: var(--muted); font-size: 12px; }
+.graphics-current-mode strong { font-weight: 550; color: var(--text); }
+.graphics-mode-options { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.graphics-mode-option { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--subtle); color: var(--text); text-align: left; }
+.graphics-mode-option:hover { background: var(--hover); }
+.graphics-mode-option.active { border-color: var(--accent); background: var(--tint); }
+.graphics-mode-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; font-size: 12px; }
+.graphics-mode-title strong { font-weight: 550; }
+.graphics-mode-check { display: inline-flex; color: var(--accent); visibility: hidden; }
+.graphics-mode-check svg { width: 15px; height: 15px; }
+.graphics-mode-option.active .graphics-mode-check { visibility: visible; }
+.graphics-mode-description { color: var(--muted); font-size: 11px; line-height: 1.7; }
+.graphics-settings .hint, .graphics-failure .hint { word-break: normal; overflow-wrap: anywhere; }
+.graphics-security-note { margin: 12px 0 0; }
+.graphics-pending { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--subtle); font-size: 12px; }
+.graphics-pending strong { font-weight: 550; }
+.graphics-pending .hint { margin: 5px 0 0; }
+.graphics-diagnostics-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--line); }
+.graphics-diagnostics-row h4 { margin: 0; font-size: 12px; font-weight: 550; }
+.graphics-diagnostics-row .hint { margin: 5px 0 0; }
+.graphics-diagnostics-row .workspace-actions { margin: 0; }
+.graphics-failure .graphics-mode-options { grid-template-columns: minmax(0, 1fr); margin-top: 18px; }
+@media(max-width:900px) { .graphics-mode-options { grid-template-columns: minmax(0, 1fr); } }

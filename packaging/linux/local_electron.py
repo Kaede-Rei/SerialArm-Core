@@ -6,8 +6,24 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import zipfile
+
+
+def check_software_runtime(launcher: Path, dist: Path) -> None:
+    """Use the desktop's software-backend resource list before creating an archive."""
+    script = "const {SOFTWARE_FILES}=require(process.argv[1]); process.stdout.write(JSON.stringify(SOFTWARE_FILES))"
+    result = subprocess.run(['node', '-e', script, str(launcher / 'desktop/graphics.cjs')],
+                            capture_output=True, text=True, timeout=15)
+    if result.returncode:
+        raise ValueError('Cannot read Electron graphics runtime requirements: ' + result.stderr.strip())
+    for name in json.loads(result.stdout):
+        if not (dist / name).is_file():
+            raise ValueError('Electron graphics runtime is missing: ' + name + '; reinstall the GUI')
+    icd = json.loads((dist / 'vk_swiftshader_icd.json').read_text(encoding='utf-8'))
+    if icd.get('ICD', {}).get('library_path') != './libvk_swiftshader.so':
+        raise ValueError('Electron SwiftShader ICD does not reference its bundled library')
 
 
 def archive_electron(launcher: Path, output: Path) -> Path:
@@ -27,6 +43,7 @@ def archive_electron(launcher: Path, output: Path) -> Path:
         raise ValueError('Installed Electron executable is not an ELF binary')
     if not (dist / 'resources').is_dir():
         raise ValueError('Electron runtime resources are missing; reinstall the GUI')
+    check_software_runtime(launcher, dist)
 
     output.mkdir(parents=True, exist_ok=True)
     archive = output / f'electron-v{expected}-linux-x64.zip'
