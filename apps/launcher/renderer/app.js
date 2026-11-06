@@ -112,7 +112,7 @@ function normalizeDialogError(source, kind = 'operation') {
     ].filter(Boolean).join('\n') : '';
     const raw = [metadata, technical, (!technical && sourceText) ? sourceText : ''].filter(Boolean).join('\n\n') || '未收到后端技术诊断，请检查运行日志';
     return {
-        kind, title, summary, advice, raw, action:detail?.action || null,
+        kind, title, summary, advice, raw, action:detail?.action || null, gainEvidence:detail?.gain_evidence || null,
         id: detail?.diagnostic_id || '',
         key: detail?.diagnostic_id || `${kind}:${rawSummary}:${technical}`
     };
@@ -131,10 +131,13 @@ function paintPriorityError() {
     const confirm = $('confirm-dialog');
     if (confirm?.open) confirm.close();
     setOperationOverlay('');
+    setCalibrationTaskModalState(false);
     const cal = $('model-calibration-overlay');
     if (cal) { cal.hidden = true; cal.setAttribute('aria-hidden', 'true'); }
     $('priority-error-title').textContent = entry.title;
     $('priority-error-detail').textContent = entry.summary;
+    const evidence = $('priority-error-evidence');
+    if (evidence) { evidence.hidden = !entry.gainEvidence; evidence.innerHTML = entry.gainEvidence ? gainProbeEvidenceHtml(entry.gainEvidence) : ''; }
     $('priority-error-guidance').textContent = entry.advice;
     const kicker = $('priority-error-kicker');
     if (kicker) kicker.textContent = entry.kind === 'fault' ? 'SERIALARM · SAFETY FAULT' : 'SERIALARM · ERROR';
@@ -236,7 +239,7 @@ function checkRuntimeAlerts(snapshot) {
     const cal = snapshot?.model_calibration;
     if (cal?.phase === 'failed' && cal.error && !cal.fault_interrupted) {
         const key = `${cal.task_id || 'unknown'}:${cal.error}`;
-        if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); showPriorityError(cal.error); }
+        if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); showPriorityError(cal.workflow_kind === 'gain' ? gainCalibrationFailure(cal) : cal.error); }
     }
     const replay = snapshot?.teach_replay;
     if (replay?.phase === 'failed' && replay.error) {
@@ -306,12 +309,13 @@ async function showProfilePicker() {
     $('picker-search')?.focus();
 }
 function shell() {
+    setCalibrationTaskModalState(false);
     // A new Shell intentionally preserves the pending fault alert, if any.
     const onboarding = ['start', 'library', 'description'].includes(state.page) || (state.page === 'settings' && !state.config.profile);
     const quickTheme = `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${associationArtwork()}<strong>SerialArm Studio</strong></div><div class="title-center">${esc(state.config.profile || t('workspace'))}<span class="title-connection" id="title-connection"></span></div><div class="title-actions">${quickTheme}<button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button><div class="window-controls"><button id="win-min" class="title-button" aria-label="${busyText('最小化', 'Minimize')}">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="${busyText('最大化或还原', 'Maximize or restore')}">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="${busyText('关闭窗口', 'Close window')}">${icon('close')}</button></div></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-action" class="button" hidden></button><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div id="model-calibration-task-kicker" class="operation-kicker">${state.language === 'en' ? 'Calibration task' : '标定任务'}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div class="task-window-content"><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div>${gainProbeStatusHtml({}, 'gain-task-probe')}</div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM · ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><div id="priority-error-evidence" hidden></div><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-action" class="button" hidden></button><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div id="model-calibration-task-kicker" class="operation-kicker">${state.language === 'en' ? 'Calibration task' : '标定任务'}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><div id="model-calibration-task-preview" class="task-preview-slot" hidden></div><div class="task-window-content"><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div>${gainProbeStatusHtml({}, 'gain-task-probe')}</div><div class="task-window-actions"><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
     const lifecycle = [['lifecycle', 'readiness', 'check'], ['profile_setup', 'profileSetup', 'robot']];
     const expert = [['model', 'model', 'model'], ['geometry', 'geometryNav', 'check'], ['calibration', 'calibrationNav', 'hardware'], ['workbench', 'workbenchNav', 'workbench'], ['run', 'adapterNav', 'run'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
     const nav = ([name, key, ico]) => `<button class="nav-item" data-page="${name}" title="${t(key)}" aria-label="${t(key)}" ${!state.config.profile ? 'disabled' : ''}>${icon(ico)}<span>${state.language === 'en' ? ({ lifecycle: 'Readiness', profile_setup: 'Parameters', model: 'Model viewer', workbench: 'Control', geometry: 'Geometry', calibration: 'Dynamics', run: 'Adapters', diagnostics: 'Diagnostics' }[name] || t(key)) : t(key)}</span></button>`;
@@ -1326,6 +1330,7 @@ function previewRecord(host, payload) {
     return record;
 }
 function disposeModelPreview() {
+    restoreCalibrationTaskPreview();
     if (!modelView) return;
     const record = graphicsState.current;
     if (record?.payload === modelView.payload) record.viewState = modelView.captureViewState?.() || record.viewState;
@@ -2803,7 +2808,7 @@ function gainCalibrationHasLinearAxes() {
     return names.some(name => jointDisplaySpec(name).linear);
 }
 function readGainRequirements() {
-    const limits = {peak_error_rad:.04,rms_error_rad:.02,hold_error_rad:.03,settling_time_s:2};
+    const limits = {peak_error_rad:.04,rms_error_rad:.02,hold_error_rad:.03,settling_time_s:2,local_range_rad:.04};
     const result = {};
     for (const [key,raw] of Object.entries(state.gainRequirements || {})) {
         const value = typeof raw === 'string' && !raw.trim() ? NaN : Number(raw);
@@ -2814,14 +2819,27 @@ function readGainRequirements() {
 }
 function gainProbePhaseLabel(kind) {
     const en = state.language === 'en';
+    if (/^noise-\d+$/.test(kind || '')) return en ? 'Stationary noise measurement' : '静止噪声测量';
+    if (/^(?:base|soft)-motion-spectrum-\d+$/.test(kind || '')) return en ? 'Multifrequency motion check' : '多频运动确认';
+    if (/^(?:(?:base|soft)-)?motion-\d+$/.test(kind || '')) return en ? 'Bidirectional motion probe' : '双向运动探测';
     if (/^base-\d+$/.test(kind || '')) return en ? 'Baseline search' : '基线增益搜索';
     if (/^soft-\d+$/.test(kind || '')) return en ? 'Compliant gain search' : '柔性增益搜索';
     if (/^drag-search-\d+$/.test(kind || '')) return en ? 'Drag damping search' : '拖拽阻尼搜索';
     const labels = {'native-frozen':['原生跟踪独立验收','Independent native tracking check'], 'soft-frozen':['柔性跟踪独立验收','Independent compliant tracking check'], 'admittance-frozen':['模型导纳独立验收','Independent admittance check'], hold:['定位保持验收','Hold check'], 'drag-decay':['拖拽阻尼衰减验收','Drag damping decay check'], 'drag-frozen':['拖拽阻尼独立验收','Independent drag damping check']};
     return labels[kind]?.[en ? 1 : 0] || kind || '—';
 }
+function gainProbeStageLabel(stage) {
+    const labels = {noise:['第 1 阶段 · 测量静止噪声','Stage 1 · Measure stationary noise'], motion_discovery:['第 1 阶段 · 建立双向运动','Stage 1 · Establish bidirectional motion'], dynamic_search:['第 2 阶段 · 动态增益搜索','Stage 2 · Search dynamic gains'], frozen:['第 2 阶段 · 独立跟踪验收','Stage 2 · Independent tracking check'], hold:['第 2 阶段 · 保持验收','Stage 2 · Hold check'], drag:['第 2 阶段 · 拖拽阻尼验收','Stage 2 · Drag damping check']};
+    return labels[stage]?.[state.language === 'en' ? 1 : 0] || stage || '—';
+}
 function gainProbeMessageLabel(message) {
-    const labels = {configured_baseline:['使用已配置增益作为起点','Starting from configured gains'], model_seed:['使用模型估计增益作为起点','Starting from model-estimated gains'], settling:['正在建立增益并等待稳定','Applying gains and settling'], measuring:['正在采集关节响应','Measuring joint response'], assessing:['正在评估本窗响应','Assessing this measurement window'], no_response:['本轴未检测到有效跟随响应','No effective following response on this joint'], tracking_not_qualified:['本次跟踪未通过验收','This tracking trial did not qualify'], qualified:['本次验收通过','This trial qualified'], candidate_updated:['已调整候选增益，继续测量','Candidate gains updated; continuing measurement'], safety_bound:['探测受到安全限制，无法继续','A configured safety limit prevents further probing'], hold_verification:['正在检查定位保持','Checking stationary hold'], drag_verification:['正在检查释放后的速度衰减','Checking velocity decay after release'], drag_excitation:['使用已验收跟踪增益建立释放前速度','Building release velocity with qualified tracking gains'], failed:['标定失败，请查看错误详情','Calibration failed; see error details'], cancelled:['任务已取消','Task cancelled'], complete:['标定已完成','Calibration complete']};
+    if (message === 'drag_decay_not_qualified') return state.language === 'en' ? 'Release velocity did not decay within the limit, or the measured speed was excessive' : '释放后的速度未在限定时间内衰减，或实测速度超过阈值';
+    if (message === 'noise_measured') return state.language === 'en' ? 'Stationary noise measurement complete' : '已完成静止噪声测量';
+    if (message === 'measurement_pending') return state.language === 'en' ? 'Waiting for measurements from this window' : '等待本窗测量数据';
+    if (message === 'measurement_interrupted') return state.language === 'en' ? 'This window was interrupted; only captured measurements are shown' : '本窗测量已中断，仅显示已采集数据';
+    const measurements = {low_bandwidth:['有效跟随频率不足','The measured following bandwidth is too low'], excessive_lag:['实测响应相位滞后过大','The measured response has excessive phase lag'], resonance:['检测到共振响应','A resonant response was detected'], hold_drift:['静态保持漂移超过阈值','Stationary hold drift exceeds the acceptance limit'], unstable_noise:['静止反馈仍不稳定，无法建立噪声基线','Stationary feedback is unstable; a noise baseline is unavailable']};
+    if (measurements[message]) return measurements[message][state.language === 'en' ? 1 : 0];
+    const labels = {noise_sampling:['正在测量编码器噪声与分辨率','Measuring encoder noise and resolution'], noise_sampled:['已完成静止噪声测量','Stationary noise measurement complete'], establishing_motion:['正在确认参考与实测均有双向运动','Checking bidirectional reference and measured motion'], motion_plan_ready:['双向运动已建立，准备动态增益搜索','Bidirectional motion established; preparing dynamic gain search'], motion_established:['双向有效运动已建立','Effective bidirectional motion established'], no_motion:['未测到有效运动','No effective measured motion'], one_sided_response:['实测响应只有单侧运动','Measured response moves in one direction only'], low_coherence:['参考与实测响应的一致性不足','Reference and measured response have low coherence'], dynamic_tracking_failed:['动态跟踪未通过本窗验收','Dynamic tracking did not pass this window'], ringing:['检测到持续振荡','Sustained oscillation detected'], oscillating:['检测到持续振荡','Sustained oscillation detected'], overdamped:['本窗响应过慢，阻尼偏大','The measured response is slow with excessive damping'], delayed_response:['实测响应延迟过大','Measured response delay is too large'], insufficient_measurements:['有效连续测量不足','Insufficient fresh continuous measurements'], limited:['测量中出现参考或力矩限幅','Reference or torque was limited during measurement'], reference_too_small:['参考运动不足以判断响应','Reference motion is too small to assess the response'], configured_baseline:['使用已配置增益作为起点','Starting from configured gains'], model_seed:['使用模型估计增益作为起点','Starting from model-estimated gains'], settling:['正在建立增益并等待稳定','Applying gains and settling'], measuring:['正在采集关节响应','Measuring joint response'], assessing:['正在评估本窗响应','Assessing this measurement window'], no_response:['本轴未检测到有效跟随响应','No effective following response on this joint'], tracking_not_qualified:['本次跟踪未通过验收','This tracking trial did not qualify'], qualified:['本次验收通过','This trial qualified'], candidate_updated:['已调整候选增益，继续测量','Candidate gains updated; continuing measurement'], safety_bound:['探测受到安全限制，无法继续','A configured safety limit prevents further probing'], hold_verification:['正在检查定位保持','Checking stationary hold'], drag_verification:['正在检查释放后的速度衰减','Checking velocity decay after release'], drag_excitation:['使用已验收跟踪增益建立释放前速度','Building release velocity with qualified tracking gains'], failed:['标定失败，请查看错误详情','Calibration failed; see error details'], cancelled:['任务已取消','Task cancelled'], complete:['标定已完成','Calibration complete']};
     return labels[message]?.[state.language === 'en' ? 1 : 0] || (message ? localizedError(message) : '—');
 }
 function gainProbeStatusValues(status = {}) {
@@ -2832,25 +2850,79 @@ function gainProbeStatusValues(status = {}) {
     const index = status.gain_candidate_index, limit = status.gain_candidate_limit;
     const windows = Math.max(0, Number(status.gain_adaptation_passes) || 0), maximum = Math.max(0, Number(status.gain_adaptation_max_passes) || 0);
     return {use:gainPurposeLabel(status.gain_active_target), joint:status.gain_probe_joint || (['hold','drag-decay'].includes(status.gain_probe_kind) ? (en ? 'All joints' : '全部关节') : '—'),
-        phase:gainProbePhaseLabel(status.gain_probe_kind), candidate:number(index) && index > 0 ? `${index}${number(limit) && limit > 0 ? ' / ' + limit : ''}` : '—',
+        phase:status.gain_probe_stage ? gainProbeStageLabel(status.gain_probe_stage) : gainProbePhaseLabel(status.gain_probe_kind), frequency:Array.isArray(status.gain_probe_frequency_hz) && status.gain_probe_frequency_hz.length ? status.gain_probe_frequency_hz.filter(number).map(value=>value.toFixed(2)).join(' / ') + ' Hz' : '—', candidate:number(index) && index > 0 ? `${index}${number(limit) && limit > 0 ? ' / ' + limit : ''}` : '—',
         amplitude:status.gain_probe_kind !== 'hold' && !status.gain_probe_kind?.startsWith('drag-') && number(status.gain_probe_amplitude_rad) ? `${(status.gain_probe_amplitude_rad * 180 / Math.PI).toFixed(3)}°` : '—',
+        gains:status.gain_probe_joint && number(status.gain_probe_kp) && number(status.gain_probe_kd) ? `${status.gain_probe_kp.toFixed(3)} / ${status.gain_probe_kd.toFixed(3)}` : '—',
         window:measurable ? `${Math.min(elapsed,duration).toFixed(1)} / ${duration.toFixed(1)} s · ${Math.round(fraction * 100)}%` : (status.gain_probe_message === 'settling' ? (en ? 'Settling before measurement' : '测量前稳定中') : '—'),
         windows:`${windows}${maximum ? ' / ' + maximum : ''}`, fraction, message:gainProbeMessageLabel(status.gain_probe_message),
         error:status.error ? localizedError(status.error) : ''};
 }
+function gainProbeEvidenceHtml(status = {}) {
+    const en = state.language === 'en', diagnostic = status.gain_probe_diagnostic;
+    const finite = value => typeof value === 'number' && Number.isFinite(value);
+    const number = (value, digits = 3) => finite(value) ? value.toFixed(digits) : '—';
+    const angle = value => finite(value) ? `${(value * 180 / Math.PI).toFixed(5)}°` : '—';
+    const yes = value => value === true ? (en ? 'Yes' : '是') : value === false ? (en ? 'No' : '否') : '—';
+    const fields = [[en ? 'Task' : '任务', status.task_id || '—']];
+    if (!diagnostic || typeof diagnostic !== 'object' || Array.isArray(diagnostic)) return `<dl class="gain-probe-evidence-grid">${fields.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl><p class="hint">${en ? 'No usable measurement-window summary was provided for this task' : '本任务尚未提供可用的测量窗摘要'}</p>`;
+    const pair = (a,b,format = angle) => `${format(a)} / ${format(b)}`;
+    const pending = diagnostic.reason === 'measurement_pending';
+    const measured = value => pending ? null : value;
+    const assessed = diagnostic.completed !== false && !pending;
+    const hold = diagnostic.stage === 'hold', drag = diagnostic.stage === 'drag';
+    const frequencyResponse = !hold && !drag && diagnostic.stage !== 'noise';
+    fields.push([en ? 'Measurement stage' : '测量阶段', gainProbeStageLabel(diagnostic.stage)], [en ? 'Joint / probe' : '关节 / 探测', `${diagnostic.joint || (hold ? en ? 'All joints' : '全部关节' : '—')} · ${gainProbePhaseLabel(diagnostic.kind || (hold ? 'hold' : drag ? 'drag-decay' : ''))}`],
+        [en ? 'Candidate trial' : '候选轮次', finite(diagnostic.candidate_index) && diagnostic.candidate_index > 0 ? String(diagnostic.candidate_index) : '—'],
+        [en ? 'This window Kp / Kd' : '本窗 Kp / Kd', pair(diagnostic.kp,diagnostic.kd,number)], [en ? 'Amplitude' : '幅度', angle(diagnostic.amplitude_rad)]);
+    if (frequencyResponse) fields.push([en ? 'Frequencies' : '频率', Array.isArray(diagnostic.frequencies_hz) && diagnostic.frequencies_hz.length ? diagnostic.frequencies_hz.filter(finite).map(value=>number(value,2)).join(' / ') + ' Hz' : '—'],
+        [en ? 'Reference motion + / −' : '参考运动 正向 / 反向', pair(measured(diagnostic.reference_positive_span_rad),measured(diagnostic.reference_negative_span_rad))],
+        [en ? 'Measured motion + / −' : '实测运动 正向 / 反向', pair(measured(diagnostic.actual_positive_span_rad),measured(diagnostic.actual_negative_span_rad))],
+        [en ? 'Response RMS ratio / coherence' : '响应 RMS 比 / 一致性', pair(measured(diagnostic.response_rms_ratio),measured(diagnostic.coherence),number)],
+        [en ? 'Fresh / total samples' : '新鲜反馈 / 总样本', `${finite(diagnostic.measurement_samples) ? diagnostic.measurement_samples : '—'} / ${finite(diagnostic.samples) ? diagnostic.samples : '—'}`],
+        [en ? 'Continuous / limited samples' : '测量连续 / 限幅样本', `${yes(measured(diagnostic.continuous))} / ${!pending && finite(diagnostic.limited_samples) ? diagnostic.limited_samples : '—'}`],
+        [en ? 'Observable / tracking passed' : '运动可测 / 跟踪通过', `${yes(assessed ? diagnostic.observable : null)} / ${yes(assessed ? diagnostic.metrics_passed : null)}`],
+        [en ? 'Qualified following frequency' : '已通过跟随频率', assessed && finite(diagnostic.follow_frequency_hz) ? `${number(diagnostic.follow_frequency_hz)} Hz` : '—']);
+    else {
+        fields.push([en ? 'Samples' : '样本数', finite(diagnostic.samples) ? diagnostic.samples : '—']);
+        if (hold || drag) fields.push([en ? 'Acceptance passed' : '验收通过', yes(assessed ? diagnostic.metrics_passed : null)]);
+    }
+    if (!hold && !drag) fields.push([en ? 'Observed position step / noise RMS' : '观测位置步长 / 噪声 RMS', `${finite(diagnostic.encoder_step_rad) && diagnostic.encoder_step_rad > 0 ? angle(diagnostic.encoder_step_rad) : en ? 'Not observed' : '未测得'} / ${angle(diagnostic.noise_rms_rad)}`]);
+    if (finite(diagnostic.minimum_motion_span_rad)) fields.push([en ? 'Minimum effective motion in each direction' : '单侧有效运动下限', angle(diagnostic.minimum_motion_span_rad)]);
+    if (drag) {
+        const speed = value => finite(measured(value)) ? `${(value * 180 / Math.PI).toFixed(4)}°/s` : '—';
+        fields.push([en ? 'Initial release velocity' : '释放初始速度', speed(diagnostic.initial_velocity_rad_s)], [en ? 'Peak release velocity' : '释放后峰值速度', speed(diagnostic.peak_velocity_rad_s)]);
+    }
+    if (diagnostic.metrics && typeof diagnostic.metrics === 'object') {
+        const metrics = [['rms_error_rad','RMS 跟踪误差','RMS tracking error','angle'],['peak_error_rad','峰值跟踪误差','Peak tracking error','angle'],['velocity_rms_rad_s','速度 RMS 误差','Velocity RMS error','velocity'],['overshoot_rad','超调','Overshoot','angle'],['tail_error_rad','尾部位置误差','Tail position error','angle','settling_error_rad'],['settling_time_s','稳定时间','Settling time','time']];
+        for (const [key,zh,english,unit,limitKey = key] of metrics) {
+            if (!frequencyResponse && (!Object.hasOwn(diagnostic.metrics,key) || hold && key === 'tail_error_rad')) continue;
+            const format = value => unit === 'time' ? `${number(value)} s` : finite(value) ? `${(value * 180 / Math.PI).toFixed(4)}${unit === 'velocity' ? '°/s' : '°'}` : '—';
+            const title = hold && key === 'peak_error_rad' ? (en ? 'Maximum hold position error' : '最大保持位置误差') : hold && key === 'velocity_rms_rad_s' ? (en ? 'Maximum observed hold speed' : '最大观测保持速度') : drag && key === 'settling_time_s' ? (en ? 'Release velocity decay time' : '释放速度衰减时间') : en ? english : zh;
+            fields.push([`${title} · ${en ? 'actual / limit' : '实测 / 上限'}`, `${format(measured(diagnostic.metrics[key]))} / ${format(diagnostic.requirements?.[limitKey])}`]);
+        }
+    }
+    return `<p class="gain-evidence-reason">${esc(gainProbeMessageLabel(diagnostic.reason))}</p><dl class="gain-probe-evidence-grid">${fields.map(([label,value])=>`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('')}</dl>${diagnostic.record_path ? `<p class="hint gain-evidence-path">${en ? 'Window recording' : '本窗记录'}<br><code>${esc(diagnostic.record_path)}</code></p>` : ''}`;
+}
+function gainCalibrationFailure(status) {
+    return {code:'GAIN_CALIBRATION_FAILED', title:busyText('执行器增益标定未通过','Actuator gain calibration did not pass'), message:localizedError(status.error), technical:status.error,
+        diagnostic_id:`gain:${status.task_id || 'unknown'}:${status.error}`, gain_evidence:structuredClone(status),
+        details:{task_id:status.task_id, gain_probe_diagnostic:status.gain_probe_diagnostic || null}, advice:busyText('查看本窗实测结果和原始记录，再决定是否调整配置或重新标定','Review this window and its recording before adjusting the configuration or recalibrating')};
+}
 function gainProbeStatusHtml(status = {}, prefix = 'gain-probe') {
     const en = state.language === 'en', value = gainProbeStatusValues(status);
-    const fields = [['use','当前用途','Current use'],['joint','当前关节','Current joint'],['phase','测量阶段','Measurement stage'],['candidate','候选轮次','Candidate trial'],['amplitude','探测幅度','Probe amplitude'],['windows','已完成窗 / 计划上限','Completed windows / plan limit']];
-    return `<div id="${prefix}" class="gain-probe-status" ${status.workflow_kind === 'gain' ? '' : 'hidden'}><dl class="gain-probe-metrics">${fields.map(([key,zh,english])=>`<div><dt>${en ? english : zh}</dt><dd id="${prefix}-${key}">${esc(value[key])}</dd></div>`).join('')}</dl><div class="gain-probe-window"><span>${en ? 'Current window' : '当前测量窗'}</span><b id="${prefix}-window">${esc(value.window)}</b></div><progress id="${prefix}-progress" max="1" ${value.fraction === null ? '' : `value="${value.fraction}"`} aria-label="${en ? 'Current measurement window' : '当前测量窗进度'}"></progress><p id="${prefix}-message" class="hint">${esc(value.message)}</p><p id="${prefix}-error" class="workspace-error" ${value.error ? '' : 'hidden'}>${esc(value.error)}</p></div>`;
+    const fields = [['use','当前用途','Current use'],['joint','当前关节','Current joint'],['phase','测量阶段','Measurement stage'],['candidate','候选轮次','Candidate trial'],['amplitude','探测幅度','Probe amplitude'],['frequency','探测频率','Probe frequencies'],['gains','本窗 Kp / Kd','This window Kp / Kd'],['windows','已完成窗 / 计划上限','Completed windows / plan limit']];
+    return `<div id="${prefix}" class="gain-probe-status" ${status.workflow_kind === 'gain' ? '' : 'hidden'}><dl class="gain-probe-metrics">${fields.map(([key,zh,english])=>`<div><dt>${en ? english : zh}</dt><dd id="${prefix}-${key}">${esc(value[key])}</dd></div>`).join('')}</dl><div class="gain-probe-window"><span>${en ? 'Current window' : '当前测量窗'}</span><b id="${prefix}-window">${esc(value.window)}</b></div><progress id="${prefix}-progress" max="1" ${value.fraction === null ? '' : `value="${value.fraction}"`} aria-label="${en ? 'Current measurement window' : '当前测量窗进度'}"></progress><p id="${prefix}-message" class="hint">${esc(value.message)}</p><p id="${prefix}-error" class="workspace-error" ${value.error ? '' : 'hidden'}>${esc(value.error)}</p><details class="gain-probe-evidence"><summary>${en ? 'Current measurement window' : '当前测量窗'}</summary><div id="${prefix}-diagnostic">${gainProbeEvidenceHtml(status)}</div></details></div>`;
 }
 function refreshGainProbeStatus(status = state.telemetry?.model_calibration || {}) {
     const value = gainProbeStatusValues(status);
     for (const prefix of ['gain-probe','gain-task-probe']) {
         const block = $(prefix); if (!block) continue;
         block.hidden = status.workflow_kind !== 'gain';
-        for (const key of ['use','joint','phase','candidate','amplitude','windows','window','message','error']) {
+        for (const key of ['use','joint','phase','candidate','amplitude','frequency','gains','windows','window','message','error']) {
             const node = $(`${prefix}-${key}`); if (node) { if (node.textContent !== value[key]) node.textContent = value[key]; if (key === 'error') node.hidden = !value.error; }
         }
+        const evidence = $(`${prefix}-diagnostic`), evidenceHtml = gainProbeEvidenceHtml(status);
+        if (evidence && evidence.innerHTML !== evidenceHtml) evidence.innerHTML = evidenceHtml;
         const progress = $(`${prefix}-progress`);
         if (progress) { if (value.fraction === null) progress.removeAttribute('value'); else progress.value = value.fraction; }
     }
@@ -4249,24 +4321,39 @@ function updateModelCalibrationLive() {
     }
     updateModelCalibrationComparison();
 }
-const gainProbeInertNodes = new Set();
-function setGainProbePreviewAccess(enabled) {
-    // Keep the existing task-only controls, but leave the model camera usable.
-    const page = $('page'), layout = page?.querySelector('.workbench-layout');
-    const floating = enabled && state.page === 'calibration' && !!layout?.querySelector('.workbench-model');
-    const targets = floating ? new Set([...document.querySelectorAll('.sidebar, #settings-quick, #theme-quick, .studio-location, #runtime-panel'), ...Array.from(page.children).filter(node => node !== layout), ...layout.querySelectorAll('.workbench-task')]) : new Set();
-    for (const node of gainProbeInertNodes) if (!targets.has(node)) { node.inert = false; gainProbeInertNodes.delete(node); }
-    for (const node of targets) if (!node.inert) { node.inert = true; gainProbeInertNodes.add(node); }
-    const overlay = $('model-calibration-overlay');
-    overlay?.classList.toggle('is-gain-probe', floating);
-    overlay?.querySelector('.model-calibration-task-window')?.setAttribute('aria-modal', floating ? 'false' : 'true');
+let calibrationTaskPreview = null;
+const calibrationModalInertNodes = new Set();
+function restoreCalibrationTaskPreview() {
+    if (!calibrationTaskPreview) return;
+    const {node, marker} = calibrationTaskPreview; calibrationTaskPreview = null;
+    if (marker.isConnected) marker.replaceWith(node);
+    else node.remove();
+    const slot = $('model-calibration-task-preview'); if (slot) slot.hidden = true;
+    modelView?.resize?.();
+}
+function setCalibrationTaskModalState(show, gainTask = false) {
+    const overlay = $('model-calibration-overlay'), slot = $('model-calibration-task-preview');
+    const window = overlay?.querySelector('.model-calibration-task-window');
+    window?.classList.toggle('is-gain-task', show && gainTask);
+    if (!show || !gainTask || state.page !== 'calibration' || !slot) restoreCalibrationTaskPreview();
+    else if (!calibrationTaskPreview) {
+        const node = $('page')?.querySelector('.workbench-model');
+        if (node) {
+            const marker = document.createComment('calibration preview original position');
+            node.before(marker); calibrationTaskPreview = {node, marker};
+            slot.hidden = false; slot.append(node); modelView?.resize?.();
+        }
+    }
+    const shells = show ? new Set(document.querySelectorAll('.shell')) : new Set();
+    for (const node of calibrationModalInertNodes) if (!shells.has(node)) { node.inert = false; calibrationModalInertNodes.delete(node); }
+    for (const node of shells) if (!node.inert) { node.inert = true; calibrationModalInertNodes.add(node); }
 }
 function updateModelCalibrationTaskOverlay() {
     const overlay = $('model-calibration-overlay'); if (!overlay) return;
     const status = state.telemetry?.model_calibration; const show = !priorityErrorOpen && modelCalibrationLongRunning(status) && state.telemetry?.robot_state !== 'FAULT';
     overlay.hidden = !show; overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
     const adapting = status?.phase === 'gain_adaptation';
-    setGainProbePreviewAccess(show && adapting);
+    setCalibrationTaskModalState(show, status?.workflow_kind === 'gain');
     refreshGainProbeStatus(status || {});
     if (!show) return;
     const passes = Math.max(0, Number(status.gain_adaptation_passes || 0));
@@ -4458,6 +4545,8 @@ function modelCalibrationReplayConfirm() {
     if (plan.source_task_id && !calibrationAlignment(plan).aligned) { showPriorityError(state.language === 'en' ? 'Replay start not aligned. Use guided alignment and wait for fresh feedback.' : '当前姿态与回放起点不匹配：请先完成引导对齐，并等待新鲜的关节反馈'); return; }
     if (plan.planner_id !== 'local_hermite' || !(Number(plan.single_pass_duration_s) > 0)) { showPriorityError(state.language === 'en' ? 'Native Core was not rebuilt. Reinstall before replay.' : 'C++ Core 仍是旧版，请重新编译安装后再执行自动回放'); return; }
     const gainPlan = state.calibrationEntry === 'gain';
+    const gainRequirements = gainPlan ? {local_range_rad:.04, ...readGainRequirements()} : null;
+    const motionRange = gainPlan ? (gainRequirements.local_range_rad * 180 / Math.PI).toFixed(2) : '';
     const oneWayDuration = Number(plan.single_pass_duration_s || 0);
     const estimate = gainPlan && oneWayDuration > 0
         ? gainCalibrationSeconds(oneWayDuration, state.gainMode, plan)
@@ -4469,9 +4558,9 @@ function modelCalibrationReplayConfirm() {
     const formula = gainPlan
         ? `${state.language === 'en' ? 'Native plan' : '原生计划'} · ${esc(gainPurposeLabel(state.gainMode === 'all' ? (state.language === 'en' ? 'All four uses' : '全部四用途') : state.gainMode))} · ${oneWay.toFixed(1)} s ${state.language === 'en' ? 'trajectory traversal' : '轨迹单程'}`
         : `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 8 × ${oneWay.toFixed(1)} + 2 × 1.15 × ${poses} + 2`;
-    dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Automatic actuator gain calibration' : '执行器增益自动标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? 'The native task probes actuator response, searches candidates and validates each selected gain use. No-contact tracking, hold stability and external-interaction qualification are reported separately' : '原生任务先探测执行器响应，再搜索候选并逐项验收所选增益用途；无接触跟踪、保持稳定性与外部交互资格分别记录') : (state.language === 'en' ? 'Six traversals: reverse/forward static holds, then reverse/forward at half speed and full planned speed' : '六次遍历：双向静态保持，随后半速双向、计划速度双向；控制限幅和取消路径保持启用')}</p><div class="callout"><b>${state.language === 'en' ? gainPlan ? 'Planned automatic-stage upper bound' : 'Estimated automatic stage' : gainPlan ? '自动阶段计划上限估时' : '预计自动阶段'}：${estimate > 0 ? estimate.toFixed(1) + ' s' : (state.language === 'en' ? 'Updated by the native plan after starting' : '开始后由原生计划更新')} · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${estimate > 0 ? totalEstimate.toFixed(1) : teaching.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'The native estimate includes the planned probe and validation stages; feedback waiting and settling can extend actual duration' : '估时来自原生任务计划，覆盖探测与验收阶段；实际反馈等待与停稳可能延长耗时'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
+    dialog.innerHTML = `<h3>${gainPlan ? (state.language === 'en' ? 'Automatic actuator gain calibration' : '执行器增益自动标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? 'The task first establishes effective bidirectional motion within the confirmed range, then searches dynamic gains and independently validates each use. Tracking, hold and external-interaction qualification are reported separately' : '先在限定范围内确认双向有效运动，再搜索动态增益并独立验收；无接触跟踪、保持稳定性与外部交互资格分别记录') : (state.language === 'en' ? 'Six traversals: reverse/forward static holds, then reverse/forward at half speed and full planned speed' : '六次遍历：双向静态保持，随后半速双向、计划速度双向；控制限幅和取消路径保持启用')}</p>${gainPlan ? `<p class="gain-motion-range">${state.language === 'en' ? `Maximum local probe motion: ±${motionRange}° from the calibration pose on each joint. Safety position, speed, acceleration and torque limits can reduce this range` : `每个关节相对标定位姿的最大局部探测范围为 ±${motionRange}°；位置、速度、加速度与力矩安全限制会进一步收紧范围`}</p>` : ''}<div class="callout"><b>${state.language === 'en' ? gainPlan ? 'Planned automatic-stage upper bound' : 'Estimated automatic stage' : gainPlan ? '自动阶段计划上限估时' : '预计自动阶段'}：${estimate > 0 ? estimate.toFixed(1) + ' s' : (state.language === 'en' ? 'Updated by the native plan after starting' : '开始后由原生计划更新')} · ${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${estimate > 0 ? totalEstimate.toFixed(1) : teaching.toFixed(1)} s</b><div>${formula}</div><div>${state.language === 'en' ? 'The native estimate includes the planned probe and validation stages; feedback waiting and settling can extend actual duration' : '估时来自原生任务计划，覆盖探测与验收阶段；实际反馈等待与停稳可能延长耗时'}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和回放区域，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
     dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked || !!graphicsAvailabilityProblem(); $('model-calibration-confirm-cancel').onclick = () => dialog.close();
-    $('model-calibration-confirm-start').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode, ...(state.calibrationEntry === 'gain' && state.gainRequirements ? {gain_requirements:readGainRequirements()} : {}) })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
+    $('model-calibration-confirm-start').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (state.calibrationEntry === 'gain') { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: state.calibrationEntry === 'gain' ? 'gain' : 'gravity', gain_mode: state.gainMode, ...(gainPlan ? {gain_requirements:gainRequirements,gain_motion_range_confirmed:true} : {}) })); if (state.telemetry) state.telemetry.model_calibration = result; state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
 }
 async function resumeModelCalibrationWithConfirmation() {
     if (graphicsAvailabilityProblem()) return null;

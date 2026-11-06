@@ -57,6 +57,11 @@
         [/calibration frozen gain verification following limit exceeded/i, '实际跟踪误差超过增益验收阈值，候选未通过本次测试；请检查对应关节、测试速度与跟踪增益'],
         [/calibration replay soft following recovery timed out/i, '自动回放等待关节追上参考位置超时，请检查增益、摩擦与负载'],
         [/calibration tracking error exceeded safe following limit/i, '自动回放的实际位置持续无法跟上参考轨迹，已按安全限制中止'],
+        [/gain stationary noise baseline is moving/i, '静止噪声采样时关节仍在运动，未开始探测；请检查机械臂支撑和反馈'],
+        [/gain motion discovery failed/i, '在已确认的局部范围内未建立可测的双向运动，请查看本窗实测幅度与判定下限'],
+        [/gain dynamic search failed/i, '动态增益搜索未通过验收，请查看本窗跟踪指标、阈值与探测记录'],
+        [/gain probe cannot preserve its established amplitude within safety limits/i, '当前安全限制无法容纳已测得有效的探测幅度，未继续缩小幅度验收'],
+        [/gain (?:local )?motion range confirmation(?: is)? required/i, '请先确认局部探测范围并完全松开机械臂，再启动增益标定'],
         [/no observable joint response.*after bounded gain search/i, '关节在限定增益搜索后仍未出现有效跟随响应，请检查探测记录及已配置的伺服增益'],
         [/measured tracking did not qualify.*after bounded gain search/i, '关节跟踪在限定增益搜索后仍未通过验收，请检查探测记录与当前增益'],
         [/no observable joint response.*safety bounds/i, '关节未出现有效跟随响应，增益搜索已到配置限制，无法继续调整候选'],
@@ -125,7 +130,7 @@
             .map(m => m[0].replace(/^value=/i, '实测值=').replace(/^limit=/i, '限制值=').replace(/^position error=/i, '位置误差=').replace(/^speed=/i, '速度=').replace(/^timeout=/i, '超时='));
         const codes = [...new Set((clean.match(codePattern) || []))];
         const replayFields = [...clean.matchAll(/\b(?:joint|actual|reference|error|soft_limit|hard_limit|kp|kd|adaptive|phase|tracking_mode|recovery_elapsed_s|velocity|validation_pause_limit|error_ratio|validation)\s*=\s*(?:[A-Za-z_][\w-]*|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?)/gi)].map(m => m[0]);
-        const gainJoint = clean.match(/(?:no observable joint response|measured tracking did not qualify|configured servo gain baseline exceeds joint safety limits|gain probe has insufficient continuous measurements|drag excitation produced no observable release velocity|insufficient joint margin or excitation budget for an observable bounded servo probe|insufficient safe velocity and torque budget for an observable drag release|drag damping did not qualify within its bounded search) at ([A-Za-z_][\w.-]*)/i);
+        const gainJoint = clean.match(/(?:gain stationary noise baseline is moving|gain motion discovery failed|gain dynamic search failed|gain probe cannot preserve its established amplitude within safety limits|no observable joint response|measured tracking did not qualify|configured servo gain baseline exceeds joint safety limits|gain probe has insufficient continuous measurements|drag excitation produced no observable release velocity|insufficient joint margin or excitation budget for an observable bounded servo probe|insufficient safe velocity and torque budget for an observable drag release|drag damping did not qualify within its bounded search) at ([A-Za-z_][\w.-]*)/i);
         const diagnostic = [...new Set([...codes, ...numbers, ...replayFields, ...(gainJoint ? ['关节=' + gainJoint[1]] : [])])].join('，');
         if (matched) return `${action}${matched[1]}${diagnostic ? `（${diagnostic}）` : ''}`;
         const zhPortion = clean.match(/[\u3400-\u9fff][^\n]*/);

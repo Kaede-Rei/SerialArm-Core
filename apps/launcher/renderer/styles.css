@@ -110,12 +110,24 @@
 .gain-probe-window b{color:var(--text);font-variant-numeric:tabular-nums}
 .gain-probe-status progress{display:block;width:100%;height:8px;accent-color:var(--accent)}
 .gain-probe-status .hint,.gain-probe-status .workspace-error{margin:0;line-height:1.5;overflow-wrap:anywhere;word-break:normal}
-.model-calibration-overlay.is-gain-probe{place-items:end;padding:16px;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;pointer-events:none}
-.model-calibration-overlay.is-gain-probe .model-calibration-task-window{width:min(460px,calc(100vw - 32px));max-height:calc(100vh - 96px);grid-template-rows:auto minmax(0,1fr) auto auto;pointer-events:auto;background:var(--card)}
-.model-calibration-overlay.is-gain-probe .task-window-content{display:grid;gap:12px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.model-calibration-task-window.is-gain-task{max-height:calc(100dvh - 48px);grid-template-rows:auto auto minmax(0,1fr) auto auto}
+.model-calibration-task-window.is-gain-task .task-window-content{display:grid;gap:12px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.task-preview-slot{height:clamp(140px,25dvh,220px);min-width:0;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:var(--soft)}
+.task-preview-slot[hidden]{display:none}
+.task-preview-slot .workbench-model{position:relative;top:auto;width:100%;height:100%;border:0}
+.model-calibration-task-window.is-gain-task .task-live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.gain-probe-evidence>summary{cursor:pointer;color:var(--muted);font-size:11px}
+.gain-probe-evidence-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:10px 0}
+.gain-probe-evidence-grid>div{min-width:0;padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--subtle)}
+.gain-probe-evidence-grid dt{color:var(--muted);font-size:10px;line-height:1.5}
+.gain-probe-evidence-grid dd{margin:4px 0 0;font-size:11px;line-height:1.5;white-space:normal;word-break:normal;overflow-wrap:anywhere}
+.gain-evidence-reason{margin:10px 0;font-size:12px;line-height:1.6}
+.gain-evidence-path{word-break:normal;overflow-wrap:anywhere}
+#priority-error-evidence{max-height:42dvh;overflow:auto;overscroll-behavior:contain}
+#priority-error-evidence[hidden]{display:none}
 .gain-qualification-error{max-width:240px;white-space:normal;font-weight:400;overflow-wrap:anywhere}
-.model-calibration-overlay.is-gain-probe .task-live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-@media(max-width:760px){.model-calibration-overlay.is-gain-probe .model-calibration-task-window{max-height:55vh;padding:14px;gap:10px}}
+@media(max-width:600px){.model-calibration-task-window.is-gain-task{padding:14px;gap:10px;max-height:calc(100dvh - 32px)}.model-calibration-overlay:has(.is-gain-task){padding:16px}.task-preview-slot{height:clamp(130px,23dvh,180px)}}
+
 
 
 /* Lifecycle-first workspace */

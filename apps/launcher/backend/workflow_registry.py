@@ -151,7 +151,8 @@ def export_record(root, directory, kind):
         'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','idim-candidate.json','source/model.urdf','source/core.yaml'}
     }[kind]
     if kind == 'gain':
-        allowed.update(path.name for path in folder.glob('servo-probe-*.csv') if path.is_file())
+        for pattern in ('servo-probe-*.csv', 'drag-decay-*.csv'):
+            allowed.update(path.name for path in folder.glob(pattern) if path.is_file())
     included=[]
     with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
         for name in sorted(allowed):
