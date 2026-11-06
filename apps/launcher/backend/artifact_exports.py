@@ -17,7 +17,8 @@ import yaml
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf
 from persistence import build_gravity_correction_payload, export_candidate_urdf, patch_text
 from workflow_registry import load, resolve_dynamics_candidate_path
-from control_parameters import canonical_core, canonical_control_text, complete_mapping_values, deployment_gain_groups
+from control_parameters import (canonical_core, canonical_control_text, four_mode_control_text, complete_mapping_values,
+                                deployment_gain_groups, gain_measurement_available, gain_selection_report)
 
 GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking', 'identification_tracking', 'all'}
 GAIN_DESTINATIONS = {
@@ -50,16 +51,14 @@ def _snapshot(record):
     return folder,metadata,model,core,config
 
 
-def _replace_core(text, targets, *, include_identification=False, hold_compensation=None):
-    if include_identification:
-        cfg = canonical_core(yaml.safe_load(text))
-        seed = cfg['control']['controller'].get('servo_tracking')
-        text = canonical_control_text(text, seed)
+def _replace_core(text, targets, *, hold_compensation=None):
+    # Patch task-role paths in memory, then serialize the four public purposes.
+    # This also upgrades old snapshots when exporting a non-servo candidate.
+    text = canonical_control_text(text)
     if hold_compensation is not None:
         text = complete_mapping_values(text, ('control',), {'hold_compensation': hold_compensation})
     result=patch_text(text,targets)
-    yaml.safe_load(result)
-    return result
+    return four_mode_control_text(result)
 
 
 def _gain_map(joints,values,limits=None):
@@ -107,36 +106,6 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
     targets = {}
     hold_compensation = None
     for item, fields in groups.items():
-        if not isinstance(fields, dict) or fields.get('validated') is not True:
-            raise ValueError(f'{item} 尚未通过独立验证')
-        if item == 'compliant_tracking':
-            hold = fields.get('hold_verification') or {}
-            if (fields.get('compliant_separation_validated') is not True or
-                hold.get('validated') is not True or
-                not isinstance(fields.get('tested_speed_fraction'), (float, int)) or
-                not 0 < float(fields['tested_speed_fraction']) <= 1):
-                raise ValueError('柔性候选缺少刚柔分离或保持稳定性验收，请重新运行柔性增益标定')
-            rigid = fields.get('rigid_reference_kp')
-            rigid_kd = fields.get('rigid_reference_kd')
-            kp, kd = fields.get('kp'), fields.get('kd')
-            expected = (groups['rigid_tracking'] if 'rigid_tracking' in groups else
-                        cfg['control']['controller']['rigid_tracking'])
-            def reference_values(term):
-                values = expected.get(term)
-                return [values[name] for name in joints] if isinstance(values, dict) else values
-            expected_kp = reference_values('kp')
-            expected_kd = reference_values('kd')
-            if (not all(isinstance(x, list) and len(x) == len(joints)
-                        for x in (rigid, rigid_kd, kp, kd, expected_kp, expected_kd)) or
-                any(not all(isinstance(v, (int, float)) and math.isfinite(v) for v in vals)
-                    for vals in (rigid, rigid_kd, kp, kd, expected_kp, expected_kd)) or
-                any(r <= 0 or d <= 0 or
-                    not math.isclose(r, ref_r, abs_tol=1e-5) or
-                    not math.isclose(d, ref_d, abs_tol=1e-5) or
-                    k > 0.65 * r + 1e-6 or v > 0.85 * d + 1e-6
-                    for r, d, k, v, ref_r, ref_d in
-                    zip(rigid, rigid_kd, kp, kd, expected_kp, expected_kd))):
-                raise ValueError('柔性增益与任务源刚性参考不一致')
         for term, limit_field in [('kp', 'max_kp_override'), ('kd', 'max_kd_override')]:
             values = fields.get(term)
             if not isinstance(values, list):
@@ -146,9 +115,13 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
                 targets[('control', 'controller', destination, term)] = gain_map
         if item in ('rigid_tracking', 'compliant_tracking'):
             hold = fields.get('hold_gains')
-            verified = any((fields.get(key) or {}).get('validated') is True
-                           for key in ('hold_verification', 'hold_compensation_verification'))
-            if isinstance(hold, dict) and verified:
+            verification = ('hold_compensation_verification'
+                            if item == 'rigid_tracking' and
+                            (fields.get('hold_compensation') or {}).get('enabled') is True
+                            else 'hold_verification')
+            measured = (gain_measurement_available(fields.get(verification), len(joints), 'hold') or
+                        (fields.get(verification) or {}).get('validated') is True)
+            if isinstance(hold, dict) and measured:
                 for term in ('kp', 'kd'):
                     values = hold.get(term)
                     if not isinstance(values, list): raise ValueError('保持验收缺少对应增益')
@@ -163,8 +136,9 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
                 if not isinstance(compensation, dict) or not isinstance(compensation.get('enabled'), bool):
                     raise ValueError('定位补偿参数不完整')
                 verification = 'hold_compensation_verification' if compensation['enabled'] else 'hold_verification'
-                if (fields.get(verification) or {}).get('validated') is not True:
-                    raise ValueError('定位补偿状态缺少对应的独立保持验收')
+                if not (gain_measurement_available(fields.get(verification), len(joints), 'hold') or
+                        (fields.get(verification) or {}).get('validated') is True):
+                    raise ValueError('定位补偿状态缺少对应的保持测量记录')
                 hold_compensation = {'enabled': compensation['enabled']}
                 for field in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
                     values = compensation.get(field)
@@ -202,19 +176,22 @@ def _gain_export(record, dest, gain_purposes=None):
         raise ValueError('未知增益标定目标')
     joints = metadata['joint_names']
     targets, hold_compensation = gain_candidate_targets(gain, cfg, joints, gain_purposes)
-    result = _replace_core(core.read_text(encoding='utf-8'), targets,
-                           include_identification='servo_tracking' in deployment_gain_groups(gain,gain_purposes), hold_compensation=hold_compensation)
+    result = _replace_core(core.read_text(encoding='utf-8'), targets, hold_compensation=hold_compensation)
     # Keep model.urdf_path unchanged because this artifact intentionally contains
     # only core.yaml; changing to a missing relative URDF would break deployment
     (dest / 'core.yaml').write_text(result, encoding='utf-8')
     evidence = dest / 'evidence'; evidence.mkdir(exist_ok=True)
-    for source in [folder / 'metadata.json', folder / 'gain-candidate.json', *sorted(folder.glob('servo-probe-*.csv'))]:
+    for source in [folder / 'metadata.json', folder / 'gain-candidate.json',
+                   *sorted(folder.glob('servo-probe-*.csv')), *sorted(folder.glob('gain-trajectory-*.csv')),
+                   *sorted(folder.glob('drag-decay-*.csv'))]:
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, evidence / source.name)
     snapshots = evidence / 'source'; snapshots.mkdir(exist_ok=True)
     for name in ('core.yaml', 'model.urdf', 'hardware.yaml', 'hardware-effective.yaml', 'gravity-correction.yaml'):
         source = folder / 'source' / name
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, snapshots / name)
-    return {'target': category, 'gain_purposes':list(deployment_gain_groups(gain,gain_purposes)), 'validated': True, 'validation_scope':gain.get('validation_scope','recorded_scope'), 'merge_source':merge_source, 'files_only': ['core.yaml']}
+    groups = deployment_gain_groups(gain,gain_purposes)
+    return {'target': category, 'gain_purposes':list(groups), **gain_selection_report(gain, groups),
+            'validation_scope':gain.get('validation_scope','recorded_scope'), 'merge_source':merge_source, 'files_only': ['core.yaml']}
 
 
 def _gravity_merge_source(folder, metadata, source_core):

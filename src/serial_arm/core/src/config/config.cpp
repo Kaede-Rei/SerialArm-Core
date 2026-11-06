@@ -172,21 +172,6 @@ T require_as(const YAML::Node& parent, const char* key, const char* context) {
 }
 
 /**
- * @brief 从控制器配置中加载阻抗增益
- * @param controller 控制器配置节点
- * @param mode_name 模式名称
- * @return 阻抗增益
- * @throws ConfigLoadException 如果增益配置无效
- */
-JointImpedanceGains load_gains(const YAML::Node& controller, const char* mode_name) {
-    const YAML::Node mode = require_map(controller, mode_name, "controller");
-    JointImpedanceGains gains;
-    gains.kp = require_as<JointVector>(mode, "kp", mode_name);
-    gains.kd = require_as<JointVector>(mode, "kd", mode_name);
-    return gains;
-}
-
-/**
  * @brief 解析模型前馈策略
  */
 ModelFeedforwardMode load_model_feedforward_mode(const YAML::Node& runtime) {
@@ -279,6 +264,74 @@ JointVector load_named_joint_vector(const YAML::Node& node, const std::vector<st
     values.reserve(joint_names.size());
     for(const auto& joint_name : joint_names) values.push_back(require_as<double>(node, joint_name.c_str(), context));
     return values;
+}
+
+JointImpedanceGains load_controller_gains(const YAML::Node& node, const std::vector<std::string>& joint_names,
+                                        bool named, const std::string& context) {
+    reject_unknown_keys(node, context.c_str(), { "kp", "kd" });
+    if(named) {
+        return {load_named_joint_vector(node["kp"], joint_names, (context + ".kp").c_str()),
+                load_named_joint_vector(node["kd"], joint_names, (context + ".kd").c_str())};
+    }
+    return {require_as<JointVector>(node, "kp", context.c_str()),
+            require_as<JointVector>(node, "kd", context.c_str())};
+}
+
+// The file groups gains by four purposes. HOLD and TRACKING remain separate
+// internal roles, including when an older file spells those roles flat.
+void load_controller_cfg(const YAML::Node& controller, const std::vector<std::string>& joint_names,
+                         bool named, const char* context, JointCtrllerCfg& cfg) {
+    reject_unknown_keys(controller, context, { "allow_full_cmd", "rigid", "compliant", "drag", "servo_tracking",
+        "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking" });
+    cfg.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", context);
+    if(controller["rigid"] || controller["compliant"] || controller["drag"])
+        for(const auto* purpose : { "rigid", "compliant", "drag", "servo_tracking" })
+            require_map(controller, purpose, context);
+    const auto role = [&](const char* group, const char* member, const char* legacy) {
+        YAML::Node current(YAML::NodeType::Undefined);
+        std::string current_context = std::string(context) + "." + group;
+        if(controller[group]) {
+            const auto purpose = require_map(controller, group, context);
+            if(member) {
+                reject_unknown_keys(purpose, current_context.c_str(), { "hold", "tracking" });
+                // A supplied purpose must describe both roles, even if a
+                // legacy alias elsewhere could otherwise fill the omission.
+                require_map(purpose, "hold", current_context.c_str());
+                require_map(purpose, "tracking", current_context.c_str());
+                current = require_map(purpose, member, current_context.c_str());
+                current_context += std::string(".") + member;
+            } else current = purpose;
+        }
+        const auto legacy_context = std::string(context) + "." + legacy;
+        if(current) {
+            auto gains = load_controller_gains(current, joint_names, named, current_context);
+            if(controller[legacy]) {
+                const auto old = load_controller_gains(require_map(controller, legacy, context), joint_names, named, legacy_context);
+                if(gains.kp != old.kp || gains.kd != old.kd)
+                    throw ConfigLoadException(ConfigErr::INVALID_VALUE, current_context + " conflicts with " + legacy_context);
+            }
+            return gains;
+        }
+        return load_controller_gains(require_map(controller, legacy, context), joint_names, named, legacy_context);
+    };
+    cfg.rigid_hold_gains = role("rigid", "hold", "rigid_hold");
+    cfg.rigid_tracking_gains = role("rigid", "tracking", "rigid_tracking");
+    cfg.compliant_hold_gains = role("compliant", "hold", "compliant_hold");
+    cfg.compliant_tracking_gains = role("compliant", "tracking", "compliant_tracking");
+    cfg.compliant_drag_gains = role("drag", nullptr, "compliant_drag");
+    cfg.servo_tracking_gains = cfg.rigid_tracking_gains;
+    if(controller["servo_tracking"] || controller["identification_tracking"]) {
+        const char* key = controller["servo_tracking"] ? "servo_tracking" : "identification_tracking";
+        cfg.servo_tracking_gains = load_controller_gains(require_map(controller, key, context), joint_names, named,
+            std::string(context) + "." + key);
+        if(controller["servo_tracking"] && controller["identification_tracking"]) {
+            const auto old = load_controller_gains(require_map(controller, "identification_tracking", context), joint_names, named,
+                std::string(context) + ".identification_tracking");
+            if(cfg.servo_tracking_gains.kp != old.kp || cfg.servo_tracking_gains.kd != old.kd)
+                throw ConfigLoadException(ConfigErr::INVALID_VALUE,
+                    std::string(context) + ".servo_tracking conflicts with " + context + ".identification_tracking");
+        }
+    }
 }
 
 /**
@@ -514,14 +567,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
 
         load_hold_compensation(root["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(root, "controller", "root");
-        cfg.ctrller.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", "controller");
-        cfg.ctrller.rigid_hold_gains = load_gains(controller, "rigid_hold");
-        cfg.ctrller.rigid_tracking_gains = load_gains(controller, "rigid_tracking");
-        cfg.ctrller.compliant_hold_gains = load_gains(controller, "compliant_hold");
-        cfg.ctrller.compliant_drag_gains = load_gains(controller, "compliant_drag");
-        cfg.ctrller.compliant_tracking_gains = load_gains(controller, "compliant_tracking");
-        cfg.ctrller.servo_tracking_gains = controller["servo_tracking"] ? load_gains(controller,"servo_tracking") :
-            (controller["identification_tracking"] ? load_gains(controller, "identification_tracking") : cfg.ctrller.rigid_tracking_gains);
+        load_controller_cfg(controller, cfg.joint_names, false, "controller", cfg.ctrller);
 
 
         const YAML::Node dynamics = require_map(root, "dynamics", "root");
@@ -738,34 +784,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.runtime.tracking_gain_profile = load_tracking_gain_profile(runtime);
         load_hold_compensation(control_node["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(control_node, "controller", "control");
-        reject_unknown_keys(controller, "control.controller", { "allow_full_cmd", "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking", "servo_tracking" });
-        reject_unknown_keys(require_map(controller, "rigid_hold", "controller"), "controller.rigid_hold", { "kp", "kd" });
-        reject_unknown_keys(require_map(controller, "rigid_tracking", "controller"), "controller.rigid_tracking", { "kp", "kd" });
-        reject_unknown_keys(require_map(controller, "compliant_hold", "controller"), "controller.compliant_hold", { "kp", "kd" });
-        reject_unknown_keys(require_map(controller, "compliant_drag", "controller"), "controller.compliant_drag", { "kp", "kd" });
-        reject_unknown_keys(require_map(controller, "compliant_tracking", "controller"), "controller.compliant_tracking", { "kp", "kd" });
-        if(controller["servo_tracking"]) reject_unknown_keys(require_map(controller,"servo_tracking","controller"),"controller.servo_tracking",{"kp","kd"});
-        if(controller["identification_tracking"])
-            reject_unknown_keys(require_map(controller, "identification_tracking", "controller"), "controller.identification_tracking", { "kp", "kd" });
-        cfg.ctrller.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", "controller");
-        cfg.ctrller.rigid_hold_gains.kp = load_named_joint_vector(require_map(controller, "rigid_hold", "controller")["kp"], cfg.joint_names, "controller.rigid_hold.kp");
-        cfg.ctrller.rigid_hold_gains.kd = load_named_joint_vector(require_map(controller, "rigid_hold", "controller")["kd"], cfg.joint_names, "controller.rigid_hold.kd");
-        cfg.ctrller.rigid_tracking_gains.kp = load_named_joint_vector(require_map(controller, "rigid_tracking", "controller")["kp"], cfg.joint_names, "controller.rigid_tracking.kp");
-        cfg.ctrller.rigid_tracking_gains.kd = load_named_joint_vector(require_map(controller, "rigid_tracking", "controller")["kd"], cfg.joint_names, "controller.rigid_tracking.kd");
-        cfg.ctrller.compliant_hold_gains.kp = load_named_joint_vector(require_map(controller, "compliant_hold", "controller")["kp"], cfg.joint_names, "controller.compliant_hold.kp");
-        cfg.ctrller.compliant_hold_gains.kd = load_named_joint_vector(require_map(controller, "compliant_hold", "controller")["kd"], cfg.joint_names, "controller.compliant_hold.kd");
-        cfg.ctrller.compliant_drag_gains.kp = load_named_joint_vector(require_map(controller, "compliant_drag", "controller")["kp"], cfg.joint_names, "controller.compliant_drag.kp");
-        cfg.ctrller.compliant_drag_gains.kd = load_named_joint_vector(require_map(controller, "compliant_drag", "controller")["kd"], cfg.joint_names, "controller.compliant_drag.kd");
-        cfg.ctrller.compliant_tracking_gains.kp = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kp"], cfg.joint_names, "controller.compliant_tracking.kp");
-        cfg.ctrller.compliant_tracking_gains.kd = load_named_joint_vector(require_map(controller, "compliant_tracking", "controller")["kd"], cfg.joint_names, "controller.compliant_tracking.kd");
-        cfg.ctrller.servo_tracking_gains = cfg.ctrller.rigid_tracking_gains;
-        if(controller["servo_tracking"] || controller["identification_tracking"]) {
-            const char* key=controller["servo_tracking"] ? "servo_tracking" : "identification_tracking";
-            const auto tracking = require_map(controller,key,"controller");
-            const auto kp_context=std::string("controller.")+key+".kp",kd_context=std::string("controller.")+key+".kd";
-            cfg.ctrller.servo_tracking_gains.kp = load_named_joint_vector(tracking["kp"], cfg.joint_names, kp_context.c_str());
-            cfg.ctrller.servo_tracking_gains.kd = load_named_joint_vector(tracking["kd"], cfg.joint_names, kd_context.c_str());
-        }
+        load_controller_cfg(controller, cfg.joint_names, true, "control.controller", cfg.ctrller);
 
         const YAML::Node joints = require_map(calibration_node, "joints", "calibration");
         reject_unknown_joint_keys(joints, cfg.joint_names, "calibration.joints");

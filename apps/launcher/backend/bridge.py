@@ -111,7 +111,7 @@ def restore_temporary_candidates_for_disconnect(native, allow_park=False):
 # Native sessions do not trust browser button states for control admission
 _READ_ONLY_MACHINE = {
     'status', 'get_admittance', 'candidate_overrides', 'calibration_status',
-    'model_calibration_status', 'candidate_gain_status', 'candidate_gravity_status',
+    'model_calibration_status', 'model_calibration_gain_plan', 'candidate_gain_status', 'candidate_gravity_status',
     'candidate_dynamics_status', 'teach_replay_status',
 }
 _SAFE_EXIT_MACHINE = {

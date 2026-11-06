@@ -104,6 +104,8 @@ struct ModelCalibrationMetadata {
     double svd_relative_threshold{ 1.0e-4 };
     double minimum_information_score{ 1.0e-4 };
     double max_task_duration_s{ 600.0 };
+    double gain_budget_source_duration_s{0};
+    std::string gain_budget_source,gain_budget_source_task_id;
 };
 
 /**

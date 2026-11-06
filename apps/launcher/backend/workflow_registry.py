@@ -151,7 +151,7 @@ def export_record(root, directory, kind):
         'dynamics':{'metadata.json','trajectory.csv','frames.csv','accepted_static.csv','result.json','idim-candidate.json','source/model.urdf','source/core.yaml'}
     }[kind]
     if kind == 'gain':
-        for pattern in ('servo-probe-*.csv', 'drag-decay-*.csv'):
+        for pattern in ('servo-probe-*.csv', 'gain-trajectory-*.csv', 'drag-decay-*.csv'):
             allowed.update(path.name for path in folder.glob(pattern) if path.is_file())
     included=[]
     with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=5) as archive:
@@ -205,17 +205,18 @@ def prepare_gain_candidate(directory, gain_purposes=None):
     path=Path(record['directory'])/'gain-candidate.json'
     candidate=_json(path)
     if not candidate or candidate.get('schema')!='serial_arm_gain_candidate':
-        raise ValueError('当前增益记录尚未通过完整控制质量验证，不能临时应用')
+        raise ValueError('当前任务缺少有效的增益候选文件')
     if candidate.get('task_id') != record.get('task_id'):
         raise ValueError('增益候选与任务编号不一致，请重新选择完整任务目录')
     if candidate.get('urdf_fingerprint')!=(record.get('metadata') or {}).get('urdf_fingerprint'):
         raise ValueError('增益候选与记录的 URDF 指纹不一致')
     if candidate.get('joint_names')!=(record.get('metadata') or {}).get('joint_names'):
         raise ValueError('增益候选与记录的关节映射不一致')
-    from control_parameters import deployment_gain_groups
+    from control_parameters import deployment_gain_groups, gain_selection_report
     groups=deployment_gain_groups(candidate,gain_purposes)
     return {'kind':'gain','candidate_path':str(path),'task_id':record['task_id'],'temporary':True,
-            'gain_purposes':list(groups),'validation_scope':candidate.get('validation_scope','recorded_scope')}
+            'gain_purposes':list(groups), **gain_selection_report(candidate, groups),
+            'validation_scope':candidate.get('validation_scope','recorded_scope')}
 
 
 def resolve_dynamics_candidate_path(report_path, report):

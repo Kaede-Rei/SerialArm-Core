@@ -1,8 +1,82 @@
 """Canonical control parameters and source-preserving YAML additions."""
 from copy import deepcopy
+import math
 
 import yaml
 from yaml.nodes import MappingNode, ScalarNode
+from yaml.tokens import AnchorToken, AliasToken, BlockEndToken, DocumentEndToken, StreamEndToken
+
+
+_CONTROLLER_ROLES = ('rigid_hold', 'rigid_tracking', 'compliant_hold',
+                     'compliant_tracking', 'compliant_drag', 'servo_tracking')
+_CONTROLLER_GROUPS = ('rigid', 'compliant', 'drag')
+
+
+def _canonical_controller(controller):
+    """Read four user purposes while retaining the six execution roles internally."""
+    if not isinstance(controller, dict):
+        raise ValueError('control.controller 必须为映射')
+    result = deepcopy(controller)
+    modern = any(key in controller for key in _CONTROLLER_GROUPS)
+    if modern:
+        for key in (*_CONTROLLER_GROUPS, 'servo_tracking'):
+            if key not in controller:
+                raise ValueError('四用途增益配置缺少 control.controller.' + key)
+        for group in ('rigid', 'compliant'):
+            fields = controller[group]
+            if not isinstance(fields, dict) or set(fields) != {'hold', 'tracking'}:
+                raise ValueError('control.controller.' + group + ' 必须完整包含 hold 和 tracking，不支持其他分组字段')
+            for task in ('hold', 'tracking'):
+                key = group + '_' + task
+                gains = fields[task]
+                if not isinstance(gains, dict) or not {'kp', 'kd'} <= gains.keys():
+                    raise ValueError('control.controller.' + group + '.' + task + ' 必须包含 kp 和 kd')
+                if key in controller and controller[key] != gains:
+                    raise ValueError('control.controller.' + group + '.' + task + ' 与旧 ' + key + ' 参数冲突')
+                result[key] = deepcopy(gains)
+            result.pop(group)
+        drag = controller['drag']
+        if not isinstance(drag, dict) or not {'kp', 'kd'} <= drag.keys():
+            raise ValueError('control.controller.drag 必须包含 kp 和 kd')
+        if 'compliant_drag' in controller and controller['compliant_drag'] != drag:
+            raise ValueError('control.controller.drag 与旧 compliant_drag 参数冲突')
+        result['compliant_drag'] = deepcopy(drag)
+        result.pop('drag')
+        servo = controller['servo_tracking']
+        if not isinstance(servo, dict) or not {'kp', 'kd'} <= servo.keys():
+            raise ValueError('control.controller.servo_tracking 必须包含 kp 和 kd')
+    if 'identification_tracking' in result:
+        legacy = result.pop('identification_tracking')
+        if 'servo_tracking' in result and result['servo_tracking'] != legacy:
+            raise ValueError('control.controller.servo_tracking 与旧 identification_tracking 参数冲突，请保留一份伺服跟踪配置')
+        result.setdefault('servo_tracking', legacy)
+    if 'servo_tracking' not in result and 'rigid_tracking' in result:
+        result['servo_tracking'] = deepcopy(result['rigid_tracking'])
+    return result
+
+
+def four_mode_core(core):
+    """Write four gain purposes without merging their separate task parameters."""
+    result = canonical_core(core)
+    controller = (result.get('control') or {}).get('controller')
+    if not isinstance(controller, dict):
+        raise ValueError('缺少 control.controller 增益配置')
+    for key in _CONTROLLER_ROLES:
+        if key not in controller:
+            raise ValueError('四用途增益配置缺少任务参数 control.controller.' + key)
+        if not isinstance(controller[key], dict) or not {'kp', 'kd'} <= controller[key].keys():
+            raise ValueError('control.controller.' + key + ' 必须包含 kp 和 kd')
+    grouped = {}
+    if 'allow_full_cmd' in controller:
+        grouped['allow_full_cmd'] = controller['allow_full_cmd']
+    for group in ('rigid', 'compliant'):
+        grouped[group] = {task: deepcopy(controller[group + '_' + task]) for task in ('hold', 'tracking')}
+    grouped['drag'] = deepcopy(controller['compliant_drag'])
+    grouped['servo_tracking'] = deepcopy(controller['servo_tracking'])
+    grouped.update({key: deepcopy(value) for key, value in controller.items()
+                    if key not in _CONTROLLER_ROLES and key != 'allow_full_cmd'})
+    result['control']['controller'] = grouped
+    return result
 
 
 def canonical_core(core):
@@ -38,14 +112,7 @@ def canonical_core(core):
     controller = (result.get('control') or {}).get('controller')
     if not isinstance(controller, dict):
         return result
-    legacy = controller.pop('identification_tracking', None)
-    current = controller.get('servo_tracking')
-    if legacy is not None and current is not None and legacy != current:
-        raise ValueError('control.controller.servo_tracking 与旧 identification_tracking 参数冲突，请保留一份伺服跟踪配置')
-    if current is None:
-        source = legacy if legacy is not None else controller.get('rigid_tracking')
-        if source is not None:
-            controller['servo_tracking'] = deepcopy(source)
+    result['control']['controller'] = _canonical_controller(controller)
     return result
 
 
@@ -56,7 +123,7 @@ def selected_gain_purposes(gain_purposes):
     aliases = {'RIGID':'rigid_tracking', 'COMPLIANT':'compliant_tracking', 'DRAG':'compliant_drag', 'SERVO':'servo_tracking', 'SERVO_TRACKING':'servo_tracking'}
     aliases.update({key.upper():key for key in GAIN_PURPOSE_KEYS})
     if not isinstance(gain_purposes, (list, tuple)) or not gain_purposes:
-        raise ValueError('请选择至少一种已通过验收的增益用途')
+        raise ValueError('请选择至少一种已有测量结果的增益用途')
     result=[]
     for key in gain_purposes:
         canonical=aliases.get(str(key).upper())
@@ -65,34 +132,133 @@ def selected_gain_purposes(gain_purposes):
     return [key for key in GAIN_PURPOSE_KEYS if key in result]
 
 
+def _gain_number(value):
+    return isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def gain_measurement_available(validation, joint_count, kind):
+    """Measurement completion is separate from meeting reference metrics."""
+    if not isinstance(validation, dict) or validation.get('available') is False or validation.get('completed') is False:
+        return False
+    if kind == 'tracking':
+        rows = validation.get('metrics')
+        return (validation.get('independent') is True and _gain_number(validation.get('duration_s')) and
+                validation['duration_s'] > 0 and
+                ('measured_duration_s' not in validation or _gain_number(validation['measured_duration_s']) and
+                 validation['measured_duration_s'] >= validation['duration_s'] - .06) and isinstance(rows, list) and
+                len(rows) == joint_count and all(isinstance(row, dict) and
+                _gain_number(row.get('samples')) and row['samples'] > 0 and
+                ('measurement_samples' not in row or _gain_number(row['measurement_samples']) and row['measurement_samples'] > 0) and
+                all(_gain_number(row.get(key)) and row[key] >= 0 for key in
+                    ('rms_error_rad', 'peak_error_rad', 'velocity_rms_rad_s', 'tail_error_rad', 'settling_s'))
+                for row in rows))
+    if not _gain_number(validation.get('samples')) or validation['samples'] <= 0:
+        return False
+    if kind == 'hold':
+        return (validation.get('reason') not in ('not_started', 'measurement_in_progress') and
+                ('fresh_samples' not in validation or isinstance(validation['fresh_samples'], list) and
+                 len(validation['fresh_samples']) == joint_count and all(_gain_number(v) and v > 0 for v in validation['fresh_samples'])) and
+                all(_gain_number(validation.get(key)) and validation[key] >= 0
+                    for key in ('worst_error_rad', 'worst_velocity_rad_s')))
+    if kind == 'drag':
+        axes = validation.get('axes')
+        return (validation.get('completed') is True and isinstance(axes, list) and
+                len(axes) == joint_count and all(isinstance(axis, dict) and
+                _gain_number(axis.get('samples')) and axis['samples'] > 0 and
+                all(_gain_number(axis.get(key)) and axis[key] >= 0 for key in
+                    ('initial_velocity_rad_s', 'peak_velocity_rad_s', 'final_velocity_rad_s', 'decay_s'))
+                for axis in axes))
+    return False
+
+
+def gain_purpose_available(candidate, purpose, fields):
+    if not isinstance(fields, dict) or fields.get('available') is False or fields.get('error') in ('not_started', 'measurement_in_progress'):
+        return False
+    names = candidate.get('joint_names')
+    count = len(names) if isinstance(names, list) else 0
+    def gains(value):
+        return isinstance(value, dict) and all(isinstance(value.get(term), list) and
+            len(value[term]) == count and all(_gain_number(v) and v >= 0 for v in value[term])
+            for term in ('kp', 'kd'))
+    if count == 0 or not gains(fields):
+        return False
+    # Existing qualified local-probe records retain their recorded scope.
+    # Failed old records need complete independent trajectory measurements.
+    if candidate.get('validation_scope') != 'independent_demonstration_trajectory':
+        return fields.get('validated') is True
+    if purpose == 'compliant_drag':
+        return all(v == 0 for v in fields['kp']) and gain_measurement_available(fields.get('drag_validation'), count, 'drag')
+    if not gain_measurement_available(fields.get('native_validation'), count, 'tracking'):
+        return False
+    if purpose == 'servo_tracking':
+        admittance = fields.get('admittance_validation') or {}
+        native_only = fields.get('admittance_required') is False and admittance.get('required') is False and admittance.get('status') == 'not_requested'
+        return native_only or gain_measurement_available(admittance, count, 'tracking')
+    if purpose not in ('rigid_tracking', 'compliant_tracking') or not gains(fields.get('hold_gains')):
+        return False
+    verification = ('hold_compensation_verification' if purpose == 'rigid_tracking' and
+                    (fields.get('hold_compensation') or {}).get('enabled') is True else 'hold_verification')
+    if not gain_measurement_available(fields.get(verification), count, 'hold'):
+        return False
+    if purpose == 'compliant_tracking':
+        return (_gain_number(fields.get('tested_speed_fraction')) and fields['tested_speed_fraction'] > 0 and
+                all(isinstance(fields.get(key), list) and len(fields[key]) == count and
+                    all(_gain_number(v) and v >= 0 for v in fields[key])
+                    for key in ('rigid_reference_kp', 'rigid_reference_kd')))
+    return True
+
+
+def gain_selection_report(candidate, groups):
+    warnings = [value for value in candidate.get('warnings', []) if isinstance(value, str)]
+    for purpose, fields in groups.items():
+        warnings.extend(value for value in fields.get('warnings', []) if isinstance(value, str))
+        if fields.get('validated') is not True:
+            warnings.append(purpose + ' 未达参考指标，保留实测结果，可应用或导出')
+    rigid, soft = groups.get('rigid_tracking'), groups.get('compliant_tracking')
+    if soft and soft.get('compliant_separation_validated') is not True:
+        warnings.append('柔性增益未达刚柔分离参考指标')
+    if rigid and soft and any(soft.get('rigid_reference_' + term) != rigid.get(term) for term in ('kp', 'kd')):
+        warnings.append('柔性测量时的刚性参考与本次采用的刚性增益不同')
+    return {'available': bool(groups), 'validated': bool(groups) and all(fields.get('validated') is True for fields in groups.values()),
+            'warnings': list(dict.fromkeys(warnings))}
+
+
 def deployment_gain_groups(candidate, gain_purposes=None):
     category = candidate.get('category')
     if category == 'identification_tracking':
         raise ValueError('旧辨识增益记录未包含导纳联合验收，请重新运行伺服跟踪标定')
     groups = candidate.get('targets') if category == 'all' else {category: candidate}
     if not isinstance(groups, dict) or not groups:
-        raise ValueError('增益候选缺少已验证的用途')
+        raise ValueError('增益候选缺少用途记录')
     selected=selected_gain_purposes(gain_purposes)
     if selected is None:
-        if candidate.get('validated') is not True: raise ValueError('增益候选尚未完整通过验收，请明确选择已通过的用途')
-        if category == 'all' and set(groups) != set(GAIN_PURPOSE_KEYS):
-            raise ValueError('统一增益候选必须包含四类用途的独立验收')
+        groups = {key: fields for key, fields in groups.items() if gain_purpose_available(candidate, key, fields)}
+        if not groups: raise ValueError('增益候选尚无完整测量结果')
     else:
         if any(key not in groups for key in selected): raise ValueError('候选未包含所选增益用途')
         groups={key:groups[key] for key in selected}
     for purpose, fields in groups.items():
-        if not isinstance(fields, dict) or fields.get('validated') is not True:
-            raise ValueError('增益用途未通过验证: ' + str(purpose))
+        if purpose not in GAIN_PURPOSE_KEYS or not gain_purpose_available(candidate, purpose, fields):
+            raise ValueError('增益用途尚无完整测量结果: ' + str(purpose))
+        if candidate.get('validation_scope') == 'independent_demonstration_trajectory':
+            continue
         if purpose == 'servo_tracking':
-            if any((fields.get(key) or {}).get('validated') is not True
-                   for key in ('native_validation', 'admittance_validation')):
-                raise ValueError('伺服跟踪候选必须通过辨识跟踪和导纳联合验收')
+            native = fields.get('native_validation') or {}
+            admittance = fields.get('admittance_validation') or {}
+            native_only = (candidate.get('validation_scope') == 'independent_demonstration_trajectory'
+                           and fields.get('admittance_required') is False
+                           and admittance.get('required') is False
+                           and admittance.get('status') == 'not_requested')
+            if native.get('validated') is not True or (not native_only and admittance.get('validated') is not True):
+                raise ValueError('伺服跟踪候选缺少原生跟踪验收，或未通过本次要求的导纳附加验收')
         elif purpose == 'compliant_drag':
             if (fields.get('drag_validation') or {}).get('validated') is not True:
                 raise ValueError('拖拽候选缺少独立稳定性验收')
         elif purpose == 'rigid_tracking':
-            if not any((fields.get(key) or {}).get('validated') is True
-                       for key in ('hold_verification', 'hold_compensation_verification')):
+            verification = ('hold_compensation_verification'
+                            if (fields.get('hold_compensation') or {}).get('enabled') is True
+                            else 'hold_verification')
+            if (fields.get(verification) or {}).get('validated') is not True:
                 raise ValueError('刚性候选缺少保持或补偿保持验收')
         elif purpose == 'compliant_tracking':
             if (fields.get('hold_verification') or {}).get('validated') is not True:
@@ -139,32 +305,80 @@ def add_mapping_value(text, parent, key, value):
     return text[:index] + prefix + block + text[index:]
 
 
-def canonical_control_text(text, servo=None):
+def _controller_text(text, controller):
+    """Replace only the controller value and verify the complete parsed document."""
     original = yaml.safe_load(text)
-    controller = ((original or {}).get('control') or {}).get('controller') or {}
-    canonical_core(original)  # Reject conflicting aliases before changing text
-    if 'identification_tracking' in controller:
-        parent = _node_at(yaml.compose(text), ('control', 'controller'))
-        name, value = next((name, value) for name, value in parent.value if name.value == 'identification_tracking')
-        if 'servo_tracking' not in controller:
-            text = text[:name.start_mark.index] + 'servo_tracking' + text[name.end_mark.index:]
-        else:
-            index = next(i for i, (key, _) in enumerate(parent.value) if key.value == 'identification_tracking')
-            if parent.flow_style:
-                if index + 1 < len(parent.value):
-                    start, end = name.start_mark.index, parent.value[index + 1][0].start_mark.index
-                else:
-                    start, end = parent.value[index - 1][1].end_mark.index, value.end_mark.index
-            else:
-                start = text.rfind('\n', 0, name.start_mark.index) + 1
-                end = value.end_mark.index
-                line = text.rfind('\n', 0, end) + 1
-                if not text[line:end].strip(): end = line
-                elif text[end:end + 1] == '\n': end += 1
-            text = text[:start] + text[end:]
-    if servo is not None:
-        text = add_mapping_value(text, ('control', 'controller'), 'servo_tracking', servo)
-    return text
+    root = yaml.compose(text)
+    control = _node_at(root, ('control',))
+    entries = [(key, value) for key, value in control.value if key.value == 'controller']
+    if len(entries) != 1 or not isinstance(entries[0][1], MappingNode):
+        raise ValueError('control.controller 必须为唯一映射')
+    key, node = entries[0]
+    visited = set()
+    def unique_keys(value):
+        if id(value) in visited:
+            return
+        visited.add(id(value))
+        if isinstance(value, MappingNode):
+            keys = [key.value for key, _ in value.value if isinstance(key, ScalarNode)]
+            if len(keys) != len(value.value) or len(keys) != len(set(keys)):
+                raise ValueError('control.controller 不支持重复键或复合键')
+            for _, child in value.value:
+                unique_keys(child)
+        elif isinstance(value.value, list):
+            for child in value.value:
+                unique_keys(child)
+    unique_keys(node)
+    if original['control']['controller'] == controller:
+        return text
+    tokens = list(yaml.scan(text))
+    if node.start_mark.index <= key.end_mark.index or any(
+            isinstance(token, (AnchorToken, AliasToken)) and
+            node.start_mark.index <= token.start_mark.index < node.end_mark.index for token in tokens):
+        raise ValueError('control.controller 含 YAML 锚点或共享别名，请先展开为独立映射后再保存四用途配置')
+    start = node.start_mark.index
+    if node.flow_style:
+        end = node.end_mark.index
+        encoded = yaml.safe_dump(controller, allow_unicode=True, default_flow_style=True,
+                                 sort_keys=False, width=1000000).strip()
+    else:
+        # Mapping end marks include comments/indentation before the next section.
+        # Preserve that suffix instead of consuming it with the rewritten value.
+        content = [token.end_mark.index for token in tokens
+                   if start <= token.start_mark.index < node.end_mark.index and
+                   not isinstance(token, (BlockEndToken, DocumentEndToken, StreamEndToken))]
+        end = max(content, default=start)
+        lines = yaml.safe_dump(controller, allow_unicode=True, default_flow_style=False,
+                               sort_keys=False, width=1000000).rstrip('\n').splitlines()
+        indent = ' ' * node.start_mark.column
+        encoded = lines[0] + ''.join('\n' + indent + line for line in lines[1:])
+    result = text[:start] + encoded + text[end:]
+    expected = deepcopy(original)
+    expected['control']['controller'] = deepcopy(controller)
+    try:
+        parsed = yaml.safe_load(result)
+    except yaml.YAMLError as error:
+        raise ValueError('无法保留控制配置外的 YAML 内容，请先展开共享别名后再保存') from error
+    if parsed != expected:
+        raise ValueError('YAML 共享别名会影响其他配置，请先拆分为独立映射后再保存')
+    return result
+
+
+def canonical_control_text(text, servo=None):
+    """Expand the four-purpose layout into the internal paths used by patchers."""
+    original = yaml.safe_load(text)
+    controller = ((original or {}).get('control') or {}).get('controller')
+    normalized = _canonical_controller(controller)
+    if servo is not None and 'servo_tracking' not in controller and 'identification_tracking' not in controller:
+        normalized['servo_tracking'] = deepcopy(servo)
+    return _controller_text(text, normalized)
+
+
+def four_mode_control_text(text):
+    """Write only the controller block as four purposes; keep other text intact."""
+    original = yaml.safe_load(text)
+    controller = four_mode_core(original)['control']['controller']
+    return _controller_text(text, controller)
 
 
 def complete_mapping_values(text, parent, values):

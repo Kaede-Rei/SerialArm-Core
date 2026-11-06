@@ -135,6 +135,7 @@ void DamiaoUsbCanBus::close() noexcept {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     frames_.clear();
     last_read_ = {};
+    endpoint_received_ns_.clear();
 }
 
 /**
@@ -189,6 +190,7 @@ void DamiaoUsbCanBus::flush() noexcept {
     rx_queue_.clear();
     frames_.clear();
     last_read_ = {};
+    endpoint_received_ns_.clear();
     if(!serial_.is_open()) return;
     try {
         serial_.flush();
@@ -239,8 +241,7 @@ void DamiaoUsbCanBus::receive_loop() noexcept {
             const auto received = std::chrono::steady_clock::now();
             const auto stamp = std::chrono::duration_cast<std::chrono::nanoseconds>(received.time_since_epoch()).count();
             const bool continuous = last_read_ != std::chrono::steady_clock::time_point{} &&
-                received-last_read_ <= std::chrono::milliseconds(20) &&
-                received-last_read_ >= std::chrono::microseconds(250);
+                received>last_read_ && received-last_read_ <= std::chrono::milliseconds(20);
             last_read_ = received;
             for(std::size_t i=0;i<n;++i) rx_queue_.push_back({rx_buf_[i], static_cast<std::uint64_t>(stamp), continuous});
             std::vector<transport::CanFrame> batch;
@@ -308,6 +309,15 @@ bool DamiaoUsbCanBus::try_parse_frame(transport::CanFrame& frame) {
         frame.id = wire.can_id;
         frame.size = wire.can_data_len;
         std::copy(std::begin(wire.can_data), std::end(wire.can_data), frame.data.begin());
+        // Different motors normally arrive a fraction of a millisecond apart.
+        // Differentiation continuity concerns repeated samples of the SAME
+        // endpoint, not the spacing of unrelated tty reads.
+        const std::uint32_t endpoint=frame.id ? frame.id<<4 : frame.data[0]&0x0f;
+        auto& previous=endpoint_received_ns_[endpoint];
+        const bool endpoint_continuous=previous!=0 && frame.received_ns>previous &&
+            frame.received_ns-previous>=250000 && frame.received_ns-previous<=20000000;
+        frame.receive_timing_valid=frame.receive_timing_valid && endpoint_continuous;
+        previous=std::max(previous,frame.received_ns);
         return true;
     }
     return false;

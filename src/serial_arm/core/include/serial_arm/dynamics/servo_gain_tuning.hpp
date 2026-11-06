@@ -110,6 +110,7 @@ inline Requirements bounded_plan(Requirements req,double amplitude,double freque
 struct MotionObservation {
     double reference_positive{0},reference_negative{0},actual_positive{0},actual_negative{0};
     double response_rms_ratio{0},coherence{0},encoder_step_rad{0},noise_rms_rad{0},minimum_motion_span_rad{0};
+    double initial_error_rad{0},positive_travel_rad{0},negative_travel_rad{0},alignment_delay_s{0};
     bool bidirectional{false},qualified{false};std::string reason{"insufficient_measurements"};
 };
 inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,double excitation_end_s) {
@@ -182,16 +183,18 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
     MotionObservation out;out.noise_rms_rad=noise.rms_rad;
     if(rows.empty())return out;
     const auto metrics=assess(rows,req,req.probe_duration_s);
-    std::vector<double> u,y,positions;
-    const double reference_center=rows.front().reference,actual_center=rows.front().actual;
+    std::vector<double> u,y,positions,selected_times;
+    std::vector<const Sample*> fresh;
+    const double reference_center=rows.front().reference;
+    out.initial_error_rad=rows.front().actual-reference_center;
     for(const auto& row:rows)if(row.new_measurement) {
         out.reference_positive=std::max(out.reference_positive,row.reference-reference_center);
         out.reference_negative=std::max(out.reference_negative,reference_center-row.reference);
-        out.actual_positive=std::max(out.actual_positive,row.actual-actual_center);
-        out.actual_negative=std::max(out.actual_negative,actual_center-row.actual);
-        positions.push_back(row.actual);
+        out.actual_positive=std::max(out.actual_positive,row.actual-reference_center);
+        out.actual_negative=std::max(out.actual_negative,reference_center-row.actual);
+        positions.push_back(row.actual);fresh.push_back(&row);
         if(row.time_s>=.7 && row.time_s<req.probe_duration_s-.7) {
-            u.push_back(row.reference-reference_center);y.push_back(row.actual-actual_center);
+            u.push_back(row.reference-reference_center);y.push_back(row.actual-reference_center);selected_times.push_back(row.time_s);
         }
     }
     out.encoder_step_rad=std::max(noise.encoder_step_rad,observed_encoder_step(positions));
@@ -199,7 +202,6 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
     const double required=std::max({6*out.encoder_step_rad,6*noise.rms_rad,
         .2*std::min(out.reference_positive,out.reference_negative)});
     out.minimum_motion_span_rad=required;
-    out.bidirectional=required>0 && out.actual_positive>=required && out.actual_negative>=required;
     // Establish correlated motion without claiming dynamic tracking quality.
     // A small causal shift allows the low-frequency starting response to lag;
     // the later independent FRF still uses the original strict phase criteria.
@@ -207,11 +209,42 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
         double su=0,sy=0,suu=0,syy=0,suy=0;const double count=static_cast<double>(u.size()-lag);
         for(std::size_t i=lag;i<u.size();++i){const double a=u[i-lag],b=y[i];su+=a;sy+=b;suu+=a*a;syy+=b*b;suy+=a*b;}
         const double a=suu-su*su/count,b=syy-sy*sy/count,c=suy-su*sy/count;
-        if(a>1e-12 && b>1e-12 && c>0)out.coherence=std::max(out.coherence,std::clamp(c*c/(a*b),0.0,1.0));
+        if(a>1e-12 && b>1e-12 && c>0) {
+            const double coherence=std::clamp(c*c/(a*b),0.0,1.0);
+            if(coherence>out.coherence){out.coherence=coherence;out.alignment_delay_s=selected_times[lag]-selected_times.front();}
+        }
     }
+    // The first actual sample may retain the preceding window's static
+    // tracking error. Measure real forward/backward travel on significant
+    // monotonic reference segments, using the same small causal alignment as
+    // the correlation test. Neither a DC offset nor the initial pose defines
+    // whether an encoder has moved in both commanded directions.
+    const auto record_segment=[&](std::size_t first,std::size_t last,int direction) {
+        const double input=fresh[last]->reference-fresh[first]->reference;
+        if(std::abs(input)<std::max(2*required,.1*req.amplitude_rad))return;
+        const auto at=[&](double time){return std::lower_bound(fresh.begin(),fresh.end(),time,
+            [](const Sample* row,double value){return row->time_s<value;});};
+        const auto begin=at(fresh[first]->time_s+out.alignment_delay_s),end=at(fresh[last]->time_s+out.alignment_delay_s);
+        if(begin==fresh.end() || end==fresh.end())return;
+        const double travel=(*end)->actual-(*begin)->actual;
+        if(direction>0)out.positive_travel_rad=std::max(out.positive_travel_rad,travel);
+        else if(direction<0)out.negative_travel_rad=std::max(out.negative_travel_rad,-travel);
+    };
+    if(fresh.size()>=2) {
+        std::size_t first=0,last=0;int direction=0;
+        for(std::size_t k=1;k<fresh.size() && fresh[k]->time_s<=req.probe_duration_s;++k) {
+            const double delta=fresh[k]->reference-fresh[k-1]->reference;
+            const int next=delta>1e-8?1:delta< -1e-8?-1:0;
+            if(next && direction && next!=direction){record_segment(first,k-1,direction);first=k-1;}
+            if(next)direction=next;
+            last=k;
+        }
+        record_segment(first,last,direction);
+    }
+    out.bidirectional=required>0 && out.positive_travel_rad>=required && out.negative_travel_rad>=required;
     if(metrics.measurement_samples<100 || !metrics.continuous)out.reason="insufficient_measurements";
     else if(metrics.limited_samples)out.reason="limited";
-    else if(std::max(out.actual_positive,out.actual_negative)<required)out.reason="no_motion";
+    else if(std::max(out.positive_travel_rad,out.negative_travel_rad)<required)out.reason="no_motion";
     else if(!out.bidirectional)out.reason="one_sided_response";
     else if(out.coherence<.65 || metrics.response_rms_ratio<.2)out.reason="low_coherence";
     else {out.reason="motion_established";out.qualified=true;}

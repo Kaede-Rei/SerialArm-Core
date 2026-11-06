@@ -16,7 +16,8 @@ import tempfile
 import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
-from control_parameters import add_mapping_value, canonical_control_text, canonical_core, complete_mapping_values
+from control_parameters import (add_mapping_value, canonical_control_text, canonical_core,
+                                four_mode_control_text, complete_mapping_values)
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted, revoke_gravity_trust
 
 
@@ -109,9 +110,7 @@ def _runtime_text(text, joints, runtime, gravity_scale):
     servo_values = (runtime.get('execution_gains') or {}).get('servo_tracking')
     servo = ({term: dict(zip(joints, servo_values[term])) for term in ('kp', 'kd')}
              if servo_values is not None else None)
-    # Canonicalize the alias only when this session actually supplies its gains
-    if servo is not None:
-        text = canonical_control_text(text, servo)
+    text = canonical_control_text(text, servo)
     if 'reference_behavior' in runtime:
         text = add_mapping_value(text, ('capability', 'admittance'), 'reference_behavior',
                                  runtime['reference_behavior'])
@@ -123,7 +122,7 @@ def _runtime_text(text, joints, runtime, gravity_scale):
     after = patch_text(text, targets)
     if (canonical.get('model') or {}).get('gravity_scale') != (yaml.safe_load(after).get('model') or {}).get('gravity_scale'):
         after = revoke_gravity_trust(after)
-    return after
+    return four_mode_control_text(after)
 
 
 def patch_text(text, targets):
@@ -647,6 +646,7 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
     trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
     if trust_reset:
         after = revoke_gravity_trust(after)
+    after = four_mode_control_text(after)
     yaml.safe_load(after)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else core_path.parent
@@ -777,6 +777,10 @@ def load_model_calibration_summary(directory):
              'accepted_static.csv': (folder/'accepted_static.csv').is_file(),
              'trajectory.csv': complete_path.is_file(),
              'trajectory.checkpoint.csv': checkpoint_path.is_file(), 'result.json': result_path.is_file()}
+    for pattern in ('gain-trajectory-*.csv', 'servo-probe-*.csv', 'drag-decay-*.csv'):
+        for path in folder.glob(pattern):
+            if path.is_file() and not path.is_symlink():
+                files[path.name] = True
     note = ('已完成标定，可查看结果或从原轨迹重新进行一次采集' if record_kind == 'completed' else
             '仅有示教轨迹，可重新校验后从头开始自动采集' if record_kind == 'teaching_only' else
             '此任务未完整结束；可用轨迹可从头重新采集，不能直接接着中断点运动' if can_resume else
@@ -866,6 +870,7 @@ def preview_gravity_correction(core_path, task_directory, *, candidate_source=No
     trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
     if trust_reset:
         after = revoke_gravity_trust(after)
+    after = four_mode_control_text(after)
     yaml.safe_load(after)
     changes = []
     before_lines = before.splitlines()

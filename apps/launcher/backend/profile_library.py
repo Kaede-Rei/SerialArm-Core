@@ -17,7 +17,7 @@ import sys
 import yaml
 
 from profiles import Inspector, config_values, read_yaml, text
-from control_parameters import canonical_core, effective_hardware
+from control_parameters import canonical_core, four_mode_core, four_mode_control_text, effective_hardware
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted
 
 
@@ -26,10 +26,14 @@ def _sha(path):
 
 
 def _atomic_yaml(path, data):
+    _atomic_yaml_text(path, yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+
+
+def _atomic_yaml_text(path, text):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_suffix(path.suffix + '.tmp')
-    temp.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False))
+    temp.write_text(text, encoding='utf-8')
     yaml.safe_load(temp.read_text())
     temp.replace(path)
 
@@ -350,7 +354,9 @@ class ProfileLibrary:
         stages = meta.get('stages') or {}
         modes = meta.get('modes') or {}
         def status(item, scope):
-            if not isinstance(item, dict) or item.get('result') not in ('passed', 'recorded'):
+            if not isinstance(item, dict) or item.get('result') not in ('passed', 'recorded', 'warning'):
+                return 'pending'
+            if item.get('result') == 'warning' and item.get('kind') != 'measured_gain_purpose':
                 return 'pending'
             if item.get('scope') != scope:
                 return 'stale'
@@ -372,7 +378,7 @@ class ProfileLibrary:
                 path = Path(candidate_path)
                 if not path.is_file() or _sha(path) != item.get('candidate_sha256'):
                     return 'stale'
-            return 'verified'
+            return 'warning' if item.get('result') == 'warning' else 'verified'
         values = {
             'description': 'verified' if model_valid else 'failed',
             'profile_setup': 'verified' if profile_setup else 'pending',
@@ -400,7 +406,7 @@ class ProfileLibrary:
                 valid = all(gains['kd'][j] > 0 for j in joints)
             scope = scopes.get('startup_hold') if name == 'RIGID_HOLD' else (scopes.get('modes') or {}).get(name)
             own = status(modes.get(name), scope)
-            mode_states[name] = (own if own in ('verified', 'stale') else 'configured') if valid else 'unconfigured'
+            mode_states[name] = (own if own in ('verified', 'warning', 'stale') else 'configured') if valid else 'unconfigured'
         required = ('description', 'profile_setup', *self._STAGES)
         missing = [k for k in required if values[k] != 'verified']
         stale = any(v == 'stale' for v in list(values.values()) + list(mode_states.values()))
@@ -518,16 +524,17 @@ class ProfileLibrary:
         stored = meta.get('gain_purposes') or {}
         legacy = meta.get('modes') or {}
         for purpose, (label, gain_keys, check_keys) in self._GAIN_PURPOSES.items():
-            configured = all(mode_states.get(key.upper()) in ('configured', 'verified', 'stale') for key in gain_keys)
+            configured = all(mode_states.get(key.upper()) in ('configured', 'verified', 'warning', 'stale') for key in gain_keys)
             entry = stored.get(purpose)
             if not isinstance(entry, dict): entry = None
             state = 'pending'
-            if isinstance(entry, dict) and entry.get('kind') == 'validated_gain_purpose' and entry.get('result') == 'passed':
+            if isinstance(entry, dict) and ((entry.get('kind') == 'validated_gain_purpose' and entry.get('result') == 'passed') or
+                                          (entry.get('kind') == 'measured_gain_purpose' and entry.get('result') == 'warning')):
                 source = Path(entry.get('candidate_path') or '/missing')
                 context = entry.get('context_files')
                 same_source = source.is_file() and _sha(source) == entry.get('candidate_sha256')
                 same_source = same_source and isinstance(context, dict) and bool(context) and all(Path(path).is_file() and _sha(Path(path)) == digest for path, digest in context.items())
-                state = 'verified' if entry.get('scope') == scopes.get('gain_purposes', {}).get(purpose) and same_source else 'stale'
+                state = ('warning' if entry.get('result') == 'warning' else 'verified') if entry.get('scope') == scopes.get('gain_purposes', {}).get(purpose) and same_source else 'stale'
                 if not isinstance(context, dict) or not context: state = 'historical'
             else:
                 old = [legacy.get(key.upper()) for key in gain_keys]
@@ -542,7 +549,7 @@ class ProfileLibrary:
                     if check['id'] not in ('tracking', 'drag'): check['status'] = 'pending'
             result[purpose] = {'label': label, 'configured': configured,
                 'evidence_status': state, 'checks': checks,
-                'candidate_path': (entry or {}).get('candidate_path', ''),
+                'candidate_path': (entry or {}).get('candidate_path', ''), 'warnings': (entry or {}).get('warnings', []),
                 'action': {'page': 'calibration', 'entry': 'gain', 'label': '执行器增益自动标定'}}
         return result
 
@@ -718,7 +725,7 @@ class ProfileLibrary:
 
     def approve_gain_mode(self, config, mode, path, native=None, gain_purposes=None):
         from workflow_registry import prepare_gain_candidate
-        from control_parameters import deployment_gain_groups, selected_gain_purposes
+        from control_parameters import deployment_gain_groups, selected_gain_purposes, gain_selection_report
         from artifact_exports import gain_candidate_targets
         source = Path(path).expanduser().resolve()
         if not source.is_dir() and (not source.is_file() or source.name != 'gain-candidate.json'):
@@ -772,8 +779,11 @@ class ProfileLibrary:
         meta_path, meta = self._readiness_meta(info, scopes)
         meta['profile'] = info['profile']
         for purpose, group in selected.items():
-            checks = {name: True for name in self._GAIN_PURPOSES[purpose][2]}
-            proof = {'result': 'passed', 'kind': 'validated_gain_purpose',
+            quality = gain_selection_report(candidate, {group: groups[group]})
+            checks = {name: quality['validated'] for name in self._GAIN_PURPOSES[purpose][2]}
+            proof = {'result': 'passed' if quality['validated'] else 'warning',
+                     'kind': 'validated_gain_purpose' if quality['validated'] else 'measured_gain_purpose',
+                     'validated': quality['validated'], 'warnings': quality['warnings'],
                      'candidate_sha256': _sha(candidate_path), 'candidate_path': str(candidate_path),
                      'checks': checks, 'context_files': context_files, 'recorded_at': time.time()}
             meta.setdefault('gain_purposes', {})[purpose] = {**proof, 'scope': scopes['gain_purposes'][purpose]}
@@ -1109,6 +1119,8 @@ class ProfileLibrary:
                 if authored_urdf != expected_urdf or not authored_urdf.is_file():
                     raise ValueError('Description 自带 Core 配置中的 URDF 路径与所选模型不匹配')
                 core_config_relative = f'config/core/{profile}.yaml'
+                # Normalize only the newly copied package, never its source.
+                authored_config.write_text(four_mode_control_text(authored_config.read_text()), encoding='utf-8')
                 # Keep an already included legacy copy consistent, for consumers
                 # still accessing config/serialarm/core.yaml directly.
                 legacy_copy = config_dir / 'core.yaml'
@@ -1116,7 +1128,7 @@ class ProfileLibrary:
                     legacy_copy.write_bytes(authored_config.read_bytes())
             else:
                 core_config_relative = 'config/serialarm/core.yaml'
-                _atomic_yaml(config_dir/'core.yaml',core)
+                _atomic_yaml(config_dir/'core.yaml',four_mode_core(core))
             hardware_plugin=text(options.get('hardware_plugin'))
             if hardware_plugin and any(c in hardware_plugin for c in '\0\r\n'):
                 raise ValueError('hardware_plugin contains an invalid path')
@@ -1607,10 +1619,15 @@ class ProfileLibrary:
         if entry.get('core') != original_entry.get('core') or entry.get('description') != original_entry.get('description'):
             raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')
         self._validate_core_profile(core,hardware,entry,core_path,before_core,allow_hardware_draft=True)
-        # A user-owned Profile is a single authoritative configuration; preserve
-        # exact existing bytes on no-op saves so comments and verified values stay intact
+        # New saves use four purposes; a schema-only save rewrites just the
+        # controller block and preserves the surrounding authored YAML.
         desired = {}
-        if core != before_core: desired[core_path] = yaml.safe_dump(core, allow_unicode=True, sort_keys=False)
+        if core != before_core:
+            desired[core_path] = yaml.safe_dump(four_mode_core(core), allow_unicode=True, sort_keys=False)
+        else:
+            original_text = core_path.read_text(encoding='utf-8')
+            modern_text = four_mode_control_text(original_text)
+            if modern_text != original_text: desired[core_path] = modern_text
         if hardware != before_hw: desired[hw_path] = yaml.safe_dump(hardware, allow_unicode=True, sort_keys=False)
         next_profiles = copy.deepcopy(profile_data)
         next_profiles['profiles'][info['profile']] = entry
@@ -1625,7 +1642,7 @@ class ProfileLibrary:
                 parsed = yaml.safe_load(value)
                 if not isinstance(parsed,dict): raise ValueError(f'{path.name} 无效配置结构')
             for path,value in desired.items():
-                _atomic_yaml(path,yaml.safe_load(value))
+                _atomic_yaml_text(path,value)
         except Exception:
             for path, content in backup.items():
                 if content is None: path.unlink(missing_ok=True)

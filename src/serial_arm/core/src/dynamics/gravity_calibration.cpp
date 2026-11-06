@@ -349,6 +349,9 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     if(!out) return tl::make_unexpected(std::string("failed to open metadata.json"));
     out << std::setprecision(17) << "{\n";
     out << "  \"task_id\":\"" << json_escape(metadata_.task_id) << "\",\n";
+    out << "  \"gain_budget_source_duration_s\":" << metadata_.gain_budget_source_duration_s
+        << ",\"gain_budget_source\":\"" << json_escape(metadata_.gain_budget_source)
+        << "\",\"gain_budget_source_task_id\":\"" << json_escape(metadata_.gain_budget_source_task_id) << "\",\n";
     out << "  \"planned_dynamics_protocol\":\"bidirectional_two_speed_v1\",\n";
     out << "  \"profile\":\"" << json_escape(metadata_.profile) << "\",\n";
     std::error_code executable_error;

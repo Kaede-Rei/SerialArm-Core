@@ -39,32 +39,103 @@ control:
     model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
     tracking_gain_profile: COMPLIANT                   # ROS 原生跟踪默认增益：RIGID / COMPLIANT / SERVO_TRACKING；模型导纳固定使用伺服增益
   controller:
-    allow_full_cmd: false                               # 是否允许外部发送完整 MIT 风格 JointCtrlCmd
-    # 刚性保持：较高 kp/kd，使关节稳定保持切换模式时的位置
-    rigid_hold:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
-      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}          # 各关节速度阻尼
-    # 刚性跟踪：较高 kp/kd，使关节严格跟踪外部位置/速度参考
-    rigid_tracking:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}  # 各关节位置刚度
-      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}          # 各关节速度阻尼
-    # 柔性保持：降低 kp/kd，使机械臂仅依靠较软的 PD 保持当前位置
-    compliant_hold:
-      kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节低位置刚度
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节低速度阻尼
-    # 柔性拖拽：kp=0，不主动拉回原位，仅使用 kd 抑制过快运动
-    compliant_drag:
-      kp: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}         # 位置恢复刚度；0 表示不主动回原位
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节拖拽阻尼
-    # 柔性跟踪：较低 kp/kd，在跟踪外部参考时允许更明显的机械柔顺
-    compliant_tracking:
-      kp: {joint1: 4.0, joint2: 10.0, joint3: 10.0, joint4: 2.5, joint5: 1.5, joint6: 0.5}       # 各关节跟踪位置刚度
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.20, joint4: 0.05, joint5: 0.03, joint6: 0.01}   # 各关节跟踪速度阻尼
-
-    # 辨识与模型导纳共用的伺服跟踪增益，独立于刚性、柔性和拖拽用途
+    allow_full_cmd: false
+    # 刚性用途：保持与跟踪分别保存任务参数
+    rigid:
+      hold:
+        kp:
+          joint1: 80.0
+          joint2: 200.0
+          joint3: 200.0
+          joint4: 50.0
+          joint5: 30.0
+          joint6: 10.0
+        kd:
+          joint1: 1.6
+          joint2: 4.0
+          joint3: 4.0
+          joint4: 1.0
+          joint5: 0.6
+          joint6: 0.2
+      tracking:
+        kp:
+          joint1: 80.0
+          joint2: 200.0
+          joint3: 200.0
+          joint4: 50.0
+          joint5: 30.0
+          joint6: 10.0
+        kd:
+          joint1: 1.6
+          joint2: 4.0
+          joint3: 4.0
+          joint4: 1.0
+          joint5: 0.6
+          joint6: 0.2
+    # 柔性用途：保持与跟踪分别保存任务参数
+    compliant:
+      hold:
+        kp:
+          joint1: 4.0
+          joint2: 10.0
+          joint3: 10.0
+          joint4: 2.5
+          joint5: 1.5
+          joint6: 0.5
+        kd:
+          joint1: 0.08
+          joint2: 0.2
+          joint3: 0.2
+          joint4: 0.05
+          joint5: 0.03
+          joint6: 0.01
+      tracking:
+        kp:
+          joint1: 4.0
+          joint2: 10.0
+          joint3: 10.0
+          joint4: 2.5
+          joint5: 1.5
+          joint6: 0.5
+        kd:
+          joint1: 0.08
+          joint2: 0.2
+          joint3: 0.2
+          joint4: 0.05
+          joint5: 0.03
+          joint6: 0.01
+    # 拖拽用途：kp=0，仅用 kd 抑制过快运动
+    drag:
+      kp:
+        joint1: 0.0
+        joint2: 0.0
+        joint3: 0.0
+        joint4: 0.0
+        joint5: 0.0
+        joint6: 0.0
+      kd:
+        joint1: 0.08
+        joint2: 0.2
+        joint3: 0.2
+        joint4: 0.05
+        joint5: 0.03
+        joint6: 0.01
+    # 伺服跟踪用途：辨识与模型导纳共用
     servo_tracking:
-      kp: {joint1: 80.0, joint2: 200.0, joint3: 200.0, joint4: 50.0, joint5: 30.0, joint6: 10.0}
-      kd: {joint1: 1.6, joint2: 4.0, joint3: 4.0, joint4: 1.0, joint5: 0.6, joint6: 0.2}
+      kp:
+        joint1: 80.0
+        joint2: 200.0
+        joint3: 200.0
+        joint4: 50.0
+        joint5: 30.0
+        joint6: 10.0
+      kd:
+        joint1: 1.6
+        joint2: 4.0
+        joint3: 4.0
+        joint4: 1.0
+        joint5: 0.6
+        joint6: 0.2
 
 # 04 safety_policy
 safety_policy:

@@ -13,6 +13,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace serial_arm::protocol::damiao_usb2can {
@@ -120,6 +121,7 @@ private:
     std::thread receiver_;
     std::atomic<bool> running_{false}, read_failed_{false};
     std::chrono::steady_clock::time_point last_read_{};
+    std::unordered_map<std::uint32_t, std::uint64_t> endpoint_received_ns_;
     std::array<std::uint8_t, 1024> rx_buf_{};            ///< 串口临时读取缓冲区
 };
 

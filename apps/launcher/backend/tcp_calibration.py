@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import yaml
+from control_parameters import four_mode_core
 
 
 MIN_TRAIN = 8
@@ -556,7 +557,7 @@ class TcpCalibration:
                 correction_data['urdf_fingerprint'] = recorded_file_fingerprint(package / 'robot.urdf')
                 (package / 'gravity-correction.yaml').write_text(yaml.safe_dump(correction_data, allow_unicode=True, sort_keys=False), encoding='utf-8')
                 new_core['model']['gravity_correction_path'] = 'gravity-correction.yaml'
-            (package / 'core.yaml').write_text(yaml.safe_dump(new_core, allow_unicode=True, sort_keys=False), encoding='utf-8')
+            (package / 'core.yaml').write_text(yaml.safe_dump(four_mode_core(new_core), allow_unicode=True, sort_keys=False), encoding='utf-8')
             hardware = Path(info['resources']['hardware'])
             shutil.copy2(hardware, package / 'hardware.yaml')
             profile_doc = yaml.safe_load(Path(info['profile_file']).read_text(encoding='utf-8'))

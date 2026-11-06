@@ -1122,9 +1122,22 @@ YAML 位于 `control.hold_compensation`，省略时关闭；提供简写节点�
 
 #### 执行增益配置
 
-`control.controller` 保留 `rigid_hold`、`rigid_tracking`、`compliant_hold`、`compliant_tracking`、`compliant_drag` 与 `servo_tracking`
+`control.controller` 按刚性、柔性、拖拽和伺服跟踪四种用途组织，`allow_full_cmd` 与四组增益同级
 
-保持与跟踪分别保存，伺服用途共用 `servo_tracking`；旧 `identification_tracking` 是兼容别名，省略两者时从刚性跟踪增益初始化；GUI 拒绝两字段不一致的配置，Core 加载优先使用 `servo_tracking`；建议只保留标准字段
+| 用途 | Kp/Kd 字段 |
+| --- | --- |
+| 刚性 | `control.controller.rigid.hold.{kp,kd}`、`control.controller.rigid.tracking.{kp,kd}` |
+| 柔性 | `control.controller.compliant.hold.{kp,kd}`、`control.controller.compliant.tracking.{kp,kd}` |
+| 拖拽 | `control.controller.drag.{kp,kd}` |
+| 伺服跟踪 | `control.controller.servo_tracking.{kp,kd}` |
+
+保持与跟踪是刚性、柔性用途内的两种任务参数，分别保存，不是额外的增益用途；每个 `kp`、`kd` 都需包含全部受控关节
+
+新式配置必须完整提供四组增益，以及刚性、柔性各自的 `hold` 和 `tracking`；缺组或缺任务参数时拒绝加载
+
+旧平铺字段 `rigid_hold`、`rigid_tracking`、`compliant_hold`、`compliant_tracking`、`compliant_drag` 和旧别名 `identification_tracking` 只兼容读取；新旧字段同时描述同一任务时，数值相同可读取，冲突则拒绝。旧配置同时省略 `servo_tracking` 与 `identification_tracking` 时沿用刚性跟踪增益；新建、保存和导出统一写入四用途结构
+
+C++ 的六个任务参数字段与内部状态保持不变，加载器负责将四用途 YAML 映射到对应字段
 
 ---
 
@@ -3899,7 +3912,7 @@ controller_cfg.servo_tracking_gains = cfg.ctrller.servo_tracking_gains;
 controller_cfg.allow_full_cmd = false;
 ```
 
-五组任务增益需完整提供；伺服增益为空时底层控制器兼容使用刚性跟踪增益，YAML 加载会生成标准 `servo_tracking` 配置
+上述六个 C++ 字段承载四种用途，其中刚性与柔性各有保持、跟踪两套任务参数；底层控制器仍兼容伺服增益为空时使用刚性跟踪增益。新式 YAML 必须完整填写四用途结构，保存与导出不再生成旧平铺字段
 
 ---
 
@@ -8594,12 +8607,15 @@ while(running) {
 }
 ```
 
-柔性程度主要来自
+柔性跟踪读取四用途配置中的以下字段；这里仅展示字段位置，完整配置还需提供其余用途及逐关节数值
 
 ```yaml
-compliant_tracking:
-  kp:
-  kd:
+control:
+  controller:
+    compliant:
+      tracking:
+        kp:
+        kd:
 ```
 
 不是来自不同的命令结构

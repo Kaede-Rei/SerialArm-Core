@@ -58,6 +58,16 @@
         [/calibration replay soft following recovery timed out/i, '自动回放等待关节追上参考位置超时，请检查增益、摩擦与负载'],
         [/calibration tracking error exceeded safe following limit/i, '自动回放的实际位置持续无法跟上参考轨迹，已按安全限制中止'],
         [/gain stationary noise baseline is moving/i, '静止噪声采样时关节仍在运动，未开始探测；请检查机械臂支撑和反馈'],
+        [/gain calibration (?:recorded-duration|300 second) wall-time budget exhausted/i, '自动标定已到本次时限，已结束后续运动；请查看已完成用途与保留的实测记录'],
+        [/checked demonstration and required independent verifications do not fit (?:twelve times the original recorded duration|the 300 second (?:gain calibration )?budget)/i, '安全重定时后的轨迹与必需验收无法在原始轨迹时长的 12 倍预算内完成，请检查轨迹和所选用途'],
+        [/gain calibration requires a checked demonstration trajectory/i, '请先选择并检查示教轨迹，再启动增益标定'],
+        [/explicit demonstrated trajectory replay confirmation is required/i, '请先确认整条示教回放路径并完全松手，再启动增益标定'],
+        [/demonstrated trajectory endpoint is stale or not aligned|gain trajectory endpoint.*(?:mismatch|aligned)|gain trajectory.*start.*(?:mismatch|aligned)/i, '当前姿态、速度或反馈未满足下一趟端点条件，请先按引导对齐并等待新鲜反馈，再重新开始'],
+        [/demonstrated-trajectory gain replay (?:lost continuous feedback|reached the hard following limit)/i, '整轨增益测量遇到反馈中断或硬跟踪误差保护，已停止回放；请查看反馈与各轴实际响应'],
+        [/rigid full-path tracking or independent hold verification did not qualify/i, '刚性跟踪或定位保持未达参考指标，实测结果已保留'],
+        [/compliant full-path tracking or independent hold verification did not qualify/i, '柔性跟踪或定位保持未达参考指标，实测结果已保留'],
+        [/native servo tracking or requested admittance trajectory verification did not qualify/i, '伺服跟踪或本次启用的导纳未达参考指标，实测结果已保留'],
+        [/simultaneous drag release did not independently qualify every joint/i, '部分关节未通过拖拽释放后的独立衰减验收，请查看各轴释放速度与衰减记录'],
         [/gain motion discovery failed/i, '在已确认的局部范围内未建立可测的双向运动，请查看本窗实测幅度与判定下限'],
         [/gain dynamic search failed/i, '动态增益搜索未通过验收，请查看本窗跟踪指标、阈值与探测记录'],
         [/gain probe cannot preserve its established amplitude within safety limits/i, '当前安全限制无法容纳已测得有效的探测幅度，未继续缩小幅度验收'],
@@ -70,6 +80,7 @@
         [/compliant gains failed independent frozen verification/i, '柔性增益未通过独立冻结验收'],
         [/configured servo gain baseline exceeds joint safety limits/i, '已配置的伺服基线增益超过该关节的安全限制，请检查增益及限制值'],
         [/drag excitation produced no observable release velocity/i, '拖拽测试未建立可测的释放速度，无法验收阻尼；请检查该关节跟踪响应及探测记录'],
+        [/simultaneous drag excitation produced no measured release velocity/i, '该关节未建立可测的释放速度，无法验收拖拽阻尼；请检查实际位置变化与跟踪响应'],
         [/insufficient joint margin or excitation budget for an observable bounded servo probe/i, '关节剩余行程或探测预算不足，无法在当前安全限制内测得有效跟踪响应'],
         [/insufficient safe velocity and torque budget for an observable drag release/i, '当前速度与力矩预算不足，无法建立可测的拖拽释放速度'],
         [/drag damping did not qualify within its bounded search/i, '拖拽阻尼在限定搜索内未通过验收，请查看释放速度与衰减记录'],
@@ -77,8 +88,8 @@
         [/gain probe has insufficient continuous measurements/i, '关节探测缺少连续有效测量，请检查反馈后重新标定'],
         [/gain adaptation.*(without|not).*\b(verification|validated|clean|converge)/i, '增益测试未通过，请检查候选中的各用途结果，再采用已通过的用途或重新标定'],
         [/automatic actuator gain calibration currently supports rotary joints only/i, '执行器增益自动标定目前仅支持转动关节，当前控制链包含移动关节'],
-        [/gain candidate failed continuous measured qualification/i, '增益候选未通过连续实测验收，请查看各用途结果及探测记录，可单独采用已通过的用途'],
-        [/gain candidate is partially qualified/i, '候选中只有部分用途通过验收，请勾选要采用的已通过用途'],
+        [/gain candidate failed continuous measured qualification/i, '部分增益用途未达参考指标，完整测量的用途可直接应用或导出'],
+        [/gain candidate is partially qualified/i, '部分用途尚未完成测量，请勾选已完成测量的用途'],
         [/gain candidate URDF fingerprint mismatch|gain candidate joint mapping mismatch/i, '增益候选与当前模型或关节映射不匹配，请核对所选任务与机械臂配置'],
         [/reverse static replay failed or cancelled/i, '反向自动采集失败或已取消，请查看具体关节和控制故障'],
         [/forward.*replay failed or cancelled/i, '正向自动采集失败或已取消'],
@@ -130,8 +141,11 @@
             .map(m => m[0].replace(/^value=/i, '实测值=').replace(/^limit=/i, '限制值=').replace(/^position error=/i, '位置误差=').replace(/^speed=/i, '速度=').replace(/^timeout=/i, '超时='));
         const codes = [...new Set((clean.match(codePattern) || []))];
         const replayFields = [...clean.matchAll(/\b(?:joint|actual|reference|error|soft_limit|hard_limit|kp|kd|adaptive|phase|tracking_mode|recovery_elapsed_s|velocity|validation_pause_limit|error_ratio|validation)\s*=\s*(?:[A-Za-z_][\w-]*|[-+]?\d+(?:\.\d+)?(?:e[-+]?\d+)?)/gi)].map(m => m[0]);
-        const gainJoint = clean.match(/(?:gain stationary noise baseline is moving|gain motion discovery failed|gain dynamic search failed|gain probe cannot preserve its established amplitude within safety limits|no observable joint response|measured tracking did not qualify|configured servo gain baseline exceeds joint safety limits|gain probe has insufficient continuous measurements|drag excitation produced no observable release velocity|insufficient joint margin or excitation budget for an observable bounded servo probe|insufficient safe velocity and torque budget for an observable drag release|drag damping did not qualify within its bounded search) at ([A-Za-z_][\w.-]*)/i);
-        const diagnostic = [...new Set([...codes, ...numbers, ...replayFields, ...(gainJoint ? ['关节=' + gainJoint[1]] : [])])].join('，');
+        const gainJoint = clean.match(/(?:gain stationary noise baseline is moving|gain motion discovery failed|gain dynamic search failed|gain probe cannot preserve its established amplitude within safety limits|no observable joint response|measured tracking did not qualify|configured servo gain baseline exceeds joint safety limits|gain probe has insufficient continuous measurements|drag excitation produced no observable release velocity|simultaneous drag excitation produced no measured release velocity|insufficient joint margin or excitation budget for an observable bounded servo probe|insufficient safe velocity and torque budget for an observable drag release|drag damping did not qualify within its bounded search) at ([A-Za-z_][\w.-]*)/i);
+        const failedUses = clean.match(/gain candidate failed continuous measured qualification:\s*([^;]+)/i);
+        const purposes = {rigid_tracking:'刚性',compliant_tracking:'柔性',compliant_drag:'拖拽',servo_tracking:'伺服跟踪'};
+        const failedNames = failedUses ? failedUses[1].split(',').map(key=>purposes[key.trim()]).filter(Boolean) : [];
+        const diagnostic = [...new Set([...codes, ...numbers, ...replayFields, ...(gainJoint ? ['关节=' + gainJoint[1]] : []), ...(failedNames.length ? ['未通过用途='+failedNames.join('、')] : [])])].join('，');
         if (matched) return `${action}${matched[1]}${diagnostic ? `（${diagnostic}）` : ''}`;
         const zhPortion = clean.match(/[\u3400-\u9fff][^\n]*/);
         if (zhPortion) return `${action}${zhPortion[0]}${diagnostic ? `（${diagnostic}）` : ''}`;

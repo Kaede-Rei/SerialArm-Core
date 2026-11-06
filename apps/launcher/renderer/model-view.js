@@ -439,6 +439,7 @@ export class SerialArmModelView {
     this.ghostLinkGroups.clear();
     if(!this.ghostRoot)return;
     this.scene.remove(this.ghostRoot);
+    this.ghostRoot.traverse(node => {if(node.userData?.ghostOwnedGeometry)node.geometry?.dispose();});
     // Ghosts share the measured model's geometries and textures, but own their
     // cloned materials. Never release the shared model buffers here.
     disposeObject(this.ghostRoot, {geometry:false, textures:false});
@@ -463,11 +464,17 @@ export class SerialArmModelView {
         for(const holder of original.children){
           if(holder.userData?.layer!=='visual')continue;
           const copy=holder.clone(true);
-          copy.traverse(child=>{if(!child.material)return;
-            const originalMaterials=Array.isArray(child.material)?child.material:[child.material];
-            const tinted=originalMaterials.map(material=>{const cloned=material.clone();cloned.color?.set?.(0x16b8b0);cloned.transparent=true;cloned.opacity=0.26;cloned.depthWrite=false;return cloned;});
-            child.material=Array.isArray(child.material)?tinted:tinted[0];
+          const outlines=[];
+          copy.traverse(child=>{if(!child.isMesh||!child.geometry)return;
+            // A reference may exactly overlap the measured model. Draw it as
+            // an unlit overlay, independent of the source textures and depth.
+            child.material=new THREE.MeshBasicMaterial({color:0x16b8b0,transparent:true,opacity:0.2,depthTest:false,depthWrite:false,side:THREE.DoubleSide});
+            child.renderOrder=24;
+            const outline=new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry,25),new THREE.LineBasicMaterial({color:0x079e98,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
+            outline.userData.ghostOwnedGeometry=true;outline.renderOrder=25;
+            outline.raycast=()=>{};outlines.push([child,outline]);
           });
+          for(const [mesh,outline] of outlines)mesh.add(outline);
           group.add(copy);
         }
         this.ghostLinkGroups.set(name,group);this.ghostRoot.add(group);
@@ -477,7 +484,7 @@ export class SerialArmModelView {
       if(frame){group.matrix.copy(frameMatrix(frame));visible++;}
     }
     this.ghostRoot.visible=visible>0;
-    this.requestRender();
+    this.refreshVisibility();
   }
 
   updatePose(native) {

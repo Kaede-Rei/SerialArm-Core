@@ -95,11 +95,13 @@ Terminal 也支持只提供 Core 配置
 
 刚性与柔性分别保留保持和跟踪数值，模型导纳固定使用伺服跟踪增益；GUI 与 C++ Terminal 的普通示教临时使用原生阻抗和重力补偿，结束后恢复上下文
 
+`control.controller` 下的四组字段是 `rigid`、`compliant`、`drag` 和 `servo_tracking`，`allow_full_cmd` 与它们同级。刚性与柔性各自包含 `hold`、`tracking`，每套任务参数都有完整逐关节 `kp`、`kd`；拖拽与伺服跟踪直接包含 `kp`、`kd`。保持与跟踪是用途内的任务参数，不是额外用途
+
 Python 交互终端使用显式流程：停放失能 → 原生阻抗 → GRAVITY 与有效重力比例 → 使能 → 拖拽；结束后由用户在失能状态切回原控制方式
 
 ROS2 默认用途由 `control.runtime.tracking_gain_profile` 选择 `RIGID`、`COMPLIANT` 或 `SERVO_TRACKING`；旧配置省略该字段时从 `tracking_impedance_mode` 推导刚性或柔性用途
 
-增益标准字段为 `control.controller.servo_tracking`；旧 `identification_tracking` 兼容读取，保存时使用标准名称
+新式配置必须完整提供四组及刚性、柔性的两种任务参数。旧平铺六组字段和 `identification_tracking` 只兼容读取；新旧字段同时存在时，同一任务数值相同可读取，冲突则拒绝。新建、保存与导出统一使用四用途结构
 
 `capability.admittance.enabled` 开启外力观测与交互计算，`reference_behavior` 选择默认控制方式；启用观测但选择原生阻抗时，只观测外力，不产生导纳位移
 
@@ -145,7 +147,7 @@ Terminal 在关闭写入时使用离线 mock；开启后使用实际 Hardware Ba
 
 增益标定在当前姿态附近进行多频探测，按用途给出候选与验证结果；伺服跟踪分别验证原生阻抗与模型导纳
 
-先采用已通过的用途，未选用途保留现有值；柔性用途依赖相同的刚性参考，单独采用柔性时需与当前部署的刚性增益匹配
+选择已有完整测量结果的用途，未选用途保留现有值；未达参考指标会显示警告，仍可应用、保存和导出。柔性用途保留测量时的刚性参考，参考与当前部署不同会提示；未开始或被故障中断的用途需先完成测量
 
 实际应用路径通过示教回放单独验证并保存响应报告，报告标记所测路径；局部探测结果的适用范围仍保留为当前姿态附近
 
