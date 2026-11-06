@@ -407,7 +407,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
         'identification_mode':mode,'source_urdf_fingerprint':metadata.get('urdf_fingerprint'),
         'runtime_provenance':metadata.get('runtime_provenance'), **source_hashes,
         'source_files_verified_unchanged':True,
-        'solver_source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('advanced_identification.py','full_inertial.py','gravity_mass_com.py','gravity_validation.py')}, 'candidate_urdf':str(filename), 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
+        'solver_source_sha256':{name:hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest() for name in ('advanced_identification.py','full_inertial.py','gravity_mass_com.py','gravity_validation.py')}, 'candidate_urdf':filename.name, 'candidate_urdf_sha256':hashlib.sha256(filename.read_bytes()).hexdigest(), 'candidate_urdf_fingerprint':_native_file_fingerprint(filename.read_bytes()), 'locked_links':sorted(locked),
         'status':'review_passed_offline' if passed else 'requires_review',
         'automatic_application_allowed':False, 'validated_on_hardware':False,
         'friction_validation_reusable':False, 'friction_status':'requires_revalidation_with_selected_model',
@@ -422,5 +422,6 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
     # Asset copying and report preparation can take time; do not publish a
     # validated report if input files changed after the numerical solve.
     _verify_identification_sources(folder, snapshot, source_hashes)
-    (dest/'identification-report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
-    return report
+    report_path = dest / 'identification-report.json'
+    report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))
+    return {**report, 'report': str(report_path)}

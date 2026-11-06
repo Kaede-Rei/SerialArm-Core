@@ -28,14 +28,17 @@ struct Metrics {
     std::size_t samples{0},measurement_samples{0},limited_samples{0},tail_samples{0};
     double rms_error{0},peak_error{0},velocity_rms{0},overshoot{0},settling_s{0};
     double residual_bias{0},residual_noise_rms{0},tail_drift{0},tail_peak_velocity{0};
+    double reference_span{0},actual_span{0},response_rms_ratio{0};
     std::size_t residual_samples{0},tail_reversals{0};
-    bool continuous{true},settled{false},oscillating{false},passed{false};
+    bool continuous{true},settled{false},oscillating{false},observable{false},passed{false};
 };
 inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,double excitation_end_s) {
     Metrics m;if(rows.empty())return m;
     double sum=0,vs=0,lo=rows.front().reference,hi=lo,actual_lo=rows.front().actual,actual_hi=actual_lo;
     double tail_lo=1e30,tail_hi=-1e30,rs=0,rss=0,last_bad=excitation_end_s;
     int last_sign=0;double last_measurement=rows.front().time_s;
+    double reference_sum=0,reference_sq=0,actual_sum=0,actual_sq=0;
+    std::size_t excitation_samples=0;
     for(std::size_t k=0;k<rows.size();++k) {
         const auto& s=rows[k];
         if(!std::isfinite(s.time_s)||!std::isfinite(s.reference)||!std::isfinite(s.actual)||!std::isfinite(s.velocity))return Metrics{};
@@ -46,6 +49,12 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
         m.limited_samples+=s.limited;
         lo=std::min(lo,s.reference);hi=std::max(hi,s.reference);
         actual_lo=std::min(actual_lo,s.actual);actual_hi=std::max(actual_hi,s.actual);
+        if(s.new_measurement && s.time_s>=0.7 && s.time_s<excitation_end_s-0.7) {
+            // Remove the posture offset before measuring motion. A stationary
+            // encoder must not pass merely because the requested motion is small.
+            const double u=s.reference-rows.front().reference,y=s.actual-rows.front().actual;
+            reference_sum+=u;reference_sq+=u*u;actual_sum+=y;actual_sq+=y*y;++excitation_samples;
+        }
         if(s.time_s>=excitation_end_s) {
             ++m.tail_samples;tail_lo=std::min(tail_lo,s.actual);tail_hi=std::max(tail_hi,s.actual);
             m.tail_peak_velocity=std::max(m.tail_peak_velocity,std::abs(s.velocity));
@@ -64,7 +73,16 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
     m.oscillating=m.tail_reversals>=4 && m.tail_drift>req.settling_error_rad;
     if(m.residual_samples){m.residual_bias=rs/m.residual_samples;m.residual_noise_rms=std::sqrt(std::max(0.0,rss/m.residual_samples-m.residual_bias*m.residual_bias));}
     if(rows.back().time_s-last_measurement>0.06)m.continuous=false;
-    m.passed=m.samples>=100 && m.measurement_samples>=100 && m.continuous && m.limited_samples==0 &&
+    m.reference_span=hi-lo;m.actual_span=actual_hi-actual_lo;
+    if(excitation_samples>=100) {
+        const double count=static_cast<double>(excitation_samples);
+        const double input_variance=std::max(0.0,reference_sq/count-std::pow(reference_sum/count,2));
+        const double output_variance=std::max(0.0,actual_sq/count-std::pow(actual_sum/count,2));
+        if(input_variance>1e-12)m.response_rms_ratio=std::sqrt(output_variance/input_variance);
+        m.observable=m.reference_span>=0.2*req.amplitude_rad &&
+            m.actual_span>=0.2*m.reference_span && m.response_rms_ratio>=0.2;
+    }
+    m.passed=m.observable && m.samples>=100 && m.measurement_samples>=100 && m.continuous && m.limited_samples==0 &&
         m.rms_error<=req.rms_error_rad && m.peak_error<=req.peak_error_rad &&
         m.velocity_rms<=req.velocity_rms_rad_s && m.overshoot<=req.overshoot_rad &&
         m.settled && m.settling_s<=req.settling_time_s && !m.oscillating;
@@ -145,14 +163,21 @@ inline Gains paired_candidate(const Gains& current,const std::vector<double>& in
         throw std::invalid_argument("servo candidate dimension mismatch");
     Gains next=current;
     for(std::size_t i=0;i<n;++i) {
+        if(!std::isfinite(current.kp[i]) || current.kp[i]<0 || !std::isfinite(current.kd[i]) || current.kd[i]<0 ||
+           !std::isfinite(inertia[i]) || inertia[i]<=0 || !std::isfinite(kp_max[i]) || kp_max[i]<=0 ||
+           !std::isfinite(kd_max[i]) || kd_max[i]<=0)
+            throw std::invalid_argument("invalid servo gain or safety bound");
+        // An early failed axis leaves later axes unmeasured. Do not revise them
+        // or replace a qualified configured baseline with a theoretical ratio.
+        if(!metrics[i].samples || (metrics[i].passed && models[i].tested_follow_frequency_hz>0))continue;
         const bool ring=metrics[i].oscillating || metrics[i].overshoot>0.004 || models[i].resonance_observed ||
             (models[i].identifiable && (models[i].damping_ratio<0.65 || models[i].effective_delay_s*models[i].natural_frequency_rad_s>0.4));
-        double kp=current.kp[i]*(ring || metrics[i].limited_samples ? .72 : metrics[i].passed ? 1.0 : 1.15);
-        // Kd authority and delay limit stiffness together, rather than clipping
-        // damping while allowing the stiffness search to keep increasing.
-        const double damping_kp_limit=std::pow(kd_max[i]/1.8,2)/std::max(1e-8,inertia[i]);
-        kp=std::clamp(kp,0.0,std::max(0.0,std::min(kp_max[i],damping_kp_limit)));
-        const double kd=std::min(kd_max[i],1.8*std::sqrt(std::max(1e-8,inertia[i])*kp));
+        const double factor=ring || metrics[i].limited_samples ? .72 :
+            !metrics[i].observable ? 1.6 : models[i].tested_follow_frequency_hz<=0 ? 1.35 : 1.15;
+        const double kp=std::clamp(current.kp[i]*factor,0.0,kp_max[i]);
+        // Keep the configured/measured damping baseline. Model inertia supplies
+        // a candidate increment, while the actual response and hard limits judge it.
+        const double kd=std::min(kd_max[i],std::max(current.kd[i],1.8*std::sqrt(inertia[i]*kp)));
         next.kp[i]=kp;next.kd[i]=std::max(0.0,kd);
     }
     return next;

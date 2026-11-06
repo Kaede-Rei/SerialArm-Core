@@ -17,6 +17,7 @@ import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
 from control_parameters import add_mapping_value, canonical_control_text, canonical_core, complete_mapping_values
+from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted, revoke_gravity_trust
 
 
 def sha256_file(path):
@@ -119,7 +120,10 @@ def _runtime_text(text, joints, runtime, gravity_scale):
         value = {key: dict(zip(joints, item)) if isinstance(item, list) else item
                  for key, item in hold.items()}
         text = complete_mapping_values(text, ('control',), {'hold_compensation': value})
-    return patch_text(text, targets)
+    after = patch_text(text, targets)
+    if (canonical.get('model') or {}).get('gravity_scale') != (yaml.safe_load(after).get('model') or {}).get('gravity_scale'):
+        after = revoke_gravity_trust(after)
+    return after
 
 
 def patch_text(text, targets):
@@ -207,7 +211,9 @@ def preview(path, joints, runtime, gravity_scale):
         if line.startswith(('- ', '+ ')):
             changed.append({'before': line[2:].strip() if line[0] == '-' else '',
                             'after': line[2:].strip() if line[0] == '+' else ''})
-    return {'path': str(path), 'sha256': sha256_file(path), 'changes': changed, 'changed': before != after}
+    trust_reset = gravity_trusted(yaml.safe_load(before)) and not gravity_trusted(yaml.safe_load(after))
+    return {'path': str(path), 'sha256': sha256_file(path), 'changes': changed, 'changed': before != after,
+            'gravity_validation_reset': trust_reset, 'gravity_validation_changes': ['gravity_scale'] if trust_reset else []}
 
 
 def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
@@ -218,8 +224,10 @@ def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
     before = path.read_text()
     after = _runtime_text(before, joints, runtime, gravity_scale)
     yaml.safe_load(after)
+    trust_reset = gravity_trusted(yaml.safe_load(before)) and not gravity_trusted(yaml.safe_load(after))
     if before == after:
-        return {'path': str(path), 'sha256': current, 'backup': '', 'changed': False}
+        return {'path': str(path), 'sha256': current, 'backup': '', 'changed': False,
+                'gravity_validation_reset': False, 'gravity_validation_changes': []}
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else path.parent
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -250,7 +258,8 @@ def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
     finally:
         if temp is not None:
             temp.unlink(missing_ok=True)
-    return {'path': str(path), 'sha256': sha256_file(path), 'backup': str(backup), 'changed': True}
+    return {'path': str(path), 'sha256': sha256_file(path), 'backup': str(backup), 'changed': True,
+            'gravity_validation_reset': trust_reset, 'gravity_validation_changes': ['gravity_scale'] if trust_reset else []}
 
 
 def export_telemetry(root, events, metadata):
@@ -623,6 +632,7 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
     before = _gravity_target_text(core_path, metadata)
     if hashlib.sha256(before.encode('utf-8')).hexdigest() != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
+    before_context = gravity_validation_context(yaml.safe_load(before), core_path)
     candidate_dir = directory / 'candidate'
     candidate_dir.mkdir(parents=True, exist_ok=True)
     correction_path = _gravity_correction_output(directory, payload)
@@ -632,8 +642,13 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
     temp_correction.replace(correction_path)
     relative = Path(os.path.relpath(correction_path, core_path.parent))
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative.as_posix())
+    gravity_changes = gravity_validation_changes(before_context,
+        gravity_validation_context(yaml.safe_load(after), core_path, correction=payload))
+    trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
+    if trust_reset:
+        after = revoke_gravity_trust(after)
     yaml.safe_load(after)
-    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup_dir = Path(storage_home).resolve() / '.serialarm' / 'backups' if storage_home else core_path.parent
     backup_dir.mkdir(parents=True, exist_ok=True)
     backup = backup_dir / (core_path.name + '.bak-' + stamp)
@@ -656,6 +671,8 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
         'candidate_source': payload.get('candidate_source'),
         'candidate_run_id': payload.get('candidate_run_id'),
         'selected_candidate_path': payload.get('candidate_path'),
+        'gravity_validation_reset': trust_reset,
+        'gravity_validation_changes': gravity_changes,
     }
     (directory / 'application.json').write_text(json.dumps(application, ensure_ascii=False, indent=2))
     return application
@@ -844,6 +861,11 @@ def preview_gravity_correction(core_path, task_directory, *, candidate_source=No
     relative = Path(os.path.relpath(candidate_path, core_path.parent)).as_posix()
     before = _gravity_target_text(core_path, metadata)
     after = _insert_or_replace_model_scalar(before, 'gravity_correction_path', relative)
+    gravity_changes = gravity_validation_changes(gravity_validation_context(yaml.safe_load(before), core_path),
+        gravity_validation_context(yaml.safe_load(after), core_path, correction=payload))
+    trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
+    if trust_reset:
+        after = revoke_gravity_trust(after)
     yaml.safe_load(after)
     changes = []
     before_lines = before.splitlines()
@@ -868,6 +890,8 @@ def preview_gravity_correction(core_path, task_directory, *, candidate_source=No
         'candidate_run_id': payload.get('candidate_run_id'),
         'selected_candidate_path': payload.get('candidate_path'),
         'scope': 'gravity_only_mass_and_first_moments' if source=='offline' else 'gravity_only_first_moments',
+        'gravity_validation_reset': trust_reset,
+        'gravity_validation_changes': gravity_changes,
     }
 
 
@@ -887,6 +911,14 @@ def restore_gravity_correction(core_path, task_directory):
         raise ValueError('original configuration backup is missing')
     restored = backup.read_text()
     yaml.safe_load(restored)
+    # Restoring a backup is not a new operator validation; a correction file
+    # referenced by it may itself have been replaced while applying a candidate.
+    current_config = yaml.safe_load(core_path.read_text())
+    gravity_changes = gravity_validation_changes(gravity_validation_context(current_config, core_path),
+        gravity_validation_context(yaml.safe_load(restored), core_path))
+    trust_reset = gravity_trusted(yaml.safe_load(restored)) and (not gravity_trusted(current_config) or bool(gravity_changes))
+    if trust_reset:
+        restored = revoke_gravity_trust(restored)
     temp = core_path.with_name(core_path.name + '.restore.tmp')
     temp.write_text(restored)
     try:
@@ -901,9 +933,11 @@ def restore_gravity_correction(core_path, task_directory):
         'core_path': str(core_path),
         'restored_from': str(backup),
         'core_sha256': sha256_file(core_path),
-        'candidate_source': payload.get('candidate_source'),
-        'candidate_run_id': payload.get('candidate_run_id'),
-        'selected_candidate_path': payload.get('candidate_path'),
+        'candidate_source': application.get('candidate_source'),
+        'candidate_run_id': application.get('candidate_run_id'),
+        'selected_candidate_path': application.get('selected_candidate_path'),
+        'gravity_validation_reset': trust_reset,
+        'gravity_validation_changes': gravity_changes,
     }
     (directory / 'restore.json').write_text(json.dumps(restore_record, ensure_ascii=False, indent=2))
     return restore_record

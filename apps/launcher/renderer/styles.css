@@ -92,6 +92,7 @@
 .model-calibration-overlay[hidden]{display:none}
 .model-calibration-task-window{width:min(600px,92vw);display:grid;gap:14px;padding:20px;border:1px solid color-mix(in srgb,var(--line) 82%,transparent);border-radius:16px;background:color-mix(in srgb,var(--card) 94%,transparent);box-shadow:0 20px 80px rgba(15,23,42,.28)}
 .task-window-head{display:flex;align-items:center;gap:14px}
+.task-window-content{display:contents}
 .task-progress-track{height:8px;overflow:hidden;border-radius:999px;background:var(--subtle);border:1px solid var(--line)}
 .task-progress-track>span{display:block;width:0;height:100%;background:var(--accent);transition:width .18s ease}
 .task-live-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px}
@@ -99,6 +100,23 @@
 .task-window-actions{display:flex;gap:8px;flex-wrap:wrap}
 @media(max-width:900px){.model-calibration-options{grid-template-columns:repeat(2,minmax(0,1fr))}.model-calibration-summary{grid-template-columns:repeat(2,minmax(0,1fr))}.task-live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.candidate-compare-head{align-items:flex-start;flex-direction:column}.candidate-compare-head span{text-align:left}}
 @media(prefers-reduced-motion:reduce){.task-progress-track>span{transition:none}}
+.gain-probe-status{display:grid;gap:10px;min-width:0}
+.gain-probe-status[hidden]{display:none}
+.gain-probe-metrics{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:0}
+.gain-probe-metrics>div{min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--card)}
+.gain-probe-metrics dt{color:var(--muted);font-size:10px;line-height:1.5}
+.gain-probe-metrics dd{margin:4px 0 0;font-size:12px;line-height:1.5;overflow-wrap:anywhere;word-break:normal}
+.gain-probe-window{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.gain-probe-window b{color:var(--text);font-variant-numeric:tabular-nums}
+.gain-probe-status progress{display:block;width:100%;height:8px;accent-color:var(--accent)}
+.gain-probe-status .hint,.gain-probe-status .workspace-error{margin:0;line-height:1.5;overflow-wrap:anywhere;word-break:normal}
+.model-calibration-overlay.is-gain-probe{place-items:end;padding:16px;background:transparent;backdrop-filter:none;-webkit-backdrop-filter:none;pointer-events:none}
+.model-calibration-overlay.is-gain-probe .model-calibration-task-window{width:min(460px,calc(100vw - 32px));max-height:calc(100vh - 96px);grid-template-rows:auto minmax(0,1fr) auto auto;pointer-events:auto;background:var(--card)}
+.model-calibration-overlay.is-gain-probe .task-window-content{display:grid;gap:12px;min-height:0;overflow:auto;overscroll-behavior:contain}
+.gain-qualification-error{max-width:240px;white-space:normal;font-weight:400;overflow-wrap:anywhere}
+.model-calibration-overlay.is-gain-probe .task-live-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:760px){.model-calibration-overlay.is-gain-probe .model-calibration-task-window{max-height:55vh;padding:14px;gap:10px}}
+
 
 /* Lifecycle-first workspace */
 .onboarding-shell{min-height:100%;background:var(--bg)}
@@ -209,6 +227,7 @@
 .idim-reasons{margin:8px 0 0;padding-left:20px;font-size:12px;line-height:1.7}
 .idim-recommendation{display:grid;gap:7px;padding:12px;border-left:3px solid var(--accent);background:var(--subtle);margin:12px 0;font-size:12px}
 .idim-supplement>summary{cursor:pointer;font-size:13px}
+.idim-supplement[open]>summary{margin-bottom:14px}
 .calibration-capability-grid,.calibration-result-stages{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .calibration-capability-grid>div,.calibration-result-stages>div{padding:12px;border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:5px;overflow-wrap:anywhere}
 .calibration-capability-grid b{font-size:21px}
@@ -217,6 +236,7 @@
 .calibration-advanced-target-label select{max-width:100%;padding:9px;border-radius:7px}
 .calibration-locks{padding:12px;border:1px solid var(--line);border-radius:9px}
 .calibration-locks summary{cursor:pointer;font-weight:600}
+.calibration-locks[open]>summary{margin-bottom:12px}
 .calibration-advanced-links{display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:8px;margin-top:12px}
 .calibration-advanced-link{display:flex;align-items:center;gap:7px;padding:6px}
 .calibration-results-card{display:flex;flex-direction:column;gap:10px}
@@ -335,6 +355,7 @@
 .parameter-switch input{accent-color:var(--accent)}
 .parameter-subgroup{grid-column:1/-1;min-width:0;margin:0;padding:13px 14px;border:1px solid var(--line);border-radius:10px;background:var(--subtle)}
 .parameter-subgroup>.parameter-fields{margin-top:11px}
+.profile-joint-advanced{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0;margin-top:16px}
 .parameter-subgroup summary{font-weight:600;font-size:12px;cursor:pointer;color:var(--text);line-height:1.5}
 .parameter-subgroup legend{padding:0 7px;font-weight:600;font-size:12px}
 .parameter-subgroup .parameter-subgroup{background:var(--card)}

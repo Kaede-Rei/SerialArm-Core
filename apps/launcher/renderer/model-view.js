@@ -116,6 +116,7 @@ export class SerialArmModelView {
     this.onStatus = onStatus;
     this.disposed = false; this.running = true; this.needsRender = true;
     this.modelGeneration = 0; this.drawCount = 0; this.modelLoaded = false;
+    this.ghostLinkGroups = new Map();
     this.status = 'initializing'; this.error = null; this.suspended = false;
     this.diagnostics = {threeRevision: THREE.REVISION, mode: this.mode, creationErrors: []};
     this.scene = new THREE.Scene();
@@ -435,6 +436,7 @@ export class SerialArmModelView {
 
   // Independent reference pose overlay; never changes the measured robot pose
   clearGhostPose() {
+    this.ghostLinkGroups.clear();
     if(!this.ghostRoot)return;
     this.scene.remove(this.ghostRoot);
     // Ghosts share the measured model's geometries and textures, but own their
@@ -446,27 +448,36 @@ export class SerialArmModelView {
 
   setGhostPose(native) {
     if (this.disposed || !this.running) return;
-    this.clearGhostPose();
     const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
-    if(!frames.size)return;
-    const ghosts=new THREE.Group();ghosts.name='reference-start-ghost';
-    let count=0;
-    for(const [name,original] of this.linkGroups){
-      const frame=frames.get(name);if(!frame)continue;
-      const group=new THREE.Group();group.matrix.copy(frameMatrix(frame));group.matrixAutoUpdate=false;
-      for(const holder of original.children){
-        if(holder.userData?.layer!=='visual')continue;
-        const copy=holder.clone(true);
-        copy.traverse(child=>{if(!child.isMesh)return;
-          const originalMaterials=Array.isArray(child.material)?child.material:[child.material];
-          const tinted=originalMaterials.map(material=>{const cloned=material.clone();cloned.color?.set?.(0x16b8b0);cloned.transparent=true;cloned.opacity=0.26;cloned.depthWrite=false;return cloned;});
-          child.material=Array.isArray(child.material)?tinted:tinted[0];
-        });
-        group.add(copy);count++;
-      }
-      ghosts.add(group);
+    if(!this.ghostRoot && !frames.size)return;
+    if(!this.ghostRoot){
+      this.ghostRoot=new THREE.Group();this.ghostRoot.name='reference-start-ghost';
+      this.scene.add(this.ghostRoot);
     }
-    if(count){this.ghostRoot=ghosts;this.scene.add(ghosts);this.requestRender();}
+    let visible=0;
+    for(const [name,original] of this.linkGroups){
+      const frame=frames.get(name);
+      let group=this.ghostLinkGroups.get(name);
+      if(!group && frame){
+        group=new THREE.Group();group.name=name;group.matrixAutoUpdate=false;
+        for(const holder of original.children){
+          if(holder.userData?.layer!=='visual')continue;
+          const copy=holder.clone(true);
+          copy.traverse(child=>{if(!child.material)return;
+            const originalMaterials=Array.isArray(child.material)?child.material:[child.material];
+            const tinted=originalMaterials.map(material=>{const cloned=material.clone();cloned.color?.set?.(0x16b8b0);cloned.transparent=true;cloned.opacity=0.26;cloned.depthWrite=false;return cloned;});
+            child.material=Array.isArray(child.material)?tinted:tinted[0];
+          });
+          group.add(copy);
+        }
+        this.ghostLinkGroups.set(name,group);this.ghostRoot.add(group);
+      }
+      if(!group)continue;
+      group.visible=!!frame;
+      if(frame){group.matrix.copy(frameMatrix(frame));visible++;}
+    }
+    this.ghostRoot.visible=visible>0;
+    this.requestRender();
   }
 
   updatePose(native) {
@@ -565,7 +576,7 @@ export class SerialArmModelView {
 
   refreshVisibility() {
     if (this.disposed || !this.root) return;
-    this.root.traverse(node => {
+    const updateNode = node => {
       const requiredLayers=Array.isArray(node.userData?.layers) ? node.userData.layers : (node.userData?.layer ? [node.userData.layer] : []);
       let visible=requiredLayers.every(layer => !(layer in this.layers) || !!this.layers[layer]);
       const inertiaKind=node.userData?.inertiaKind;
@@ -574,7 +585,11 @@ export class SerialArmModelView {
       const kind=node.userData?.ownerKind,name=node.userData?.ownerName;
       if(kind&&name&&this.objectVisibility[kind])visible=visible&&this.objectVisibility[kind].get(name)!==false;
       node.visible=visible;
-    });
+    };
+    this.root.traverse(updateNode);
+    // Cached visual holders follow layer/object visibility without changing
+    // the frame-presence visibility of their containing ghost Link groups.
+    this.ghostRoot?.traverse(node => {if(node.userData?.layer)updateNode(node);});
     for(const [name,helper] of this.frameHelpers)helper.visible=!!this.layers.linkFrames&&this.objectVisibility.linkFrames.get(name)!==false;
     this.requestRender();
   }

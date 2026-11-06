@@ -35,6 +35,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <exception>
 #include <functional>
 #include <fstream>
 #include <iomanip>
@@ -1432,8 +1433,15 @@ private:
     }
 
     void machine_deactivate() {
-        if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
-        if(teach_replay_phase_.load()==1){teach_replay_record_stop_.store(true);cycle_cv_.notify_all();if(teach_replay_worker_.joinable())teach_replay_worker_.join();}
+        // Disable first. A recording/replay worker must not delay the motor
+        // disable while it finishes sampling, restores parameters or joins.
+        const bool stop_teaching = teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3;
+        if(stop_teaching) {
+            teach_replay_record_stop_.store(true);
+            teach_replay_stop_.store(true);
+        }
+        const bool stop_legacy = machine_calibration_kind_ != "none";
+        if(stop_legacy) machine_friction_stop_.store(true);
         const auto teaching_phase = model_calibration_phase_.load();
         const bool stopping_teaching = teaching_phase == ModelCalibrationPhase::TEACHING ||
             ((teaching_phase == ModelCalibrationPhase::FAILED || teaching_phase == ModelCalibrationPhase::CANCELLED) &&
@@ -1445,18 +1453,20 @@ private:
             model_calibration_cv_.notify_all();
             cycle_cv_.notify_all();
         }
-        else machine_require_no_calibration("deactivate");
+        cycle_cv_.notify_all();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             clear_command_sources();
-            teach_restore_controls_locked();
             const auto result = robot_.force_deactivate();
             if(!result) throw machine_robot_error("deactivate", result.error());
+            teach_restore_controls_locked();
             if(gravity_verify_active_) { gravity_verify_restore_locked(); gravity_verify_result_ = "cancelled"; }
             last_output_.reset();
             feedback_time_ns_ = 0;
             background_fault_reported_ = false;
         }
+        if(stop_teaching && teach_replay_worker_.joinable()) teach_replay_worker_.join();
+        if(stop_legacy) machine_calibration_cancel(false);
         // Explicit disable also closes an interrupted demonstration
         // Do not hold the robot mutex while joining its sampling worker
         if(stopping_teaching) machine_model_calibration_cancel();
@@ -1814,24 +1824,40 @@ private:
     }
 
     void machine_hold() {
-        if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
-        if(model_calibration_task_active()) model_calibration_pause_.store(true);
-        else machine_require_no_calibration("hold");
-        std::lock_guard<std::mutex> lock(mutex_);
-        if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("hold requires RobotState::ACTIVE");
-        clear_command_sources();
-        const auto purpose=robot_.get_gain_profile();
-        const auto hold_mode=purpose==JointGainProfile::COMPLIANT ? JointImpedanceMode::COMPLIANT_HOLD : JointImpedanceMode::RIGID_HOLD;
-        const auto result = runtime_.set_impedance_mode(robot_,hold_mode,Robot::Clock::now(),HoldTargetPolicy::CAPTURE_MEASURED);
-        if(!result) throw machine_robot_error("hold", result.error());
-        if(direct_drag_controls_){teach_restore_controls_locked();direct_drag_controls_=false;}
-        if(purpose==JointGainProfile::SERVO_TRACKING) {
-            const auto gains=robot_.set_execution_gain_profile(purpose);
-            if(!gains)throw machine_robot_error("hold servo gains",gains.error());
+        const bool stop_teaching = teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3;
+        if(stop_teaching) {
+            teach_replay_record_stop_.store(true);
+            teach_replay_stop_.store(true);
         }
-        last_output_.reset();
-        feedback_time_ns_ = 0;
-        background_fault_reported_ = false;
+        const bool stop_legacy = machine_calibration_kind_ != "none";
+        if(stop_legacy) machine_friction_stop_.store(true);
+        if(model_calibration_task_active()) model_calibration_pause_.store(true);
+        cycle_cv_.notify_all();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            clear_command_sources();
+        }
+        // Finish stopped workers before the final mode write, so their own
+        // cleanup cannot replace the operator's current-position hold.
+        if(stop_teaching && teach_replay_worker_.joinable()) teach_replay_worker_.join();
+        if(stop_legacy) machine_calibration_cancel(false);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("hold requires RobotState::ACTIVE");
+            clear_command_sources();
+            if(stop_teaching || direct_drag_controls_) teach_restore_controls_locked();
+            const auto purpose=robot_.get_gain_profile();
+            const auto hold_mode=purpose==JointGainProfile::COMPLIANT ? JointImpedanceMode::COMPLIANT_HOLD : JointImpedanceMode::RIGID_HOLD;
+            const auto result = runtime_.set_impedance_mode(robot_,hold_mode,Robot::Clock::now(),HoldTargetPolicy::CAPTURE_MEASURED);
+            if(!result) throw machine_robot_error("hold", result.error());
+            if(purpose==JointGainProfile::SERVO_TRACKING) {
+                const auto gains=robot_.set_execution_gain_profile(purpose);
+                if(!gains)throw machine_robot_error("hold servo gains",gains.error());
+            }
+            last_output_.reset();
+            feedback_time_ns_ = 0;
+            background_fault_reported_ = false;
+        }
     }
 
     static const char* reference_behavior_name(ReferenceBehavior behavior) {
@@ -1921,14 +1947,14 @@ private:
         if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("set_admittance failed");
     }
 
-    void machine_restore_calibration_runtime(bool restore_gravity) {
+    void machine_restore_calibration_runtime(bool restore_gravity, bool restore_mode = true) {
         if(!machine_calibration_context_valid_) return;
         if(restore_gravity) {
             std::lock_guard<std::mutex> lock(mutex_);
             const auto result = dynamics_.set_gravity_scale(machine_calibration_original_gravity_);
             if(result) cfg_.dynamics.gravity_scale = machine_calibration_original_gravity_;
         }
-        set_tuning_impedance_mode(machine_calibration_original_mode_);
+        if(restore_mode) set_tuning_impedance_mode(machine_calibration_original_mode_);
         {
             std::lock_guard<std::mutex> lock(mutex_);
             robot_.set_admittance_suspended(machine_calibration_original_suspended_);
@@ -2089,6 +2115,13 @@ private:
         model_calibration_teaching_wall_duration_s_ = 0.0;
         model_calibration_teaching_started_at_.reset();
         model_calibration_started_at_.reset();
+        {
+            std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+            gain_probe_kind_.clear();gain_probe_joint_.clear();gain_probe_message_.clear();
+            gain_candidate_index_=0;gain_probe_elapsed_s_=0;gain_probe_duration_s_=0;
+            gain_probe_amplitude_rad_=0;gain_probe_reference_.clear();
+            gain_seed_source_.clear();gain_seed_={};
+        }
         model_calibration_update_progress(0, 0);
     }
 
@@ -3152,8 +3185,12 @@ private:
             (compliant_limits ? serial_arm::calibration_gain_adaptation::compliant_validation_max_error_ratio :
                                 serial_arm::calibration_gain_adaptation::rigid_validation_max_error_ratio) : 1.0;
         std::string& follow_error=standalone_replay ? teach_replay_error_ : model_calibration_error_;
+        const auto cancelled = [&]() {
+            return model_calibration_cancel_.load() ||
+                (standalone_replay && teach_replay_stop_.load());
+        };
         std::unique_lock<std::mutex> lock(mutex_);
-        if(robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load() ||
+        if(robot_.get_state()!=RobotState::ACTIVE || cancelled() ||
            ref_pos.size()!=cfg_.joint_names.size() || ref_vel.size()!=ref_pos.size()) return false;
         std::uint64_t cursor=cycle_counter_;
         bool braking=false;
@@ -3164,6 +3201,7 @@ private:
             return evaluate(ref_pos,output.joint_state.pos,output.joint_state.vel,cfg_.safety.limits.max_vel,pause_soft_ratio);
         };
         const auto issue_reference=[&](bool hold) {
+            if(cancelled()) return false;
             const JointPosVelCmd cmd{ref_pos,
                 serial_arm::calibration_replay_supervisor::command_velocity(ref_vel,hold)};
             const auto sent=runtime_.submit_reference(robot_,cmd,Robot::Clock::now(),standalone_replay ? MotionSource::REPLAY : MotionSource::CALIBRATION);
@@ -3190,12 +3228,12 @@ private:
             }
         }
         if(!issue_reference(braking))return false;
-        while(!model_calibration_cancel_.load()) {
+        while(!cancelled()) {
             const bool updated=cycle_cv_.wait_for(lock,Heartbeat::poll_interval,[&] {
-                return model_calibration_cancel_.load() || cycle_counter_>cursor ||
+                return cancelled() || cycle_counter_>cursor ||
                        robot_.get_state()!=RobotState::ACTIVE;
             });
-            if(model_calibration_cancel_.load() || robot_.get_state()!=RobotState::ACTIVE)return false;
+            if(cancelled() || robot_.get_state()!=RobotState::ACTIVE)return false;
             const auto now=Robot::Clock::now();
             bool fresh_feedback=false;
             if(updated && cycle_counter_>cursor) {
@@ -3520,12 +3558,49 @@ private:
         JointVector center,min_position,max_position;
         bool completed{false},passed{false};
     };
+    struct GainQualificationFailure : std::runtime_error { using std::runtime_error::runtime_error; };
+
+    void gain_probe_begin(const std::string& kind, const std::string& joint,
+                          double duration, double amplitude, const std::string& message) {
+        std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+        gain_probe_kind_=kind;gain_probe_joint_=joint;gain_probe_duration_s_=duration;
+        if(kind=="hold" || kind.find("frozen")!=std::string::npos)gain_candidate_index_=0;
+        gain_probe_elapsed_s_=0;gain_probe_amplitude_rad_=amplitude;
+        gain_probe_reference_.clear();gain_probe_message_=message;
+    }
+
+    void gain_probe_update(double elapsed, const JointVector& reference, const std::string& message) {
+        std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+        gain_probe_elapsed_s_=std::clamp(elapsed,0.0,gain_probe_duration_s_);
+        gain_probe_reference_=reference;gain_probe_message_=message;
+        const double fraction=gain_probe_duration_s_>0 ? gain_probe_elapsed_s_/gain_probe_duration_s_ : 0;
+        if(model_calibration_total_units_)
+            model_calibration_progress_=std::max(model_calibration_progress_,
+                std::min(0.99,(static_cast<double>(model_calibration_adaptation_passes_.load())+fraction)/
+                    static_cast<double>(model_calibration_total_units_)));
+    }
+
+    void gain_probe_end(const std::string& message, bool completed=false) {
+        const auto count=completed ? model_calibration_adaptation_passes_.fetch_add(1)+1 :
+            model_calibration_adaptation_passes_.load();
+        std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+        gain_probe_reference_.clear();gain_probe_message_=message;
+        if(completed) {
+            gain_probe_elapsed_s_=gain_probe_duration_s_;
+            model_calibration_completed_units_=count;
+            if(model_calibration_total_units_)
+                model_calibration_progress_=std::max(model_calibration_progress_,
+                    std::min(0.99,static_cast<double>(count)/static_cast<double>(model_calibration_total_units_)));
+        }
+    }
 
     ServoTrial gain_response_trial(const JointImpedanceGains& gains,JointGainProfile profile,
-                                   bool admittance,bool configured,const std::string& label) {
+                                   bool admittance,bool configured,const std::string& label,bool searching=false,
+                                   std::optional<std::size_t> selected_axis=std::nullopt) {
         using namespace serial_arm::servo_tuning;
         const auto n=cfg_.joint_names.size();ServoTrial trial;
         trial.rows.resize(n);trial.center.resize(n);trial.min_position.resize(n);trial.max_position.resize(n);
+        trial.metrics.resize(n);trial.models.resize(n);
         const auto mode=profile==JointGainProfile::COMPLIANT ? JointImpedanceMode::COMPLIANT_TRACKING : JointImpedanceMode::RIGID_TRACKING;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -3540,8 +3615,8 @@ private:
             else if(!robot_.set_calibration_tracking_gains(gains,mode))throw std::runtime_error("gain probe candidate rejected");
             trial.center=robot_.get_joint_state().pos;trial.min_position=trial.max_position=trial.center;
         }
-        std::vector<Requirements> probe_requirements;
-        for(std::size_t axis=0;axis<n;++axis) {
+        const auto first_axis=selected_axis.value_or(0),end_axis=selected_axis ? first_axis+1 : n;
+        for(std::size_t axis=first_axis;axis<end_axis;++axis) {
             Requirements req=gain_requirements_;
             if(profile==JointGainProfile::COMPLIANT)for(auto& hz:req.frequencies_hz)hz*=0.65;
             if(cfg_.safety.limits.has_position_limit[axis]) {
@@ -3555,7 +3630,11 @@ private:
             req.amplitude_rad=std::min({req.amplitude_rad,0.12*cfg_.safety.limits.max_vel[axis]/w,
                 0.12*cfg_.safety.limits.max_acc[axis]/(w*w),
                 0.12*cfg_.safety.limits.max_effort[axis]/std::max(0.01,gains.kp[axis]+w*gains.kd[axis])});
-            if(req.amplitude_rad<0.001)throw std::runtime_error("insufficient joint margin for an observable bounded servo probe");
+            gain_probe_begin(label,cfg_.joint_names[axis],req.probe_duration_s+req.tail_s,req.amplitude_rad,"settling");
+            if(req.amplitude_rad<0.001) {
+                gain_probe_end("safety_bound");
+                throw GainQualificationFailure("insufficient joint margin or excitation budget for an observable bounded servo probe at "+cfg_.joint_names[axis]);
+            }
             std::ofstream csv(std::filesystem::path(model_calibration_directory_)/("servo-probe-"+label+"-"+std::to_string(axis)+".csv"));
             if(!csv)throw std::runtime_error("cannot record gain probe");
             csv << "time_s,reference,reference_velocity,actual,velocity,residual,residual_valid,limited,new_measurement\n" << std::setprecision(17);
@@ -3570,6 +3649,7 @@ private:
                 if(now<warm_until) {
                     const auto sent=runtime_.submit_reference(robot_,JointPosVelCmd{trial.center,JointVector(n,0.0)},now,MotionSource::CALIBRATION);
                     if(!sent)throw machine_robot_error("gain probe settling reference",sent.error());
+                    gain_probe_update(0,trial.center,"settling");
                     cycle_cv_.wait_for(lock,std::chrono::milliseconds(5));continue;
                 }
                 if(first){started=now;cursor=cycle_counter_;first=false;}
@@ -3579,6 +3659,7 @@ private:
                 const auto offset=probe(time,req);command[axis]+=offset.first;velocity[axis]=offset.second;
                 const auto sent=runtime_.submit_reference(robot_,JointPosVelCmd{command,velocity},now,MotionSource::CALIBRATION);
                 if(!sent)throw machine_robot_error("continuous gain probe reference",sent.error());
+                gain_probe_update(time,command,"measuring");
                 const bool fresh=cycle_cv_.wait_for(lock,std::chrono::milliseconds(100),[&]{return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load();});
                 if(!fresh || !last_output_ || robot_.get_state()!=RobotState::ACTIVE)
                     throw std::runtime_error("gain probe lost continuous feedback");
@@ -3612,16 +3693,19 @@ private:
                     << sample.residual << ',' << sample.residual_valid << ',' << sample.limited << ',' << sample.new_measurement << '\n';
             }
             csv.flush();if(!csv)throw std::runtime_error("gain probe recording failed");
-            probe_requirements.push_back(req);
-            model_calibration_adaptation_passes_.fetch_add(1);
+            gain_probe_end("assessing",true);
+            trial.metrics[axis]=assess(trial.rows[axis],req,req.probe_duration_s);
+            trial.models[axis]=identify(trial.rows[axis],req);
+            const bool qualified=trial.metrics[axis].passed && trial.models[axis].tested_follow_frequency_hz>0;
+            gain_probe_end(qualified ? "qualified" : !trial.metrics[axis].observable ? "no_response" : "tracking_not_qualified");
+            // Stop this candidate on its first rejected axis. Later axes have
+            // no measurements yet and must not be revised speculatively.
+            if(searching && !qualified)break;
         }
         {std::lock_guard<std::mutex> lock(mutex_);robot_.set_admittance_suspended(true);
             if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::RIGID_HOLD))throw std::runtime_error("cannot hold after servo probe");}
-        for(std::size_t axis=0;axis<n;++axis) {
-            trial.metrics.push_back(assess(trial.rows[axis],probe_requirements[axis],probe_requirements[axis].probe_duration_s));
-            trial.models.push_back(identify(trial.rows[axis],probe_requirements[axis]));
-        }
-        trial.completed=true;trial.passed=std::all_of(trial.metrics.begin(),trial.metrics.end(),[](const Metrics& m){return m.passed;}) &&
+        trial.completed=std::all_of(trial.metrics.begin(),trial.metrics.end(),[](const Metrics& m){return m.samples>0;});
+        trial.passed=trial.completed && std::all_of(trial.metrics.begin(),trial.metrics.end(),[](const Metrics& m){return m.passed;}) &&
             std::all_of(trial.models.begin(),trial.models.end(),[](const auto& m){return m.tested_follow_frequency_hz>0;});
         return trial;
     }
@@ -3645,16 +3729,20 @@ private:
             robot_.set_admittance_suspended(false);result.target=robot_.get_hold_target();
         }
         const auto started=Robot::Clock::now();std::uint64_t cursor=0;
+        gain_probe_begin("hold","",2.1,0,"hold_verification");
         while(std::chrono::duration<double>(Robot::Clock::now()-started).count()<2.1) {
             std::unique_lock<std::mutex> lock(mutex_);
             if(model_calibration_cancel_.load() || model_calibration_pause_.load())throw std::runtime_error("continuous hold verification interrupted");
+            gain_probe_update(std::chrono::duration<double>(Robot::Clock::now()-started).count(),{},"hold_verification");
             if(!cycle_cv_.wait_for(lock,std::chrono::milliseconds(100),[&]{return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE;}) ||
                robot_.get_state()!=RobotState::ACTIVE || !last_output_)throw std::runtime_error("hold verification lost feedback");
             cursor=cycle_counter_;if(std::chrono::duration<double>(Robot::Clock::now()-started).count()<0.8)continue;
             const auto& output=*last_output_;
             if(output.hold_target_pos.size()!=n || output.joint_state.pos.size()!=n || output.joint_state.vel.size()!=n)
                 throw std::runtime_error("hold target feedback unavailable");
-            if(std::any_of(output.torque_limited.begin(),output.torque_limited.end(),[](auto v){return v!=0;}))return result;
+            if(std::any_of(output.torque_limited.begin(),output.torque_limited.end(),[](auto v){return v!=0;})) {
+                gain_probe_end("safety_bound",true);return result;
+            }
             for(std::size_t i=0;i<n;++i) {
                 // The nominal HOLD target is authoritative, never a fresh actual-position baseline
                 if(std::abs(result.target[i]-output.hold_target_pos[i])>1e-9)throw std::runtime_error("hold target changed during verification");
@@ -3667,7 +3755,7 @@ private:
             if(std::any_of(output.hold_integral_torque.begin(),output.hold_integral_torque.end(),[](double v){return std::abs(v)>1e-6;}))++result.integral_samples;
         }
         if(result.samples)for(auto& e:result.mean_error)e/=result.samples;
-        model_calibration_adaptation_passes_.fetch_add(1);
+        gain_probe_end("assessing",true);
         result.validated=result.samples>=30 && result.worst_error<=gain_requirements_.hold_error_rad &&
             result.worst_velocity<=gain_requirements_.hold_velocity_rad_s &&
             (!compensation.enabled || (result.observer_samples>=30 && result.integral_samples>=30));
@@ -3675,24 +3763,32 @@ private:
     }
 
     struct DragTrial {JointVector decay_s,initial_velocity,peak_velocity;bool validated{true};std::size_t samples{0};};
-    DragTrial gain_drag_trial(const JointImpedanceGains& gains) {
+    DragTrial gain_drag_trial(const JointImpedanceGains& gains,const JointImpedanceGains& excitation,
+                              const std::string& label,std::optional<std::size_t> selected_axis=std::nullopt) {
         const auto n=cfg_.joint_names.size();DragTrial result;
         result.decay_s.assign(n,0);result.initial_velocity.assign(n,0);result.peak_velocity.assign(n,0);
-        for(std::size_t axis=0;axis<n;++axis) {
+        const auto first_axis=selected_axis.value_or(0),end_axis=selected_axis ? first_axis+1 : n;
+        for(std::size_t axis=first_axis;axis<end_axis;++axis) {
             JointVector center;
             {
                 std::lock_guard<std::mutex> lock(mutex_);clear_command_sources();
                 if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::RIGID_TRACKING) ||
-                   !robot_.set_execution_gain_profile(JointGainProfile::DRAG) ||
+                   !robot_.set_execution_gain_profile(JointGainProfile::SERVO_TRACKING) ||
                    !robot_.set_calibration_reference_behavior(ReferenceBehavior::NATIVE_IMPEDANCE) ||
-                   !robot_.set_calibration_tracking_gains(gains,JointImpedanceMode::RIGID_TRACKING))
+                   !robot_.set_calibration_tracking_gains(excitation,JointImpedanceMode::RIGID_TRACKING))
                     throw std::runtime_error("cannot select bounded drag damping probe");
                 robot_.set_admittance_suspended(true);center=robot_.get_joint_state().pos;
             }
             const double velocity=std::min({0.015,0.03*cfg_.safety.limits.max_vel[axis],
-                0.02*cfg_.safety.limits.max_effort[axis]/std::max(.01,gains.kd[axis])});
+                0.036*cfg_.safety.limits.max_acc[axis],
+                0.02*cfg_.safety.limits.max_effort[axis]/std::max(.01,excitation.kd[axis]+.5*excitation.kp[axis])});
             const auto start=Robot::Clock::now();bool released=false;double release_s=0;std::uint64_t cursor=0;
-            std::ofstream csv(std::filesystem::path(model_calibration_directory_)/("drag-decay-"+std::to_string(axis)+".csv"));
+            gain_probe_begin(label,cfg_.joint_names[axis],3.0,0,"drag_excitation");
+            if(velocity<.003) {
+                gain_probe_end("safety_bound");
+                throw GainQualificationFailure("insufficient safe velocity and torque budget for an observable drag release at "+cfg_.joint_names[axis]);
+            }
+            std::ofstream csv(std::filesystem::path(model_calibration_directory_)/("drag-decay-"+label+"-"+std::to_string(axis)+".csv"));
             if(!csv)throw std::runtime_error("cannot record drag validation");
             csv<<"time_s,velocity,released\n";
             while(true) {
@@ -3704,12 +3800,19 @@ private:
                     JointVector q=center,v(n,0);const double ramp=std::clamp((time-.35)/.3,0.0,1.0);
                     v[axis]=velocity*ramp;q[axis]+=velocity*std::max(0.0,time-.5);
                     if(!runtime_.submit_reference(robot_,JointPosVelCmd{q,v},now,MotionSource::CALIBRATION))throw std::runtime_error("drag excitation rejected");
+                    gain_probe_update(time,q,"drag_excitation");
                 } else if(!released) {
+                    result.initial_velocity[axis]=std::abs(robot_.get_joint_state().vel[axis]);
                     if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::COMPLIANT_DRAG) ||
+                       !robot_.set_execution_gain_profile(JointGainProfile::DRAG) ||
                        !robot_.set_calibration_tracking_gains(gains,JointImpedanceMode::COMPLIANT_DRAG))
                         throw std::runtime_error("drag release rejected");
-                    released=true;release_s=time;result.initial_velocity[axis]=std::abs(robot_.get_joint_state().vel[axis]);
+                    clear_command_sources();released=true;release_s=time;
+                    gain_probe_update(time,{},"drag_verification");
+                    if(result.initial_velocity[axis]<.003)
+                        throw GainQualificationFailure("drag excitation produced no observable release velocity at "+cfg_.joint_names[axis]+"; damping search cannot qualify a stationary joint");
                 }
+                if(released)gain_probe_update(time,{},"drag_verification");
                 if(!cycle_cv_.wait_for(lock,std::chrono::milliseconds(100),[&]{return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE;}) || !last_output_ || robot_.get_state()!=RobotState::ACTIVE)
                     throw std::runtime_error("drag validation lost feedback");
                 cursor=cycle_counter_;const auto& out=*last_output_;
@@ -3722,9 +3825,11 @@ private:
                 }
                 lock.unlock();csv<<time<<','<<speed<<','<<released<<'\n';
             }
+            csv.flush();if(!csv)throw std::runtime_error("drag validation recording failed");
             result.validated=result.validated && result.initial_velocity[axis]>=.003 && result.decay_s[axis]<=1.0 &&
                 result.peak_velocity[axis]<=std::max(.025,1.4*result.initial_velocity[axis]);
-            model_calibration_adaptation_passes_.fetch_add(1);
+            gain_probe_end("assessing",true);
+            if(!result.validated)break;
         }
         {std::lock_guard<std::mutex> lock(mutex_);if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::RIGID_HOLD))throw std::runtime_error("cannot hold after damping probe");}
         return result;
@@ -3841,36 +3946,83 @@ private:
             if(!dynamics_.is_updated())throw std::runtime_error("servo calibration needs a valid measured dynamics snapshot");
             const auto& matrix=dynamics_.get_mass_matrix();
             for(std::size_t i=0;i<n;++i){inertia[i]=matrix(i,i);if(!std::isfinite(inertia[i]) || inertia[i]<=0)throw std::runtime_error("invalid local effective inertia");}
-            const bool verified=runtime_gain_applied_ && (runtime_gain_category_=="all" || runtime_gain_category_=="servo_tracking");
-            seed=verified ? *gain_trial_original_servo_ : model_calibration_physical_gains(4.0);
+            std::lock_guard<std::mutex> probe_lock(model_calibration_mutex_);
+            const auto& configured=*gain_trial_original_servo_;
+            const bool has_baseline=configured.kp.size()==n && configured.kd.size()==n &&
+                std::all_of(configured.kp.begin(),configured.kp.end(),[](double value){return std::isfinite(value)&&value>0;}) &&
+                std::all_of(configured.kd.begin(),configured.kd.end(),[](double value){return std::isfinite(value)&&value>0;});
+            if(has_baseline) {
+                for(std::size_t i=0;i<n;++i)
+                    if(configured.kp[i]>cfg_.safety.limits.max_kp[i] || configured.kd[i]>cfg_.safety.limits.max_kd[i])
+                        throw std::runtime_error("configured servo gain baseline exceeds joint safety limits at "+cfg_.joint_names[i]);
+                // Reuse the operator's existing actuator baseline. Its legal
+                // values are a starting point, not evidence of qualification.
+                seed=configured;
+                gain_seed_source_=runtime_gain_applied_ && (runtime_gain_category_=="all" || runtime_gain_category_=="servo_tracking") ?
+                    "verified_runtime" : "configured_servo";
+            } else {
+                seed=model_calibration_physical_gains(4.0);
+                gain_seed_source_="model_fallback";
+            }
+            gain_seed_=seed;
         }
-        // Damping authority bounds Kp before the first experiment, including a model seed
-        std::vector<Metrics> empty_metrics(n);std::vector<ResponseModel> empty_models(n);
-        const auto bounded=paired_candidate({seed.kp,seed.kd},inertia,cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,empty_metrics,empty_models);
-        seed={bounded.kp,bounded.kd};
+        gain_probe_end(gain_seed_source_=="model_fallback" ? "model_seed" : "configured_baseline");
+        const auto search_candidate=[&](JointImpedanceGains& gains,JointGainProfile profile,
+                                        const JointVector& kp_limit,const JointVector& kd_limit,const std::string& label,
+                                        ServoTrial* last_trial=nullptr) {
+            // Give each axis its own bounded candidate budget. Changing one
+            // axis never spends the budgets of later axes or repeats qualified
+            // search windows; the final full-axis frozen trial checks coupling.
+            for(std::size_t axis=0;axis<n;++axis) {
+              for(std::size_t attempt=0;attempt<gain_requirements_.max_candidates;++attempt) {
+                {
+                    std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+                    gain_candidate_index_=attempt+1;
+                }
+                const auto trial=gain_response_trial(gains,profile,false,false,label+"-"+std::to_string(attempt),true,axis);
+                if(last_trial)*last_trial=trial;
+                // Only a measured, observable and qualified candidate may be
+                // frozen. An earlier low-error, motionless trial is never best.
+                if(trial.metrics[axis].passed && trial.models[axis].tested_follow_frequency_hz>0)break;
+                const std::string& joint=cfg_.joint_names[axis];
+                if(trial.metrics[axis].measurement_samples<100 || !trial.metrics[axis].continuous)
+                    throw std::runtime_error("gain probe has insufficient continuous measurements at "+joint+"; check feedback before retrying");
+                const bool no_response=!trial.metrics[axis].observable;
+                const std::string reason=no_response ? "no observable joint response" : "measured tracking did not qualify";
+                if(attempt+1>=gain_requirements_.max_candidates)
+                    throw GainQualificationFailure(reason+" at "+joint+" after bounded gain search; inspect the probe recording and configured gain baseline");
+                const auto candidate=paired_candidate({gains.kp,gains.kd},inertia,kp_limit,kd_limit,trial.metrics,trial.models);
+                if(std::abs(candidate.kp[axis]-gains.kp[axis])<=1e-9 && std::abs(candidate.kd[axis]-gains.kd[axis])<=1e-9) {
+                    gain_probe_end("safety_bound");
+                    throw GainQualificationFailure(reason+" at "+joint+"; gain search reached its safety bounds without a new candidate");
+                }
+                gains={candidate.kp,candidate.kd};
+                model_calibration_adaptation_revisions_.fetch_add(1);
+                gain_probe_end("candidate_updated");
+              }
+            }
+        };
         model_calibration_gain_stage_.store(2);
         const bool standalone_compliant=model_calibration_gain_mode_=="compliant";
         // A standalone compliant candidate is qualified against the selected rigid
         // configuration, which its apply/export consumers also use as the bound
-        JointImpedanceGains best=standalone_compliant?cfg_.ctrller.rigid_tracking_gains:seed;double best_score=1e30;
-        for(std::size_t attempt=0;!standalone_compliant && attempt<gain_requirements_.max_candidates;++attempt) {
-            auto trial=gain_response_trial(seed,JointGainProfile::SERVO_TRACKING,false,false,"base-"+std::to_string(attempt));
-            const double value=score(trial.metrics);
-            if(value<best_score){best_score=value;best=seed;}
-            if(trial.passed)break;
-            const auto candidate=paired_candidate({seed.kp,seed.kd},inertia,cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,trial.metrics,trial.models);
-            seed={candidate.kp,candidate.kd};model_calibration_adaptation_revisions_.fetch_add(1);
-        }
+        JointImpedanceGains best=standalone_compliant?cfg_.ctrller.rigid_tracking_gains:seed;
+        if(!standalone_compliant)
+            search_candidate(best,JointGainProfile::SERVO_TRACKING,cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,"base");
         // A frozen trial is independent from the samples used to select gains
         auto native=standalone_compliant?ServoTrial{}:gain_response_trial(best,JointGainProfile::SERVO_TRACKING,false,false,"native-frozen");
+        if(!standalone_compliant && !native.passed)
+            throw std::runtime_error("servo baseline failed independent frozen verification; later gain qualifications were not started");
         struct Stage {
             std::string category;JointImpedanceGains gains;ServoTrial native,admittance;
             GainHoldResult hold;std::optional<HoldCompensationCfg> compensation;std::optional<GainHoldResult> compensated_hold;
-            std::optional<DragTrial> drag;bool validated{false};
+            std::optional<DragTrial> drag;bool validated{false};std::string error;
         };
         std::vector<Stage> stages;
         const bool all=model_calibration_gain_mode_=="all";
         const auto want=[&](const char* mode){return all || model_calibration_gain_mode_==mode;};
+        std::exception_ptr interrupted;
+        try {
         if(want("rigid")) {
             model_calibration_gain_stage_.store(0);Stage stage;stage.category="rigid_tracking";stage.gains=best;stage.native=native;stage.compensation=disabled;
             stage.hold=gain_hold_trial(best,false,disabled);
@@ -3895,31 +4047,63 @@ private:
             model_calibration_gain_stage_.store(1);Stage stage;stage.category="compliant_tracking";stage.gains=best;
             const auto bounds=serial_arm::calibration_replay_supervisor::compliant_bounds(best.kp,best.kd,cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd);
             if(!bounds.valid)throw std::runtime_error("cannot derive compliant limits from the measured rigid reference");
-            for(std::size_t i=0;i<n;++i){stage.gains.kp[i]*=.4;stage.gains.kd[i]=std::min(bounds.kd_ceiling[i],1.8*std::sqrt(inertia[i]*stage.gains.kp[i]));}
-            double soft_best=1e30;JointImpedanceGains soft=stage.gains;
-            for(std::size_t attempt=0;attempt<gain_requirements_.max_candidates;++attempt) {
-                auto trial=gain_response_trial(soft,JointGainProfile::COMPLIANT,false,false,"soft-"+std::to_string(attempt));
-                if(score(trial.metrics)<soft_best){soft_best=score(trial.metrics);stage.gains=soft;}
-                if(trial.passed)break;
-                const auto next=paired_candidate({soft.kp,soft.kd},inertia,bounds.kp_ceiling,bounds.kd_ceiling,trial.metrics,trial.models);
-                soft={next.kp,next.kd};model_calibration_adaptation_revisions_.fetch_add(1);
+            const auto& configured_soft=cfg_.ctrller.compliant_tracking_gains;
+            for(std::size_t i=0;i<n;++i) {
+                const bool configured=configured_soft.kp.size()==n && configured_soft.kd.size()==n &&
+                    std::isfinite(configured_soft.kp[i]) && configured_soft.kp[i]>0 &&
+                    std::isfinite(configured_soft.kd[i]) && configured_soft.kd[i]>0;
+                stage.gains.kp[i]=std::min(bounds.kp_ceiling[i],configured ? configured_soft.kp[i] : .4*best.kp[i]);
+                stage.gains.kd[i]=std::min(bounds.kd_ceiling[i],configured ? configured_soft.kd[i] : 1.8*std::sqrt(inertia[i]*stage.gains.kp[i]));
             }
-            stage.native=gain_response_trial(stage.gains,JointGainProfile::COMPLIANT,false,false,"soft-frozen");
-            stage.hold=gain_hold_trial(stage.gains,true,disabled);
-            stage.validated=stage.native.passed && stage.hold.validated && serial_arm::calibration_replay_supervisor::within_compliant_bounds(stage.gains.kp,stage.gains.kd,bounds);
+            try {
+                search_candidate(stage.gains,JointGainProfile::COMPLIANT,bounds.kp_ceiling,bounds.kd_ceiling,"soft",&stage.native);
+                stage.native=gain_response_trial(stage.gains,JointGainProfile::COMPLIANT,false,false,"soft-frozen");
+                if(!stage.native.passed)throw GainQualificationFailure("compliant gains failed independent frozen verification");
+                stage.hold=gain_hold_trial(stage.gains,true,disabled);
+                stage.validated=stage.hold.validated && serial_arm::calibration_replay_supervisor::within_compliant_bounds(stage.gains.kp,stage.gains.kd,bounds);
+            } catch(const GainQualificationFailure& error) {
+                if(model_calibration_cancel_.load() || model_calibration_pause_.load() || machine_robot_state()!=RobotState::ACTIVE)throw;
+                // A local soft-search failure does not discard independently
+                // qualified rigid/servo uses in an all-purpose result.
+                stage.error=error.what();stage.validated=false;
+                if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))throw;
+                gain_probe_end("failed");
+            }
             stages.push_back(std::move(stage));
         }
         if(want("drag")) {
             model_calibration_gain_stage_.store(3);Stage stage;stage.category="compliant_drag";
             stage.gains.kp.assign(n,0);stage.gains.kd.resize(n);
-            for(std::size_t i=0;i<n;++i)stage.gains.kd[i]=std::min(cfg_.safety.limits.max_kd[i],std::max(.01,5.0*inertia[i]));
-            for(std::size_t attempt=0;attempt<gain_requirements_.max_candidates;++attempt) {
-                stage.drag=gain_drag_trial(stage.gains);if(stage.drag->validated)break;
-                for(std::size_t i=0;i<n;++i)stage.gains.kd[i]=std::min(cfg_.safety.limits.max_kd[i],stage.gains.kd[i]*1.35);
-                model_calibration_adaptation_revisions_.fetch_add(1);
+            for(std::size_t i=0;i<n;++i) {
+                const auto& configured=cfg_.ctrller.compliant_drag_gains.kd;
+                const double damping=configured.size()==n && std::isfinite(configured[i]) && configured[i]>0 ?
+                    configured[i] : std::max(.01,5.0*inertia[i]);
+                stage.gains.kd[i]=std::min(cfg_.safety.limits.max_kd[i],damping);
             }
-            // One new release window validates the selected damping, independent of the search
-            stage.drag=gain_drag_trial(stage.gains);stage.validated=stage.drag->validated;stages.push_back(std::move(stage));
+            try {
+                for(std::size_t axis=0;axis<n;++axis) {
+                    for(std::size_t attempt=0;attempt<gain_requirements_.max_candidates;++attempt) {
+                        {std::lock_guard<std::mutex> lock(model_calibration_mutex_);gain_candidate_index_=attempt+1;}
+                        stage.drag=gain_drag_trial(stage.gains,best,"drag-search-"+std::to_string(attempt),axis);
+                        if(stage.drag->validated)break;
+                        const double next=std::min(cfg_.safety.limits.max_kd[axis],stage.gains.kd[axis]*1.35);
+                        if(attempt+1>=gain_requirements_.max_candidates || std::abs(next-stage.gains.kd[axis])<=1e-9)
+                            throw GainQualificationFailure("drag damping did not qualify within its bounded search at "+cfg_.joint_names[axis]);
+                        stage.gains.kd[axis]=next;model_calibration_adaptation_revisions_.fetch_add(1);
+                    }
+                }
+                // Independent release windows use the selected damping only
+                stage.drag=gain_drag_trial(stage.gains,best,"drag-frozen");
+                stage.validated=stage.drag->validated;
+            } catch(const GainQualificationFailure& error) {
+                if(model_calibration_cancel_.load() || model_calibration_pause_.load() || machine_robot_state()!=RobotState::ACTIVE)throw;
+                stage.error=error.what();stage.validated=false;
+                if(!stage.drag){stage.drag=DragTrial{};stage.drag->decay_s.assign(n,0);stage.drag->initial_velocity.assign(n,0);}
+                stage.drag->validated=false;
+                if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))throw;
+                gain_probe_end("failed");
+            }
+            stages.push_back(std::move(stage));
         }
         if(want("servo_tracking")) {
             model_calibration_gain_stage_.store(2);Stage stage;stage.category="servo_tracking";stage.gains=best;stage.native=native;
@@ -3930,7 +4114,14 @@ private:
             stage.admittance=gain_response_trial(best,JointGainProfile::SERVO_TRACKING,true,true,"admittance-frozen");
             stage.validated=stage.native.passed && stage.admittance.passed;stages.push_back(std::move(stage));
         }
-        const bool approved=!stages.empty() && std::all_of(stages.begin(),stages.end(),[](const auto& s){return s.validated;});
+        } catch(...) {
+            interrupted=std::current_exception();
+            if(stages.empty())std::rethrow_exception(interrupted);
+            gain_probe_end(model_calibration_cancel_.load() ? "cancelled" : "failed");
+            if(machine_robot_state()==RobotState::ACTIVE)(void)set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD);
+        }
+        const bool approved=!interrupted && !stages.empty() && std::all_of(stages.begin(),stages.end(),[](const auto& s){return s.validated;});
+        try {
         std::ofstream out(std::filesystem::path(model_calibration_directory_)/"gain-candidate.json");
         if(!out)throw std::runtime_error("cannot save measured gain candidate");
         out<<std::setprecision(17);
@@ -3939,10 +4130,11 @@ private:
         const auto hold_json=[&](const GainHoldResult& h){out<<"{\"validated\":"<<(h.validated?"true":"false")<<",\"samples\":"<<h.samples<<",\"worst_error_rad\":"<<h.worst_error<<",\"worst_drift_rad\":"<<h.worst_error<<",\"worst_velocity_rad_s\":"<<h.worst_velocity<<",\"target_source\":\"cycle.hold_target_pos\",\"target_pos\":";machine_json_joint_vector(out,h.target);out<<",\"disturbance_release\":\"pending\"}";};
         const auto validation_json=[&](const ServoTrial& trial) {
             out<<"{\"validated\":"<<(trial.passed?"true":"false")<<",\"continuous\":"<<(std::all_of(trial.metrics.begin(),trial.metrics.end(),[](const auto& m){return m.continuous;})?"true":"false")<<",\"metrics\":[";
-            for(std::size_t i=0;i<trial.metrics.size();++i){if(i)out<<',';const auto& m=trial.metrics[i];out<<"{\"samples\":"<<m.samples<<",\"rms_error_rad\":"<<m.rms_error<<",\"peak_error_rad\":"<<m.peak_error<<",\"velocity_rms_rad_s\":"<<m.velocity_rms<<",\"overshoot_rad\":"<<m.overshoot<<",\"settling_s\":"<<m.settling_s<<",\"limited_samples\":"<<m.limited_samples<<",\"oscillating\":"<<(m.oscillating?"true":"false")<<'}';}out<<"]}";
+            for(std::size_t i=0;i<trial.metrics.size();++i){if(i)out<<',';const auto& m=trial.metrics[i];out<<"{\"samples\":"<<m.samples<<",\"rms_error_rad\":"<<m.rms_error<<",\"peak_error_rad\":"<<m.peak_error<<",\"velocity_rms_rad_s\":"<<m.velocity_rms<<",\"overshoot_rad\":"<<m.overshoot<<",\"settling_s\":"<<m.settling_s<<",\"limited_samples\":"<<m.limited_samples<<",\"oscillating\":"<<(m.oscillating?"true":"false")<<",\"observable\":"<<(m.observable?"true":"false")<<",\"reference_span_rad\":"<<m.reference_span<<",\"actual_span_rad\":"<<m.actual_span<<",\"response_rms_ratio\":"<<m.response_rms_ratio<<'}';}out<<"]}";
         };
         const auto write_stage=[&](const Stage& stage) {
             if(all)out<<"\"validated\":"<<(stage.validated?"true":"false")<<',';
+            if(!stage.error.empty())out<<"\"error\":\""<<machine_json_escape(stage.error)<<"\",";
             out<<"\"kp\":";machine_json_joint_vector(out,stage.gains.kp);out<<",\"kd\":";machine_json_joint_vector(out,stage.gains.kd);
             out<<",\"qualification_scope\":{\"trajectory\":\"local_multifrequency\",\"external_tip\":\"pending\",\"disturbance_release\":\"pending\",\"contact\":\"not_tested\"}";
             if(stage.category=="compliant_drag") {
@@ -3991,11 +4183,20 @@ private:
         for(std::size_t i=0;i<n;++i){if(i)out<<',';out<<'"'<<machine_json_escape(cfg_.joint_names[i])<<'"';}out<<"],\"passes\":"<<model_calibration_adaptation_passes_.load()<<",\"revisions\":"<<model_calibration_adaptation_revisions_.load()<<",\"validation_scope\":\"frozen_continuous_local_multifrequency\",\"load_description\":\""<<machine_json_escape(model_calibration_options_.load_description)<<"\",\"seed_posture\":";machine_json_joint_vector(out,native.center.empty()?stages.front().native.center:native.center);
         const auto& r=gain_requirements_;
         out<<",\"gain_requirements\":{\"peak_error_rad\":"<<r.peak_error_rad<<",\"rms_error_rad\":"<<r.rms_error_rad<<",\"velocity_rms_rad_s\":"<<r.velocity_rms_rad_s<<",\"overshoot_rad\":"<<r.overshoot_rad<<",\"settling_error_rad\":"<<r.settling_error_rad<<",\"settling_time_s\":"<<r.settling_time_s<<",\"hold_error_rad\":"<<r.hold_error_rad<<",\"hold_velocity_rad_s\":"<<r.hold_velocity_rad_s<<",\"amplitude_rad\":"<<r.amplitude_rad<<"}";
+        out<<",\"seed_source\":\""<<machine_json_escape(gain_seed_source_)<<"\",\"seed_kp\":";machine_json_joint_vector(out,gain_seed_.kp);
+        out<<",\"seed_kd\":";machine_json_joint_vector(out,gain_seed_.kd);
+        out<<",\"partial\":"<<(interrupted?"true":"false");
         out<<",\"admittance_parameters\":{\"mass\":";machine_json_joint_vector(out,cfg_.capability.admittance.controller.mass);
         out<<",\"damping\":";machine_json_joint_vector(out,cfg_.capability.admittance.controller.damping);out<<",\"stiffness\":";machine_json_joint_vector(out,cfg_.capability.admittance.controller.stiffness);
         out<<",\"joint_enabled\":";machine_json_vector(out,cfg_.capability.admittance.joint_enabled);out<<",\"observer_mode\":\""<<observer_mode_name(cfg_.capability.admittance.observer.mode)<<"\"}";
         if(all){out<<",\"targets\":{";for(std::size_t i=0;i<stages.size();++i){if(i)out<<',';out<<'"'<<stages[i].category<<"\":{";write_stage(stages[i]);out<<'}';}out<<'}';}else{out<<',';write_stage(stages.front());}out<<'}';out.flush();if(!out)throw std::runtime_error("gain candidate writing failed");
         model_calibration_adaptation_converged_.store(approved);
+        } catch(...) {
+            // File I/O must never replace the original cancellation or control fault.
+            if(interrupted)std::rethrow_exception(interrupted);
+            throw;
+        }
+        if(interrupted)std::rethrow_exception(interrupted);
         if(!approved)throw std::runtime_error("gain candidate failed continuous measured qualification; inspect gain-candidate.json and probe CSV files");
     }
 
@@ -4008,6 +4209,13 @@ private:
                 const auto recording=model_calibration_recorder_.status();
                 if(recording.write_failed || recording.data_gap || recording.accepted_frames!=recording.written_frames)
                     throw std::runtime_error(recording.error.empty()?"gain recording did not finish writing":recording.error);
+                gain_probe_end("complete");
+                {
+                    std::lock_guard<std::mutex> lock(model_calibration_mutex_);
+                    model_calibration_completed_units_=model_calibration_adaptation_passes_.load();
+                    model_calibration_total_units_=model_calibration_completed_units_;
+                    model_calibration_progress_=1.0;
+                }
                 model_calibration_set_phase(ModelCalibrationPhase::COMPLETE);
                 model_calibration_write_result_file();return;
             }
@@ -4096,6 +4304,8 @@ private:
             model_calibration_write_result_file();
         }
         catch(const std::exception& error) {
+            if(model_calibration_workflow_kind_=="gain")
+                gain_probe_end(model_calibration_cancel_.load() ? "cancelled" : "failed");
             {
                 std::lock_guard<std::mutex> error_lock(model_calibration_mutex_);
                 if(!model_calibration_fault_interrupted_.load() || model_calibration_error_.empty())
@@ -4253,6 +4463,9 @@ private:
             model_calibration_estimated_duration_s_=serial_arm::calibration_acquisition::traversal_factor*one_way+dwell+2.0;
         }
         if(model_calibration_workflow_kind_=="gain") {
+            model_calibration_adaptation_passes_.store(0);
+            model_calibration_adaptation_revisions_.store(0);
+            model_calibration_update_progress(0,gain_planned_windows());
             const double axes=static_cast<double>(cfg_.joint_names.size());
             const double probe=axes*(gain_requirements_.probe_duration_s+gain_requirements_.tail_s+.4);
             const double candidates=static_cast<double>(gain_requirements_.max_candidates);
@@ -4612,7 +4825,16 @@ private:
         const auto scope=report["validation_scope"].as<std::string>();
         if(scope!="dynamic_inertia")
             throw std::runtime_error("static gravity candidate must use the gravity-only apply route");
-        const auto candidate_path=std::filesystem::canonical(report["candidate_urdf"].as<std::string>());
+        const std::filesystem::path recorded_candidate(report["candidate_urdf"].as<std::string>());
+        if(recorded_candidate.empty()) throw std::runtime_error("candidate URDF path is empty");
+        // Reports and candidates form one portable directory. An older report
+        // may retain its former absolute path after the directory is copied.
+        const auto local_candidate = recorded_candidate.is_absolute()
+            ? report_path.parent_path() / recorded_candidate.filename()
+            : report_path.parent_path() / recorded_candidate;
+        const auto candidate_path=std::filesystem::canonical(local_candidate);
+        if(candidate_path.parent_path()!=report_path.parent_path())
+            throw std::runtime_error("candidate URDF must remain in the identification report directory");
         if(!std::filesystem::is_regular_file(candidate_path))
             throw std::runtime_error("candidate URDF is missing");
         if(!report["candidate_urdf_fingerprint"] ||
@@ -4764,6 +4986,20 @@ private:
         out << ",\"gain_adaptation_passes\":" << model_calibration_adaptation_passes_.load()
             << ",\"gain_adaptation_revisions\":" << model_calibration_adaptation_revisions_.load()
             << ",\"gain_adaptation_converged\":" << (model_calibration_adaptation_converged_.load()?"true":"false");
+        out << ",\"gain_probe_kind\":\"" << machine_json_escape(gain_probe_kind_)
+            << "\",\"gain_probe_joint\":\"" << machine_json_escape(gain_probe_joint_)
+            << "\",\"gain_probe_message\":\"" << machine_json_escape(gain_probe_message_)
+            << "\",\"gain_candidate_index\":" << gain_candidate_index_
+            << ",\"gain_candidate_limit\":" << gain_requirements_.max_candidates
+            << ",\"gain_probe_elapsed_s\":" << gain_probe_elapsed_s_
+            << ",\"gain_probe_duration_s\":" << gain_probe_duration_s_
+            << ",\"gain_probe_amplitude_rad\":" << gain_probe_amplitude_rad_
+            << ",\"gain_probe_reference_joint_positions\":";
+        if(model_calibration_phase_.load()==ModelCalibrationPhase::GAIN_ADAPTATION &&
+           !model_calibration_cancel_.load() && !model_calibration_pause_.load())machine_json_joint_vector(out,gain_probe_reference_);
+        else out << "[]";
+        out << ",\"gain_seed_source\":\"" << machine_json_escape(gain_seed_source_) << "\",\"gain_seed_kp\":";
+        machine_json_joint_vector(out,gain_seed_.kp);out << ",\"gain_seed_kd\":";machine_json_joint_vector(out,gain_seed_.kd);
         out << ",\"fault_interrupted\":" << (model_calibration_fault_interrupted_.load()?"true":"false");
         out << ",\"teaching_wall_duration_s\":" << (model_calibration_phase_.load() == ModelCalibrationPhase::TEACHING && model_calibration_teaching_started_at_ ?
             std::chrono::duration<double>(Robot::Clock::now() - *model_calibration_teaching_started_at_).count() : model_calibration_teaching_wall_duration_s_)
@@ -4876,13 +5112,13 @@ private:
         machine_calibration_context_valid_ = false;
     }
 
-    void machine_calibration_cancel() {
-        if(machine_calibration_kind_ == "friction_recording" || machine_calibration_kind_ == "friction_replaying") {
+    void machine_calibration_cancel(bool restore_mode = true) {
+        if(machine_friction_thread_.joinable()) {
             machine_friction_stop_.store(true);
             cycle_cv_.notify_all();
-            if(machine_friction_thread_.joinable()) machine_friction_thread_.join();
+            machine_friction_thread_.join();
         }
-        if(machine_calibration_context_valid_) machine_restore_calibration_runtime(true);
+        if(machine_calibration_context_valid_) machine_restore_calibration_runtime(true, restore_mode);
         machine_calibration_kind_ = "none";
         machine_calibration_phase_ = "cancelled";
         machine_calibration_poses_.clear();
@@ -4931,6 +5167,10 @@ private:
     void machine_friction_replay_start() {
         if(machine_calibration_kind_ != "friction_ready" || !machine_friction_trajectory_) throw std::runtime_error("friction trajectory is not ready");
         if(machine_friction_thread_.joinable()) throw std::runtime_error("friction worker is already active");
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            machine_require_friction_endpoint_locked(machine_friction_trajectory_->positions.back());
+        }
         machine_calibration_kind_ = "friction_replaying";
         machine_calibration_phase_ = "replaying_reverse";
         machine_friction_stop_.store(false);
@@ -6517,6 +6757,55 @@ private:
         return std::min(rate, kNominalReplayRate);
     }
 
+    void machine_require_friction_endpoint_locked(const JointVector& expected) const {
+        if(robot_.get_state()!=RobotState::ACTIVE || !last_output_ || !feedback_time_ns_)
+            throw std::runtime_error("friction replay requires fresh ACTIVE feedback; align the endpoint manually before replay");
+        const auto now_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+        const double age_ms=now_ns>=feedback_time_ns_ ? double(now_ns-feedback_time_ns_)/1.0e6 :
+            std::numeric_limits<double>::infinity();
+        const auto& actual=last_output_->joint_state;
+        const auto choice=serial_arm::calibration_recovery::select_endpoint(actual.pos,actual.vel,
+            expected,expected,age_ms,dynamics_.get_info().joint_types);
+        if(age_ms>150.0 || !choice.valid || !choice.at_endpoint)
+            throw std::runtime_error("friction replay endpoint is not aligned or stationary; align the endpoint manually and reconfirm playback");
+    }
+
+    bool wait_for_friction_endpoint(const JointVector& expected, bool finish_pass) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto deadline=Robot::Clock::now()+std::chrono::milliseconds(finish_pass ? 2000 : 150);
+        std::uint64_t zero_velocity_cursor=0;
+        bool zero_velocity_sent=false;
+        while(Robot::Clock::now()<deadline) {
+            if(machine_friction_stop_.load() || robot_.get_state()!=RobotState::ACTIVE) return false;
+            if(last_output_ && feedback_time_ns_) {
+                const auto now_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+                const double age_ms=now_ns>=feedback_time_ns_ ? double(now_ns-feedback_time_ns_)/1.0e6 :
+                    std::numeric_limits<double>::infinity();
+                const auto& actual=last_output_->joint_state;
+                const auto choice=serial_arm::calibration_recovery::select_endpoint(actual.pos,actual.vel,
+                    expected,expected,age_ms,dynamics_.get_info().joint_types);
+                if(age_ms>150.0 || !choice.valid || choice.max_position_ratio>1.0)
+                    throw std::runtime_error("friction replay endpoint feedback is stale or misaligned; align the endpoint manually before replay");
+                if(!finish_pass || (zero_velocity_sent && cycle_counter_>zero_velocity_cursor && choice.at_endpoint)) {
+                    machine_require_friction_endpoint_locked(expected);
+                    return true;
+                }
+                // Finish the path at its already-commanded endpoint with zero
+                // velocity. This never creates a separate alignment movement.
+                zero_velocity_cursor=cycle_counter_;
+                if(machine_friction_stop_.load()) return false;
+                if(!runtime_.submit_reference(robot_,JointPosVelCmd{expected,JointVector(expected.size(),0.0)},
+                        Robot::Clock::now(),MotionSource::CALIBRATION)) return false;
+                zero_velocity_sent=true;
+            }
+            const auto cursor=cycle_counter_;
+            cycle_cv_.wait_until(lock,std::min(deadline,Robot::Clock::now()+std::chrono::milliseconds(100)),[&]() {
+                return machine_friction_stop_.load() || robot_.get_state()!=RobotState::ACTIVE || cycle_counter_>cursor;
+            });
+        }
+        throw std::runtime_error("friction replay endpoint did not become stationary; hold and align it manually before retrying");
+    }
+
     bool play_friction_calibration_pass(
         const FrictionCalibrationTrajectory& trajectory,
         bool reverse,
@@ -6538,6 +6827,7 @@ private:
 
         std::vector<JointVector> ordered = trajectory.positions;
         if(reverse) std::reverse(ordered.begin(), ordered.end());
+        if(!wait_for_friction_endpoint(ordered.front(),false)) return false;
 
         const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
         const double index_step = playback_rate * nominal_dt / trajectory.sample_dt;
@@ -6563,7 +6853,7 @@ private:
             std::uint64_t cursor = 0;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if(robot_.get_state() != RobotState::ACTIVE) return false;
+                if(machine_friction_stop_.load() || robot_.get_state() != RobotState::ACTIVE) return false;
                 cursor = cycle_counter_;
                 const auto command = runtime_.submit_reference(robot_,JointPosVelCmd{ ref_pos, ref_vel }, Robot::Clock::now(),MotionSource::CALIBRATION);
                 if(!command) {
@@ -6651,7 +6941,7 @@ private:
             previous_ref = std::move(ref_pos);
             progress = next_progress;
         }
-        return true;
+        return wait_for_friction_endpoint(ordered.back(),true);
     }
 
     void print_friction_calibration_yaml(
@@ -7933,6 +8223,11 @@ private:
     std::optional<JointImpedanceGains> gain_trial_original_servo_;
     std::optional<HoldCompensationCfg> gain_trial_original_hold_compensation_;
     std::atomic<int> model_calibration_gain_stage_{2};
+    std::string gain_probe_kind_,gain_probe_joint_,gain_probe_message_,gain_seed_source_;
+    std::size_t gain_candidate_index_{0};
+    double gain_probe_elapsed_s_{0},gain_probe_duration_s_{0},gain_probe_amplitude_rad_{0};
+    JointVector gain_probe_reference_;
+    JointImpedanceGains gain_seed_;
     bool runtime_gain_applied_{false};
     bool runtime_gravity_applied_{false};
     bool runtime_dynamics_applied_{false};

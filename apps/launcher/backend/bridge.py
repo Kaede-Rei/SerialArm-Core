@@ -570,6 +570,9 @@ def main():
                                 'endpoint_dwell_s': params.get('endpoint_dwell_s', 0) if kind == 'cycle' else 0,
                                 'confirmed': params.get('confirmed') is True,
                             }
+                            for field in ('reference_behavior', 'gain_profile'):
+                                if field in params:
+                                    machine_params[field] = params[field]
                             verify_machine_admission(profile_library, active_workbench_config, 'teach_replay_play', machine_params, native)
                             result = native.request('teach_replay_play', machine_params, timeout=8)
                         elif op == 'stop':
@@ -657,7 +660,7 @@ def main():
                     admission = profile_library._readiness(config)
                     offline = info['write_enabled'] is False
                     allowed = ((admission.get('connection_readiness') or {}).get('offline_connectable') is True
-                               if offline else admission['checks'].get('profile_setup') == 'verified')
+                               if offline else (admission.get('connection_readiness') or {}).get('hardware_connectable') is True)
                     if not allowed:
                         issues = ((admission.get('connection_readiness') or {}).get('offline_issues') if offline else admission.get('setup_issues')) or []
                         detail = '；'.join(item['message'] for item in issues[:4]) if issues else (admission.get('reason') or 'Core 或硬件配置尚不完整')

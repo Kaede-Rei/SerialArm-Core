@@ -217,6 +217,25 @@ def prepare_gain_candidate(directory, gain_purposes=None):
             'gain_purposes':list(groups),'validation_scope':candidate.get('validation_scope','recorded_scope')}
 
 
+def resolve_dynamics_candidate_path(report_path, report):
+    """Resolve a report-local URDF, including relocated legacy absolute paths."""
+    report_file = Path(report_path).expanduser().resolve(strict=True)
+    value = report.get('candidate_urdf')
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError('离线验证报告缺少模型 URDF 路径')
+    candidate = Path(value).expanduser()
+    if candidate.is_absolute():
+        # Legacy reports stored the acquisition machine's absolute directory.
+        # Bind to the copy beside this report even if the old file still exists.
+        candidate = report_file.parent / candidate.name
+    else:
+        candidate = report_file.parent / candidate
+    candidate = candidate.resolve(strict=True)
+    if not candidate.is_file() or candidate.parent != report_file.parent:
+        raise ValueError('模型 URDF 必须与离线验证报告位于同一候选目录')
+    return candidate
+
+
 def prepare_dynamics_candidate(report_path):
     """Offline-reviewed dynamic URDF preview, checked again by native Core."""
     report_file=Path(report_path).expanduser().resolve(strict=True)
@@ -225,9 +244,7 @@ def prepare_dynamics_candidate(report_path):
         raise ValueError('请选择有效的高级辨识候选报告')
     if report.get('status')!='review_passed_offline' or report.get('validation_scope')!='dynamic_inertia' or not report.get('full_dynamics_physical_pass'):
         raise ValueError('当前候选未通过完整动力学的离线审核和物理约束验收')
-    candidate=Path(report.get('candidate_urdf') or '').expanduser().resolve(strict=True)
-    if not candidate.is_file() or candidate.parent!=report_file.parent:
-        raise ValueError('模型 URDF 必须与离线验证报告位于同一候选目录')
+    candidate=resolve_dynamics_candidate_path(report_file, report)
     digest=hashlib.sha256(candidate.read_bytes()).hexdigest()
     if not report.get('candidate_urdf_sha256') or report['candidate_urdf_sha256']!=digest:
         raise ValueError('候选 URDF 已变化，必须重新执行离线辨识')

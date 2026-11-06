@@ -16,7 +16,7 @@ import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf
 from persistence import build_gravity_correction_payload, export_candidate_urdf, patch_text
-from workflow_registry import load
+from workflow_registry import load, resolve_dynamics_candidate_path
 from control_parameters import canonical_core, canonical_control_text, complete_mapping_values, deployment_gain_groups
 
 GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking', 'identification_tracking', 'all'}
@@ -404,10 +404,7 @@ def _dynamics_export(record,dest,report_path=None):
         raise ValueError('辨识报告与任务不匹配')
     if data.get('status')!='review_passed_offline' or data.get('full_dynamics_physical_pass') is not True:
         raise ValueError('所选高级辨识候选未通过离线物理与数据验收，不能导出为部署模型')
-    candidate=Path(data.get('candidate_urdf') or '').expanduser()
-    if not candidate.is_file():candidate=report.parent/f"candidate-{data.get('identification_mode')}.urdf"
-    candidate=candidate.resolve()
-    if candidate.parent!=report.parent or not candidate.is_file():raise ValueError('候选 URDF 路径无效')
+    candidate=resolve_dynamics_candidate_path(report, data)
     if hashlib.sha256(candidate.read_bytes()).hexdigest()!=data.get('candidate_urdf_sha256'):
         raise ValueError('候选 URDF 与审核时的模型指纹不同')
     # Candidate-local resources may have been remapped from original source paths

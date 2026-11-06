@@ -336,8 +336,15 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 /* Daily actions remain visible while editing targets and control settings. */
 .workspace-operation-panel { position: sticky; top: 70px; z-index: 8; background: var(--card); padding-block: 0 12px; }
 .robot-operation-bar { padding: 12px 14px; box-shadow: var(--shadow); }
-.control-settings > summary { cursor: pointer; padding: 14px; font-weight: 600; border: 1px solid var(--line); border-radius: 12px; }
-.control-settings[open] > summary { margin-bottom: 16px; }
+.control-settings { padding: 0; }
+.control-settings > summary { cursor: pointer; padding: 18px; font-size: 15px; font-weight: 600; line-height: 1.5; }
+.control-settings[open] > summary { border-bottom: 1px solid var(--line); }
+.control-settings-body { display: grid; grid-template-columns: minmax(0,1fr); gap: 16px; min-width: 0; padding: 18px; border-radius: 0 0 11px 11px; background: var(--subtle); }
+.control-settings-body > .workspace-section { margin: 0; }
+.control-settings .hint, .control-settings .kv dd { word-break: normal; overflow-wrap: anywhere; }
+@media(max-width:600px) {
+  .control-settings > summary, .control-settings-body { padding: 14px; }
+}
 .hardware-tools { margin: 16px 0; }
 .teach-timeline { margin-top: 18px; }
 .teach-timeline input[type="range"] { width: 100%; accent-color: var(--accent); }

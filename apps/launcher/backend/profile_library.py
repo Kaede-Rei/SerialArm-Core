@@ -18,6 +18,7 @@ import yaml
 
 from profiles import Inspector, config_values, read_yaml, text
 from control_parameters import canonical_core, effective_hardware
+from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted
 
 
 def _sha(path):
@@ -92,6 +93,7 @@ class ProfileLibrary:
         self.inspector = inspector
         self.library_file = Path(os.environ.get('SERIAL_ARM_PROFILE_LIBRARY', Path.home() / '.config/serial-arm/profile-library.yaml')).expanduser()
         self.cache = Path(os.environ.get('XDG_CACHE_HOME', Path.home() / '.cache')) / 'serial-arm/description-preview'
+        self._gravity_validation_baselines = {}
 
     def _library_data(self):
         if not self.library_file.is_file(): return {'profiles': {}, 'hidden_builtin': []}
@@ -198,18 +200,56 @@ class ProfileLibrary:
             for purpose, (_, gain_keys, _) in self._GAIN_PURPOSES.items()}
         return scopes
 
-    def _readiness_meta(self, info):
+    def _readiness_meta(self, info, scopes=None):
+        from profile_storage import legacy_profile_homes
         path = self._readiness_path(info['profile_file'], info['profile'])
-        # Existing verification notes remain readable after switching to
-        # the Profile-local directory. New writes always use the new location
         safe = ''.join(c if c.isalnum() or c in '_-' else '_' for c in str(info['profile'])) or 'profile'
         old_path = (self.library_file.parent / 'readiness' / f'{safe}.yaml') if str(info['profile_file']).startswith(str(self.root / 'src/robot_supports/profiles')) else (Path(info['profile_file']).parent / '.serialarm' / 'readiness' / f'{safe}.yaml')
-        source = path if path.is_file() else old_path
-        try:
-            meta = yaml.safe_load(source.read_text()) if source.is_file() else {}
-        except (OSError, yaml.YAMLError):
-            meta = {}
-        return path, meta if isinstance(meta, dict) else {}
+        candidates = [(path, True), (old_path, True)]
+        candidates += [(home / '.serialarm' / 'readiness' / 'checks.yaml', False)
+                       for home in legacy_profile_homes(info, self.root)]
+        meta = {}
+        imported = False
+        for source, named_owner in dict.fromkeys(candidates):
+            try:
+                record = yaml.safe_load(source.read_text()) if source.is_file() else {}
+            except (OSError, UnicodeError, yaml.YAMLError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            owner = record.get('profile')
+            if owner and owner != info['profile']:
+                continue
+            if named_owner or owner == info['profile']:
+                selected = record
+            else:
+                # Old shared files lack an owner. Import only entries whose
+                # existing dependency scope proves this Profile owns them.
+                selected = {}
+                for category in ('stages', 'modes', 'gain_purposes'):
+                    entries = record.get(category) or {}
+                    for key, item in entries.items() if isinstance(entries, dict) else ():
+                        expected = ((scopes or {}).get(key) if category == 'stages' else
+                            (scopes or {}).get('startup_hold') if category == 'modes' and key == 'RIGID_HOLD' else
+                            ((scopes or {}).get(category) or {}).get(key))
+                        if expected and isinstance(item, dict) and item.get('scope') == expected:
+                            selected.setdefault(category, {})[key] = item
+            for category in ('stages', 'modes', 'gain_purposes'):
+                entries = selected.get(category) or {}
+                if isinstance(entries, dict):
+                    for key, item in entries.items():
+                        if source != path and key not in (meta.get(category) or {}):
+                            imported = True
+                        meta.setdefault(category, {}).setdefault(key, item)
+            if source == path:
+                for key, value in record.items():
+                    if key not in ('stages', 'modes', 'gain_purposes') and key not in meta:
+                        meta[key] = value
+        if meta:
+            meta['profile'] = info['profile']
+            if imported:
+                _atomic_yaml(path, meta)
+        return path, meta
 
     def _is_official_profile(self, info):
         # Identity must come from the actual built-in profile catalogue, never
@@ -306,7 +346,7 @@ class ProfileLibrary:
                 reason = str(error)
                 setup_issues.append(self._field_issue(reason))
         scopes = self._dependencies(info, core, hardware) if checks.get('core') else {}
-        _, meta = self._readiness_meta(info)
+        _, meta = self._readiness_meta(info, scopes)
         stages = meta.get('stages') or {}
         modes = meta.get('modes') or {}
         def status(item, scope):
@@ -400,8 +440,8 @@ class ProfileLibrary:
                 urdf_limits = {}
         position_ranges = []
         for joint in joints:
-            values = urdf_limits.get(joint) or {}
-            try: low, high = float(values['lower']), float(values['upper'])
+            limits = urdf_limits.get(joint) or {}
+            try: low, high = float(limits['lower']), float(limits['upper'])
             except (KeyError, TypeError, ValueError): low, high = None, None
             position_ranges.append((low, high))
         safety_summary = {
@@ -546,7 +586,8 @@ class ProfileLibrary:
         core = read_yaml(info['resources']['core'])
         hardware = read_yaml(info['resources']['hardware'])
         scopes = self._dependencies(info, core, hardware)
-        path, data = self._readiness_meta(info)
+        path, data = self._readiness_meta(info, scopes)
+        data['profile'] = info['profile']
         field = 'modes' if stage == 'startup_hold' else 'stages'
         key = 'RIGID_HOLD' if stage == 'startup_hold' else stage
         previous = (data.get(field) or {}).get(key)
@@ -728,7 +769,8 @@ class ProfileLibrary:
                 if not same(actual, expected):
                     raise ValueError('当前配置与已验收候选不一致：core.' + '.'.join(key) + '；请先应用并保存该候选，再导入验收记录')
         scopes = self._dependencies(info, core, hardware)
-        meta_path, meta = self._readiness_meta(info)
+        meta_path, meta = self._readiness_meta(info, scopes)
+        meta['profile'] = info['profile']
         for purpose, group in selected.items():
             checks = {name: True for name in self._GAIN_PURPOSES[purpose][2]}
             proof = {'result': 'passed', 'kind': 'validated_gain_purpose',
@@ -1195,6 +1237,9 @@ class ProfileLibrary:
             admittance.setdefault('reference_behavior', 'MODEL_ADMITTANCE' if admittance.get('enabled') is True else 'NATIVE_IMPEDANCE')
         hardware = read_yaml(hardware_path) if hardware_path.is_file() else {}
         profile = read_yaml(profile_path)['profiles'][info['profile']]
+        gravity_context = gravity_validation_context(core, core_path, hardware, (profile.get('hardware') or {}).get('plugin'))
+        self._gravity_validation_baselines.setdefault((str(core_path), _sha(core_path),
+            _sha(hardware_path) if hardware_path.is_file() else '', _sha(profile_path)), gravity_context)
         joints = (core.get('model') or {}).get('joint_names') or []
         try:
             urdf = (core_path.parent / core['model']['urdf_path']).resolve()
@@ -1499,6 +1544,23 @@ class ProfileLibrary:
                 if bus_key in ids: raise ValueError(f'hardware.damiao.actuators.{name}.motor_id 重复')
                 ids.add(bus_key)
 
+    def _profile_editor_gravity_status(self, config, payload):
+        info, core_path, hardware_path, profile_path = self._profile_config_paths(config)
+        before = canonical_core(read_yaml(core_path))
+        hardware = read_yaml(hardware_path) if hardware_path.is_file() else {}
+        entry = read_yaml(profile_path)['profiles'][info['profile']]
+        current = gravity_validation_context(before, core_path, hardware, (entry.get('hardware') or {}).get('plugin'))
+        core = canonical_core(payload['core']) if isinstance(payload.get('core'), dict) else before
+        submitted_entry = payload.get('profile_entry') or entry
+        after = gravity_validation_context(core, core_path, payload.get('hardware', hardware),
+                                           (submitted_entry.get('hardware') or {}).get('plugin'))
+        baseline = self._gravity_validation_baselines.get((str(core_path), payload.get('core_sha'),
+            payload.get('hardware_sha'), payload.get('profile_sha')), current)
+        changed = list(dict.fromkeys(gravity_validation_changes(baseline, after) + gravity_validation_changes(current, after)))
+        requested = gravity_trusted(core)
+        return {'gravity_validation_changes': changed,
+                'gravity_validation_reset': bool(requested and changed)}
+
     def profile_editor_save(self, config, payload):
         info, core_path, hw_path, profile_path = self._profile_config_paths(config)
         for path, field in ((core_path,'core_sha'),(hw_path,'hardware_sha'),(profile_path,'profile_sha')):
@@ -1530,12 +1592,15 @@ class ProfileLibrary:
         new_modes = set(core['control']['controller']) - set(before_core['control']['controller'])
         if not new_modes.issubset({'servo_tracking'}):
             raise ValueError('control.controller 不允许新增未知控制模式')
+        gravity_status = self._profile_editor_gravity_status(config, {**payload, 'core': core})
         original_gravity_trusted = before_core['safety_policy']['fault_recovery']['gravity_model_validated']
         requested_gravity_trusted = core['safety_policy']['fault_recovery']['gravity_model_validated']
         # Explicit operator acknowledgment is required for a false -> true trust transition
         # Disabling recovery trust must always remain possible
         if requested_gravity_trusted and not original_gravity_trusted and payload.get('gravity_recovery_confirmed') is not True:
             raise ValueError('启用柔性故障恢复前必须确认重力补偿已在当前机械臂和负载上完成真机验证')
+        if gravity_status['gravity_validation_reset']:
+            core['safety_policy']['fault_recovery']['gravity_model_validated'] = False
         if payload.get('hardware_imported') is not True:
             self._same_structure(before_hw,hardware,'hardware')
         self._same_structure(original_entry,entry,'profile')
@@ -1568,4 +1633,4 @@ class ProfileLibrary:
                     tmp = path.with_suffix(path.suffix+'.rollback')
                     tmp.write_bytes(content); tmp.replace(path)
             raise
-        return self.profile_editor_load(config)
+        return {**self.profile_editor_load(config), **gravity_status}

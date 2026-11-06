@@ -119,11 +119,30 @@ class TcpCalibration:
         model = core.get('model') or {}
         return {key: model.get(key) for key in ('joint_names', 'base_frame', 'tool_frame')}
 
+    @staticmethod
+    def _same_session_profile(session, info):
+        if not isinstance(session, dict) or session.get('profile') != info['profile']:
+            return False
+        source = session.get('profile_file')
+        if not isinstance(source, str) or not source:
+            return False
+        # Catalogue renames inside the same directory retain the Profile's
+        # storage identity; model and mapping checks still bind its samples.
+        return Path(source).expanduser().resolve().parent == Path(info['profile_file']).expanduser().resolve().parent
+
     def _ensure(self, config):
         info, core, core_path, urdf = self._profile(config)
         session = self.session
-        if not session or session['profile'] != info['profile'] or session['profile_file'] != info['profile_file']:
+        if not self._same_session_profile(session, info):
             raise ValueError('请先开始当前机械臂的固定点几何实验')
+        if (any(not isinstance(session.get(key), str) or not session[key]
+                for key in ('core_hash', 'urdf_hash', 'calibration_hash', 'parent_frame')) or
+                any(not isinstance(session.get(key), list) for key in ('train', 'validation')) or
+                any(key not in session or session[key] is not None and not isinstance(session[key], dict)
+                    for key in ('candidate', 'report')) or
+                session.get('purpose', 'tcp') not in ('diagnostic', 'tcp')):
+            self.session = None
+            raise ValueError('固定点实验记录不完整，请重新开始标定')
         scope = session.get('kinematics_hash')
         # Earlier saved sessions did not have a scoped hash, so retain their
         # original full-file check instead of silently trusting old samples
@@ -135,6 +154,7 @@ class TcpCalibration:
         if session['calibration_hash'] != self.library._digest(core.get('calibration')):
             self.session = None
             raise ValueError('关节映射或零位已变化，旧 TCP 采样不再适用')
+        session['profile_file'] = info['profile_file']
         return session, info, core, core_path, urdf
 
     def _directory(self, info, purpose='tcp'):
@@ -281,24 +301,35 @@ class TcpCalibration:
         default = {'active':False, 'base_frame':core['model']['base_frame'],
                    'tool_frame':core['model']['tool_frame'], 'frame_options':options,
                    'suggested_frame':next((f for f in ('tip', 'tcp', 'tool_tip') if f in options), core['model']['tool_frame'])}
-        if self.session is not None and (self.session.get('profile') != info['profile'] or self.session.get('profile_file') != info['profile_file']):
-            self.session = None
-        if self.session is None:
+        ready = None
+        if self.session is not None:
+            try:
+                ready = self._ensure(config)
+            except ValueError:
+                self.session = None
+        if ready is None:
             paths = [self._directory(info, mode) / 'fixed-point-session.yaml' for mode in ('diagnostic', 'tcp')]
             # Read previously saved legacy TCP sessions without changing their application rights
             paths.append(self._directory(info, 'tcp') / 'tcp-session.yaml')
             for path in sorted((path for path in paths if path.is_file()), key=lambda x: x.stat().st_mtime, reverse=True):
                 try:
                     doc = yaml.safe_load(path.read_text(encoding='utf-8'))
-                    if isinstance(doc, dict) and doc.get('profile') == info['profile'] and doc.get('profile_file') == info['profile_file']:
-                        doc.setdefault('purpose', 'tcp')
-                        self.session = doc
-                        self.session['last_sequence'] = -1
-                        break
-                except (OSError, yaml.YAMLError):
+                    if not self._same_session_profile(doc, info):
+                        continue
+                    doc.setdefault('purpose', 'tcp')
+                    self.session = doc
+                    self.session['last_sequence'] = -1
+                    ready = self._ensure(config)
+                    # A migrated record still contains its original directory.
+                    # Save, export and discard must affect this local copy only.
+                    self.session['directory'] = str(path.parent)
+                    break
+                except (OSError, ValueError, yaml.YAMLError):
+                    self.session = None
                     continue
-        try: session, info, core, core_path, urdf = self._ensure(config)
-        except ValueError: return default
+        if ready is None:
+            return default
+        session, info, core, core_path, urdf = ready
         return {**default, 'active':True, 'parent_frame':session['parent_frame'],
                 'purpose':session.get('purpose', 'tcp'), 'train':len(session['train']), 'validation':len(session['validation']),
                 'candidate':session['candidate'], 'report':session['report'],
@@ -497,18 +528,12 @@ class TcpCalibration:
                 origin=ET.SubElement(joint,'origin')
             origin.set('xyz',' '.join(format(float(v),'.12g') for v in preview['tcp_xyz_m']))
             origin.set('rpy',' '.join(format(float(v),'.12g') for v in preview['tcp_rpy_rad']))
-            roots = config.get('resource_paths', '').split(':') if config.get('resource_paths') else []
+            roots = self.library.inspector.roots(config, info['profile_file'])
             copied = {}
             for mesh in root.findall('.//mesh'):
                 filename = mesh.get('filename', '')
                 if not filename: continue
-                if filename.startswith('package://'):
-                    name, relative = filename.removeprefix('package://').split('/', 1)
-                    source = self.library.inspector.share(name, roots) / relative
-                else:
-                    source = Path(filename)
-                    if not source.is_absolute(): source = urdf.parent / source
-                source = source.resolve()
+                source = Path(self.library.inspector._resolve_mesh(filename, urdf, roots))
                 if not source.is_file(): raise ValueError('模型网格资源不存在 ' + filename)
                 if source not in copied:
                     resource = package / 'resources' / (str(len(copied)) + '-' + source.name)
