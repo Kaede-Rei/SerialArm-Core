@@ -8,7 +8,7 @@
 namespace serial_arm {
 
 // Reduce only the park reference speed if the soft controller falls behind.
-// At the hard lag threshold it decelerates; it never accelerates the reference.
+// At the hard lag threshold it decelerates; it never accelerates the reference
 inline double park_reference_speed_fraction(double reference, double measured) {
     constexpr double soft_lag = 0.08;
     constexpr double hard_lag = 0.18;
@@ -21,7 +21,7 @@ inline double park_reference_speed_fraction(double reference, double measured) {
 // hazard. At the 75% boundary we rebase the reference on measured position
 // and ramp the feedback gains over time. A fixed distance gate would leave
 // slow compliant tracking permanently stuck in the first phase.
-// Reject only invalid feedback or appreciable residual motion before transfer.
+// Reject only invalid feedback or appreciable residual motion before transfer
 inline bool park_safe_for_timed_rigid(const std::vector<double>& measured,
                                      const std::vector<double>& measured_vel,
                                      const std::vector<double>& target,
@@ -41,7 +41,7 @@ inline bool park_safe_for_timed_rigid(const std::vector<double>& measured,
 }
 
 // Smoothstep avoids an instantaneous Kp/Kd jump on COMPLIANT_TRACKING ->
-// RIGID_TRACKING; the trajectory reference is independently rebased to actual q.
+// RIGID_TRACKING; the trajectory reference is independently rebased to actual q
 inline double park_rigid_gain_fraction(double elapsed_s, double ramp_s) {
     if(!std::isfinite(elapsed_s) || !std::isfinite(ramp_s) || ramp_s<=0.0)
         return 0.0;

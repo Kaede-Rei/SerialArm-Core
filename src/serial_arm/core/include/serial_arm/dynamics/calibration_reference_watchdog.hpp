@@ -6,7 +6,7 @@
 namespace serial_arm::calibration_reference_watchdog {
 
 // Only protects a LIVE, otherwise healthy control cycle during replay following
-// pauses. Never replaces the independent native command/state safety watchdogs.
+// pauses. Never replaces the independent native command/state safety watchdogs
 class Heartbeat {
 public:
     using Clock = std::chrono::steady_clock;

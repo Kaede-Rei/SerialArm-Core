@@ -9,7 +9,7 @@
 namespace serial_arm::calibration_measurement {
 
 // One cycle's actual motor-feedback observation.  No subtraction of the
-// motor's PD command: at static equilibrium that torque supports gravity.
+// motor's PD command: at static equilibrium that torque supports gravity
 struct Observation {
     double time_s{};
     std::vector<double> q;
@@ -17,7 +17,7 @@ struct Observation {
     std::vector<double> tau;
 };
 
-// All criteria operate on a recent window, never a single quiet velocity frame.
+// All criteria operate on a recent window, never a single quiet velocity frame
 class StableWindow {
 public:
     explicit StableWindow(double seconds=0.42): seconds_(seconds) {}

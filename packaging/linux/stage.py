@@ -273,7 +273,7 @@ def clean_runtime_environment():
 
 
 def validate_python_payload(payload):
-    """Exclude build-host site packages and exercise the solver shipped to users."""
+    """Exclude build-host site packages and exercise the solver shipped to users"""
     check = r'''
 import sys
 from pathlib import Path

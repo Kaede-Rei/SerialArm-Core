@@ -137,7 +137,7 @@ export class SerialArmModelView {
       const attributes = {antialias: this.mode !== 'compatibility', alpha: true};
       this.diagnostics.requestedAttributes = attributes;
       // One explicit WebGL2 request records the browser's creation error and avoids
-      // Three.js trying a second context with different attributes after failure.
+      // Three.js trying a second context with different attributes after failure
       this.gl = this.canvas.getContext('webgl2', attributes);
       if (!this.gl) throw new Error('WebGL2 context creation failed');
       Object.assign(this.diagnostics, contextDiagnostics(this.gl));
@@ -340,7 +340,7 @@ export class SerialArmModelView {
           const gltf = await new Promise((resolve,reject)=>new GLTFLoader().parse(data, '', resolve, reject)); object = gltf.scene;
           if (!current()) { disposeObject(object); return; }
           // The URDF material owns the display appearance; release the imported
-          // materials/textures before replacing them instead of retaining them.
+          // materials/textures before replacing them instead of retaining them
           disposeObject(object, {geometry: false});
           object.traverse(node => { if (node.isMesh) node.material = material(item.rgba, collision); });
         } else throw new Error(`Unsupported model resource type: ${resource.extension}`);
@@ -456,7 +456,7 @@ export class SerialArmModelView {
     this.scene.remove(this.ghostRoot);
     this.ghostRoot.traverse(node => {if(node.userData?.ghostOwnedGeometry)node.geometry?.dispose();});
     // Ghosts share the measured model's geometries and textures, but own their
-    // cloned materials. Never release the shared model buffers here.
+    // cloned materials. Never release the shared model buffers here
     disposeObject(this.ghostRoot, {geometry:false, textures:false});
     this.ghostRoot=null;
     this.requestRender();
@@ -482,7 +482,7 @@ export class SerialArmModelView {
           const outlines=[];
           copy.traverse(child=>{if(!child.isMesh||!child.geometry)return;
             // A reference may exactly overlap the measured model. Draw it as
-            // an unlit overlay, independent of the source textures and depth.
+            // an unlit overlay, independent of the source textures and depth
             child.material=new THREE.MeshBasicMaterial({color:0x16b8b0,transparent:true,opacity:0.2,depthTest:false,depthWrite:false,side:THREE.DoubleSide});
             child.renderOrder=24;
             const outline=new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry,25),new THREE.LineBasicMaterial({color:0x079e98,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
@@ -610,7 +610,7 @@ export class SerialArmModelView {
     };
     this.root.traverse(updateNode);
     // Cached visual holders follow layer/object visibility without changing
-    // the frame-presence visibility of their containing ghost Link groups.
+    // the frame-presence visibility of their containing ghost Link groups
     this.ghostRoot?.traverse(node => {if(node.userData?.layer)updateNode(node);});
     for(const [name,helper] of this.frameHelpers)helper.visible=!!this.layers.linkFrames&&this.objectVisibility.linkFrames.get(name)!==false;
     this.requestRender();
@@ -796,7 +796,7 @@ export class SerialArmModelView {
       if (this.needsRender || changed) this.drawScene();
       this.drawing = false;
       // A change event wakes the next frame until OrbitControls' damping is
-      // settled; an unchanged scene has no permanently running animation loop.
+      // settled; an unchanged scene has no permanently running animation loop
       if (changed || this.cameraTransition.active || this.smoothZoom.active || this.needsRender) this.requestRender();
     } catch (error) {
       this.drawing = false;
@@ -826,7 +826,7 @@ export class SerialArmModelView {
     this.modelLoaded = false; this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null; this.payload = null;
     this.renderer?.dispose();
     // Detaching the canvas does not release its context immediately. Release
-    // it explicitly so repeated retry/navigation cannot exhaust WebGL contexts.
+    // it explicitly so repeated retry/navigation cannot exhaust WebGL contexts
     this.gl?.getExtension('WEBGL_lose_context')?.loseContext();
     this.canvas?.remove();
   }

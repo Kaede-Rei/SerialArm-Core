@@ -1,6 +1,6 @@
 'use strict';
 // UI-only localization. Original diagnostics remain accessible in the
-// "原始技术诊断" expandable section, and backend protocols remain stable.
+// "原始技术诊断" expandable section, and backend protocols remain stable
 (function (root) {
     const explanations = [
         [/replay mode must be RIGID_TRACKING or COMPLIANT_TRACKING/i, '回放任务状态无效，请重新选择执行器增益用途'],

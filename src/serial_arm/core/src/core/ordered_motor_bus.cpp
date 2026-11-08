@@ -34,7 +34,7 @@ class OrderedMotorBus final:public MotorBus {
         for(std::size_t i=0;i<order_.size();++i){
             const auto& capability=current[order_[i]];
             // The command/feedback permutation was fixed at configure time.
-            // A capability refresh must not silently change joint identity.
+            // A capability refresh must not silently change joint identity
             if(capability.joint_name!=caps_[i].joint_name)
                 return tl::make_unexpected(MotorBusErr::INVALID_CFG);
             next.push_back(capability);

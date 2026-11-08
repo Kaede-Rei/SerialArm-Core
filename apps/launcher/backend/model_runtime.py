@@ -1,4 +1,4 @@
-"""Persistent read-only Core model probe used by the embedded model preview."""
+"""Persistent read-only Core model probe used by the embedded model preview"""
 import json
 import math
 from pathlib import Path

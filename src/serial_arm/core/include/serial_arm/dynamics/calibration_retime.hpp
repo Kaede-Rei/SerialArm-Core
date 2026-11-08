@@ -13,7 +13,7 @@ namespace serial_arm::calibration_retime {
 // Geometric retiming for model calibration only. Unlike replaying the teaching
 // clock, this preserves joint-space waypoints while discarding pauses and
 // choosing a NEW time axis from the configured command velocity/acceleration
-// limits. It never expands those limits to hit a requested time budget.
+// limits. It never expands those limits to hit a requested time budget
 struct Plan {
     std::vector<std::vector<double>> positions;
     double sample_dt{0.0};
@@ -44,7 +44,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
 
     // Ramer-Douglas-Peucker in joint-space: use spatial distance to a segment,
-    // not index/time distance (which would preserve long periods of standing still).
+    // not index/time distance (which would preserve long periods of standing still)
     std::vector<bool> keep(input.size(), false);
     keep.front() = keep.back() = true;
     std::vector<std::pair<std::size_t,std::size_t>> intervals{{0,input.size()-1}};
@@ -81,7 +81,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     if(length < 0.04) throw std::invalid_argument("demonstration does not contain enough joint movement for calibration");
     // Sample the demonstrated polyline in joint-space arclength. Retiming
     // this *continuous path* avoids a separate accelerate/decelerate cycle
-    // for each recorded encoder tick or geometry waypoint.
+    // for each recorded encoder tick or geometry waypoint
     const std::size_t count = std::clamp<std::size_t>(static_cast<std::size_t>(std::ceil(length / 0.04)) + 1, 120, 1600);
     const double ds = length / static_cast<double>(count - 1);
     Plan result;
@@ -100,7 +100,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
     // Small bounded geometric corner rounding removes quantization-induced
     // velocity discontinuities. Reject if smoothing strays too far from the
-    // manually demonstrated geometry (per joint 0.01 rad max).
+    // manually demonstrated geometry (per joint 0.01 rad max)
     const auto unsmoothed = geometry;
     for(std::size_t k=1;k+1<count;++k) for(std::size_t j=0;j<joints;++j) {
         geometry[k][j] = 0.12*unsmoothed[k-1][j] + 0.76*unsmoothed[k][j] + 0.12*unsmoothed[k+1][j];
@@ -117,7 +117,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     for(std::size_t k=1;k+1<count;++k) for(std::size_t j=0;j<joints;++j)
         curvature[k][j] = (tangent[k+1][j]-tangent[k-1][j])/(2.0*ds);
     // Allow higher speed on smooth segments while retaining explicit joint
-    // limits, curve-aware braking and the final spline-extrema verification.
+    // limits, curve-aware braking and the final spline-extrema verification
     std::vector<double> speed(count,std::numeric_limits<double>::infinity());
     std::vector<double> accel(count,std::numeric_limits<double>::infinity());
     for(std::size_t k=0;k<count;++k) for(std::size_t j=0;j<joints;++j) {
@@ -129,7 +129,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
     // Apply bounds for the actual cubic geometry between each pair of knots:
     // finite-difference curvature at knots alone misses sharp intermediate
-    // curvature, which otherwise triggers global slowdown after resampling.
+    // curvature, which otherwise triggers global slowdown after resampling
     for(std::size_t k=0;k+1<count;++k) for(std::size_t j=0;j<joints;++j) {
         const double d=geometry[k+1][j]-geometry[k][j];
         const double m0=tangent[k][j]*ds, m1=tangent[k+1][j]*ds;
@@ -144,7 +144,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
     // Plan static collection points as genuine zero-speed boundary conditions.
     // Zero speed at a curve knot is handled by the same forward/backward braking
-    // passes as path endpoints; the reverse traversal inherits these stops.
+    // passes as path endpoints; the reverse traversal inherits these stops
     for(const auto& stop : static_stops) {
         if(stop.size() != joints) throw std::invalid_argument("invalid calibration stop dimension");
         std::size_t best_index = 0;
@@ -175,7 +175,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     if(!std::isfinite(total) || total<=0.0 || total>36000.0)
         throw std::runtime_error("calibration trajectory duration is invalid or excessive");
     // Cubic Hermite interpolation is performed by the production replay interface at the same
-    // uniform sampling interval; check its exact derivative extrema below.
+    // uniform sampling interval; check its exact derivative extrema below
     const std::size_t samples=std::max<std::size_t>(2,static_cast<std::size_t>(std::ceil(total/0.01))+1);
     if(samples>200000) throw std::runtime_error("calibration trajectory exceeds safe sample count");
     result.sample_dt=total/static_cast<double>(samples-1);
@@ -199,7 +199,7 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     }
     // Validate the *actual* Hermite controller interpolation. The local path
     // envelope is the primary limiter; this final factor is only a conservative
-    // correction for reconstruction between time samples.
+    // correction for reconstruction between time samples
     double slowdown=1.0;
     for(std::size_t k=1;k<samples;++k) for(std::size_t j=0;j<joints;++j) {
         const double p0=result.positions[k-1][j], p1=result.positions[k][j];

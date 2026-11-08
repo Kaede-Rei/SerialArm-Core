@@ -26,14 +26,14 @@ inline std::vector<Sample> rolling_noise_window(const std::vector<Sample>& rows,
 inline NoiseEstimate usable_noise_estimate(const NoiseEstimate& measured) {
     if(measured.stationary)return measured;
     // A moving baseline is not a measurement of stationary jitter. Preserve
-    // observed encoder resolution, but never absorb drift into noise margins.
+    // observed encoder resolution, but never absorb drift into noise margins
     NoiseEstimate conservative;conservative.samples=measured.samples;conservative.encoder_step_rad=measured.encoder_step_rad;
     conservative.span_rad=measured.span_rad;conservative.drift_rad=measured.drift_rad;
     return conservative;
 }
 
 // A demonstrated path is not a three-tone identification signal. Its measured
-// tracking errors and commanded direction coverage are the acceptance evidence.
+// tracking errors and commanded direction coverage are the acceptance evidence
 struct TrajectoryTuningEvidence {
     std::size_t samples{0};
     double position_floor_rad{0},bias_rad{0},centered_rms_rad{0},reference_rms_rad{0};
@@ -74,7 +74,7 @@ inline TrajectoryTuningEvidence trajectory_tuning_evidence(const std::vector<Sam
     const double determinant=qq*vv-qv*qv;
     // Separating amplitude from velocity-correlated error needs two independent
     // reference components. Never fit a moving DC offset or an ill-conditioned
-    // path, and never time-shift feedback to improve the reported errors.
+    // path, and never time-shift feedback to improve the reported errors
     if(out.reference_rms_rad<=out.position_floor_rad || vv/count<=1e-12 ||
        !std::isfinite(determinant) || determinant<=1e-6*qq*vv)return out;
     const double amplitude=(qe*vv-ve*qv)/determinant,velocity=(ve*qq-qe*qv)/determinant;
@@ -117,7 +117,7 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     out.tuning=trajectory_tuning_evidence(rows,noise,excitation_end_s);
     // A motor velocity code can alternate at rest after a monotone approach.
     // Count reversals only when fresh positions actually move back across the
-    // measured encoder/noise floor; keep every tracking-error limit unchanged.
+    // measured encoder/noise floor; keep every tracking-error limit unchanged
     out.tail_position_reversals=tail_position_reversals(rows,excitation_end_s,
         std::max({3*out.motion.encoder_step_rad,6*noise.rms_rad,.0002}));
     out.metrics.oscillating=out.tail_position_reversals>=4 && out.metrics.tail_drift>req.settling_error_rad;
@@ -140,12 +140,12 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     const bool stationary_bias=tail_count>=20 && tail_reference_high-tail_reference_low<1e-6 &&
         tail_actual_high-tail_actual_low<=std::max({3*out.motion.encoder_step_rad,6*noise.rms_rad,.0002}) && !out.metrics.oscillating;
     // Raw overshoot remains part of strict acceptance. Only the candidate
-    // direction separates a stationary load offset from dynamic overshoot.
+    // direction separates a stationary load offset from dynamic overshoot
     const double bias=stationary_bias?out.steady_error_rad:0.0;
     out.dynamic_overshoot_rad=std::max({0.0,actual_high-reference_high-std::max(0.0,bias),
         reference_low-actual_low+std::min(0.0,bias)});
     // Identify meaningful monotone legs without assuming that the first point
-    // lies at the middle of an arbitrary demonstrated path.
+    // lies at the middle of an arbitrary demonstrated path
     const Sample* first=nullptr;const Sample* previous=nullptr;int direction=0;
     const auto leg=[&](const Sample* a,const Sample* b) {
         if(!a || !b)return;
@@ -172,7 +172,7 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     out.motion.qualified=out.responsive && m.measurement_samples>=100 && m.continuous && m.limited_samples==0;
     // Global linear correlation is useful diagnostic context, but Coulomb
     // friction can lower it before tuning. It is neither FRF nor a first-pass
-    // rejection gate for a general path.
+    // rejection gate for a general path
     out.metrics.observable=out.responsive;
     out.passed=out.motion.qualified && m.samples>=100 && m.rms_error<=req.rms_error_rad &&
         m.peak_error<=req.peak_error_rad && m.velocity_rms<=req.velocity_rms_rad_s &&
@@ -209,7 +209,7 @@ inline bool trajectory_tuning_evidence_valid(const TrajectoryTuningEvidence& t) 
 
 // Reference limits report quality; they are not gain multipliers. Candidate
 // steps are small experiments within Safety, then compared against measured
-// incumbents before any candidate is retained.
+// incumbents before any candidate is retained
 inline Gains trajectory_candidate(const Gains& current,const std::vector<double>& kp_max,
                                    const std::vector<double>& kd_max,
                                    const std::vector<TrajectoryAssessment>& assessments,const Requirements& req) {
@@ -226,7 +226,7 @@ inline Gains trajectory_candidate(const Gains& current,const std::vector<double>
         if(a.passed || !trajectory_tuning_measurement(a) || !a.reference_coverage)continue;
         const bool ring=m.oscillating || a.dynamic_overshoot_rad>req.overshoot_rad;
         // A failed communication path or reversed mapping is not evidence for
-        // more actuator stiffness. Low linear correlation alone is not used.
+        // more actuator stiffness. Low linear correlation alone is not used
         if(!a.responsive && !ring)continue;
         if(ring) {
             next.kp[i]=std::clamp(.9*current.kp[i],0.0,kp_max[i]);
@@ -248,7 +248,7 @@ inline Gains trajectory_candidate(const Gains& current,const std::vector<double>
                   a.dynamic_overshoot_rad<=t.position_floor_rad) {
             // Velocity-correlated lag does not establish an amplitude deficit.
             // Trial a small damping reduction, never during measured ringing;
-            // the next real traversal must justify retaining it.
+            // the next real traversal must justify retaining it
             next.kd[i]=.95*current.kd[i];
         }
     }
@@ -278,7 +278,7 @@ inline bool trajectory_trial_preferred(const Gains& candidate,const std::vector<
         const double resolution=std::max(at.position_floor_rad,bt.position_floor_rad);
         const double margin=std::max(resolution,.05*bt.centered_rms_rad);
         // One badly worsened axis cannot be hidden by improvements elsewhere.
-        // This selects an entire measured gain set, never an unmeasured mix.
+        // This selects an entire measured gain set, never an unmeasured mix
         if(at.centered_rms_rad>bt.centered_rms_rad+margin ||
            a.metrics.rms_error>b.metrics.rms_error+std::max(resolution,.05*b.metrics.rms_error) ||
            a.dynamic_overshoot_rad>b.dynamic_overshoot_rad+resolution)return false;
@@ -292,7 +292,7 @@ inline bool trajectory_trial_preferred(const Gains& candidate,const std::vector<
     const double margin=std::max(std::sqrt(noise_square/n),.05*previous);
     if(current<previous-margin)return true;
     // Indistinguishable tracking quality favors the less aggressive measured
-    // choice, normalized to the authored seed rather than the Safety ceiling.
+    // choice, normalized to the authored seed rather than the Safety ceiling
     return std::abs(current-previous)<=margin && candidate_cost<incumbent_cost-1e-9;
 }
 
@@ -311,7 +311,7 @@ inline double recorded_duration_budget(double recorded_duration_s) {
 
 // Compare release, peak and settled speed using the same position evidence.
 // A single motor velocity code is retained in diagnostics, not substituted for
-// a windowed speed; the Core's independent state-velocity limits still apply.
+// a windowed speed; the Core's independent state-velocity limits still apply
 inline double drag_position_speed(const std::vector<Sample>& rows,const NoiseEstimate& noise,double window_s=.6) {
     if(rows.size()<3)return 0;
     const double end=rows.back().time_s;double lo=1e30,hi=-1e30;std::size_t count=0;
@@ -339,7 +339,7 @@ inline TrajectorySchedule plan_trajectory_budget(double trajectory_duration_s,co
     out.native_pass_duration_s=trajectory_duration_s+tail_s+handover_s;
     out.compliant_pass_duration_s=trajectory_duration_s/.65+tail_s+handover_s;
     // Parallel noise/hold and the two simultaneous all-axis drag-release
-    // windows belong to fixed_overhead_s; they are not additional path passes.
+    // windows belong to fixed_overhead_s; they are not additional path passes
     out.estimated_total_s=fixed_overhead_s+(base?2:0)*out.native_pass_duration_s+
         (soft?2:0)*out.compliant_pass_duration_s+(admittance?out.native_pass_duration_s:0);
     if(out.estimated_total_s>budget_s+1e-9)return out;

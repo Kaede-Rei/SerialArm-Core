@@ -5,7 +5,7 @@ for (const f of ['desktop/main.cjs', 'desktop/preload.cjs', 'desktop/bridge.cjs'
   if (!fs.statSync(path.join(root, f)).isFile()) throw new Error('Missing launcher file: ' + f);
 }
 // Compatibility rendering uses the software backend shipped with this Electron
-// runtime; do not replace a missing library with host graphics dependencies.
+// runtime; do not replace a missing library with host graphics dependencies
 const {SOFTWARE_FILES} = require('../desktop/graphics.cjs');
 const electronDist = path.join(root, 'node_modules/electron/dist');
 for (const name of SOFTWARE_FILES) {
@@ -21,7 +21,7 @@ if (softwareICD.ICD?.library_path !== './libvk_swiftshader.so') {
 // Every renderer request must be present in Electron's exact IPC whitelist.
 // Renderer groups such as geometry_repeat_ + op are prefixes, not actual RPC methods.
 // Expand and validate their concrete RPC names instead of falsely rejecting the prefix
-// or unconditionally skipping validation.
+// or unconditionally skipping validation
 const main = fs.readFileSync(path.join(root, 'desktop/main.cjs'), 'utf8');
 const renderer = fs.readFileSync(path.join(root, 'renderer/app.js'), 'utf8');
 const bridge = fs.readFileSync(path.join(root, 'backend/bridge.py'), 'utf8');

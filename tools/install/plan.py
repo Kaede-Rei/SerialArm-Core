@@ -42,7 +42,7 @@ class Plan:
         mode = 'ros2-' + self.ros_distro if self.ros2 else 'standalone'
         key = f'{mode}-{self.robot}-t{int(self.terminal)}-p{int(self.python)}-m{int(self.moveit)}'
         # Existing installations encoded the removed development option in their
-        # directory name. Reuse that generation when its native selection matches.
+        # directory name. Reuse that generation when its native selection matches
         root = Path(self.root).resolve()
         try:
             manifest = json.loads((root / '.install/manifest.json').read_text())

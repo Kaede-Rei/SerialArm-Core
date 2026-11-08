@@ -7,7 +7,7 @@
 namespace serial_arm::calibration_replay_supervisor {
 // A soft path governor; the native joint, motor and command watchdog limits
 // remain unchanged.  Soft limits are strictly BELOW the historical following
-// tolerance.  Do not interpret these as general-purpose collision safety.
+// tolerance.  Do not interpret these as general-purpose collision safety
 enum class State { FOLLOWING, PAUSE_FOR_FEEDBACK };
 struct Assessment {
     State state{State::PAUSE_FOR_FEEDBACK};
@@ -51,7 +51,7 @@ inline Assessment evaluate(const std::vector<double>& reference,
         if(excess>most_excess){most_excess=excess;result.worst_joint=i;result.max_error=error;}
         // During frozen verification the instant error allowance must match
         // the verification metric. Do not treat its softer diagnostic
-        // threshold as a hard actuator limit. Remain below the real hard bound.
+        // threshold as a hard actuator limit. Remain below the real hard bound
         const double pause_limit=std::min(soft*pause_soft_ratio,0.80*hard);
         if(error>pause_limit)result.state=State::PAUSE_FOR_FEEDBACK;
         if(error>=hard)result.hard_violation=true;
@@ -110,14 +110,14 @@ inline double search_governor_slew_limit(const std::vector<double>& max_velocity
     return std::clamp(limit,0.0,1.0);
 }
 // The user trajectory may have a nonzero velocity at the sampled reference;
-// as soon as path time stops, that derivative is no longer a valid setpoint.
+// as soon as path time stops, that derivative is no longer a valid setpoint
 inline std::vector<double> command_velocity(const std::vector<double>& requested, bool waiting) {
     return waiting ? std::vector<double>(requested.size(), 0.0) : requested;
 }
 // Update solely in response to measured following errors. The initial
 // dynamics-based gains are only a starting estimate. Actuator limits only CAP
 // the revision; they never supply a 'target percentage' or a guessed optimum.
-// Gains must be applied with a continuous ramp by Robot.
+// Gains must be applied with a continuous ramp by Robot
 inline bool revise_tracking(std::vector<double>& kp,std::vector<double>& kd,
                             const Assessment& assessment,
                             const std::vector<double>& reference,
@@ -138,13 +138,13 @@ inline bool revise_tracking(std::vector<double>& kp,std::vector<double>& kd,
            max_kp[i]<=0||max_kd[i]<=0)return false;
         // Relative-error deadband prevents permanently hardening otherwise
         // healthy joints. A drifting joint gets more position authority and
-        // braking. No response -> eventually stop rather than guessing harder.
+        // braking. No response -> eventually stop rather than guessing harder
         const double normalized=std::abs(e)/soft;
         if(normalized<0.65)continue;
         const double growth=1.0+std::min(0.80,0.40*normalized);
         const double next_kp=std::min(max_kp[i],kp[i]*growth);
         // Velocity damping is increased only if the joint is actually moving
-        // away from its target, or is still moving rapidly near it.
+        // away from its target, or is still moving rapidly near it
         const bool moving_away=(actual[i]-reference[i])*velocity[i]>0.0;
         const double next_kd=moving_away ? std::min(max_kd[i],kd[i]*1.35) : kd[i];
         changed=changed || next_kp>kp[i]+1e-7 || next_kd>kd[i]+1e-7;
@@ -154,7 +154,7 @@ inline bool revise_tracking(std::vector<double>& kp,std::vector<double>& kd,
 }
 // Compliant calibration is constrained by the measured or configured rigid
 // reference rather than the motor ceiling. A gain set that has no meaningful
-// stiffness separation is not a valid compliant candidate.
+// stiffness separation is not a valid compliant candidate
 struct CompliantBounds {
     std::vector<double> kp_ceiling;
     std::vector<double> kd_ceiling;
@@ -191,7 +191,7 @@ inline bool within_compliant_bounds(const std::vector<double>& kp,
 // Only fresh feedback changes compliant gains. Healthy tracking slowly probes
 // lower stiffness while increased position error requests just enough recovery
 // authority, never exceeding the rigid-relative ceiling. No force measurement
-// is implied by this purely position-domain search.
+// is implied by this purely position-domain search
 inline bool revise_compliant(std::vector<double>& kp,std::vector<double>& kd,
                              const Assessment& assessment,
                              const std::vector<double>& reference,

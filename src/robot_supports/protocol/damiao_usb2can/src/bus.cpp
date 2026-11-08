@@ -311,7 +311,7 @@ bool DamiaoUsbCanBus::try_parse_frame(transport::CanFrame& frame) {
         std::copy(std::begin(wire.can_data), std::end(wire.can_data), frame.data.begin());
         // Different motors normally arrive a fraction of a millisecond apart.
         // Differentiation continuity concerns repeated samples of the SAME
-        // endpoint, not the spacing of unrelated tty reads.
+        // endpoint, not the spacing of unrelated tty reads
         const std::uint32_t endpoint=frame.id ? frame.id<<4 : frame.data[0]&0x0f;
         auto& previous=endpoint_received_ns_[endpoint];
         const bool endpoint_continuous=previous!=0 && frame.received_ns>previous &&

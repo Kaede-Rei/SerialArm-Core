@@ -663,7 +663,7 @@ bool is_zero_vector(const JointVector& values) {
 }
 
 // Synthetic bounds are used only by the write-disabled mock session. They
-// are never accepted as evidence of physical actuator capabilities.
+// are never accepted as evidence of physical actuator capabilities
 HardwareCapabilities simulation_capabilities(const std::vector<std::string>& names) {
     HardwareCapabilities result;
     for(const auto& name:names) {
@@ -965,7 +965,7 @@ public:
             };
 
         // Poll the pipe so successful asynchronous shutdown can end this loop
-        // without waiting for another command or for the peer to close stdin.
+        // without waiting for another command or for the peer to close stdin
         std::string buffered_input;
         bool input_eof = false;
         auto next_request = [&](std::string& line) {
@@ -1044,7 +1044,7 @@ public:
                         // The demonstration is already stopped in this phase.
                         // Parking is an explicit operator decision to abandon
                         // pending replay, preserving its saved task data. Do
-                        // not silently interrupt an active replay/recording.
+                        // not silently interrupt an active replay/recording
                         if(model_calibration_phase_.load() == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION)
                             machine_model_calibration_cancel();
                         machine_require_no_calibration("park");
@@ -1438,7 +1438,7 @@ private:
 
     void machine_deactivate() {
         // Disable first. A recording/replay worker must not delay the motor
-        // disable while it finishes sampling, restores parameters or joins.
+        // disable while it finishes sampling, restores parameters or joins
         const bool stop_teaching = teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3;
         if(stop_teaching) {
             teach_replay_record_stop_.store(true);
@@ -1843,7 +1843,7 @@ private:
             clear_command_sources();
         }
         // Finish stopped workers before the final mode write, so their own
-        // cleanup cannot replace the operator's current-position hold.
+        // cleanup cannot replace the operator's current-position hold
         if(stop_teaching && teach_replay_worker_.joinable()) teach_replay_worker_.join();
         if(stop_legacy) machine_calibration_cancel(false);
         if(stop_model && model_calibration_worker_.joinable())model_calibration_worker_.join();
@@ -2043,7 +2043,7 @@ private:
         metadata.locked_links = model_calibration_options_.locked_links;
         for(const auto& link : model_calibration_links_cache_) metadata.identifiable_links.push_back(link.link_name);
         // Runtime model-based/adaptive gains are pose-dependent. The actual
-        // commanded Kp/Kd are recorded per-frame, not guessed at task start.
+        // commanded Kp/Kd are recorded per-frame, not guessed at task start
         metadata.measurement_hold_kp.clear();
         metadata.measurement_hold_kd.clear();
         metadata.measurement_tracking_kp.clear();
@@ -2209,7 +2209,7 @@ private:
             throw std::runtime_error("drag teaching requires positive damping");
         // Hold/mode acknowledgements invalidate the displayed cycle until the
         // worker publishes its next sample. Wait for that sample without making
-        // the user repeat an otherwise valid operation.
+        // the user repeat an otherwise valid operation
         if(!last_output_ || !feedback_time_ns_)
             cycle_cv_.wait_for(lock,std::chrono::milliseconds(150),[this]{return robot_.get_state()!=RobotState::ACTIVE || (last_output_ && feedback_time_ns_);});
         const auto now_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
@@ -2588,7 +2588,7 @@ private:
         model_calibration_teach_thread_ = std::thread([this]() {
             // Preserve the already-validated ACTIVE-cycle samples if the robot
             // faults during teaching. This is file-only recovery: no motor
-            // command or fault clear is ever issued by this thread.
+            // command or fault clear is ever issued by this thread
             auto captured = collect_friction_drag_trajectory_until_stop(model_calibration_teach_stop_,
                 [this](const FrictionCalibrationTrajectory& partial) {
                     const auto saved = model_calibration_recorder_.write_trajectory_checkpoint(partial.positions, partial.sample_dt);
@@ -2617,7 +2617,7 @@ private:
             if(interrupted) {
                 // A hardware-originated state change must also restore the
                 // temporary recording controller settings without requiring
-                // a second GUI request or ever clearing a latched FAULT.
+                // a second GUI request or ever clearing a latched FAULT
                 if(model_calibration_phase_.load() == ModelCalibrationPhase::TEACHING) {
                     if(robot_state != RobotState::FAULT && !model_calibration_cancel_.load() &&
                         !model_calibration_fault_interrupted_.load()) {
@@ -2698,7 +2698,7 @@ private:
         // Greedy D-optimal experimental design. A single stationary pose
         // contributes an entire multi-joint regression BLOCK, rather than one
         // flattened vector. Accumulating G(q)^T G(q) correctly captures the
-        // information on every observable gravity-parameter combination.
+        // information on every observable gravity-parameter combination
         const Eigen::Index columns = candidates.front().feature.cols();
         double typical_energy = 0.0;
         for(const auto& pose : candidates) typical_energy += pose.feature.squaredNorm();
@@ -2755,7 +2755,7 @@ private:
 
     // A recorded trajectory is a *new* task, never a resumed actuator command.
     // Loading it never sends a motion reference; the operator must subsequently
-    // confirm model_calibration_start in the usual safety dialog.
+    // confirm model_calibration_start in the usual safety dialog
     struct GainBudgetSource {double duration_s{0};std::string source,task_id;};
     static GainBudgetSource recorded_gain_budget_source(const std::filesystem::path& directory,double fallback_duration) {
         GainBudgetSource fallback{fallback_duration,"imported_trajectory_timestamps",directory.filename().string()};
@@ -2820,7 +2820,7 @@ private:
             if(meta["joint_names"][i].as<std::string>() != cfg_.joint_names[i])
                 throw std::runtime_error("recorded joint ordering does not match active robot");
         // The operator may adjust identification options before staging an old
-        // trajectory; apply the same bounded options as normal teaching.
+        // trajectory; apply the same bounded options as normal teaching
         if(params["pose_budget"]) model_calibration_options_.pose_budget = std::clamp<std::size_t>(params["pose_budget"].as<std::size_t>(), 5, 16);
         if(params["validation_fraction"]) model_calibration_options_.validation_fraction = std::clamp(params["validation_fraction"].as<double>(), 0.15, 0.45);
         if(params["max_com_offset_m"]) model_calibration_options_.max_com_offset_m = std::clamp(params["max_com_offset_m"].as<double>(), 0.005, 0.20);
@@ -2841,11 +2841,11 @@ private:
         }
         if(choices.size() <= unique.size()) throw std::runtime_error("at least one identifiable gravity link must remain unlocked");
         // Protect even against metadata with manually edited joint calibration;
-        // the entire Core fingerprint above includes the joint mapping.
+        // the entire Core fingerprint above includes the joint mapping
         const auto trajectory_path = std::filesystem::is_regular_file(directory / "trajectory.csv") ?
             directory / "trajectory.csv" : directory / "trajectory.checkpoint.csv";
         // Checkpoints are partial, unverified teaching recordings. Apply all
-        // fingerprint, joint-order, finite/range and retiming checks below.
+        // fingerprint, joint-order, finite/range and retiming checks below
         std::ifstream csv(trajectory_path);
         if(!csv) throw std::runtime_error("neither trajectory.csv nor trajectory.checkpoint.csv exists");
         std::string line, field;
@@ -2884,7 +2884,7 @@ private:
             throw std::runtime_error("imported trajectory is too short or exceeds joint safety margins");
         // Prefer whichever recorded endpoint is already close to the robot.
         // Either direction traverses the exact same demonstrated geometric path;
-        // this does NOT generate an unvalidated path from park to an endpoint.
+        // this does NOT generate an unvalidated path from park to an endpoint
         serial_arm::calibration_recovery::Choice endpoint_choice;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -2897,13 +2897,13 @@ private:
             }
         }
         // Feedback is mandatory to choose the safe trajectory orientation.
-        // Do not silently assume the original endpoint when feedback is missing.
+        // Do not silently assume the original endpoint when feedback is missing
         if(!endpoint_choice.valid)
             throw std::runtime_error("fresh robot feedback is required before importing a replay trajectory");
         if(endpoint_choice.reverse_recorded_path)
             std::reverse(candidate.positions.begin(),candidate.positions.end());
         // Always retime with *current* safety limits; never trust timestamps in
-        // an imported CSV as a guarantee of velocity/acceleration feasibility.
+        // an imported CSV as a guarantee of velocity/acceleration feasibility
         const double recorded_duration = candidate.sample_dt * static_cast<double>(candidate.positions.size() - 1);
         const auto budget_source=recorded_gain_budget_source(directory,recorded_duration);
         const auto selected = model_calibration_select_pose_targets(candidate);
@@ -3040,7 +3040,7 @@ private:
             model_calibration_recorder_.stop();
             // Teaching runs in COMPLIANT_DRAG. A rejected trajectory must not
             // leave that mode active merely because the GUI request failed.
-            // Never try to override a latched robot FAULT.
+            // Never try to override a latched robot FAULT
             if(machine_robot_state() == RobotState::ACTIVE)
                 (void)set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD);
             model_calibration_restore_runtime_hold();
@@ -3053,7 +3053,7 @@ private:
             model_calibration_recorder_.stop();
             // Teaching runs in COMPLIANT_DRAG. A rejected trajectory must not
             // leave that mode active merely because the GUI request failed.
-            // Never try to override a latched robot FAULT.
+            // Never try to override a latched robot FAULT
             if(machine_robot_state() == RobotState::ACTIVE)
                 (void)set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD);
             model_calibration_restore_runtime_hold();
@@ -3085,12 +3085,12 @@ private:
             model_calibration_pose_targets_ = model_calibration_remap_targets(
                 *model_calibration_trajectory_, stop_positions, selected);
             // The newly time-parameterized trajectory is safe at rate 1.0.
-            // The two slow friction passes use rate 0.5, with extra margin.
+            // The two slow friction passes use rate 0.5, with extra margin
             model_calibration_replay_rate_ = 1.0;
             if(!friction_trajectory_inside_safe_replay_range(*model_calibration_trajectory_))
                 throw std::runtime_error("retimed trajectory exceeds safe replay range");
             // Validate the actual spline at quarter intervals: a continuous
-            // Hermite spline may overshoot positions even if its knots are safe.
+            // Hermite spline may overshoot positions even if its knots are safe
             FrictionCalibrationTrajectory interpolated;
             interpolated.sample_dt = planned.sample_dt / 4.0;
             for(std::size_t k = 0; k + 1 < planned.positions.size(); ++k)
@@ -3116,7 +3116,7 @@ private:
             model_calibration_recorder_.stop();
             // Teaching runs in COMPLIANT_DRAG. A rejected trajectory must not
             // leave that mode active merely because the GUI request failed.
-            // Never try to override a latched robot FAULT.
+            // Never try to override a latched robot FAULT
             if(machine_robot_state() == RobotState::ACTIVE)
                 (void)set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD);
             model_calibration_restore_runtime_hold();
@@ -3126,7 +3126,7 @@ private:
         // pauses and one forward dynamic replay. Both directions are logged for
         // friction estimation; the fitter must still pass observability checks.
         // This is a two-pass budget, NOT a guarantee of identified inertias.
-        // Teaching wall time is independent of the replay clock.
+        // Teaching wall time is independent of the replay clock
         const double planned_pass_s = model_calibration_trajectory_->sample_dt *
             static_cast<double>(model_calibration_trajectory_->positions.size() - 1);
         const double static_collection_s = static_cast<double>(model_calibration_pose_targets_.size()) *
@@ -3144,7 +3144,7 @@ private:
             throw std::runtime_error(model_calibration_error_);
         }
         // No 600 s task deadline: arbitrary teaching length is allowed.
-        // Joint limits, range checks, fault handling and manual cancellation remain mandatory.
+        // Joint limits, range checks, fault handling and manual cancellation remain mandatory
         const auto trajectory_write = model_calibration_recorder_.write_trajectory(model_calibration_trajectory_->positions, model_calibration_trajectory_->sample_dt);
         if(!trajectory_write) {
             model_calibration_error_ = trajectory_write.error();
@@ -3164,7 +3164,7 @@ private:
     bool model_calibration_within_time_limit() {
         // No artificial global time cap. The user sees an estimated duration
         // before confirming replay and can cancel at any point. Native joint
-        // safety, command cycle watchdogs, and per-pose stability checks remain.
+        // safety, command cycle watchdogs, and per-pose stability checks remain
         return true;
     }
 
@@ -3217,7 +3217,7 @@ private:
         // Keep the demonstrated path.  Supervise EACH replay point using live
         // feedback; when catching up, position reference is frozen AND target
         // velocity becomes ZERO.  Holding a nonzero target velocity was able to
-        // drive a Damiao MIT motor beyond a frozen position reference.
+        // drive a Damiao MIT motor beyond a frozen position reference
         using serial_arm::calibration_reference_watchdog::Heartbeat;
         using serial_arm::calibration_replay_supervisor::evaluate;
         using serial_arm::calibration_replay_supervisor::State;
@@ -3225,12 +3225,12 @@ private:
         // Search and gravity acquisition pause at the soft follow threshold.
         // A frozen gain verification has a DIFFERENT instant-error acceptance
         // criterion. Keep the pause threshold consistent with that criterion
-        // while the independent hard following guard always remains active.
+        // while the independent hard following guard always remains active
         const bool frozen_gain_verification=metrics && !allow_gain_revision;
         // Ordinary compliant playback is intentionally softer than frozen-gain
         // validation, while the independent hard-following limit stays unchanged.
         // A longer bounded catch-up lets compliant motors settle without
-        // falsely reporting a calibration failure.
+        // falsely reporting a calibration failure
         const double pause_soft_ratio=standalone_replay && compliant_replay ? 1.5 :
             frozen_gain_verification ?
             (compliant_limits ? serial_arm::calibration_gain_adaptation::compliant_validation_max_error_ratio :
@@ -3329,7 +3329,7 @@ private:
                     heartbeat.begin_catchup(now);
                     if(metrics)++metrics->pauses;
                     // A paused trajectory MUST NOT keep the previous nonzero
-                    // MIT velocity setpoint. Brake immediately at the SAME q.
+                    // MIT velocity setpoint. Brake immediately at the SAME q
                     if(!issue_reference(true))return false;
                 }
                 if(braking && status.state==State::FOLLOWING &&
@@ -3340,7 +3340,7 @@ private:
                 }
                 // Only a real, fresh feedback response can trigger a revision.
                 // Never use the user's configured rigidity as a calibration
-                // target: the safety bounds are solely hard actuator ceilings.
+                // target: the safety bounds are solely hard actuator ceilings
                 if(allow_gain_revision && model_calibration_last_replay_gain_revision_ &&
                    now-*model_calibration_last_replay_gain_revision_>=std::chrono::milliseconds(120) &&
                    (braking || status.state!=State::FOLLOWING || error_ratio>=0.65 ||
@@ -3403,7 +3403,7 @@ private:
                 return false;
             }
             // The reference stays live for the native 100 ms CMD_TIMEOUT even
-            // when path time is paused. A genuinely stalled cycle still faults.
+            // when path time is paused. A genuinely stalled cycle still faults
             if(heartbeat.refresh_due(now) && !issue_reference(braking))return false;
         }
         return false;
@@ -3412,7 +3412,7 @@ private:
     // The URDF inertia and gravity gradient define physical gains in real
     // units, not a percentage of any user-supplied gain or safety ceiling.
     // Safety ceilings ONLY constrain commands.  The real robot response then
-    // decides whether a pose is usable and whether the controller needs revision.
+    // decides whether a pose is usable and whether the controller needs revision
     JointImpedanceGains model_calibration_physical_gains(double frequency) const {
         const std::size_t n=cfg_.joint_names.size();
         if(!dynamics_.is_updated())throw std::runtime_error("calibration requires an updated dynamics model");
@@ -3449,7 +3449,7 @@ private:
     }
 
     // The background recorder keeps all cycles untagged. This snapshot is
-    // copied ONLY into an in-memory candidate window, never accepted early.
+    // copied ONLY into an in-memory candidate window, never accepted early
     ModelCalibrationFrame model_calibration_static_frame(const RobotCycleOutput& output,
                                                           Robot::TimePoint now,
                                                           const ModelCalibrationPoseTarget& target) const {
@@ -3512,7 +3512,7 @@ private:
             return set_tuning_impedance_mode(JointImpedanceMode::RIGID_TRACKING);
         };
         // Minimum initial ramp must complete before a sample is even considered.
-        // No fixed Kp/Kd ratio and no assumption that a quiet encoder is enough.
+        // No fixed Kp/Kd ratio and no assumption that a quiet encoder is enough
         StableWindow window;
         std::vector<ModelCalibrationFrame> candidate;
         std::optional<Robot::TimePoint> good_started;
@@ -3557,7 +3557,7 @@ private:
                 if(candidate.size()>=35 && std::chrono::duration<double>(now-*good_started).count()>=
                     model_calibration_options_.static_sample_s){
                     // Final check is across the WHOLE accepted window, not
-                    // a handful of individually quiet 0.18 s slices.
+                    // a handful of individually quiet 0.18 s slices
                     StableWindow complete(model_calibration_options_.static_sample_s);
                     for(const auto& row:candidate)
                         complete.push(Observation{row.monotonic_ns*1e-9,row.position,row.velocity,row.torque});
@@ -3576,7 +3576,7 @@ private:
             }
             // Revision only after a genuinely observed response window.
             // Limit both count and cadence; all commands remain under the
-            // existing motor safety limits. No user-provided tuning assumptions.
+            // existing motor safety limits. No user-provided tuning assumptions
             if(!stable && window.full() && revisions<3 &&
                std::chrono::duration<double>(now-last_revision).count()>0.90){
                 std::vector<double> std_tau,drift,peak;
@@ -3598,7 +3598,7 @@ private:
             }
         }
         ++model_calibration_rejected_static_groups_;
-        // A failed pose is NEVER added to the online/offline dataset.
+        // A failed pose is NEVER added to the online/offline dataset
         return finish();
     }
 
@@ -3771,7 +3771,7 @@ private:
                 observation.age_ms=std::max(observation.age_ms,observation.feedback_age_ms[axis]);
                 auto noise=axis<gain_noise_.size()?gain_noise_[axis]:NoiseEstimate{};
                 // A handover displacement is not an encoder-resolution
-                // measurement. Retain the independent baseline/path estimate.
+                // measurement. Retain the independent baseline/path estimate
                 observation.velocity[axis]=std::max(drag_position_speed(rows[axis],noise,.25),drag_position_speed(rows[axis],noise,.1));
                 ready=ready && std::abs(observation.position[axis]-target[axis])<=serial_arm::calibration_recovery::position_tolerance(types.at(axis)) &&
                     observation.velocity[axis]<=serial_arm::calibration_recovery::velocity_tolerance(types.at(axis));
@@ -4212,7 +4212,7 @@ private:
 
     bool model_calibration_static_pass(bool reverse) {
         if(!model_calibration_trajectory_) return false;
-        // Capture usable moving samples in the same traversal as gravity poses.
+        // Capture usable moving samples in the same traversal as gravity poses
         model_calibration_speed_tier_.store(2);
         model_calibration_direction_.store(reverse ? -1 : 1);
         const auto& trajectory = *model_calibration_trajectory_;
@@ -4332,7 +4332,7 @@ private:
                     if(configured.kp[i]>cfg_.safety.limits.max_kp[i] || configured.kd[i]>cfg_.safety.limits.max_kd[i])
                         throw std::runtime_error("configured servo gain baseline exceeds joint safety limits at "+cfg_.joint_names[i]);
                 // Reuse the operator's existing actuator baseline. Its legal
-                // values are a starting point, not evidence of qualification.
+                // values are a starting point, not evidence of qualification
                 seed=configured;
                 gain_seed_source_=runtime_gain_applied_ && (runtime_gain_category_=="all" || runtime_gain_category_=="servo_tracking") ?
                     "verified_runtime" : "configured_servo";
@@ -4375,7 +4375,7 @@ private:
             }
             gains=incumbent;
             // Freeze one complete, actually measured gain set. An unmeasured
-            // proposal and independently selected per-axis values are not a trial.
+            // proposal and independently selected per-axis values are not a trial
             return gain_trajectory_trial(gains,profile,false,false,label+"-frozen","trajectory_frozen");
         };
         std::exception_ptr interrupted;
@@ -4394,7 +4394,7 @@ private:
                 model_calibration_gain_stage_.store(0);auto& stage=stage_for("rigid_tracking");stage.error="measurement_in_progress";stage.gains=best;stage.native=native;stage.compensation=disabled;
                 stage.hold=gain_hold_trial(stage.hold_gains,false,disabled);
                 // Preserve the independently measured baseline before an optional
-                // compensation trial can exhaust the budget or lose feedback.
+                // compensation trial can exhaust the budget or lose feedback
                 stage.available=stage.native.available && stage.hold.available;
                 stage.validated=stage.native.passed && stage.hold.validated;
                 stage.error=stage.validated?"":"rigid full-path tracking or independent hold verification did not qualify";
@@ -4564,7 +4564,7 @@ private:
         if(all){out<<",\"targets\":{";for(std::size_t i=0;i<stages.size();++i){if(i)out<<',';out<<'"'<<stages[i].category<<"\":{";write_stage(stages[i]);out<<'}';}out<<'}';}else{out<<',';write_stage(stages.front());}out<<'}';out.flush();if(!out)throw std::runtime_error("gain candidate writing failed");
         model_calibration_adaptation_converged_.store(approved);
         } catch(...) {
-            // File I/O must never replace the original cancellation or control fault.
+            // File I/O must never replace the original cancellation or control fault
             if(interrupted)std::rethrow_exception(interrupted);
             throw;
         }
@@ -4598,7 +4598,7 @@ private:
                     throw std::runtime_error("cannot select calibrated servo gains for identification");
             }
             // Formal identification: both static approach directions followed by
-            // two independently tagged dynamic speed pairs on the checked path.
+            // two independently tagged dynamic speed pairs on the checked path
             model_calibration_set_phase(ModelCalibrationPhase::STATIC_REVERSE);
             if(!model_calibration_static_pass(true))
                 throw std::runtime_error(model_calibration_error_.empty() ? "reverse static replay failed or cancelled" : model_calibration_error_);
@@ -4628,14 +4628,14 @@ private:
             if(gravity)model_calibration_result_=gravity.value();
             else {
                 // A failed quick static preview must not discard the remaining
-                // formal dynamics observations. Hardware failures still abort.
+                // formal dynamics observations. Hardware failures still abort
                 model_calibration_result_.reset();
                 std::lock_guard<std::mutex> preview_lock(model_calibration_mutex_);
                 model_calibration_preview_error_=gravity.error();
             }
             // Holdout validation is advisory for exported candidates. Never
             // abort data acquisition or suppress the candidate because of
-            // an inaccurate initial URDF. Applying it to hardware is separate.
+            // an inaccurate initial URDF. Applying it to hardware is separate
             if(!model_calibration_within_time_limit()) throw std::runtime_error(model_calibration_error_);
             {
                 std::lock_guard<std::mutex> lock(model_calibration_mutex_);
@@ -4654,7 +4654,7 @@ private:
                 throw std::runtime_error("failed to hold after replay");
             // Acquisition ends in the confirmed hold above. No full-history copy
             // or archived-state update of the LIVE dynamics object while ACTIVE.
-            // Friction and full IDIM belong to isolated offline identification.
+            // Friction and full IDIM belong to isolated offline identification
             model_calibration_friction_result_.reset();
             model_calibration_friction_pass_=false;
             {
@@ -4699,7 +4699,7 @@ private:
     }
 
     // A supervised, manual alignment mode: no generated autonomous path is
-    // permitted here because the standalone Core has no live planning scene.
+    // permitted here because the standalone Core has no live planning scene
     void machine_model_calibration_alignment_begin(const YAML::Node& params) {
         model_calibration_require_task(params);
         if(model_calibration_phase_.load() != ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION ||
@@ -4734,7 +4734,7 @@ private:
         if(machine_robot_state() != RobotState::ACTIVE)
             throw std::runtime_error("robot is not ACTIVE; cannot finish manual alignment");
         // Only engage the stronger hold after the operator has stopped moving;
-        // the pose itself may still be far from the saved endpoint.
+        // the pose itself may still be far from the saved endpoint
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if(!last_output_ || feedback_time_ns_ == 0)
@@ -4750,7 +4750,7 @@ private:
             }
         }
         // Hold the ACTUAL current pose, regardless of alignment outcome.
-        // A non-matching pose remains blocked from starting replay.
+        // A non-matching pose remains blocked from starting replay
         if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD))
             throw std::runtime_error("failed to enter rigid hold after manual alignment");
         model_calibration_alignment_active_.store(false);
@@ -4831,7 +4831,7 @@ private:
         if(workflow=="gain")gain_endpoint=gain_endpoint_observation(false,model_calibration_trajectory_->positions.back());
         if(!model_calibration_source_task_id_.empty() || gain_endpoint) {
             // The first pass traverses the path in reverse, starting at its last
-            // sample. A parked arm can be far away: NEVER jump to that target.
+            // sample. A parked arm can be far away: NEVER jump to that target
             std::lock_guard<std::mutex> lock(mutex_);
             if(robot_.get_state() != RobotState::ACTIVE || !last_output_ || feedback_time_ns_ == 0)
                 throw std::runtime_error("cannot confirm imported replay without fresh ACTIVE robot feedback");
@@ -4852,7 +4852,7 @@ private:
             }
         }
         // Publish a complete accepted request only after all stage, parameter
-        // and endpoint checks pass. A duplicate or rejected request is read-only.
+        // and endpoint checks pass. A duplicate or rejected request is read-only
         model_calibration_workflow_kind_=std::move(workflow);
         model_calibration_gain_mode_=std::move(gain_mode);
         gain_requirements_=requirements;
@@ -5064,7 +5064,7 @@ private:
     }
 
     // Compare decoded values, so formatting, key ordering and YAML anchors
-    // never invalidate a compatible recorded control context.
+    // never invalidate a compatible recorded control context
     static bool gain_context_equal(const YAML::Node& a,const YAML::Node& b) {
         if(!a || a.IsNull())return !b || b.IsNull();
         if(!b || b.IsNull() || a.Type()!=b.Type())return false;
@@ -5188,7 +5188,7 @@ private:
         }
         if(runtime_gravity_applied_ || runtime_dynamics_applied_ || (model_calibration_candidate_applied_ && !persistent_gravity_correction_loaded_))fail("temporary model override");
         // Offline recordings remain usable offline, but never qualify a hardware
-        // session; a real session must match its effective connection snapshot.
+        // session; a real session must match its effective connection snapshot
         if(runtime["write_enabled"].as<bool>()!=cfg_.runtime.write_enabled)fail("hardware/mock backend");
         if(cfg_.runtime.write_enabled) {
             (void)trusted("hardware.yaml","hardware_fingerprint");
@@ -5419,14 +5419,14 @@ private:
             throw std::runtime_error("advanced model does not match current URDF");
         if(!report["candidate_urdf"] || !report["validation_scope"])
             throw std::runtime_error("advanced identification report is incomplete");
-        // Full inertia is allowed only for an actual dynamic-data assessment.
+        // Full inertia is allowed only for an actual dynamic-data assessment
         const auto scope=report["validation_scope"].as<std::string>();
         if(scope!="dynamic_inertia")
             throw std::runtime_error("static gravity candidate must use the gravity-only apply route");
         const std::filesystem::path recorded_candidate(report["candidate_urdf"].as<std::string>());
         if(recorded_candidate.empty()) throw std::runtime_error("candidate URDF path is empty");
         // Reports and candidates form one portable directory. An older report
-        // may retain its former absolute path after the directory is copied.
+        // may retain its former absolute path after the directory is copied
         const auto local_candidate = recorded_candidate.is_absolute()
             ? report_path.parent_path() / recorded_candidate.filename()
             : report_path.parent_path() / recorded_candidate;
@@ -5440,12 +5440,12 @@ private:
             throw std::runtime_error("advanced candidate bytes changed since offline verification");
         auto new_cfg=cfg_.dynamics;
         new_cfg.urdf_path=candidate_path.string();
-        // Avoid accidentally layering a stale gravity correction on a new model.
+        // Avoid accidentally layering a stale gravity correction on a new model
         new_cfg.gravity_correction_path.clear();
         Dynamics candidate;
         if(!candidate.configure(new_cfg))
             throw std::runtime_error("candidate URDF cannot configure robot dynamics");
-        // Check the whole controlled kinematic tree, not only tool0 at q=0.
+        // Check the whole controlled kinematic tree, not only tool0 at q=0
         const auto& expected_frames=dynamics_.get_info().frame_names;
         const auto& candidate_frames=candidate.get_info().frame_names;
         if(expected_frames!=candidate_frames)
@@ -5454,7 +5454,7 @@ private:
         JointState sample;
         sample.pos.assign(n,0.0);sample.vel.assign(n,0.0);sample.tor.assign(n,0.0);
         JointVector zero(n,0.0);
-        // Must not mutate live dynamics caches: work on a separate prior.
+        // Must not mutate live dynamics caches: work on a separate prior
         Dynamics prior;
         if(!prior.configure(cfg_.dynamics))
             throw std::runtime_error("original model snapshot could not be validated");
@@ -6006,7 +6006,7 @@ private:
             else out << ",\"fault\":null";
         }
         else out << ",\"last_fault\":null,\"fault\":null";
-        // Report effective runtime limits, not merely the URDF source limits.
+        // Report effective runtime limits, not merely the URDF source limits
         out << ",\"safety_limits\":{\"max_cmd_vel\":";
         machine_json_joint_vector(out, cfg_.safety.limits.max_vel);
         out << ",\"min_pos\":";machine_json_joint_vector(out,cfg_.safety.limits.min_pos);
@@ -6167,7 +6167,7 @@ private:
         hooks.after_step=[this](const RuntimeSnapshot& step){
             if(step.cycle) {
                 // Refresh diagnostic RNEA against the accepted reference; the
-                // command itself was already computed from the cycle snapshot.
+                // command itself was already computed from the cycle snapshot
                 if(dynamics_.is_updated())static_cast<void>(dynamics_.update_reference(step.cycle->joint_ref_acc));
                 last_output_=*step.cycle;
                 last_cycle_monotonic_ns_=step.monotonic_ns;
@@ -6267,7 +6267,7 @@ private:
         }
         if(direct_drag_controls_)teach_restore_controls_locked();
         // A FAULT must interrupt replay/teaching even while a task is paused.
-        // Leave the robot in its latched safe FAULT; do not auto-clear or resume.
+        // Leave the robot in its latched safe FAULT; do not auto-clear or resume
         const auto calibration_phase = model_calibration_phase_.load();
         if(calibration_phase == ModelCalibrationPhase::TEACHING ||
             calibration_phase == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION ||
@@ -6290,12 +6290,12 @@ private:
                 model_calibration_error_=machine_robot_error("model calibration stopped by safety fault",fault).what();
             }
             // Teaching and waiting-for-confirmation have no replay worker to
-            // transition them into FAILED, so latch that phase here.
+            // transition them into FAILED, so latch that phase here
             if(calibration_phase == ModelCalibrationPhase::TEACHING ||
                 calibration_phase == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION) {
                 model_calibration_set_phase(ModelCalibrationPhase::FAILED);
                 // WAITING has no worker to clean up its recorder; the already
-                // saved trajectory.csv remains available for later inspection.
+                // saved trajectory.csv remains available for later inspection
                 if(calibration_phase == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION)
                     model_calibration_recorder_.stop();
             }
@@ -6527,7 +6527,7 @@ private:
         }
 
         // Stop an unfinished calibration from leaking temporary tracking gains
-        // into a normal shutdown. Robot's ordinary configured gains stay intact.
+        // into a normal shutdown. Robot's ordinary configured gains stay intact
         robot_.clear_calibration_hold_gains();
         robot_.clear_calibration_tracking_gains();
         // 停放使用低刚度 COMPLIANT_TRACKING 降低碰撞风险，同时暂停导纳避免 park reference 被外力偏移
@@ -6584,7 +6584,7 @@ private:
                 });
             if(interrupted()) return;
             const Robot::TimePoint now = Robot::Clock::now();
-            // Do not validate or deactivate based on an old frozen feedback frame.
+            // Do not validate or deactivate based on an old frozen feedback frame
             if(cycle_counter_ == previous_cycle || !last_output_) {
                 if(std::chrono::duration<double>(now - started_at).count() >= cfg_.shutdown.timeout_s) {
                     clear_command_sources();
@@ -6616,7 +6616,7 @@ private:
 
             // The nominal 75/25 division is temporal. Decelerate the compliant
             // reference shortly before the transition, so measured velocity can
-            // pass the handover gate without requiring proximity to park_pos.
+            // pass the handover gate without requiring proximity to park_pos
             const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
             const double soft_end_s=cfg_.shutdown.timeout_s*cfg_.shutdown.compliant_phase_ratio;
             if(!rigid_finish_mode && elapsed_s>=std::max(0.0,soft_end_s-0.35))
@@ -6629,7 +6629,7 @@ private:
                     cfg_.shutdown.relaxed_tolerance_ratio)) {
                 // Robot::set_impedance_mode resets its command history to actual
                 // feedback, then the park streamer starts from this same state.
-                // High rigidity never inherits the compliant reference backlog.
+                // High rigidity never inherits the compliant reference backlog
                 const JointVector actual_pos = last_output_->joint_state.pos;
                 const auto rigid_result = runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID_TRACKING, now);
                 if(!rigid_result) {
@@ -6642,7 +6642,7 @@ private:
                 }
                 // The command starts at measured q, NOT at the old compliant
                 // reference, and the gains are blended over 0.65 s instead of
-                // jumping directly from Gray compliant Kp to rigid Kp.
+                // jumping directly from Gray compliant Kp to rigid Kp
                 if(!robot_.begin_park_rigid_gain_ramp(0.65,now)) {
                     clear_command_sources();
                     (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID_HOLD,now);
@@ -6655,7 +6655,7 @@ private:
                 stream_.last_update_time = now;
                 stream_.completion_reported = false;
                 // Keep the configured safe speed limit during final approach.
-                // The old 0.16 clamp made a 2.5 s rigid phase unnecessarily slow.
+                // The old 0.16 clamp made a 2.5 s rigid phase unnecessarily slow
                 stream_.speed_scale = cfg_.shutdown.speed_scale;
                 rigid_finish_mode = true;
                 settled_at.reset();
@@ -7276,7 +7276,7 @@ private:
                 return stop_recording.load() || cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
                 });
             // A FAULT or deliberate disable must stop sampling immediately,
-            // but must not discard samples from earlier valid control cycles.
+            // but must not discard samples from earlier valid control cycles
             if(robot_.get_state() != RobotState::ACTIVE) break;
             if(stop_recording.load()) break;
             if(!updated || cycle_counter_ <= cursor || !last_output_) continue;
@@ -7285,7 +7285,7 @@ private:
                 trajectory.positions.push_back(last_output_->joint_state.pos);
                 if(checkpoint && trajectory.positions.size() >= last_checkpoint_samples + checkpoint_interval) {
                     // Sampling has its own worker, but never write a file while
-                    // holding the mutex that guards the real-time cycle state.
+                    // holding the mutex that guards the real-time cycle state
                     lock.unlock();
                     checkpoint(trajectory);
                     last_checkpoint_samples = trajectory.positions.size();
@@ -7404,7 +7404,7 @@ private:
                     return true;
                 }
                 // Finish the path at its already-commanded endpoint with zero
-                // velocity. This never creates a separate alignment movement.
+                // velocity. This never creates a separate alignment movement
                 zero_velocity_cursor=cycle_counter_;
                 if(machine_friction_stop_.load()) return false;
                 if(!runtime_.submit_reference(robot_,JointPosVelCmd{expected,JointVector(expected.size(),0.0)},

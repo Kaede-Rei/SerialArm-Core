@@ -1,7 +1,7 @@
 import {stepCameraSpring} from './model-camera-zoom.mjs';
 
 // Orbit in spherical coordinates, rather than drawing a line through the model
-// when moving between opposite views. All six components retain their velocity.
+// when moving between opposite views. All six components retain their velocity
 export class ModelCameraTransition {
   constructor(controls, preference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')) {
     this.controls = controls;
@@ -29,7 +29,7 @@ export class ModelCameraTransition {
 
   clearDamping() {
     // Drain OrbitControls' pending input through its public API, then restore
-    // the displayed pose synchronously so no stale drag fights the transition.
+    // the displayed pose synchronously so no stale drag fights the transition
     const position = this.camera.position.clone(), target = this.controls.target.clone();
     const quaternion = this.camera.quaternion.clone(), damping = this.controls.enableDamping;
     this.controls.enableDamping = false; this.controls.update();

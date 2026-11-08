@@ -2,12 +2,14 @@
 
 # SerialArm-Core
 
-**通用串联机械臂工作台与动力学控制内核**
+[简体中文](README.md) · [English](README_en.md)
+
+**串联机械臂控制内核与 SerialArm Studio 工作台**
 
 配置模型与驱动，标定动力学与增益，通过 C++、Python 或 ROS2 控制机械臂
 
 <p>
-  <a href="https://github.com/Kaede-Rei/SerialArm-Core/blob/main/LICENSE"><img src="https://img.shields.io/github/license/Kaede-Rei/SerialArm-Core?style=flat-square&amp;label=License" alt="许可证" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/Kaede-Rei/SerialArm-Core?style=flat-square&amp;label=License" alt="许可证" /></a>
   <img src="https://img.shields.io/badge/Platform-Linux-334155?style=flat-square&amp;logo=linux&amp;logoColor=white" alt="Linux" />
   <img src="https://img.shields.io/badge/Core-C%2B%2B17-00599C?style=flat-square&amp;logo=cplusplus&amp;logoColor=white" alt="C++17" />
   <img src="https://img.shields.io/badge/Binding-Python-3776AB?style=flat-square&amp;logo=python&amp;logoColor=white" alt="Python Binding" />
@@ -15,7 +17,7 @@
   <img src="https://img.shields.io/badge/Desktop-Electron-47848F?style=flat-square&amp;logo=electron&amp;logoColor=white" alt="Electron" />
 </p>
 
-[项目简介](#项目简介) · [功能与界面](#功能与界面) · [系统架构](#系统架构) · [快速开始](#快速开始) · [文档](#文档与协作) · [问题反馈](https://github.com/Kaede-Rei/SerialArm-Core/issues)
+[项目简介](#项目简介) · [功能与界面](#功能与界面) · [系统架构](#系统架构) · [快速开始](#快速开始) · [文档](#文档) · [参与贡献](#参与贡献) · [许可证](#许可证) · [问题反馈](https://github.com/Kaede-Rei/SerialArm-Core/issues)
 
 </div>
 
@@ -23,11 +25,9 @@
 
 ## 项目简介
 
-SerialArm-Core 提供通用串联机械臂工作台与 C++ 控制内核，将模型、硬件驱动、关节控制、动力学计算、标定与运行状态组织在同一 Robot Profile 下
+SerialArm-Core 将模型、硬件映射、动力学计算和控制参数组织在同一 Robot Profile 下；桌面应用 SerialArm Studio 提供模型查看、参数配置、控制、示教与标定；C++、Python 和可选的 ROS2 / MoveIt 适配层用于上层集成
 
-用户可以从已有 URDF 或 Description 创建机器人实例，完成硬件映射、参数配置与动力学验证，再通过 C++、Python 或 ROS2 / MoveIt 接入上层应用
-
-达妙是仓库现有的内置硬件驱动，DM-Arm 是配套机械臂示例；其他硬件通过 `MotorBus` 驱动和 Hardware YAML 接入，驱动需提供当前控制链要求的位置、速度、力矩反馈与完整关节阻抗命令语义，接入步骤见 [机械臂接入指南](docs/tutorial.md)
+达妙是仓库现有的内置硬件驱动，DM-Arm 是配套机械臂示例；其他硬件通过 `MotorBus` 驱动和 Hardware YAML 接入，驱动需提供当前控制链要求的位置、速度、力矩反馈与完整关节阻抗命令语义，接入步骤见 [机械臂接入指南](docs/guide.md)
 
 图形界面、Terminal 和 Python 直接使用 C++ Core，无需宿主 ROS2 环境；ROS2 与 MoveIt 按需接入，下游机械臂在自己的 Profile 中维护模型、驱动和标定结果
 
@@ -80,7 +80,7 @@ SerialArm-Core 提供通用串联机械臂工作台与 C++ 控制内核，将模
 | 真机控制 | 原生阻抗、模型导纳、动力学前馈、示教与轨迹回放 |
 | 标定 | 执行器增益自动标定、重力校正、几何实验与完整动力学辨识 |
 | 硬件抽象 | 关节与执行器映射、Backend、CAN / Serial Transport |
-| 运行安全 | 状态检查、限位、故障处理、控制准入与安全退出 |
+| 运行检查 | 反馈与状态检查、限位、故障处理、控制准入与停放退出 |
 | 上层接入 | 原生 C++、Python Binding、ROS2 ros2_control 与 MoveIt 2 |
 | 桌面工作台 | Profile 配置、模型预览、控制、标定与诊断 |
 
@@ -100,97 +100,67 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 ## 快速开始
 
-### 环境要求
+### 使用桌面发行包
 
-- Linux，桌面发行包面向 Ubuntu x86_64
-- C++17、Python 3.10 及以上
-- 桌面 GUI 需要 Node.js 20 及以上、npm 与图形桌面
-- ROS2 / MoveIt 是可选适配层，仅使用这些入口时需要相应环境
+发行包与版本说明见 [Releases](https://github.com/Kaede-Rei/SerialArm-Core/releases)；AppImage 与 deb 面向 Ubuntu 22.04 x86_64，安装与运行步骤见 [发行包安装](docs/install.md#安装发行包)
 
-### 一键安装与启动
+默认发行包包含 Core、Terminal、Python Binding、DM-Arm 支持与 GUI，使用工作台无需安装 Node.js、编译工具或 ROS2；ROS2 / MoveIt 入口需要对应的可选组件与宿主环境
+
+### 从源码安装
+
+在仓库根目录运行；安装器需要 Linux 和 Python 3.10+，GUI 源码安装另需 Node.js 20+、npm 与图形桌面
 
 ```bash
+git clone https://github.com/Kaede-Rei/SerialArm-Core.git
+cd SerialArm-Core
 ./install.sh
 ./launch.sh
 ```
 
-安装向导默认选择 Standalone，可独立使用 Core、Terminal 与桌面 GUI；Python、ROS2 和 MoveIt 按需选择，安装计划列出所需系统依赖
+安装向导默认选择 Standalone，安装 Core、Terminal、模型检查工具与 GUI；Python Binding、ROS2 和 MoveIt 按需选择；组件、依赖与非交互命令见 [安装说明](docs/install.md)
 
-### Linux 发行包构建
+已有 ROS2 工作区可直接使用 `colcon build`，步骤见 [ROS2 工作区构建](docs/install.md#直接在-ros2-工作区构建)；独立 C++ 与 Python 集成见 [开发说明](docs/development.md) 和 [API 参考](docs/reference/api.md)
 
-只在准备 Release 时生成 AppImage 与 deb，日常修改、编译验证和更新本机安装不运行发布打包
+### 先加载模型，再连接实机
 
-默认发行包包含 Core、Terminal、Python Binding、DM-Arm 与 GUI，启动和控制不依赖 ROS2
+首页新建机械臂 Profile，导入 URDF、Xacro 或 Description 包，选择 Base 与 Tool，检查控制链、关节限位与模型资源
 
-```bash
-./build_linux.sh
-# 仅复用与当前源码一致的独立安装
-./build_linux.sh --reuse-install
-# 显式增加 ROS2 / MoveIt 适配层
-./build_linux.sh --with-ros2
-```
-
-产物为 `dist/SerialArm-Core-linux-x86_64.AppImage` 与 `dist/SerialArm-Core-linux-amd64.deb`
-
-构建机使用 Ubuntu 22.04 x86_64、Node.js 20+；默认发行包可在未安装 ROS2 的目标机运行，包含可选适配层时也只在启动 Hardware 或 MoveIt 入口时加载宿主 ROS2 环境
-
-详细要求见 [安装说明](docs/install.md)
-
-### 从模型开始离线使用
-
-首页新建机械臂 Profile，导入 URDF、Xacro 或 Description 包，选择 Base 与 Tool；工作台检查控制链、关节限位与模型资源，并保存独立配置
-
-保持 `control.runtime.write_enabled: false` 可连接离线仿真会话，无需填写电机型号或安装硬件驱动；模型有效后也可直接运行
+保持 `control.runtime.write_enabled: false` 可使用 GUI 或 C++ Terminal 的离线会话，无需填写电机型号或安装硬件驱动
 
 ```bash
 ./.install/run serial_arm_terminal --config /absolute/path/to/core.yaml --machine
 ```
 
-仿真状态与量程标记为 mock；接入实机时再选择驱动、填写映射和安全限制，开启写入并重新连接
+离线会话使用 mock 状态；接入实机前，选择驱动、核对映射与安全限制，开启写入并重新连接
 
-### 在已有 ROS2 工作区构建
-
-```bash
-source /opt/ros/humble/setup.bash
-colcon build
-source install/setup.bash
-```
-
-在包含 `serial_arm_core` 源码的工作区根目录执行即可，Python Binding 使用仓库提供的 pybind11 构建依赖，无须提前运行独立安装脚本
-
-### 使用内置或外部 Profile
+使用内置或外部 Profile
 
 ```bash
 ./.install/run serial_arm_terminal --robot-profile dm_arm_gray
-```
 
-下游机械臂使用独立 Profile 文件与对应模型资源
-
-```bash
 ./.install/run serial_arm_terminal \
   --robot-profile your_robot \
   --profile-file /absolute/path/to/robot_profiles.yaml
 ```
 
-执行真机控制前应检查关节映射、限位、模型与执行器写入配置，确保现场具备安全停机条件
+这些入口需要已安装 Terminal；执行真机命令前核对设备、关节方向、零位和限位，并准备可靠支撑与现场停机措施
 
-## 文档与协作
+## 文档
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [安装说明](docs/install.md) | 依赖环境、组件选择、命令行安装与运行入口 |
-| [GUI 使用指南](docs/launcher.md) | 机器人工作区、模型、控制、标定与诊断 |
-| [机器人接入指南](docs/tutorial.md) | Profile、硬件映射、控制与安全参数 |
-| [系统架构](docs/architecture.md) | Core、Adapter、Hardware、Description 与 Profile 的职责边界 |
+| [安装说明](docs/install.md) | 发行包、源码安装、可选组件与图形诊断 |
+| [使用指南](docs/guide.md) | 模型导入、首次连接、控制、示教、标定与导出 |
+| [开发说明](docs/development.md) | 系统架构、源码目录、构建、驱动扩展与发布入口 |
 | [API 参考](docs/reference/api.md) | C++、Python、控制接口与扩展契约 |
-| [问题反馈](https://github.com/Kaede-Rei/SerialArm-Core/issues) | 问题报告与功能建议 |
+| [标定参考](docs/reference/calibration.md) | 重力与完整动力学辨识的数据、算法、验证和命令 |
 
----
+## 参与贡献
 
-<div align="center">
+通过 [Issues](https://github.com/Kaede-Rei/SerialArm-Core/issues) 报告问题或讨论功能，也可以提交 Pull Request；问题复现信息、修改范围与验证方式见 [贡献说明](CONTRIBUTING.md)
 
-**SerialArm-Core**
+## 许可证
 
-Model · Calibration · Control · Integration
+项目自有代码采用 [GNU GPL v3.0（GPL-3.0-only）](LICENSE)；随源码提供的第三方组件保留各自许可证，包括 [pybind11](src/serial_arm/core/third_lib/pybind11/LICENSE) 与 [tl::expected](src/serial_arm/core/third_lib/tl/COPYING)
 
-</div>
+达妙协议代码引自 Motor SDK，来源及待确认的上游许可见 [dm_hw 说明](src/robot_supports/hardware/damiao/third_lib/damiao/README.md#来源与许可)

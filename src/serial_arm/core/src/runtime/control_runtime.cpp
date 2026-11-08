@@ -46,7 +46,7 @@ tl::expected<void, RobotFault> ControlRuntime::set_impedance_mode(Robot& robot, 
     const auto result=robot.set_impedance_mode(mode,now,target_policy);
     if(result) {
         // Legacy drag requests explicitly select native MIT interaction; this
-        // adapter policy is separate from Core's configurable reference law.
+        // adapter policy is separate from Core's configurable reference law
         if(mode==JointImpedanceMode::COMPLIANT_DRAG) {
             if(!drag_suspension_)drag_suspension_=robot.is_admittance_suspended();
             robot.set_admittance_suspended(true);

@@ -128,7 +128,7 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
     // Safety stores a scalar ratio relative to the command velocity limit.
     // Both resolved limits are derived from the same URDF joint velocity and
     // global policy scales; preserving their ratio prevents cmd_vel_scale from
-    // unintentionally lowering the measured-state hard-fault threshold.
+    // unintentionally lowering the measured-state hard-fault threshold
     if(!resolved.joints.empty()) {
         cfg.state_vel_fault_ratio = resolved.joints.front().max_state_vel /
             resolved.joints.front().max_cmd_vel;

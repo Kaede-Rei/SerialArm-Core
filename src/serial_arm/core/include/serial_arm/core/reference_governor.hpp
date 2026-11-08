@@ -29,7 +29,7 @@ struct ReferenceGovernorOutput {
 
 // Project one backward-Euler reference step onto motion and coupled torque
 // constraints. Force limits include the local MIT PD contribution, and any
-// acceleration change is reflected in the model feedforward before dispatch.
+// acceleration change is reflected in the model feedforward before dispatch
 tl::expected<ReferenceGovernorOutput, ReferenceGovernorErr>
 govern_reference(const ReferenceGovernorInput& input);
 

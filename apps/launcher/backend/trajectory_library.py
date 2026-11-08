@@ -1,4 +1,4 @@
-"""Named joint trajectories stored under the owning Profile .serialarm directory."""
+"""Named joint trajectories stored under the owning Profile .serialarm directory"""
 from __future__ import annotations
 import csv
 from datetime import datetime

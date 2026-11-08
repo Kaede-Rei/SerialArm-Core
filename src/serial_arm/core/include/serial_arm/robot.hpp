@@ -232,7 +232,7 @@ public:
     void clear_execution_gain_profile();
     /** Temporary hold gains used only by automatic static model identification.
      * They never modify the robot configuration or other impedance modes.
-     * The override is cleared on leaving RIGID_HOLD and on deactivation.
+     * The override is cleared on leaving RIGID_HOLD and on deactivation
      */
     bool begin_calibration_hold(const JointImpedanceGains& gains);
     bool set_calibration_hold_gains(const JointImpedanceGains& gains);
@@ -240,12 +240,12 @@ public:
     // Temporary ramped gains for trajectory tracking or independent hold
     // verification. Active only in the matching impedance mode and never saved
     bool set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode=JointImpedanceMode::RIGID_TRACKING);
-    // Explicit temporary runtime gains; only accepted while motors are INACTIVE.
+    // Explicit temporary runtime gains; only accepted while motors are INACTIVE
     bool set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains);
     void clear_calibration_tracking_gains() noexcept;
     /** Shutdown-only compliant-to-rigid Kp/Kd handover. The current reference
      * is reset to measured q by set_impedance_mode before calling this.
-     * Ordinary tracking and calibration gains are not changed.
+     * Ordinary tracking and calibration gains are not changed
      */
     bool begin_park_rigid_gain_ramp(double duration_s, TimePoint now = Clock::now());
 

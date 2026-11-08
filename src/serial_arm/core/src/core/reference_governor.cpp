@@ -81,7 +81,7 @@ govern_reference(const ReferenceGovernorInput& input) {
     if(impossible)return tl::make_unexpected(ReferenceGovernorErr::INFEASIBLE);
 
     // Hildreth's dual coordinate projection solves the small strictly convex
-    // velocity QP. Full mass-matrix rows retain cross-joint torque coupling.
+    // velocity QP. Full mass-matrix rows retain cross-joint torque coupling
     bool converged=false;
     for(int iteration=0;iteration<1024;++iteration) {
         double largest_change=0.0;

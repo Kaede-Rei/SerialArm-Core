@@ -5,11 +5,11 @@ required_conan_version = ">=2.1"
 
 
 class SerialArmStandaloneDeps(ConanFile):
-    """Standalone dependency set for SerialArm-Core.
+    """Standalone dependency set for SerialArm-Core
 
     The Core CMake project intentionally remains dependency-manager agnostic and
     continues to consume dependencies through find_package(). Conan only owns
-    dependency acquisition and generates CMake package/toolchain metadata.
+    dependency acquisition and generates CMake package/toolchain metadata
     """
 
     settings = "os", "compiler", "build_type", "arch"

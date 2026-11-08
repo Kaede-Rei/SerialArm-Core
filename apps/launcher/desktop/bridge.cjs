@@ -5,7 +5,7 @@ const fs = require('node:fs');
 
 // Linux sessions already use start_new_session in the backend. Retain the
 // process start time as well as its PID so local cleanup cannot target a reused
-// PID after the backend has disappeared.
+// PID after the backend has disappeared
 function processIdentity(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
@@ -109,7 +109,7 @@ class Bridge extends EventEmitter {
     this.captureOwnedProcesses(); this.closing = true;
     const targets = [...this.ownedProcesses.values()].filter(identity => sameProcess(identity, processIdentity(identity.pid)));
     // Terminate only observed members of this launcher's process tree/session,
-    // never a negative PID or an unverified process group.
+    // never a negative PID or an unverified process group
     for (const identity of targets.sort((a, b) => (a.pid === this.child.pid) - (b.pid === this.child.pid))) {
       if (!sameProcess(identity, processIdentity(identity.pid))) continue;
       try { process.kill(identity.pid, 'SIGKILL'); }

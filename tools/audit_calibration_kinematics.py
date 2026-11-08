@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run read-only angular q/dq audit on one or more frames.csv files."""
+"""Run read-only angular q/dq audit on one or more frames.csv files"""
 import argparse,csv,hashlib,json,sys
 from pathlib import Path
 import numpy as np

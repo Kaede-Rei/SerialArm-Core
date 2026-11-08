@@ -278,7 +278,7 @@ class Runner:
             preflight_gui()
 
     def clean_configuration(self):
-        """Only discard this selected configuration's generated native outputs."""
+        """Only discard this selected configuration's generated native outputs"""
         if not self.plan.clean_rebuild:
             return
         for directory in (self.build, self.prefix):
@@ -638,7 +638,7 @@ exec "$@"
         )
 
     def refresh_runtime_entries(self, manifest):
-        """Upgrade existing installations without rebuilding any native code."""
+        """Upgrade existing installations without rebuilding any native code"""
         if not manifest.get('install_prefix'): return
         original = (self.plan, self.prefix, self.build, self.setup, self.ros_setup)
         try:

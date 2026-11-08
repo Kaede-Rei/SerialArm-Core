@@ -1,7 +1,7 @@
-"""Static gravity regression with fixed trusted parameters and observable updates.
+"""Static gravity regression with fixed trusted parameters and observable updates
 
 Only mass and first moments enter gravity; COM inertia tensors stay unchanged.
-No empirical mass or COM bounds are imposed on the numerical solution.
+No empirical mass or COM bounds are imposed on the numerical solution
 """
 from __future__ import annotations
 
@@ -9,11 +9,11 @@ import numpy as np
 
 
 def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=1e-3):
-    """Configuration-dependent gravity combinations observable from static poses.
+    """Configuration-dependent gravity combinations observable from static poses
 
     Per-joint centering projects out unknown constant torque offsets before the
     SVD. Unobservable combinations are pinned to the trusted prior, not filled
-    by the dynamic trajectory or arbitrary individual-link parameter changes.
+    by the dynamic trajectory or arbitrary individual-link parameter changes
     """
     G = np.asarray(regressor, dtype=float)
     sigma = np.asarray(noise_scale, dtype=float)
@@ -22,7 +22,7 @@ def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=
     if sigma.shape != (joints,) or np.any(sigma <= 0) or not np.isfinite(G).all():
         raise ValueError('静态重力回归或噪声尺度无效')
     # Unknown motor offsets are indistinguishable from columns that do not
-    # vary with configuration. The centering must be done per joint.
+    # vary with configuration. The centering must be done per joint
     poses = G.reshape(-1, joints, G.shape[1])
     centered = poses - np.mean(poses, axis=0, keepdims=True)
     weighted = (centered / sigma[None, :, None]).reshape(-1, G.shape[1])
@@ -37,17 +37,17 @@ def observable_gravity_basis(regressor, joints, noise_scale, relative_threshold=
 
 def solve_static_updates(designs, residuals, *, relative_threshold=1e-3,
                          objective='bias_separated'):
-    """Fit tau-model updates in observable coordinates using training poses only.
+    """Fit tau-model updates in observable coordinates using training poses only
 
     Each pose and joint has equal weight. ``bias_separated`` projects out a
     constant offset per joint and scores held-out poses with that training-only
     offset. ``urdf`` fits and scores the raw gravity prediction without an
-    offset, matching deployment of an inertial-parameter-only URDF.
+    offset, matching deployment of an inertial-parameter-only URDF
 
     Scaling and SVD are recomputed within each leave-one-pose-out fold. The
     returned torque_bias is the fitted model-minus-measured nuisance offset;
     it is exactly zero for ``urdf``. A diagnostic residual mean must be reported
-    separately by the evaluator, not silently subtracted in the raw objective.
+    separately by the evaluator, not silently subtracted in the raw objective
     """
     if objective not in ('bias_separated', 'urdf'):
         raise ValueError('静态拟合目标必须为 bias_separated 或 urdf')
@@ -83,7 +83,7 @@ def solve_static_updates(designs, residuals, *, relative_threshold=1e-3,
     indices = np.arange(len(designs))
     # None is a genuine no-update candidate and wins exact ties. The zero and
     # weak penalties allow training-only CV to select an unshrunk supported
-    # update when evidence warrants it; no held-out validation data enter here.
+    # update when evidence warrants it; no held-out validation data enter here
     penalties = (None, 0.0, 1e-6, 1e-4, 1e-3, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0)
     scores = []
     for penalty in penalties:
@@ -107,7 +107,7 @@ def solve_static_updates(designs, residuals, *, relative_threshold=1e-3,
 
 def fit_static_mass_com(prior, training, mapped, locked_links, *,
                         objective='bias_separated'):
-    """Keep locked blocks in the full model baseline and fit free m/h only."""
+    """Keep locked blocks in the full model baseline and fit free m/h only"""
     prior = np.asarray(prior, dtype=float)
     active = [10*k+i for k, (_, name, _) in enumerate(mapped)
               if name not in locked_links for i in range(4)]

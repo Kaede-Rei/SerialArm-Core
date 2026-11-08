@@ -1,7 +1,7 @@
-"""Offline static mass/first-moment proposals from recorded pose groups.
+"""Offline static mass/first-moment proposals from recorded pose groups
 
 The online result remains untouched; full dynamic inertia fitting is a separate
-workflow requiring trustworthy motion acceleration measurements.
+workflow requiring trustworthy motion acceleration measurements
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def _scope(mapped, mode, locked_links):
 
 
 def _com_reason(prior, trial, *_unused, **_ignored):
-    """Reject undefined physical parameters without imposing empirical bounds."""
+    """Reject undefined physical parameters without imposing empirical bounds"""
     import numpy as np
     if len(trial) < 4 or not np.isfinite(trial[:4]).all():
         return '非有限质量或一阶矩'
@@ -58,7 +58,7 @@ def _static_poses(folder, joints, *, include_provenance=False):
     import numpy as np
     groups = defaultdict(list)
     # Existing task archives keep their historic minimum.  New tasks use
-    # metadata to opt into the stronger multi-cycle stability requirements.
+    # metadata to opt into the stronger multi-cycle stability requirements
     metadata = {}
     try:
         metadata = json.loads((Path(folder) / 'metadata.json').read_text(encoding='utf-8'))
@@ -66,7 +66,7 @@ def _static_poses(folder, joints, *, include_provenance=False):
     except (OSError, ValueError, TypeError, AttributeError):
         minimum_frames = 15
     # New data MUST have an approved, atomic static sample archive.  Never
-    # silently fall back to raw frames, including if the accepted file is lost.
+    # silently fall back to raw frames, including if the accepted file is lost
     accepted = Path(folder) / 'accepted_static.csv'
     new_policy = (metadata.get('measurement_policy', {}) if isinstance(metadata, dict) else {})
     if new_policy.get('static_source') == 'accepted_static.csv' and not accepted.is_file():
@@ -115,7 +115,7 @@ def _static_poses(folder, joints, *, include_provenance=False):
     heldout_count = sum(item[0] for item in rows)
     # One genuinely separate holdout pose is sufficient to compute an offline
     # proposal, but it is insufficient evidence for automatic validation.
-    # Keep the pose groups separate and report the reduced validation coverage.
+    # Keep the pose groups separate and report the reduced validation coverage
     if training_count < 3 or heldout_count < 1:
         raise ValueError(
             f'有效静态姿态不足，训练 {training_count} 组、独立验证 {heldout_count} 组'
@@ -164,7 +164,7 @@ def _static_validation(training, heldout, prior, candidate):
     """Validate the actual gravity-only URDF candidate without changing it
 
     Per-candidate constant torque biases are estimated only from training
-    stationary poses and reused unchanged on held-out stationary poses.
+    stationary poses and reused unchanged on held-out stationary poses
     """
     import numpy as np
     def measurements(rows):
@@ -187,7 +187,7 @@ def _preserve_com_inertia(prior, selected):
 
     The XML inertia tensor is about the COM and is not changed during export.
     Pinocchio uses inertia about the Link origin, so its six dynamic moment
-    entries must include the updated parallel-axis term for a fair check.
+    entries must include the updated parallel-axis term for a fair check
     """
     import numpy as np
     out = np.asarray(selected, dtype=float).copy()
@@ -212,7 +212,7 @@ def _preserve_com_inertia(prior, selected):
 
 
 def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
-    """Review the solved static parameters without replacing or clipping blocks."""
+    """Review the solved static parameters without replacing or clipping blocks"""
     import numpy as np
     prior = np.asarray(fit['prior'], dtype=float)
     raw = np.asarray(fit['candidate'], dtype=float)
@@ -239,7 +239,7 @@ def _raw_gravity_candidate(fit, mapped, metadata, mode, locked):
 
 
 def recompute(directory, mode='global', locked_links=None, *, objective='bias_separated'):
-    """Fit static free m/h blocks, with trusted blocks fixed from the start."""
+    """Fit static free m/h blocks, with trusted blocks fixed from the start"""
     if objective not in ('urdf', 'bias_separated'):
         raise ValueError('未知的离线拟合目标')
     folder, metadata, result, snapshot, _ = _prepare_inputs(directory)
@@ -282,7 +282,7 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
         fit, mapped, metadata, mode, set(locked))
     # The XML COM inertia tensor is never changed. Pinocchio dynamic inertia
     # about the Link origin must reflect the parallel-axis theorem for scoring
-    # the *exported* URDF, not the original (possibly nonphysical) 60D fit.
+    # the *exported* URDF, not the original (possibly nonphysical) 60D fit
     exported = None
     before = after = noise = candidate_bias = None
     evaluation = None
@@ -309,7 +309,7 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
         before = dict(evaluation['raw_urdf']['validation']['baseline'])
         after = dict(evaluation['raw_urdf']['validation']['candidate'])
         # Retain the legacy normalized display score, explicitly using the
-        # training-residual scale; it is not a measured sensor-noise estimate.
+        # training-residual scale; it is not a measured sensor-noise estimate
         for metric in (before, after):
             metric['score'] = float(np.mean((np.asarray(metric['rms']) / noise)**2))
         candidate_bias = np.asarray(evaluation['training_bias']['candidate'])
@@ -399,7 +399,7 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
         'noise_rms': noise.tolist() if noise is not None else [],
         'noise_rms_meaning': 'legacy_training_residual_scale_with_floor_not_measured_sensor_noise',
         # Compatibility: runtime payload uses this residual for the observer,
-        # never as an extra gravity feedforward term or a raw-score correction.
+        # never as an extra gravity feedforward term or a raw-score correction
         'torque_bias': candidate_bias.tolist() if candidate_bias is not None else None,
         'diagnostic_training_residual_mean': candidate_bias.tolist() if candidate_bias is not None else None,
         'com_shifts_m': shifts,
@@ -425,7 +425,7 @@ def recompute(directory, mode='global', locked_links=None, *, objective='bias_se
     }
     if any(_digest(path) != source_hashes[name] for name,path in source_files.items()):
         raise ValueError('求解期间原始数据或模型发生变化，拒绝保存不一致的候选')
-    # Preserve every mode/objective run before updating the latest-candidate pointer.
+    # Preserve every mode/objective run before updating the latest-candidate pointer
     report['candidate_run_id'] = uuid.uuid4().hex
     archive = folder / 'offline_candidates' / report['candidate_run_id']
     archive.mkdir(parents=True, exist_ok=False)

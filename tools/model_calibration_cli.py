@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Non-GUI commands for model-calibration records and persistence."""
+"""Non-GUI commands for model-calibration records and persistence"""
 from __future__ import annotations
 
 import argparse

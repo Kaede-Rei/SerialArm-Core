@@ -67,7 +67,7 @@ inline NoiseEstimate estimate_noise(const std::vector<Sample>& rows) {
         const double travel=std::abs(slope)*(rows.back().time_s-rows.front().time_s);
         result.drift_rad=travel;
         // Encoder jitter is a few stationary codes, never a moving baseline.
-        // A symmetric oscillation has zero slope but still spans many codes.
+        // A symmetric oscillation has zero slope but still spans many codes
         result.stationary=result.span_rad<=.0015 && result.span_rad<=std::max(3*result.encoder_step_rad,1e-6) &&
             travel<=std::max(result.encoder_step_rad,2*residual+1e-7);
     }
@@ -132,7 +132,7 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
         actual_lo=std::min(actual_lo,s.actual);actual_hi=std::max(actual_hi,s.actual);
         if(s.new_measurement && s.time_s>=0.7 && s.time_s<excitation_end_s-0.7) {
             // Remove the posture offset before measuring motion. A stationary
-            // encoder must not pass merely because the requested motion is small.
+            // encoder must not pass merely because the requested motion is small
             const double u=s.reference-rows.front().reference,y=s.actual-rows.front().actual;
             reference_sum+=u;reference_sq+=u*u;actual_sum+=y;actual_sq+=y*y;++excitation_samples;
         }
@@ -154,7 +154,7 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
     m.settled=m.tail_samples>=20 && rows.back().time_s-last_bad>=0.25;
     m.tail_drift=m.tail_samples ? tail_hi-tail_lo : 1e30;
     // A stationary velocity code may be nonzero, but its tolerance cannot hide
-    // actual position drift or an oscillating tail.
+    // actual position drift or an oscillating tail
     if(req.velocity_noise_floor>req.hold_velocity_rad_s && m.tail_drift>std::max({3*req.encoder_step_rad,6*req.noise_rms_rad,.0002})) {
         std::vector<Sample> tail;for(const auto& s:rows)if(s.time_s>=excitation_end_s)tail.push_back(s);
         NoiseEstimate noise;noise.encoder_step_rad=req.encoder_step_rad;noise.rms_rad=req.noise_rms_rad;
@@ -204,7 +204,7 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
     out.minimum_motion_span_rad=required;
     // Establish correlated motion without claiming dynamic tracking quality.
     // A small causal shift allows the low-frequency starting response to lag;
-    // the later independent FRF still uses the original strict phase criteria.
+    // the later independent FRF still uses the original strict phase criteria
     for(std::size_t lag=0;lag<std::min<std::size_t>(100,u.size()/4);lag+=4) {
         double su=0,sy=0,suu=0,syy=0,suy=0;const double count=static_cast<double>(u.size()-lag);
         for(std::size_t i=lag;i<u.size();++i){const double a=u[i-lag],b=y[i];su+=a;sy+=b;suu+=a*a;syy+=b*b;suy+=a*b;}
@@ -218,7 +218,7 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
     // tracking error. Measure real forward/backward travel on significant
     // monotonic reference segments, using the same small causal alignment as
     // the correlation test. Neither a DC offset nor the initial pose defines
-    // whether an encoder has moved in both commanded directions.
+    // whether an encoder has moved in both commanded directions
     const auto record_segment=[&](std::size_t first,std::size_t last,int direction) {
         const double input=fresh[last]->reference-fresh[first]->reference;
         if(std::abs(input)<std::max(2*required,.1*req.amplitude_rad))return;
@@ -256,7 +256,7 @@ struct ResponseModel {
     double natural_frequency_rad_s{0},damping_ratio{0},effective_delay_s{0};
     double relative_fit_error{1e30},held_out_error{1e30},tested_follow_frequency_hz{0};
     double coherence{0};
-    // A cutoff is reported only when measurements bracket it, never extrapolated.
+    // A cutoff is reported only when measurements bracket it, never extrapolated
     double observed_cutoff_hz{std::numeric_limits<double>::quiet_NaN()};
     std::vector<FrequencyPoint> points;
 };
@@ -285,7 +285,7 @@ inline ResponseModel identify(const std::vector<Sample>& rows,const Requirements
         if(std::abs(response[j])>=0.80 && std::abs(response[j])<=1.20 && std::abs(std::arg(response[j]))<0.45)
             out.tested_follow_frequency_hz=req.frequencies_hz[j];
     }
-    // Fit two frequencies, retain the third as an independent spectral check.
+    // Fit two frequencies, retain the third as an independent spectral check
     struct Fit {double loss,wn,zeta,delay,held;};
     std::vector<Fit> fits;fits.reserve(65*32*17);double best=1e30;
     for(int ni=0;ni<65;++ni)for(int zi=0;zi<32;++zi)for(int di=0;di<17;++di) {
@@ -332,7 +332,7 @@ inline Gains paired_candidate(const Gains& current,const std::vector<double>& in
            !std::isfinite(kd_max[i]) || kd_max[i]<=0)
             throw std::invalid_argument("invalid servo gain or safety bound");
         // An early failed axis leaves later axes unmeasured. Do not revise them
-        // or replace a qualified configured baseline with a theoretical ratio.
+        // or replace a qualified configured baseline with a theoretical ratio
         if(!metrics[i].samples || (metrics[i].passed && models[i].tested_follow_frequency_hz>0))continue;
         const bool ring=metrics[i].oscillating || metrics[i].overshoot>req.overshoot_rad || models[i].resonance_observed ||
             (models[i].identifiable && models[i].damping_ratio<0.65);
@@ -347,7 +347,7 @@ inline Gains paired_candidate(const Gains& current,const std::vector<double>& in
             std::clamp(measured_deficit,1.2,2.0);
         const double kp=std::clamp(current.kp[i]*factor,0.0,kp_max[i]);
         // Keep the configured/measured damping baseline. Model inertia supplies
-        // a candidate increment, while the actual response and hard limits judge it.
+        // a candidate increment, while the actual response and hard limits judge it
         const double kd=std::clamp(current.kd[i]*(ring?1.2:metrics[i].limited_samples || delayed?.9:overdamped?.8:1.0),0.0,kd_max[i]);
         next.kp[i]=kp;next.kd[i]=std::max(0.0,kd);
     }

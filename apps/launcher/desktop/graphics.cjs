@@ -32,7 +32,7 @@ class GraphicsRuntime {
     this.compatibilityAvailable = this.resources.every(file => file.present);
     this.blockedReason = '';
     // The explicit command-line selection is also an opt-in; a saved selection
-    // requires the consent recorded by the mode dialog in this application.
+    // requires the consent recorded by the mode dialog in this application
     const consent = override === 'compatibility' || preferences.graphicsUnsafeSoftware === true;
     if (this.startupMode === 'compatibility' && (!consent || !this.compatibilityAvailable)) {
       this.blockedReason = consent ? 'SOFTWARE_RUNTIME_MISSING' : 'SOFTWARE_CONSENT_REQUIRED';
@@ -57,7 +57,7 @@ class GraphicsRuntime {
   }
   async refreshGPUInfo(timeoutMs = 1500) {
     // Keep one outstanding Electron query. A stalled GPU process must not hold
-    // mode selection, diagnostic export or the rescue interface indefinitely.
+    // mode selection, diagnostic export or the rescue interface indefinitely
     if (!this.refreshing) {
       this.refreshing = Promise.resolve().then(() => this.app.getGPUInfo('complete')).then(info => {
         this.gpuInfo = info; this.gpuInfoError = ''; this.gpuInfoWaitTimedOut = false;
@@ -92,7 +92,7 @@ class GraphicsRuntime {
   select(mode) {
     this.requestedMode = mode;
     // Rescue does not change Chromium's process-wide backend. Returning to the
-    // already running backend only needs the view to be recreated.
+    // already running backend only needs the view to be recreated
     this.effectiveMode = mode === 'rescue' || mode === this.backendMode ? mode : this.effectiveMode;
     this.blockedReason = '';
   }

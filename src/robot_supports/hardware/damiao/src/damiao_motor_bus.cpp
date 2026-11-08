@@ -252,7 +252,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::connect() {
 
         // Model names are only configuration-time defaults. Read actual encoding
         // ranges without enabling or writing any register; fail closed if any
-        // axis does not confirm all three values. Nothing is committed halfway.
+        // axis does not confirm all three values. Nothing is committed halfway
         std::vector<damiao::LimitParam> confirmed_limits;
         confirmed_limits.reserve(next_motors.size());
         for(const auto& motor : next_motors) {

@@ -432,7 +432,7 @@ std::string ModelCalibrationRecorder::frame_line(const ModelCalibrationFrame& fr
     auto append = [&](const JointVector& values) { for(double value : values) out << ',' << value; };
     append(frame.position); append(frame.velocity); append(frame.torque); append(frame.acceleration); append(frame.reference_position); append(frame.reference_velocity);
     // Historical/synthetic frames may not have command telemetry.  Preserve
-    // the extended CSV column count for every row in the new schema.
+    // the extended CSV column count for every row in the new schema
     auto append_optional=[&](const JointVector& values) {
         for(std::size_t i=0;i<frame.position.size();++i)
             out << ',' << (values.size()==frame.position.size()?values[i]:0.0);
@@ -468,11 +468,11 @@ void ModelCalibrationRecorder::writer_loop() {
             queue_.pop_front();
             // Pre-adaptation remains in the raw CSV for diagnostics, but
             // must NEVER enter the online friction/identification buffer.
-            // Long warm-up runs would otherwise pollute or bloat that buffer.
+            // Long warm-up runs would otherwise pollute or bloat that buffer
 
         }
         {
-            // This mutex is never taken by push() or the control cycle.
+            // This mutex is never taken by push() or the control cycle
             std::lock_guard<std::mutex> archive_lock(archive_mutex_);
             if(frame.phase != "gain_adaptation")frames_.push_back(frame);
         }
@@ -640,7 +640,7 @@ std::vector<GravityCalibrationPoseGroup> group_static_calibration_frames(const s
         if(!valid || !validation)continue;
         GravityCalibrationPoseGroup combined;combined.pose_group=id;combined.validation=*validation;
         // Equal direction weight; trim each approach separately before merging.
-        // Never apply one global tail window, which would discard reverse data.
+        // Never apply one global tail window, which would discard reverse data
         for(const auto& [direction,group]:directions)
             combined.samples.insert(combined.samples.end(),group.samples.end()-count,group.samples.end());
         result.push_back(std::move(combined));
@@ -709,12 +709,12 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     // Fit from pose-to-pose torque variations.  Constant joint offsets are
     // nuisance parameters; joint-centering removes them without consuming
     // first-moment observability.  This also prevents a torque zero-offset
-    // from masquerading as a link COM displacement.
+    // from masquerading as a link COM displacement
     Eigen::MatrixXd centered = A.leftCols(static_cast<Eigen::Index>(params));
     Eigen::VectorXd target = b;
     // Retain the uncentered regressor energy as a numerical reference.  A
     // column whose pose-to-pose variation is only roundoff is *not* an
-    // observable direction, no matter how large it becomes after scaling.
+    // observable direction, no matter how large it becomes after scaling
     Eigen::VectorXd uncentered_energy = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
     for(std::size_t joint=0;joint<joints;++joint) {
         for(std::size_t pose=0;pose<training_count;++pose) {
@@ -728,7 +728,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
 
         // Subtract a reference pose before computing the mean.  Directly
         // subtracting the mean of nearly identical nonzero rows introduces
-        // cancellation noise and used to give repeated poses a fake rank.
+        // cancellation noise and used to give repeated poses a fake rank
         const Eigen::RowVectorXd reference = centered.row(static_cast<Eigen::Index>(joint));
         const double target_reference = target(static_cast<Eigen::Index>(joint));
         Eigen::RowVectorXd mean_delta = Eigen::RowVectorXd::Zero(static_cast<Eigen::Index>(params));
@@ -750,7 +750,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     }
 
     // Normalize by observed regressor energy, NEVER by a COM offset bound.
-    // Tiny/zero columns are unobservable: they retain the source URDF prior.
+    // Tiny/zero columns are unobservable: they retain the source URDF prior
     Eigen::VectorXd column_scale(static_cast<Eigen::Index>(params));
     Eigen::MatrixXd normalized=centered;
     for(std::size_t col=0;col<params;++col) {
@@ -759,7 +759,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
         const double original_rms=std::sqrt(std::max(0.0,uncentered_energy(static_cast<Eigen::Index>(col))/static_cast<double>(centered.rows())));
         // The relative term rejects floating-point cancellation, while the
         // absolute floor avoids amplifying sub-picometre-equivalent columns.
-        // This is an observability check, NOT a COM-displacement constraint.
+        // This is an observability check, NOT a COM-displacement constraint
         const double excitation_floor=std::max(1.0e-12,1.0e-9*original_rms);
         if(!(rms>excitation_floor)) {
             normalized.col(static_cast<Eigen::Index>(col)).setZero();
@@ -879,7 +879,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
 
     // Robust iteratively reweighted SVD ridge in the observable subspace.
     // Huber reweighting reduces the influence of transient torque spikes.
-    // Ridge is a soft numerical prior, not a hard COM or output constraint.
+    // Ridge is a soft numerical prior, not a hard COM or output constraint
     Eigen::VectorXd normalized_delta=Eigen::VectorXd::Zero(static_cast<Eigen::Index>(params));
     Eigen::VectorXd weights=Eigen::VectorXd::Ones(target.size());
     for(std::size_t iter=0;iter<5 && result.numerical_rank>0 && !prefer_prior;++iter) {
@@ -901,7 +901,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
         normalized_delta=fit_svd.matrixV()*coeff;
         const Eigen::VectorXd residual=normalized*normalized_delta-target;
         // Per-joint robust scale: do not downweight entire joint groups merely
-        // because their expected gravitational torque is larger.
+        // because their expected gravitational torque is larger
         for(std::size_t joint=0;joint<joints;++joint) {
             std::vector<double> abs_residual;
             for(std::size_t pose=0;pose<training_count;++pose)
@@ -917,7 +917,7 @@ tl::expected<GravityCalibrationResult, std::string> fit_gravity_calibration(
     const Eigen::VectorXd delta_h=column_scale.cwiseProduct(normalized_delta);
     if(!delta_h.allFinite()) return tl::make_unexpected(std::string("gravity fit produced non-finite first moments"));
     result.first_moments.reserve(first->links.size());
-    result.constraints_ok = true; // Legacy result field: no COM displacement bound is enforced.
+    result.constraints_ok = true; // Legacy result field: no COM displacement bound is enforced
     result.com_offsets_m.reserve(first->links.size());
     std::size_t active_link=0;
     for(std::size_t link=0;link<first->links.size();++link) {

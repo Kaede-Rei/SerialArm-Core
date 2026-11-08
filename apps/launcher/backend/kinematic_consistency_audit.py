@@ -1,10 +1,10 @@
-"""Read-only angular position/velocity consistency audit, requiring only NumPy.
+"""Read-only angular position/velocity consistency audit, requiring only NumPy
 
 This diagnostic estimates relative scale/bias between recorded q and dq. It is
 NOT an external sensor calibration and NEVER applies corrections. Unwrapped
 angular positions (rad), angular velocities (rad/s), and monotonic seconds are
 required. Touching windows share endpoint observations; no confidence interval
-or claim of independent repetitions is produced.
+or claim of independent repetitions is produced
 """
 from __future__ import annotations
 import numpy as np
@@ -14,12 +14,12 @@ def audit_angular_kinematics(time_s, q_rad, dq_rad_s, *, phase=None, valid=None,
         joint_names=None, window_s=1.0, max_gap_s=0.025, min_samples=12,
         min_windows=6, min_velocity_excitation_rms_rad_s=0.02,
         scale_review_tolerance=0.05):
-    """Fit Δq = scale * integral(dq dt) + bias * Δt per excited joint.
+    """Fit Δq = scale * integral(dq dt) + bias * Δt per excited joint
 
     All thresholds are explicit engineering review choices, not noise estimates.
     Phase changes, invalid/nonfinite samples and large time gaps split windows.
     Near-constant velocity cannot separate scale from bias and is not assigned
-    an interpretable scale. This function reads arrays without modifying them.
+    an interpretable scale. This function reads arrays without modifying them
     """
     t=np.asarray(time_s,dtype=float);q=np.asarray(q_rad,dtype=float);v=np.asarray(dq_rad_s,dtype=float)
     if t.ndim!=1 or q.ndim!=2 or q.shape!=v.shape or len(t)!=len(q) or q.shape[1]<1:

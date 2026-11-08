@@ -278,7 +278,7 @@ JointImpedanceGains load_controller_gains(const YAML::Node& node, const std::vec
 }
 
 // The file groups gains by four purposes. HOLD and TRACKING remain separate
-// internal roles, including when an older file spells those roles flat.
+// internal roles, including when an older file spells those roles flat
 void load_controller_cfg(const YAML::Node& controller, const std::vector<std::string>& joint_names,
                          bool named, const char* context, JointCtrllerCfg& cfg) {
     reject_unknown_keys(controller, context, { "allow_full_cmd", "rigid", "compliant", "drag", "servo_tracking",
@@ -295,7 +295,7 @@ void load_controller_cfg(const YAML::Node& controller, const std::vector<std::st
             if(member) {
                 reject_unknown_keys(purpose, current_context.c_str(), { "hold", "tracking" });
                 // A supplied purpose must describe both roles, even if a
-                // legacy alias elsewhere could otherwise fill the omission.
+                // legacy alias elsewhere could otherwise fill the omission
                 require_map(purpose, "hold", current_context.c_str());
                 require_map(purpose, "tracking", current_context.c_str());
                 current = require_map(purpose, member, current_context.c_str());
@@ -1163,7 +1163,7 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
             result.state_vel_fault_ratio = refreshed.state_vel_fault_ratio;
         // A caller may edit the public configuration after loading it. Preserve
         // those explicit limits while recomputing fields still derived from the
-        // provisional hardware defaults.
+        // provisional hardware defaults
         const auto preserve_edits = [&](auto JointLimitCfg::* field) {
             const auto& initial = source.initial_limits.*field;
             const auto& edited = requested.safety.limits.*field;

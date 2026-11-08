@@ -4,7 +4,7 @@
 
 namespace serial_arm::calibration_acquisition {
 // Each reverse/forward pair starts and ends at the demonstrated replay start.
-// Rates are fractions of the already retimed, safety-checked nominal path.
+// Rates are fractions of the already retimed, safety-checked nominal path
 struct DynamicPass { bool reverse; int speed_tier; double rate; };
 inline constexpr std::array<DynamicPass,4> dynamic_passes{{
     {true,1,0.5},{false,1,0.5},{true,2,1.0},{false,2,1.0}

@@ -46,7 +46,7 @@ SerialArm pybind11 Python 交互终端
     python serial_arm_terminal.py \
         --robot-profile dm_arm_gray
 
-也可以不使用 Robot Profile，显式传入路径：
+也可以不使用 Robot Profile，显式传入路径
 
     python serial_arm_terminal.py \
         --config /path/to/robot.yaml \

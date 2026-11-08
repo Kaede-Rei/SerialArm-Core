@@ -1,4 +1,4 @@
-"""Offline identification of accepted-reference to measured-position response."""
+"""Offline identification of accepted-reference to measured-position response"""
 import math
 import json
 
@@ -108,7 +108,7 @@ def _identify(samples, index, name, dt):
     if span < 0.01 or np.std(y) < 1e-4:
         result['reason'] = '参考变化不足，至少需要 0.01 rad 的多次往返跟踪'
         return result
-    # An affine offset absorbs static tracking error; it must not become a pole.
+    # An affine offset absorbs static tracking error; it must not become a pole
     u = u - np.mean(u)
     y = y - np.mean(y)
     split = int(len(y) * 0.7)
@@ -151,7 +151,7 @@ def _identify(samples, index, name, dt):
         result['reason'] = '采样率未覆盖可解析的执行带宽，请使用更高频率的跟踪记录'
         return result
     continuous = np.log(poles.astype(complex)) / dt
-    # The dominant pole pair describes the fitted second-order response only.
+    # The dominant pole pair describes the fitted second-order response only
     dominant = continuous[np.argmax(continuous.real)]
     natural = float(abs(dominant))
     result.update(identified=True, reason='二阶执行模型，按时间顺序留出后 30% 验证',
@@ -162,7 +162,7 @@ def _identify(samples, index, name, dt):
 
 
 def response_condition_change(samples):
-    """Do not fit one execution model across different closed-loop conditions."""
+    """Do not fit one execution model across different closed-loop conditions"""
     keys = ('kp', 'kd', 'actual_kp', 'actual_kd', 'gain_purpose', 'gain_profile',
             'impedance_mode', 'reference_behavior', 'model_feedforward_mode',
             'condition_signature', 'hold_compensation_enabled')
@@ -176,7 +176,7 @@ def response_condition_change(samples):
 
 
 def analyze_interaction_response(window):
-    """Analyze a completed passive window without issuing a robot command."""
+    """Analyze a completed passive window without issuing a robot command"""
     samples = window.get('samples', [])
     names = window.get('joint_names', [])
     result = dict(source='passive_closed_loop_identification', sample_count=len(samples),

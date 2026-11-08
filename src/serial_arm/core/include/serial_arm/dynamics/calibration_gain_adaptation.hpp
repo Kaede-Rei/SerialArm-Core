@@ -6,7 +6,7 @@
 
 namespace serial_arm::calibration_gain_adaptation {
 // Statistics from actual motor feedback while replaying the demonstrated
-// path. A new calibration task NEVER infers suitable gains from user Kp/Kd.
+// path. A new calibration task NEVER infers suitable gains from user Kp/Kd
 struct PassMetrics {
     std::size_t samples{0};
     std::size_t pauses{0};
@@ -26,7 +26,7 @@ struct PassMetrics {
 // Tolerances are dimensionless tracking quality relative to the *existing*
 // conservative soft following limits, not fractions of actuator Kp/Kd.
 // Rigid and identification gains require a frozen full-speed round trip.
-// Compliant gains are checked separately at a declared reduced rate.
+// Compliant gains are checked separately at a declared reduced rate
 inline constexpr double rigid_validation_max_error_ratio=1.50;
 inline constexpr double compliant_validation_max_error_ratio=1.75;
 inline bool quality_acceptable(const PassMetrics& metrics) {
@@ -37,7 +37,7 @@ inline bool quality_acceptable(const PassMetrics& metrics) {
 }
 // Compliant tracking is deliberately judged at a reduced, explicitly
 // recorded trajectory rate. The native hard-following and motor limits remain
-// identical to the rigid test; this only changes the performance acceptance.
+// identical to the rigid test; this only changes the performance acceptance
 inline constexpr double compliant_search_rate=0.55;
 inline constexpr double compliant_search_return_rate=0.75;
 inline constexpr double compliant_validation_rate=0.65;

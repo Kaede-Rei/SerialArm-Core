@@ -3,7 +3,7 @@
 
 This is an independent URDF-kinematics sanity check, not Pinocchio and not a
 substitute for C++ model or hardware validation. It never commands a robot
-and does not modify the original records. Requires NumPy.
+and does not modify the original records. Requires NumPy
 """
 from __future__ import annotations
 import argparse

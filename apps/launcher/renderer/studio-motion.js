@@ -1,6 +1,6 @@
 'use strict';
 // Same quick spring as AT-System-Integration's StudioMotion: k=900, c=50, m=.7.
-// Retain velocity when a press reverses, without introducing a renderer framework.
+// Retain velocity when a press reverses, without introducing a renderer framework
 (() => {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     const springs = new Map();
@@ -55,7 +55,7 @@
 })();
 
 // Progressive enhancement keeps the original selects and their change handlers
-// as the source of truth, while matching StudioSelect's top-layer option menu.
+// as the source of truth, while matching StudioSelect's top-layer option menu
 (() => {
     let sequence = 0;
     const enhanced = new WeakMap();
@@ -131,7 +131,7 @@
                 };
             }
             // The browser treats the invoker as part of its popover. A manual
-            // onclick toggle races auto light-dismiss on a second pointer click.
+            // onclick toggle races auto light-dismiss on a second pointer click
             trigger.popoverTargetElement = menu;
             trigger.popoverTargetAction = 'toggle';
             menu.addEventListener('beforetoggle', event => {

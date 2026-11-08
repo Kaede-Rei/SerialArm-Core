@@ -1,7 +1,7 @@
-"""Physical joint static/dynamic convex regression, with training-only CV.
+"""Physical joint static/dynamic convex regression, with training-only CV
 
 No empirical mass/COM boxes. Normalized pseudo-inertia cones constrain the
-fit itself. Prior/no-update is a genuine model candidate, never a fake success.
+fit itself. Prior/no-update is a genuine model candidate, never a fake success
 """
 import numpy as np
 
@@ -54,7 +54,7 @@ def _system(z,statics,basis,free,T,method):
             S.append(np.column_stack([s['mapped_Y']@T,nuisance*ns])*weight[:,None])
             t.append((s['tau']-s['baseline'])*weight)
         A=np.r_[A,np.concatenate(S)];b=np.r_[b,np.concatenate(t)]
-    # Tiny nuisance regularization; b is a nuisance estimate, not known sensor calibration.
+    # Tiny nuisance regularization; b is a nuisance estimate, not known sensor calibration
     R=np.zeros((3*j,n+3*j));R[:,n:]=np.diag(np.tile([.1,.001,.001],j))/np.sqrt(j)
     return np.r_[A,R],np.r_[b,np.zeros(3*j)],ns,raw
 
@@ -64,7 +64,7 @@ def constrained_fit(z,statics,engine,free,basis,method,penalty,parameter_target=
     except ImportError as exc:raise ValueError('联合物理辨识需要 CVXPY/Clarabel，请运行安装器更新工作台专用环境')from exc
     T,E,blocks=physical_coordinates(engine.prior,free);n=T.shape[1];j=z['tau'].shape[1]
     A,b,ns,raw=_system(z,statics,basis,free,T,method)
-    # Small square-root system from the exact quadratic sufficient statistics.
+    # Small square-root system from the exact quadratic sufficient statistics
     H=A.T@A;g=A.T@b;eig,U=np.linalg.eigh(.5*(H+H.T));eig=np.maximum(eig,0)
     R=np.sqrt(eig)[:,None]*U.T;rhs=np.divide(U.T@g,np.sqrt(eig),out=np.zeros_like(g),where=eig>1e-14)
     x=cp.Variable(n+3*j);constraints=[]
@@ -89,7 +89,7 @@ def constrained_fit(z,statics,engine,free,basis,method,penalty,parameter_target=
 
 
 def fit_prior(z,statics,engine,free,basis,method='WLS'):
-    """Freeze source inertias but fit nuisance with the SAME joint objective."""
+    """Freeze source inertias but fit nuisance with the SAME joint objective"""
     T,_,_=physical_coordinates(engine.prior,free)
     for s in statics:s['mapped_Y']=s['Y'][:,engine.cols]
     A,b,ns,raw=_system(z,statics,basis,free,T,method);n=T.shape[1]
@@ -102,7 +102,7 @@ def fit_prior(z,statics,engine,free,basis,method='WLS'):
 
 def _selection_score(z,statics,fit,parameters,prior,motion_scale):
     from dynamic_identification import score
-    # Calibration/validation scale is derived exclusively from this fold's training system.
+    # Calibration/validation scale is derived exclusively from this fold's training system
     motion=(score(z,fit)['rms_nm']/max(.02,float(motion_scale)))**2
     gravity=0.
     if statics:
@@ -135,7 +135,7 @@ def fit_joint(train,statics,engine,free,basis,method='WLS',parameter_target='ful
         scores.append(float(np.mean(losses))if len(losses)==count else float('inf'));failures.append(errors)
     recommendation=int(np.argmin(scores))
     # Always retain the best converged physical FIT as an explicit review
-    # alternative, even when training CV recommends the unchanged source.
+    # alternative, even when training CV recommends the unchanged source
     choice=1+int(np.argmin(scores[1:]));penalty=grid[choice]
     if not np.isfinite(scores[choice]):raise ValueError('全部物理候选求解失败；没有把原模型伪装成新候选')
     params,fit,diagnostic=constrained_fit(train,statics,engine,free,basis,method,penalty,parameter_target)

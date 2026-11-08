@@ -228,7 +228,7 @@ class ProfileLibrary:
                 selected = record
             else:
                 # Old shared files lack an owner. Import only entries whose
-                # existing dependency scope proves this Profile owns them.
+                # existing dependency scope proves this Profile owns them
                 selected = {}
                 for category in ('stages', 'modes', 'gain_purposes'):
                     entries = record.get(category) or {}
@@ -306,7 +306,7 @@ class ProfileLibrary:
                     and a['motor_id'] > 0 for a in acts.values()) and len(set(ids)) == len(joints))
         if setup_issues: profile_setup = False
         reason = setup_issues[0]['message'] if setup_issues else ''
-        # Offline simulation needs a valid Core model, not a made-up motor type.
+        # Offline simulation needs a valid Core model, not a made-up motor type
         core_issues = [item for item in setup_issues if item.get('group') != 'hardware']
         model_valid = bool(checks.get('core') and checks.get('description'))
         if model_valid:
@@ -363,7 +363,7 @@ class ProfileLibrary:
             # Existing historical checklist entries are still user reports,
             # even if they were recorded while a real robot was connected.
             # Older native gravity samples include a true Machine proof; do
-            # not demote them to self-check notes when upgrading the UI.
+            # not demote them to self-check notes when upgrading the UI
             if (item.get('kind') == 'operator_and_live' and
                     (item.get('runtime') or {}).get('sample_count', 0) >= 3):
                 return 'verified'
@@ -558,11 +558,11 @@ class ProfileLibrary:
         return self._readiness(config)
 
     def record_stage(self, config, stage, answers, native=None):
-        """Store optional operator notes without turning them into runtime admission.
+        """Store optional operator notes without turning them into runtime admission
 
         A checklist is not a native robot measurement. Opening or recording a
         checklist must not require ACTIVE, a workbench, or prior stage results.
-        Native measurement/verification tasks keep their independent safeguards.
+        Native measurement/verification tasks keep their independent safeguards
         """
         requirements = {
             'model_check': ('chain', 'limits', 'inertial'),
@@ -588,7 +588,7 @@ class ProfileLibrary:
             checked[key] = value
 
         # Only the Profile and its configuration dependencies are required to
-        # associate a note with the right robot; no hardware session is needed.
+        # associate a note with the right robot; no hardware session is needed
         info = self.inspector.inspect(config)
         core = read_yaml(info['resources']['core'])
         hardware = read_yaml(info['resources']['hardware'])
@@ -612,7 +612,7 @@ class ProfileLibrary:
         data.setdefault(field, {})[key] = entry
         # A real completed native gravity task may provide stronger evidence.
         # Missing, stale or unrelated sessions never block saving a note and
-        # must never transform self-reported checkboxes into a native proof.
+        # must never transform self-reported checkboxes into a native proof
         if stage == 'gravity_verification' and native is not None:
             try:
                 sample = native.request('status', {}, timeout=8)
@@ -647,7 +647,7 @@ class ProfileLibrary:
                         'recorded_at': time.time(),
                     }
             except Exception:
-                # There is no usable live native proof; keep only the note.
+                # There is no usable live native proof; keep only the note
                 pass
         _atomic_yaml(path, data)
         return self._readiness(config)
@@ -655,7 +655,7 @@ class ProfileLibrary:
     @staticmethod
     def _gain_interaction_context(core, purpose):
         # Receipt scopes retain their existing saved-configuration semantics;
-        # actual measured context is checked separately by _gain_binding.
+        # actual measured context is checked separately by _gain_binding
         admittance = ((core.get('capability') or {}).get('admittance') or {})
         if purpose == 'SERVO_TRACKING':
             return {key: admittance.get(key) for key in ('joint_enabled', 'observer', 'calibration', 'controller')}
@@ -878,7 +878,7 @@ class ProfileLibrary:
                 cache.mkdir(parents=True, exist_ok=True)
                 shutil.copytree(package_root, copied, ignore=shutil.ignore_patterns('.git', '__pycache__', '.serialarm'))
             # The main package copy is reusable; includes in other packages can
-            # change independently, so always evaluate Xacro against current resources.
+            # change independently, so always evaluate Xacro against current resources
             script = ('import sys,json; sys.path.insert(0,sys.argv[2]); '
                 'from profiles import Inspector; import xacro,xacro.substitution_args; '
                 'inspector=Inspector(sys.argv[3]); roots=json.loads(sys.argv[4]); '
@@ -923,7 +923,7 @@ class ProfileLibrary:
         return {'source_root':str(root),'resource_roots':resource_roots,'original_package_root':original_package_root,'package_root':str(package_root),'package_name':package_name,'urdf':str(urdf),'urdf_relative':str(urdf.relative_to(package_root)),'xacro':str(xacros[0]) if xacros else '','ros2_control_xacro':next((str(p) for p in xacros if 'ros2_control' in p.name),''),'roots':roots,'leaves':leaves,'links':[x['name'] for x in raw['links']],'joints':raw['joints'],'preview':preview,'fingerprint':_sha(urdf), 'model_valid': not model_issues, 'model_issues': model_issues}
 
     def _collect_description_resources(self, analysis, package_dir, copied):
-        """Keep copied models usable after their original workspace is removed."""
+        """Keep copied models usable after their original workspace is removed"""
         original = Path(analysis['package_root']).resolve()
         roots = [analysis['source_root'], str(original.parent), str(original), *analysis.get('resource_roots', []),
                  *self.inspector.roots(config_values({}), analysis['urdf'])]
@@ -940,7 +940,7 @@ class ProfileLibrary:
             imported_files[source] = target
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, target)
-            # Preserve the standard relative material/texture dependencies of OBJ and DAE assets.
+            # Preserve the standard relative material/texture dependencies of OBJ and DAE assets
             references = []
             if source.suffix.lower() in ('.obj', '.mtl'):
                 body = source.read_text(errors='replace')
@@ -993,7 +993,7 @@ class ProfileLibrary:
             if mesh.get('filename') != relative:
                 mesh.set('filename', relative); model_changed = True
         if model_changed: tree.write(urdf, encoding='utf-8', xml_declaration=True)
-        # Parse using generated resources only, with no fallback to the source workspace.
+        # Parse using generated resources only, with no fallback to the source workspace
         parsed = self.inspector._parse_urdf(urdf, [str(package_dir)])
         problems = [item['error'] for link in parsed['links'] for item in [*link['visuals'],*link['collisions']] if item.get('error')]
         if problems: raise ValueError('model.urdf_path 生成配置缺少资源 / Generated model resources are incomplete: ' + '; '.join(problems))
@@ -1050,7 +1050,7 @@ class ProfileLibrary:
             # If the Description already supplies a robot-specific Core config,
             # use it as the authoritative profile configuration. In particular,
             # do not silently replace validated joint-specific gains by the generic
-            # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults.
+            # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults
             authored_config = copied / 'config' / 'core' / f'{profile}.yaml'
             if authored_config.is_file():
                 authored_core = read_yaml(authored_config)
@@ -1064,10 +1064,10 @@ class ProfileLibrary:
                 if authored_urdf != expected_urdf or not authored_urdf.is_file():
                     raise ValueError('Description 自带 Core 配置中的 URDF 路径与所选模型不匹配')
                 core_config_relative = f'config/core/{profile}.yaml'
-                # Normalize only the newly copied package, never its source.
+                # Normalize only the newly copied package, never its source
                 authored_config.write_text(four_mode_control_text(authored_config.read_text()), encoding='utf-8')
                 # Keep an already included legacy copy consistent, for consumers
-                # still accessing config/serialarm/core.yaml directly.
+                # still accessing config/serialarm/core.yaml directly
                 legacy_copy = config_dir / 'core.yaml'
                 if legacy_copy.is_file():
                     legacy_copy.write_bytes(authored_config.read_bytes())
@@ -1565,7 +1565,7 @@ class ProfileLibrary:
             raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')
         self._validate_core_profile(core,hardware,entry,core_path,before_core,allow_hardware_draft=True)
         # New saves use four purposes; a schema-only save rewrites just the
-        # controller block and preserves the surrounding authored YAML.
+        # controller block and preserves the surrounding authored YAML
         desired = {}
         if core != before_core:
             desired[core_path] = yaml.safe_dump(four_mode_core(core), allow_unicode=True, sort_keys=False)

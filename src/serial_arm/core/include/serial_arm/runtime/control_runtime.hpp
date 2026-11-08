@@ -22,7 +22,7 @@ struct RuntimeSnapshot {
 };
 
 struct RuntimeHooks {
-    // All hooks run in the same serialized context as Robot::cycle.
+    // All hooks run in the same serialized context as Robot::cycle
     std::function<bool()> running;
     std::function<bool(Robot::TimePoint, double)> before_cycle;
     std::function<void(const RuntimeSnapshot&)> after_step;
@@ -30,7 +30,7 @@ struct RuntimeHooks {
 };
 
 // One executor is shared by the terminal, Python session and ROS2 adapter.
-// Adapters own transport and presentation, never a second Robot control loop.
+// Adapters own transport and presentation, never a second Robot control loop
 class ControlRuntime {
 public:
     void run(Robot& robot, double frequency_hz, double max_dt_s, const RuntimeHooks& hooks);
@@ -57,7 +57,7 @@ private:
     std::atomic<bool> executing_{false};
 };
 
-// Shared bounded point-to-point progression, including the parking follow guard.
+// Shared bounded point-to-point progression, including the parking follow guard
 bool advance_joint_reference(
     JointVector& position, JointVector& velocity, const JointVector& target,
     const JointVector& max_velocity, const JointVector& max_acceleration,

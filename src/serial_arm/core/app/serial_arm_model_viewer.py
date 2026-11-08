@@ -2,7 +2,7 @@
 """
 URDF 机械臂模型、关节坐标系与旋转轴可视化工具
 
-特点：
+特点
 1. 从 arm.yaml 的 model.urdf_path 读取机械臂 URDF
 2. 解析 URDF 中的 STL visual / collision 网格并显示完整机械臂模型
 3. 显示各关节的 RGB 坐标系、黑色关节轴及关节名称标签
@@ -21,7 +21,7 @@ URDF 机械臂模型、关节坐标系与旋转轴可视化工具
     python3 serial_arm_model_viewer.py --opacity 0.6
     python3 serial_arm_model_viewer.py --help
 
-操作：
+操作
 - 鼠标左键拖动：旋转视角
 - 鼠标中键拖动：平移视角
 - 鼠标滚轮：缩放视角
@@ -40,7 +40,7 @@ URDF 机械臂模型、关节坐标系与旋转轴可视化工具
 - H：显示或隐藏左侧菜单
 - 关闭窗口：退出程序
 
-坐标轴颜色：
+坐标轴颜色
 - X：红色
 - Y：绿色
 - Z：蓝色

@@ -202,7 +202,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         // A failed FIRST activation (including motors not powered yet) must
         // not trap the operator in FAULT forever. Only startup bus faults
         // without an active holding controller are eligible for retry.
-        // An in-motion safety FAULT must still be cleared explicitly.
+        // An in-motion safety FAULT must still be cleared explicitly
         const bool startup_failure = !fault_hold_active_ && !has_completed_cycle_ && current_fault_ &&
             (current_fault_->code==RobotErr::MOTOR_BUS_CONNECT_FAILED ||
              current_fault_->code==RobotErr::MOTOR_BUS_ACTIVATE_FAILED);
@@ -379,7 +379,7 @@ bool Robot::begin_calibration_hold(const JointImpedanceGains& gains) {
            gains.kp[i]>cfg_.safety.limits.max_kp[i] || gains.kd[i]>cfg_.safety.limits.max_kd[i])return false;
     }
     // Capture the ACTUAL previous control effort before changing mode.
-    // No cycle should briefly revert to the user's RIGID_HOLD Kp/Kd.
+    // No cycle should briefly revert to the user's RIGID_HOLD Kp/Kd
     JointImpedanceGains origin{last_joint_cmd_.kp,last_joint_cmd_.kd};
     const auto switched=set_impedance_mode(JointImpedanceMode::RIGID_HOLD,Clock::now());
     if(!switched)return false;
@@ -438,7 +438,7 @@ bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains, Joi
     if(mode==JointImpedanceMode::COMPLIANT_DRAG && std::any_of(gains.kp.begin(),gains.kp.end(),[](double value){return value!=0;}))return false;
     const auto now=Clock::now();
     // Revisions start at the CURRENT blended gains, never jump back to the
-    // user's rigid tracking gains on each automatic adjustment.
+    // user's rigid tracking gains on each automatic adjustment
     JointImpedanceGains source=mode==JointImpedanceMode::COMPLIANT_TRACKING ?
         cfg_.ctrller.compliant_tracking_gains : mode==JointImpedanceMode::COMPLIANT_HOLD ?
         cfg_.ctrller.compliant_hold_gains : mode==JointImpedanceMode::RIGID_HOLD ?
@@ -503,7 +503,7 @@ bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
        ctrller_.get_impedance_mode()!=JointImpedanceMode::RIGID_TRACKING ||
        !std::isfinite(duration_s) || duration_s < 0.1 || duration_s > 2.0 ||
        now < last_cycle_time_) return false;
-    // A calibration override must not supersede the shutdown gain handover.
+    // A calibration override must not supersede the shutdown gain handover
     clear_calibration_tracking_gains();
     park_rigid_ramp_started_=now;
     park_rigid_ramp_duration_s_=duration_s;
@@ -735,7 +735,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     // The actual wall-clock dt is observed for the safety watchdog. When one or
     // two consecutive cycles exceed the limit, advance the controller by the
     // nominal dt, not by the delayed wall-clock interval. Command/state timeouts
-    // still use real timestamps and all other fault conditions stay immediate.
+    // still use real timestamps and all other fault conditions stay immediate
     const bool dt_fault_required = dt_overrun_watchdog_.fault_required(dt, cfg_.safety.max_dt_s);
     const double controller_dt = dt > cfg_.safety.max_dt_s ? nominal_dt : dt;
 
@@ -1322,7 +1322,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
         // ever reaches ACTIVE (e.g. USB-CAN connected, motors not powered).
         // The hardware backend already attempted to disable every motor on
         // the failed activation path. Retry a best-effort disable, then
-        // restore only the lifecycle to INACTIVE; never command motion here.
+        // restore only the lifecycle to INACTIVE; never command motion here
         const bool startup_failure = current_fault_ &&
             (current_fault_->code == RobotErr::MOTOR_BUS_CONNECT_FAILED ||
              current_fault_->code == RobotErr::MOTOR_BUS_ACTIVATE_FAILED) &&
@@ -1906,7 +1906,7 @@ void Robot::apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now) {
     }
     cmd.kp=gains->kp;cmd.kd=gains->kd;
     // Calibration hold gains are independent of normal user Kp/Kd.  Blend
-    // smoothly on entry, before the standard joint safety checker.
+    // smoothly on entry, before the standard joint safety checker
     if(calibration_hold_gains_ && ctrller_.get_impedance_mode() == JointImpedanceMode::RIGID_HOLD) {
         gain_source_=GainSource::CALIBRATION_OVERRIDE;
         const double elapsed = std::chrono::duration<double>(now-calibration_hold_started_).count();
@@ -1940,7 +1940,7 @@ void Robot::apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now) {
 
     // Park is the only user of this temporary handover. The first RIGID_TRACKING
     // command has compliant gains, then Kp/Kd increase continuously while its
-    // reference travels from actual measured q; safety limits still apply.
+    // reference travels from actual measured q; safety limits still apply
     if(park_rigid_ramp_started_ &&
        ctrller_.get_impedance_mode()==JointImpedanceMode::RIGID_TRACKING) {
         gain_source_=GainSource::PARK_OVERRIDE;

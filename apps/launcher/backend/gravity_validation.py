@@ -1,17 +1,17 @@
-"""Offline gravity-candidate evaluation with explicit deployment semantics.
+"""Offline gravity-candidate evaluation with explicit deployment semantics
 
 Rows are stationary pose aggregates and columns are joints, all in N m.  This
 module does not fit inertial parameters, select hyperparameters, or operate a
-robot.  Its two scores answer different questions:
+robot.  Its two scores answer different questions
 
-* raw_urdf: prediction minus measured torque, without a fitted offset;
+* raw_urdf: prediction minus measured torque, without a fitted offset
 * bias_corrected: the same residual minus a per-joint offset estimated only
-  from training poses and then frozen for the held-out poses.
+  from training poses and then frozen for the held-out poses
 
 Torque feedback is not independent gravity truth.  An offline pass is evidence
 for a candidate on this particular holdout, not certification of compensation
 or physical safety on hardware.  The improvement and regression thresholds
-below are engineering decision thresholds, not estimates of sensor noise.
+below are engineering decision thresholds, not estimates of sensor noise
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _require_finite_result(value):
 
 
 def _finite_evaluation(function):
-    """Fail closed on overflow even when every supplied input is finite."""
+    """Fail closed on overflow even when every supplied input is finite"""
     @wraps(function)
     def checked(*args, **kwargs):
         try:
@@ -40,7 +40,7 @@ def _finite_evaluation(function):
         except (FloatingPointError, OverflowError) as exc:
             raise ValueError('gravity evaluation produced non-finite derived residuals or metrics') from exc
         # Python float operations (for example a relative threshold product)
-        # do not obey NumPy errstate; reject them before serializing a report.
+        # do not obey NumPy errstate; reject them before serializing a report
         _require_finite_result(result)
         return result
     return checked
@@ -102,7 +102,7 @@ def _comparison(before, after, absolute_improvement_nm, relative_improvement,
     improvement = original - updated
     per_joint = np.asarray(before['rms']) - np.asarray(after['rms'])
     regressed = np.flatnonzero(-per_joint > axis_tolerance).tolist()
-    # Strict means beyond the declared minimum, not just numerical inequality.
+    # Strict means beyond the declared minimum, not just numerical inequality
     strict = improvement > threshold
     if regressed or improvement < -threshold:
         direction = 'degraded'
@@ -131,12 +131,12 @@ def evaluate_gravity_candidate(
     per_joint_regression_tolerance_nm=0.02,
     min_training_poses=3, min_validation_poses=2,
 ):
-    """Evaluate already-fixed baseline/candidate predictions on disjoint poses.
+    """Evaluate already-fixed baseline/candidate predictions on disjoint poses
 
     All six arrays use shape ``(pose_count, joint_count)``; different training
     and validation counts are allowed.  Callers must provide disjoint pose
     groups and identify the model, data, and solver versions in their report.
-    The evaluator cannot establish independence from predictions alone.
+    The evaluator cannot establish independence from predictions alone
 
     The returned ``status`` is one of prior_retained, improved, equivalent,
     degraded, or insufficient_evidence.  ``static_pass`` is an *offline* raw
@@ -144,11 +144,11 @@ def evaluate_gravity_candidate(
     rank > 0, sufficient pose counts, a strict aggregate RMS improvement, and
     no per-joint regression beyond the supplied tolerance.  Rank need not
     equal the number of physical parameters; callers must preserve unsupported
-    directions and separately check parameter/export physical admissibility.
+    directions and separately check parameter/export physical admissibility
 
     Two validation poses meet the default calculation gate but still provide
     limited same-session evidence.  No number of same-session poses makes this
-    function authorize hardware use.  The bias sign is model-minus-measured.
+    function authorize hardware use.  The bias sign is model-minus-measured
     """
     train = _pose_arrays(training_baseline, training_candidate, training_measured, 'training')
     hold = _pose_arrays(validation_baseline, validation_candidate, validation_measured, 'validation')
@@ -173,7 +173,7 @@ def evaluate_gravity_candidate(
 
     raw_train = (train[0] - train[2], train[1] - train[2])
     raw_hold = (hold[0] - hold[2], hold[1] - hold[2])
-    # No validation measurements may enter this estimate.
+    # No validation measurements may enter this estimate
     biases = tuple(error.mean(axis=0) for error in raw_train) if len(train[0]) else None
 
     def report(errors_train, errors_hold):

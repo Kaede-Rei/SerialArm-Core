@@ -1,7 +1,7 @@
-"""Model-specific operator trust for compliant fault recovery.
+"""Model-specific operator trust for compliant fault recovery
 
 Compare the values used by dynamics, rather than file paths or YAML formatting.
-No controller gains participate in this comparison.
+No controller gains participate in this comparison
 """
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ def gravity_trusted(core):
 
 
 def revoke_gravity_trust(text):
-    """Preserve the current YAML layout through the existing narrow patcher."""
+    """Preserve the current YAML layout through the existing narrow patcher"""
     from persistence import patch_text
     if not gravity_trusted(yaml.safe_load(text) or {}):
         return text

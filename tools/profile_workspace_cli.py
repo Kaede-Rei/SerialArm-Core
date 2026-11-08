@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Non-GUI entry points for the SerialArm profile workspace lifecycle."""
+"""Non-GUI entry points for the SerialArm profile workspace lifecycle"""
 from __future__ import annotations
 
 import argparse

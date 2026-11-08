@@ -128,7 +128,7 @@ class TcpCalibration:
         if not isinstance(source, str) or not source:
             return False
         # Catalogue renames inside the same directory retain the Profile's
-        # storage identity; model and mapping checks still bind its samples.
+        # storage identity; model and mapping checks still bind its samples
         return Path(source).expanduser().resolve().parent == Path(info['profile_file']).expanduser().resolve().parent
 
     def _ensure(self, config):
@@ -322,7 +322,7 @@ class TcpCalibration:
                     self.session['last_sequence'] = -1
                     ready = self._ensure(config)
                     # A migrated record still contains its original directory.
-                    # Save, export and discard must affect this local copy only.
+                    # Save, export and discard must affect this local copy only
                     self.session['directory'] = str(path.parent)
                     break
                 except (OSError, ValueError, yaml.YAMLError):
@@ -460,7 +460,7 @@ class TcpCalibration:
                 raise ValueError('TCP 名称已被其他模型元素使用，请选择不同的工具配置')
             # Recalibrate the existing tool in its original parent coordinates.
             # Sampling relative to the current TCP is valid and never creates
-            # a self-parenting joint or an ever-growing chain of TCP links.
+            # a self-parenting joint or an ever-growing chain of TCP links
             parent_frame=old.find('parent').get('link')
             transform=self._fixed_component(urdf,parent_frame).get(session['parent_frame'])
             if transform is None: raise ValueError('所选参考 Frame 与已有工具不是同一固定工具链')

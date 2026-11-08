@@ -36,7 +36,7 @@ struct ModelCalibrationFrame {
     std::vector<std::uint8_t> feedback_timing_valid;
     JointVector reference_position;
     JointVector reference_velocity;
-    // Observed controller commands; logged for gain-dependence diagnosis.
+    // Observed controller commands; logged for gain-dependence diagnosis
     JointVector command_kp;
     JointVector command_kd;
     JointVector model_feedforward;
@@ -139,12 +139,12 @@ public:
         const ModelCalibrationMetadata& metadata,
         const std::vector<JointVector>& trajectory = {});
     void push(ModelCalibrationFrame frame);
-    // A static pose is published only when its COMPLETE uninterrupted window passed.
+    // A static pose is published only when its COMPLETE uninterrupted window passed
     bool approve_static_group(const std::vector<ModelCalibrationFrame>& group);
     std::vector<ModelCalibrationFrame> approved_static_frames() const;
     void stop();
     ModelCalibrationRecorderStatus status() const;
-    // Full snapshots are offline-only; cannot block the control producer.
+    // Full snapshots are offline-only; cannot block the control producer
     std::vector<ModelCalibrationFrame> frames() const;
     tl::expected<void, std::string> write_trajectory(const std::vector<JointVector>& trajectory, double sample_dt);
     tl::expected<void, std::string> write_trajectory_checkpoint(const std::vector<JointVector>& trajectory, double sample_dt);

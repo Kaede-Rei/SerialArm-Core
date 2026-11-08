@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Line-delimited IPC; events and replies share stdout with serialized writes."""
+"""Line-delimited IPC; events and replies share stdout with serialized writes"""
 import json
 import copy
 import math
@@ -13,7 +13,7 @@ import time
 import traceback
 
 # Keep optional optimization dependencies in the dedicated GUI environment;
-# ROS setup may otherwise prepend an incompatible system SciPy.
+# ROS setup may otherwise prepend an incompatible system SciPy
 if sys.prefix != sys.base_prefix:
     _gui_site=Path(sys.prefix)/'lib'/('python'+str(sys.version_info.major)+'.'+str(sys.version_info.minor))/'site-packages'
     if _gui_site.is_dir():sys.path.insert(0,str(_gui_site))
@@ -128,7 +128,7 @@ _GRAVITY_VERIFY_MACHINE = {
 
 
 def gain_mode_configured(readiness, mode):
-    # Measurement quality is reported separately from valid configured gains.
+    # Measurement quality is reported separately from valid configured gains
     return readiness.get('modes', {}).get(mode) in ('configured', 'verified', 'warning', 'stale')
 
 
@@ -481,7 +481,7 @@ def main():
                 elif method == 'readiness_record':
                     # Operator checklists are optional notes, not live-hardware
                     # acceptance or runtime permission. Native calibration
-                    # capture endpoints enforce real feedback independently.
+                    # capture endpoints enforce real feedback independently
                     target = config_values(params.get('config', {}))
                     stage = params.get('stage', '')
                     linked_native = None
@@ -758,7 +758,7 @@ def main():
                                 response.get('source') != 'passive_native_cycle_snapshots'):
                             raise ValueError('响应记录必须为已结束且包含有效快照的被动记录')
                         # Preserve the operator's release annotation and source session,
-                        # including when the live session has since disconnected.
+                        # including when the live session has since disconnected
                         json.dumps(response, allow_nan=False)
                         from interaction_response import analyze_interaction_response
                         response['execution_dynamics'] = analyze_interaction_response(response)
@@ -788,7 +788,7 @@ def main():
                         prepared = prepare_gain_candidate(params.get('directory', ''), gain_purposes=params.get('gain_purposes'))
                         result_path = prepared['candidate_path']
                         # Native applies against the loaded model, effective hardware
-                        # and live control settings, which may differ from saved defaults.
+                        # and live control settings, which may differ from saved defaults
                         native_args = {'path': result_path, **({'gain_purposes':params['gain_purposes']} if params.get('gain_purposes') is not None else {})}
                     elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))['candidate_path'];native_args={'path':result_path}
                     elif kind == 'dynamics': result_path=prepare_dynamics_candidate(params.get('report', ''))['report'];native_args={'report':result_path}

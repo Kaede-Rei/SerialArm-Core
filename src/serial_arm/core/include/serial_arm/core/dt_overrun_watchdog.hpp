@@ -7,7 +7,7 @@ namespace serial_arm {
 
 // Only a finite, positive cycle over the configured maximum contributes to
 // the consecutive-overrun count. Invalid/negative dt remains an immediate fault
-// and all other safety checks remain independent.
+// and all other safety checks remain independent
 class DtOverrunWatchdog {
 public:
     static constexpr std::size_t kConsecutiveLimit = 3;

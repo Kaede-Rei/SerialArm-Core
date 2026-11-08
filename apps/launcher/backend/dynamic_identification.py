@@ -1,8 +1,8 @@
-"""Global/local inverse-dynamics identification from archived observations.
+"""Global/local inverse-dynamics identification from archived observations
 
 No device access. Derivatives come exclusively from zero-phase filtered actual
 positions. A local solve fixes trusted blocks BEFORE fitting; output is always
-the full selected inertial model, never a post-fit mask or mass/COM-only splice.
+the full selected inertial model, never a post-fit mask or mass/COM-only splice
 """
 from __future__ import annotations
 import csv
@@ -46,7 +46,7 @@ def _receipt(folder):
 
 
 def load_observations(directory):
-    """Preserve invalid rows as segment boundaries, never bridge over a gap."""
+    """Preserve invalid rows as segment boundaries, never bridge over a gap"""
     folder = Path(directory).expanduser().resolve()
     meta = json.loads((folder/'metadata.json').read_text())
     names = meta.get('joint_names')
@@ -72,7 +72,7 @@ def load_observations(directory):
     good = np.array([row.get('valid') == '1' for row in rows])
     good &= (np.isfinite(q).all(1) & np.isfinite(v).all(1) & np.isfinite(tau).all(1)
              & np.isfinite(age) & (age >= 0) & (age <= 30) & np.isin(phases, PHASES))
-    # Slice complete ~10s blocks exactly once, independent of fit/filter scope.
+    # Slice complete ~10s blocks exactly once, independent of fit/filter scope
     segments, lo = [], None
     for i in range(len(t)+1):
         boundary = (i == len(t) or not good[i] or
@@ -183,7 +183,7 @@ class Model:
         return locked, free
 
     def basis(self, free):
-        """Use model-only random states, never validation observations."""
+        """Use model-only random states, never validation observations"""
         rng = np.random.default_rng(201997); rows = []
         j = len(self.qi)
         for _ in range(240):
@@ -216,7 +216,7 @@ def preprocess(observations, engine, free, basis, cutoff=5.):
             for axis in range(j): f[axis,3*axis:3*axis+3] = [1.,np.sign(vi[axis]),vi[axis]]
             xs.append(np.concatenate([y[:,np.asarray(engine.cols)[free]]@basis,f],axis=1))
             baselines.append(y@engine.theta)
-        # Same anti-alias filter for every regressor, known baseline and target.
+        # Same anti-alias filter for every regressor, known baseline and target
         sos = butter(4,5.,fs=fs,output='sos')
         x = sosfiltfilt(sos,np.asarray(xs),axis=0)
         baseline = sosfiltfilt(sos,np.asarray(baselines),axis=0)
@@ -286,7 +286,7 @@ def physical_review(parameters, mapped):
 
 
 def pseudo_inertia(p):
-    """Linear mass-distribution moment matrix, using inertia at link origin."""
+    """Linear mass-distribution moment matrix, using inertia at link origin"""
     I=np.array([[p[4],p[5],p[7]],[p[5],p[6],p[8]],[p[7],p[8],p[9]]])
     J=np.zeros((4,4));J[:3,:3]=.5*np.trace(I)*np.eye(3)-I
     J[:3,3]=p[1:4];J[3,:3]=p[1:4];J[3,3]=p[0]
@@ -294,10 +294,10 @@ def pseudo_inertia(p):
 
 
 def complete_physical(prior, candidate, free, null_basis):
-    """Find a physical representative WITHOUT changing observable parameters.
+    """Find a physical representative WITHOUT changing observable parameters
 
     Convex PSD feasibility in the model-only structural nullspace; empirical
-    mass/COM bounds are absent. Failure leaves the raw solution diagnostic.
+    mass/COM bounds are absent. Failure leaves the raw solution diagnostic
     """
     from scipy.optimize import minimize
     N=np.asarray(null_basis);k=N.shape[1]
@@ -367,7 +367,7 @@ def _disjoint_split(z):
 def _compatible(a,b):
     from artifact_exports import _same_dynamics_model
     # Identical complete models, mappings, gravity, and joint order for honest
-    # session transfer. No silent rewriting of the validation model snapshot.
+    # session transfer. No silent rewriting of the validation model snapshot
     if _sha(a.source)!=_sha(b.source):
         if not _same_dynamics_model(a.source,b.source):
             raise ValueError('验证会话源模型不同，请使用同装机和同输入模型的独立会话')
@@ -398,7 +398,7 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
     static_rows=static_equations(engine,folder)
     static_train=[r for r in static_rows if not r['held']]
     full,fit,completion=fit_joint(train,static_train,engine,free,basis,estimator,parameter_target)
-    # Unconstrained IDIM is a benchmark diagnostic, never silently substituted.
+    # Unconstrained IDIM is a benchmark diagnostic, never silently substituted
     raw_fit=solve(train,rank,estimator);raw_parameters=engine.prior.copy()
     raw_parameters[free]+=basis@raw_fit['beta'][:rank]
     base=fit_prior(train,static_train,engine,free,basis,estimator)
@@ -471,7 +471,7 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
     report['report_path']=str(dest/'idim-report.json')
     _json(dest/'idim-report.json',report)
     _json(dest/'receipt.json',dict(run_id=run_id,report_sha256=_sha(dest/'idim-report.json')))
-    # Latest pointer only: the immutable per-run report is the source of export.
+    # Latest pointer only: the immutable per-run report is the source of export
     if destination is None:
         pointer=folder/'idim-candidate.json';tmp=folder/('idim-candidate-'+run_id+'.tmp')
         _json(tmp,report);tmp.replace(pointer)
@@ -479,9 +479,9 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
 
 
 def export_candidate(report_path, destination=None, *, review_only=False, report_only=False):
-    """Export immutable selected parameters after independent offline checks.
+    """Export immutable selected parameters after independent offline checks
 
-    Never refits, replaces inertia, adds bias, writes Core YAML or drives hardware.
+    Never refits, replaces inertia, adds bias, writes Core YAML or drives hardware
     """
     from full_inertial import _dynamic_parameters_to_urdf_fields
     from model_calibration_source import resolve_relative_mesh
@@ -523,7 +523,7 @@ def export_candidate(report_path, destination=None, *, review_only=False, report
         for name,x in zip(('ixx','ixy','ixz','iyy','iyz','izz'),(I[0,0],I[0,1],I[0,2],I[1,1],I[1,2],I[2,2])):t.set(name,f'{x:.17g}')
     dest=Path(destination).expanduser().resolve() if destination else path.parent/'export'
     if dest.exists():raise ValueError('导出目录已存在，请使用新目录')
-    # Work in a sibling stage; publish only after model roundtrip and hashes.
+    # Work in a sibling stage; publish only after model roundtrip and hashes
     dest.parent.mkdir(parents=True,exist_ok=True);stage=dest.with_name(dest.name+'.tmp-'+uuid.uuid4().hex)
     stage.mkdir()
     try:
@@ -541,7 +541,7 @@ def export_candidate(report_path, destination=None, *, review_only=False, report
         parsed=engine.pin.buildModelFromUrdf(str(model_path));expected=engine.theta.copy();expected[engine.cols]=parameters
         readback=np.concatenate([parsed.inertias[j].toDynamicParameters()for j in range(1,parsed.njoints)])
         if not np.allclose(readback,expected,rtol=1e-10,atol=1e-12):raise ValueError('URDF 惯性参数回读不一致')
-        # Inertial changes must preserve actual FK, joint topology and dimensions.
+        # Inertial changes must preserve actual FK, joint topology and dimensions
         rng=np.random.default_rng(17);max_fk=0.
         for _ in range(16):
             q=engine.neutral.copy();from full_inertial import _assign_configuration

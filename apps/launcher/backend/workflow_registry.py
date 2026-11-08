@@ -1,7 +1,7 @@
-"""Read-only cross-tool history inventory and explicit artifact provenance.
+"""Read-only cross-tool history inventory and explicit artifact provenance
 
 Task records are immutable data sources.  The registry never authorizes hardware
-motion; Core must independently check fingerprints and robot lifecycle state.
+motion; Core must independently check fingerprints and robot lifecycle state
 """
 from __future__ import annotations
 import csv
@@ -177,7 +177,7 @@ def export_record(root, directory, kind):
 
 
 def prepare_gravity_candidate(directory, *, prefer_recomputed=False, candidate_path=None, candidate_source=None):
-    """Stage an ephemeral validated package, without changing Core YAML."""
+    """Stage an ephemeral validated package, without changing Core YAML"""
     import yaml
     from persistence import build_gravity_correction_payload
     from persistence import select_gravity_candidate
@@ -185,7 +185,7 @@ def prepare_gravity_candidate(directory, *, prefer_recomputed=False, candidate_p
     folder, metadata, _, payload=build_gravity_correction_payload(directory,prefer_recomputed=source=='offline',candidate_path=selected)
     if prefer_recomputed and payload.get('candidate_source') != 'recomputed-candidate.json':
         raise ValueError('缺少离线重力候选，请先执行离线重算')
-    # Native checks actual robot URDF fingerprint again, on every apply.
+    # Native checks actual robot URDF fingerprint again, on every apply
     folder=Path(folder)
     receipt = payload.get('candidate_report_sha256')
     target=folder/'candidate'/('gravity-runtime-preview-'+receipt[:16]+'.yaml' if receipt else 'gravity-runtime-preview.yaml')
@@ -220,7 +220,7 @@ def prepare_gain_candidate(directory, gain_purposes=None):
 
 
 def resolve_dynamics_candidate_path(report_path, report):
-    """Resolve a report-local URDF, including relocated legacy absolute paths."""
+    """Resolve a report-local URDF, including relocated legacy absolute paths"""
     report_file = Path(report_path).expanduser().resolve(strict=True)
     value = report.get('candidate_urdf')
     if not isinstance(value, str) or not value.strip():
@@ -228,7 +228,7 @@ def resolve_dynamics_candidate_path(report_path, report):
     candidate = Path(value).expanduser()
     if candidate.is_absolute():
         # Legacy reports stored the acquisition machine's absolute directory.
-        # Bind to the copy beside this report even if the old file still exists.
+        # Bind to the copy beside this report even if the old file still exists
         candidate = report_file.parent / candidate.name
     else:
         candidate = report_file.parent / candidate
@@ -239,7 +239,7 @@ def resolve_dynamics_candidate_path(report_path, report):
 
 
 def prepare_dynamics_candidate(report_path):
-    """Offline-reviewed dynamic URDF preview, checked again by native Core."""
+    """Offline-reviewed dynamic URDF preview, checked again by native Core"""
     report_file=Path(report_path).expanduser().resolve(strict=True)
     report=_json(report_file)
     if report_file.name!='identification-report.json' or not report or report.get('schema')!='serial_arm_advanced_identification':
@@ -254,10 +254,10 @@ def prepare_dynamics_candidate(report_path):
 
 
 def validate_gain_trajectory(directory, response_window, purpose):
-    """Assess a fresh recorded reference path with a frozen, qualified gain set.
+    """Assess a fresh recorded reference path with a frozen, qualified gain set
 
     This adds independent path evidence; it never upgrades local qualification
-    into unmeasured workspace or contact certification, or changes runtime gains.
+    into unmeasured workspace or contact certification, or changes runtime gains
     """
     import math
     from control_parameters import deployment_gain_groups, selected_gain_purposes

@@ -1,5 +1,5 @@
 /* Shared visual language of AT-System-Integration's current Robot Studio GUI.
-   Keep domain-specific layouts in styles.css; application chrome lives here. */
+   Keep domain-specific layouts in styles.css; application chrome lives here */
 :root {
   --input: var(--subtle);
   --soft: var(--subtle);
@@ -129,7 +129,7 @@ textarea { font-family: inherit; }
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page { flex: 1 0 auto; overflow: visible; }
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page-body { overflow: visible; }
 .studio-content > .terminal-card { flex: none; margin: 0 22px 18px; }
-/* Workspaces have one page scroller, shared with the optional runtime panel. */
+/* Workspaces have one page scroller, shared with the optional runtime panel */
 .studio-content:has(.workbench-layout) { scroll-behavior: auto; }
 .studio-page:has(.workbench-layout) { flex: 1 0 auto; overflow: visible; }
 .studio-page-body:has(.workbench-layout) { flex: none; overflow: visible; }
@@ -142,7 +142,7 @@ textarea { font-family: inherit; }
 .workspace-status { border-radius: 8px; font-size: 11px; }
 .workspace-status span { font-size: 11px; }
 :root.light #terminal { background: #fbfbfc; }
-/* Robot manager follows the reference's row layout, search, filters and menu. */
+/* Robot manager follows the reference's row layout, search, filters and menu */
 .robot-manager { display: flex; flex-direction: column; min-height: 0; max-height: inherit; max-width: 720px; width: 100%; margin: 0 auto; color: var(--text); overflow: hidden; }
 .robot-manager-heading { display: flex; align-items: center; justify-content: space-between; padding: 24px 26px 20px; gap: 16px; flex: none; }
 .robot-manager-heading > div { display: flex; align-items: center; gap: 11px; min-width: 0; }
@@ -189,7 +189,7 @@ textarea { font-family: inherit; }
 .robot-row-menu button { display: flex; align-items: center; justify-content: flex-start; gap: 9px; width: 100%; text-align: left; font-size: 12px; padding: 8px 9px; min-height: 33px; border: 0; background: transparent; border-radius: 6px; color: var(--red); }
 .robot-row-menu button:hover { background: var(--hover); }
 .robot-row-menu button svg { width: 15px; height: 15px; }
-/* Native dialogs preserve modal focus and all existing hardware confirmations. */
+/* Native dialogs preserve modal focus and all existing hardware confirmations */
 .studio-dialog { width: min(520px,calc(100vw - 40px)); max-height: calc(100dvh - 48px); margin: auto; overflow: auto; box-shadow: 0 20px 80px #0003; }
 .studio-dialog::backdrop, .priority-error-overlay[open] { background: #0005; backdrop-filter: blur(3px); }
 .studio-dialog h3, .priority-error-card h3 { font-size: 19px; font-weight: 600; line-height: 1.5; margin: 9px 0 12px; }
@@ -205,7 +205,7 @@ textarea { font-family: inherit; }
 .priority-error-card .error-technical { margin: 16px 0; }
 .priority-error-card .error-technical summary { font-size: 12px; color: var(--muted); }
 .priority-error-card .error-technical pre { max-height: 34vh; overflow: auto; }
-/* The reference uses short fades and restrained panel motion. */
+/* The reference uses short fades and restrained panel motion */
 .page.page-transition-out { animation: studio-fade-out 70ms var(--motion-ease) both; pointer-events: none; }
 .page.page-transition-in { animation: studio-fade-in 140ms var(--motion-ease) both; }
 dialog[open]:not(.priority-error-overlay), .priority-error-overlay[open] .priority-error-card,
@@ -281,7 +281,7 @@ dialog[open]:not(.priority-error-overlay), .priority-error-overlay[open] .priori
   .model-calibration-task-window, .toast { animation: none !important; transform: none !important; }
 }
 
-/* StudioSelect appearance, with native values retained for the robot editor. */
+/* StudioSelect appearance, with native values retained for the robot editor */
 .studio-select { position: relative; min-width: 0; width: 100%; }
 select.studio-native-select { position: absolute; width: 1px !important; height: 1px !important; padding: 0 !important; margin: 0; opacity: 0; pointer-events: none; clip-path: inset(50%); }
 .ros-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 34px; text-align: left; font-size: 12px; color: var(--text); background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
@@ -301,7 +301,7 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 .app.atil-shell .sidebar .nav-item span { overflow: hidden; text-overflow: ellipsis; }
 @media(max-width:900px) { .settings-grid { grid-template-columns: 1fr; } }
 
-/* Preserve SerialArm's original three entrances and navigation categories. */
+/* Preserve SerialArm's original three entrances and navigation categories */
 .onboarding-shell .onboarding-body { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .onboarding-shell .onboarding-content {
   width: 100%; max-width: none; margin: 0;
@@ -342,7 +342,7 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
   .home-association-mark { width: 76px; height: 76px; }
 }
 
-/* Daily actions remain visible while editing targets and control settings. */
+/* Daily actions remain visible while editing targets and control settings */
 .workspace-operation-panel { position: sticky; top: var(--robot-controls-top, 0px); z-index: 8; background: var(--card); padding: 0 0 16px; }
 .workbench-task > .workspace-operation-panel { padding: 18px 18px 0; }
 .workbench-task > .workspace-operation-panel + .workspace-panel { padding-top: 16px; }
@@ -374,7 +374,7 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
   .page-head-actions > .parameter-top-actions { flex-wrap: wrap; }
 }
 
-/* Preparation stays scannable; each section owns its disclosure state. */
+/* Preparation stays scannable; each section owns its disclosure state */
 .readiness-overview { margin: 18px 0; }
 .readiness-overview .readiness-connection { grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 14px; margin: 0; }
 .readiness-overview .readiness-connection > div { padding: 16px; gap: 12px; min-height: 70px; }
@@ -418,7 +418,7 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 }
 @media(prefers-reduced-motion:reduce) { .readiness-fold > summary::before { transition: none; } }
 
-/* A graphics fault stays inside its preview, independent of robot operation. */
+/* A graphics fault stays inside its preview, independent of robot operation */
 .graphics-failure { box-sizing: border-box; width: 100%; min-height: 100%; max-height: 100%; padding: 28px; overflow: auto; background: var(--card); color: var(--text); position: relative; z-index: 4; }
 .graphics-failure h3 { margin: 0 0 14px; }
 .graphics-failure p, .graphics-settings p { line-height: 1.7; }

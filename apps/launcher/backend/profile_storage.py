@@ -1,4 +1,4 @@
-"""Profile-owned data directories, independent of catalogue filename or size."""
+"""Profile-owned data directories, independent of catalogue filename or size"""
 from __future__ import annotations
 from pathlib import Path
 import json
@@ -26,7 +26,7 @@ def _identity(info, repository_root):
             robot = root / 'src/robot_supports/robots' / name
             home = robot if robot.is_dir() else shared / name
         else:
-            # Adding a neighbour or renaming the catalogue never moves a robot.
+            # Adding a neighbour or renaming the catalogue never moves a robot
             home = folder if folder.name == name else folder / name
     return name, profile_file, folder, home
 
@@ -59,7 +59,7 @@ def _same_tree(source, target):
 
 
 def _copy_record(source, target, metadata=None):
-    # Never alter historical sources or combine files from divergent tasks.
+    # Never alter historical sources or combine files from divergent tasks
     if source.is_symlink() or any(p.is_symlink() for p in source.rglob('*')):
         return
     if target.exists():
@@ -96,7 +96,7 @@ def _copy_trajectory(source, target, name, repository_root):
     if not isinstance(key, str) or not re.fullmatch(r'[0-9a-f]{32}', key):
         return None
     collision = False
-    # These are the same two roots TrajectoryLibrary.list/ensure consume.
+    # These are the same two roots TrajectoryLibrary.list/ensure consume
     roots = (target.parent, Path(repository_root) / '.install' / 'teach-replay' / safe_profile(name))
     for base in roots:
         for path in base.glob('*/metadata.json'):
@@ -124,7 +124,7 @@ def _import_owned_records(info, repository_root, home):
         nonlocal changed
         previous = imports.get(str(record))
         # A removed migrated trajectory was explicitly deleted by the user;
-        # leaving its historical source intact must not resurrect it next time.
+        # leaving its historical source intact must not resurrect it next time
         if isinstance(previous, str):
             return
         copied = (_copy_trajectory(record, destination, name, repository_root)

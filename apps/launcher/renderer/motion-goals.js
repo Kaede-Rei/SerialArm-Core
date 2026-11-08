@@ -1,4 +1,4 @@
-/* Goal conversion edits parameter drafts only, never robot commands. */
+/* Goal conversion edits parameter drafts only, never robot commands */
 (function (root) {
     function returnFactor(zeta) {
         if (!Number.isFinite(zeta) || zeta < .7 || zeta > 1.2) throw new Error('Return damping ratio must be between 0.7 and 1.2');
@@ -8,7 +8,7 @@
             const d = Math.sqrt(zeta * zeta - 1), a = -zeta + d, b = -zeta - d;
             return (-b * Math.exp(a * time) + a * Math.exp(b * time)) / (a - b);
         };
-        // In this damping range the first overshoot stays within the 5% band.
+        // In this damping range the first overshoot stays within the 5% band
         let lower = 0, upper = 30;
         for (let i = 0; i < 60; i++) { const middle = (lower + upper) / 2; if (error(middle) > .05) lower = middle; else upper = middle; }
         return upper;

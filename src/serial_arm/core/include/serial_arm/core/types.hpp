@@ -38,7 +38,7 @@ enum class ModelFeedforwardMode {
 /**
  * @brief 关节状态
  *
- * 所有数据均位于关节侧：
+ * 所有数据均位于关节侧
  * - pos: rad for revolute/continuous, m for prismatic
  * - vel: rad/s or m/s
  * - tor: generalized effort, N·m or N
@@ -53,7 +53,7 @@ struct JointState {
  * @brief 执行器状态
  *
  * Core 统一定义执行器侧状态单位；Hardware Backend 必须将厂商协议
- * 反馈、厂商单位、电流或其他底层量转换为以下 SerialArm 语义：
+ * 反馈、厂商单位、电流或其他底层量转换为以下 SerialArm 语义
  * - pos: rad
  * - vel: rad/s
  * - tor: N·m
@@ -75,7 +75,7 @@ struct ActuatorState {
 /**
  * @brief 关节阻抗增益
  *
- * 增益均为关节侧增益：
+ * 增益均为关节侧增益
  * - kp: N·m/rad
  * - kd: N·m·s/rad
  */

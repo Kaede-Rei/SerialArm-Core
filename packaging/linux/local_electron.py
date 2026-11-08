@@ -12,7 +12,7 @@ import zipfile
 
 
 def check_software_runtime(launcher: Path, dist: Path) -> None:
-    """Use the desktop's software-backend resource list before creating an archive."""
+    """Use the desktop's software-backend resource list before creating an archive"""
     script = "const {SOFTWARE_FILES}=require(process.argv[1]); process.stdout.write(JSON.stringify(SOFTWARE_FILES))"
     result = subprocess.run(['node', '-e', script, str(launcher / 'desktop/graphics.cjs')],
                             capture_output=True, text=True, timeout=15)

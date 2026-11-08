@@ -1,7 +1,7 @@
-"""Stable operator-facing error contract for Python/Native Launcher requests.
+"""Stable operator-facing error contract for Python/Native Launcher requests
 
 No motor-control behaviour or retry policy is changed here. Full tracebacks
-are sent only to the technical stderr log with a diagnostic identifier.
+are sent only to the technical stderr log with a diagnostic identifier
 """
 from __future__ import annotations
 
@@ -89,7 +89,7 @@ def describe(error, method='', params=None):
     exception_name = type(error).__name__
     original_message = str(error).strip()
     # str(error) may be empty or just an opaque wrapper, so the exception
-    # type and the actual traceback MUST remain reachable from the GUI.
+    # type and the actual traceback MUST remain reachable from the GUI
     chain = ''.join(traceback.format_exception(type(error), error, error.__traceback__, chain=True)).strip()
     technical = f'{exception_name}: {original_message}' if original_message else exception_name
     technical_trace = chain if chain else technical
@@ -104,7 +104,7 @@ def describe(error, method='', params=None):
     if error.__traceback__ is not None:
         frames = traceback.extract_tb(error.__traceback__)
         # Prefer the project entry point to the final frame inside PyYAML or
-        # another dependency. The full call stack remains in technical.
+        # another dependency. The full call stack remains in technical
         project_frames = [frame for frame in frames if '/backend/' in frame.filename.replace('\\', '/')
                           and '/site-packages/' not in frame.filename.replace('\\', '/')]
         source_frame = project_frames[-1] if project_frames else frames[-1]

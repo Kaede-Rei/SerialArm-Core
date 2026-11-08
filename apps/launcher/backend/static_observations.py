@@ -1,4 +1,4 @@
-"""One static-data contract for gravity and full IDIM; never operate hardware."""
+"""One static-data contract for gravity and full IDIM; never operate hardware"""
 import csv
 from collections import defaultdict
 from pathlib import Path
@@ -8,7 +8,7 @@ import numpy as np
 def load_static_groups(folder, joints):
     folder=Path(folder);accepted=folder/'accepted_static.csv'
     if not accepted.is_file():
-        # Historic tasks may use approved-looking reverse groups in frames.csv.
+        # Historic tasks may use approved-looking reverse groups in frames.csv
         import json
         meta=json.loads((folder/'metadata.json').read_text())
         if (meta.get('measurement_policy')or{}).get('static_source')=='accepted_static.csv':
@@ -44,13 +44,13 @@ def static_equations(engine, folder):
     groups=load_static_groups(folder,engine.meta['joint_names']);nj=len(engine.qi);rows=[]
     for g in groups:
         ys=np.array([engine.Y(m['q'],np.zeros(nj),np.zeros(nj))for m in g['members']]);tau=np.array([m['tau']for m in g['members']]);base=ys@engine.theta
-        # Evaluate every approach at its ACTUAL q; averaging q is nonlinear and wrong.
+        # Evaluate every approach at its ACTUAL q; averaging q is nonlinear and wrong
         Y=ys.mean(0);y=tau.mean(0);paired=len(ys)==2
         half=.5*((base[0]-tau[0])-(base[1]-tau[1]))if paired else np.zeros(nj)
         spread=max(np.max(abs(g['members'][0]['q']-g['members'][1]['q'])),0.)if paired else None
         within=np.mean([m['torque_mad']for m in g['members']],axis=0)
         uncertainty=np.maximum(within,.02 if paired else .05)
-        # Hysteresis is uncertainty, not a measured sensor offset or exact odd friction.
+        # Hysteresis is uncertainty, not a measured sensor offset or exact odd friction
         if paired:uncertainty=np.maximum(uncertainty,abs(half))
         rows.append(dict(group=g['group'],held=g['validation'],Y=Y,baseline=Y@engine.theta,tau=y,
                          uncertainty=uncertainty,paired=paired,q_delta_rad=spread,half_difference=half,members=g['members']))

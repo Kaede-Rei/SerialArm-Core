@@ -54,7 +54,7 @@ def _snapshot(record):
 
 def _replace_core(text, targets, *, hold_compensation=None):
     # Patch task-role paths in memory, then serialize the four public purposes.
-    # This also upgrades old snapshots when exporting a non-servo candidate.
+    # This also upgrades old snapshots when exporting a non-servo candidate
     text = canonical_control_text(text)
     if hold_compensation is not None:
         text = complete_mapping_values(text, ('control',), {'hold_compensation': hold_compensation})
@@ -100,7 +100,7 @@ def _bundle_model(snapshot, metadata, dest, name='robot.urdf'):
 
 
 def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
-    """Validate a candidate and return its exact deployment leaves."""
+    """Validate a candidate and return its exact deployment leaves"""
     category = gain.get('category')
     policy = cfg.get('safety_policy') or {}
     groups = deployment_gain_groups(gain, gain_purposes)
@@ -168,7 +168,7 @@ def _gain_export(record, dest, gain_purposes=None):
         gain.get('joint_names') != metadata.get('joint_names')):
         raise ValueError('增益候选与任务源模型不一致')
     # Selected groups are merged into the current compatible Core so an older
-    # calibration cannot roll back unrelated gains adjusted since acquisition.
+    # calibration cannot roll back unrelated gains adjusted since acquisition
     groups = deployment_gain_groups(gain, gain_purposes)
     core, merge_source, context_warnings = _gain_merge_source(folder, metadata, core, groups)
     cfg=yaml.safe_load(core.read_text(encoding='utf-8'))
@@ -177,7 +177,7 @@ def _gain_export(record, dest, gain_purposes=None):
         measured = recorded_gain_core(cfg, metadata, gain)
         if measured != canonical_core(cfg):
             # A runtime setting can change without saving the Profile. Export
-            # the actual measured context, never the old file's defaults.
+            # the actual measured context, never the old file's defaults
             source_text = yaml.safe_dump(measured, allow_unicode=True, sort_keys=False)
             cfg = measured
     category = gain.get('category')
@@ -203,10 +203,10 @@ def _gain_export(record, dest, gain_purposes=None):
     summary = ['增益候选导出', '', '配置来源：' + ('当前兼容配置' if merge_source == 'current_core' else '标定任务快照与实测控制上下文'),
                '任务：' + str(metadata.get('task_id') or ''),
                '用途：' + '、'.join(groups), '',
-               'core.yaml 为独立导出文件，未修改当前机械臂配置；部署前请核对模型及资源路径。']
+               'core.yaml 为独立导出文件，未修改当前机械臂配置；部署前请核对模型及资源路径']
     if context_warnings:
         summary += ['', '上下文提示：', *context_warnings,
-                    '本文件保留标定时的映射、控制与硬件条件，未合并当前配置。']
+                    '本文件保留标定时的映射、控制与硬件条件，未合并当前配置']
     if quality['warnings']:
         summary += ['', '测量质量提示：', *quality['warnings']]
     (dest / 'README.txt').write_text('\n'.join(summary) + '\n', encoding='utf-8')
@@ -216,7 +216,7 @@ def _gain_export(record, dest, gain_purposes=None):
 
 
 def _gain_merge_source(folder, metadata, source_core, purposes):
-    """Merge only when the recorded deployment context is still unchanged."""
+    """Merge only when the recorded deployment context is still unchanged"""
     current_path = metadata.get('core_config_path')
     if not current_path:
         return source_core, 'task_snapshot', []
@@ -232,7 +232,7 @@ def _gain_merge_source(folder, metadata, source_core, purposes):
         if runtime.get('write_enabled') is not False:
             # Task metadata records the acquired driver, not a current Profile
             # declaration. Reusing that value as the current driver would make
-            # the comparison tautological after a Profile switched backends.
+            # the comparison tautological after a Profile switched backends
             raise ValueError('历史记录没有当前 Profile 的驱动声明，无法确认当前硬件上下文')
         info = {'profile': metadata.get('profile'), 'resources': {'core': str(current)},
                 'hardware_plugin': (metadata.get('runtime_provenance') or {}).get('hardware_plugin_file_path'),
@@ -268,11 +268,11 @@ def _gravity_merge_source(folder, metadata, source_core):
 
 
 def _same_dynamics_model(source, candidate):
-    """Compare model parameters, not XML layout or packaged visual resources.
+    """Compare model parameters, not XML layout or packaged visual resources
 
     Exporters serialize floating point values with 12 significant digits.  That
     roundoff must not revoke an unchanged model's operator validation, whereas
-    changed inertial parameters or joint definitions must revoke it.
+    changed inertial parameters or joint definitions must revoke it
     """
     numeric_attributes = {'value', 'xyz', 'rpy', 'ixx', 'ixy', 'ixz', 'iyy',
                           'iyz', 'izz', 'lower', 'upper', 'effort', 'velocity',
@@ -358,7 +358,7 @@ def _gravity_export(record,dest,candidate_source=None,candidate_path=None):
         if resources.is_dir():shutil.copytree(resources,dest/'resources')
         ET.parse(target)
         if offline:
-            # Carry the exact exported candidate alongside the deployment files.
+            # Carry the exact exported candidate alongside the deployment files
             report_source = source.parent / 'recomputed-candidate.json'
             report_digest = hashlib.sha256(report_source.read_bytes()).hexdigest()
             if report_digest != payload.get('candidate_report_sha256'):
@@ -390,7 +390,7 @@ def _gravity_export(record,dest,candidate_source=None,candidate_path=None):
             (scale_changed or not _same_dynamics_model(model,target))):
         # Static holdout scores do not validate native compliant recovery on a
         # changed URDF or gravity scale. Keep the user's allow_compliant_recovery
-        # preference; only revoke inherited model-specific hardware validation.
+        # preference; only revoke inherited model-specific hardware validation
         targets[('safety_policy','fault_recovery','gravity_model_validated')]='false'
     result_core=_replace_core(core_text,targets)
     (dest/'core.yaml').write_text(result_core,encoding='utf-8')

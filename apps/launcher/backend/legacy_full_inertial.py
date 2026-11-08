@@ -1,8 +1,8 @@
-"""Offline, opt-in full-inertial URDF candidate from completed model calibration.
+"""Offline, opt-in full-inertial URDF candidate from completed model calibration
 
 Never modifies the source URDF or running robot. Rank-deficient fits are marked
 prior-constrained, not fully identified. Raw motor torques need verified signs,
-no external contacts, and accurate joint accelerations to be trusted.
+no external contacts, and accurate joint accelerations to be trusted
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 
 def physical_inertia(mass, com, inertia, *, min_mass=1e-7):
-    """Require SPD center inertia and principal-moment triangle inequalities."""
+    """Require SPD center inertia and principal-moment triangle inequalities"""
     import numpy as np
     if not np.isfinite(mass) or mass <= min_mass or not np.isfinite(com).all():
         return False
@@ -148,12 +148,12 @@ def _review_candidate(fit, model, pin, moving_joints=None):
 
 
 def _dynamic_parameters_to_urdf_fields(parameters):
-    """Represent the unconstrained 10D Pinocchio inertial vector in the link frame.
+    """Represent the unconstrained 10D Pinocchio inertial vector in the link frame
 
     The dynamic parameter layout is [m, m*c_x, m*c_y, m*c_z,
     Ixx_origin, Ixy_origin, Iyy_origin, Ixz_origin, Iyz_origin, Izz_origin].
     Only finite and nonzero mass is required for the COM to be mathematically
-    defined; negative mass and non-SPD tensors are reported, never projected.
+    defined; negative mass and non-SPD tensors are reported, never projected
     """
     import numpy as np
     p=np.asarray(parameters,dtype=float).reshape(10)
@@ -224,7 +224,7 @@ def export_full_inertial_candidate(directory, destination=None):
     tree.write(tmp,encoding='utf-8',xml_declaration=True)
     # Parsing and roundtrip checking are diagnostics only; keep the raw
     # unconstrained result for human review even if the dynamics engine
-    # considers its physical inertias invalid.
+    # considers its physical inertias invalid
     try:
         parsed=pin.buildModelFromUrdf(str(tmp))
         if parsed.nv!=model.nv:

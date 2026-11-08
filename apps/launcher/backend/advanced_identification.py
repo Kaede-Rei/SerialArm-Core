@@ -16,7 +16,7 @@ from full_inertial import (
 )
 
 def _native_file_fingerprint(contents):
-    """Match Core's 64-bit FNV-1a fingerprint for runtime candidate validation."""
+    """Match Core's 64-bit FNV-1a fingerprint for runtime candidate validation"""
     value=1469598103934665603
     for item in contents:
         value=((value^item)*1099511628211)&0xffffffffffffffff
@@ -32,7 +32,7 @@ def _source_sha256(path):
 
 
 def _identification_source_hashes(folder, snapshot):
-    """Bind static scores to accepted samples as well as the original model."""
+    """Bind static scores to accepted samples as well as the original model"""
     folder = Path(folder)
     accepted = folder / 'accepted_static.csv'
     return {
@@ -171,7 +171,7 @@ def _fit_static(directory, model, pin, mapped, mode, locked_links):
     hold = [v for v in values if v[0]]
     from gravity_mass_com import solve_static_updates
     # Keep this supplementary entrypoint's existing bias-separated objective
-    # explicit; raw URDF deployment evidence is evaluated independently below.
+    # explicit; raw URDF deployment evidence is evaluated independently below
     objective = 'bias_separated'
     solved = solve_static_updates([v[1] for v in train], [v[2] for v in train],
                                   objective=objective)
@@ -266,7 +266,7 @@ def _physical_urdf_links(root):
 
 
 def _physical_dynamic_candidate(prior, target, mapped, locked, active_parameters):
-    """Review the solved subspace without per-link projection or post-fit masking."""
+    """Review the solved subspace without per-link projection or post-fit masking"""
     candidate = np.asarray(target, dtype=float).copy()
     details = []
     active = set(active_parameters)
@@ -295,7 +295,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
         report = identify(directory,mode='local' if locked_links else 'global',
                           locked_links=locked_links or [],destination=destination,parameter_target=mode)
         # Legacy clients may display a review report, but never activate an
-        # unexported raw representative through the old temporary-apply path.
+        # unexported raw representative through the old temporary-apply path
         report.update(candidate_urdf=None,validation_scope='dynamic_diagnostic',
                       full_dynamics_physical_pass=report['physical_pass'],
                       regressor_rank=report['structural_rank'],
@@ -377,7 +377,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
                 T.set(key,f'{val:.12g}')
         extra={'solver':'dynamic_reduced_svd_irls','acceleration_input':'recorded_acceleration_no_reconstruction','dynamic_frames':len(rows),'observable_directions':rank,'unobservable_directions':columns-rank,'friction_validation':'independent_training_fit'}
     # Check the exact files used for fitting before creating export artifacts.
-    # Presence/absence changes of accepted_static.csv are included in the check.
+    # Presence/absence changes of accepted_static.csv are included in the check
     _verify_identification_sources(folder, snapshot, source_hashes)
     tree=ET.ElementTree(root)
     # No source replacement, always write to an isolated review directory
@@ -420,7 +420,7 @@ def run_advanced(directory, mode, destination=None, locked_links=None):
         'limitations':['只读候选，不修改原始模型或控制器','没有独立关节力矩真值和加速度测量，真机使用必须另行验收'],
     }
     # Asset copying and report preparation can take time; do not publish a
-    # validated report if input files changed after the numerical solve.
+    # validated report if input files changed after the numerical solve
     _verify_identification_sources(folder, snapshot, source_hashes)
     report_path = dest / 'identification-report.json'
     report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False))

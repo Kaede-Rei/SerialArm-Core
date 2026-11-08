@@ -213,7 +213,7 @@ async function start() {
         catch (error) {
             // Electron invoke serializes thrown Error objects down to message-only
             // text. Return an explicit error envelope so the preload can restore
-            // the typed operator diagnostics without losing code or context.
+            // the typed operator diagnostics without losing code or context
             return {
                 __serialarm_error: error.serialarm || {
                     code: 'BACKEND_UNAVAILABLE', category: 'communication', severity: 'error',

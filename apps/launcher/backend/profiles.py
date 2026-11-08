@@ -1,4 +1,4 @@
-"""Read-only configuration inspection; never instantiate hardware or open buses."""
+"""Read-only configuration inspection; never instantiate hardware or open buses"""
 import glob
 import json
 import hashlib
@@ -65,7 +65,7 @@ class Inspector:
         self._model_checks = {}
 
     def hardware_driver(self, plugin):
-        """Locate a driver without loading its code or opening a device."""
+        """Locate a driver without loading its code or opening a device"""
         plugin = text(plugin)
         manifest = self.manifest()
         roots = [manifest.get('native_prefix'), manifest.get('install_prefix'),
@@ -84,7 +84,7 @@ class Inspector:
 
     @staticmethod
     def validate_urdf(path, controlled=None):
-        """Validate the single-tree scalar-joint model accepted by the Core."""
+        """Validate the single-tree scalar-joint model accepted by the Core"""
         def fail(detail):
             raise ValueError('model.urdf_path ' + detail)
         try:

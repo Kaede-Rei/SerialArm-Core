@@ -1,4 +1,4 @@
-"""Bind measured gains to their model, mapping and execution context."""
+"""Bind measured gains to their model, mapping and execution context"""
 from __future__ import annotations
 
 import json
@@ -18,7 +18,7 @@ def _purpose_name(purpose):
 
 
 def _joint_context(value, names, field=''):
-    """Read native ordered vectors and GUI joint maps as the same parameters."""
+    """Read native ordered vectors and GUI joint maps as the same parameters"""
     if isinstance(value, list):
         if len(value) != len(names):
             raise ValueError('增益记录的逐关节上下文维度不匹配: ' + field)
@@ -40,7 +40,7 @@ def gain_interaction_context(core, purpose, *, compensation=False):
 
 
 def recorded_gain_core(core, metadata, candidate):
-    """Restore measured settings which could differ from the saved source file."""
+    """Restore measured settings which could differ from the saved source file"""
     original = canonical_core(core)
     names = metadata.get('joint_names') or (original.get('model') or {}).get('joint_names') or []
     mapping = metadata.get('mapping') or {}
@@ -65,7 +65,7 @@ def recorded_gain_core(core, metadata, candidate):
             result = deepcopy(before) if isinstance(before, dict) else {}
             for key, value in actual.items():
                 if disabled and isinstance(value, list) and not value:
-                    continue  # Native-only sessions leave unused vectors empty.
+                    continue  # Native-only sessions leave unused vectors empty
                 result[key] = (overlay(result.get(key), value) if isinstance(value, dict)
                                else _joint_context(value, names, key))
             return result
@@ -75,10 +75,10 @@ def recorded_gain_core(core, metadata, candidate):
 
 
 def verify_gain_context(folder, info, core, hardware, purposes):
-    """Return source evidence files, or reject a changed measurement context.
+    """Return source evidence files, or reject a changed measurement context
 
     Quality metrics and gains are intentionally excluded: measured warnings
-    remain usable, and selecting one purpose must not reset other gains.
+    remain usable, and selecting one purpose must not reset other gains
     """
     folder = Path(folder)
     metadata_path = folder / 'metadata.json'
@@ -139,7 +139,7 @@ def verify_gain_context(folder, info, core, hardware, purposes):
         files.append(snapshot)
 
     # Mock sessions have no hardware snapshots. They can only bind to another
-    # mock context; write_enabled above prevents reuse on an actual arm.
+    # mock context; write_enabled above prevents reuse on an actual arm
     if before_runtime.get('write_enabled') is False:
         return files
     recorded_hardware = folder / 'source/hardware.yaml'

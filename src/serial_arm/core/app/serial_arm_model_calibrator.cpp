@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
                 const Eigen::Matrix3d delta=original_tool.rotation().transpose()*candidate_tool.rotation();
                 // acos(trace) amplifies roundoff near identity to sqrt(epsilon),
                 // falsely rejecting unchanged geometry at the 1e-10 threshold.
-                // AngleAxis uses a quaternion/atan2 conversion stable near zero.
+                // AngleAxis uses a quaternion/atan2 conversion stable near zero
                 max_rotation_error=std::max(max_rotation_error,Eigen::AngleAxisd(delta).angle());
             }
             const double gravity_rms=gravity_count?std::sqrt(gravity_sq/static_cast<double>(gravity_count)):0.0;

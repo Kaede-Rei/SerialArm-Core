@@ -1,4 +1,4 @@
-// Exact solution of the shared 480 / 44 / 1 camera spring (roots -20, -24).
+// Exact solution of the shared 480 / 44 / 1 camera spring (roots -20, -24)
 export function stepCameraSpring(value, velocity, goal, seconds) {
   const offset = value - goal;
   const slow = (velocity + 24 * offset) / 4, fast = offset - slow;
@@ -7,7 +7,7 @@ export function stepCameraSpring(value, velocity, goal, seconds) {
 }
 
 // Match AT-System-Integration's canvas response: stiffness 480, damping 44,
-// mass 1, and 0.0025 log-scale units per normalized wheel pixel.
+// mass 1, and 0.0025 log-scale units per normalized wheel pixel
 export class SmoothModelZoom {
   constructor(controls, preference = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)')) {
     this.controls = controls;
@@ -30,7 +30,7 @@ export class SmoothModelZoom {
         this.controls.update();
       }
     };
-    // Capture only wheel zoom; OrbitControls retains rotation, pan and touch.
+    // Capture only wheel zoom; OrbitControls retains rotation, pan and touch
     this.element.addEventListener('wheel', this.onWheel, {capture: true, passive: false});
     controls.addEventListener('start', this.onStart);
     controls.addEventListener('end', this.onEnd);
@@ -76,7 +76,7 @@ export class SmoothModelZoom {
     if (!this.controls.enabled || !this.controls.enableZoom) { this.cancel(); return false; }
     if (!Number.isFinite(seconds) || seconds <= 0) return false;
     // Exact overdamped spring solution (roots -20 and -24). Actual elapsed
-    // time gives the same response on 30/60/144 Hz displays and after a pause.
+    // time gives the same response on 30/60/144 Hz displays and after a pause
     [this.value, this.velocity] = stepCameraSpring(this.value, this.velocity, this.goal, seconds);
     const [min, max] = this.limits();
     const bounded = Math.max(Math.log(min), Math.min(Math.log(max), this.value));
@@ -95,7 +95,7 @@ export class SmoothModelZoom {
     if (previous <= 0) return;
     if (this.controls.zoomToCursor) {
       // Same perspective dolly and orbit-target placement as OrbitControls,
-      // spread across rendered frames so the point under the cursor stays put.
+      // spread across rendered frames so the point under the cursor stays put
       this.camera.getWorldDirection(this.direction);
       this.ray.set(this.pointer.x, this.pointer.y, 1).unproject(this.camera)
         .sub(this.camera.position).normalize();

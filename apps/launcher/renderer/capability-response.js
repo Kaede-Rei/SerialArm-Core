@@ -1,4 +1,4 @@
-/* Passive response measurements use the native cycle clock and explicit release marks. */
+/* Passive response measurements use the native cycle clock and explicit release marks */
 (function (root) {
     const finite = value => typeof value === 'number' && Number.isFinite(value);
     const mean = values => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;

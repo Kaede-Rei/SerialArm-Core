@@ -19,7 +19,7 @@ struct JointMotionStatus {
 };
 
 // Tracks a point-to-point request using the existing reference generator and
-// measured cycles; it never generates commands or owns a control loop.
+// measured cycles; it never generates commands or owns a control loop
 class JointMotionTracker {
 public:
     std::uint64_t begin(const JointVector& target,const std::vector<std::string>& joint_types) {

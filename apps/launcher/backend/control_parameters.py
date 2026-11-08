@@ -1,4 +1,4 @@
-"""Canonical control parameters and source-preserving YAML additions."""
+"""Canonical control parameters and source-preserving YAML additions"""
 from copy import deepcopy
 import math
 
@@ -13,7 +13,7 @@ _CONTROLLER_GROUPS = ('rigid', 'compliant', 'drag')
 
 
 def _canonical_controller(controller):
-    """Read four user purposes while retaining the six execution roles internally."""
+    """Read four user purposes while retaining the six execution roles internally"""
     if not isinstance(controller, dict):
         raise ValueError('control.controller 必须为映射')
     result = deepcopy(controller)
@@ -56,7 +56,7 @@ def _canonical_controller(controller):
 
 
 def four_mode_core(core):
-    """Write four gain purposes without merging their separate task parameters."""
+    """Write four gain purposes without merging their separate task parameters"""
     result = canonical_core(core)
     controller = (result.get('control') or {}).get('controller')
     if not isinstance(controller, dict):
@@ -137,7 +137,7 @@ def _gain_number(value):
 
 
 def gain_measurement_available(validation, joint_count, kind):
-    """Measurement completion is separate from meeting reference metrics."""
+    """Measurement completion is separate from meeting reference metrics"""
     if not isinstance(validation, dict) or validation.get('available') is False or validation.get('completed') is False:
         return False
     if kind == 'tracking':
@@ -183,7 +183,7 @@ def gain_purpose_available(candidate, purpose, fields):
     if count == 0 or not gains(fields):
         return False
     # Existing qualified local-probe records retain their recorded scope.
-    # Failed old records need complete independent trajectory measurements.
+    # Failed old records need complete independent trajectory measurements
     if candidate.get('validation_scope') != 'independent_demonstration_trajectory':
         return fields.get('validated') is True
     if purpose == 'compliant_drag':
@@ -285,7 +285,7 @@ def _node_at(root, path):
 
 
 def add_mapping_value(text, parent, key, value):
-    """Add one missing member without rewriting existing comments or values."""
+    """Add one missing member without rewriting existing comments or values"""
     node = _node_at(yaml.compose(text), parent)
     if any(name.value == key for name, _ in node.value):
         return text
@@ -306,7 +306,7 @@ def add_mapping_value(text, parent, key, value):
 
 
 def _controller_text(text, controller):
-    """Replace only the controller value and verify the complete parsed document."""
+    """Replace only the controller value and verify the complete parsed document"""
     original = yaml.safe_load(text)
     root = yaml.compose(text)
     control = _node_at(root, ('control',))
@@ -335,7 +335,7 @@ def _controller_text(text, controller):
             node.start_mark.index <= token.start_mark.index < node.end_mark.index for token in tokens):
         # Older GUI profiles shared gain dictionaries, including aliases from
         # fault_recovery into this block. Expand references before replacing
-        # their definitions so the rest of the document retains its values.
+        # their definitions so the rest of the document retains its values
         return _controller_text(_expand_yaml_aliases(text), controller)
     if original['control']['controller'] == controller:
         return text
@@ -346,7 +346,7 @@ def _controller_text(text, controller):
                                  sort_keys=False, width=1000000).strip()
     else:
         # Mapping end marks include comments/indentation before the next section.
-        # Preserve that suffix instead of consuming it with the rewritten value.
+        # Preserve that suffix instead of consuming it with the rewritten value
         content = [token.end_mark.index for token in tokens
                    if start <= token.start_mark.index < node.end_mark.index and
                    not isinstance(token, (BlockEndToken, DocumentEndToken, StreamEndToken))]
@@ -368,7 +368,7 @@ def _controller_text(text, controller):
 
 
 def _expand_yaml_aliases(text):
-    """Expand shared YAML values without rewriting unrelated text or comments."""
+    """Expand shared YAML values without rewriting unrelated text or comments"""
     root = yaml.compose(text)
     nodes = {}
     def collect(node):
@@ -415,7 +415,7 @@ def _expand_yaml_aliases(text):
 
 
 def canonical_control_text(text, servo=None):
-    """Expand the four-purpose layout into the internal paths used by patchers."""
+    """Expand the four-purpose layout into the internal paths used by patchers"""
     original = yaml.safe_load(text)
     controller = ((original or {}).get('control') or {}).get('controller')
     normalized = _canonical_controller(controller)
@@ -425,14 +425,14 @@ def canonical_control_text(text, servo=None):
 
 
 def four_mode_control_text(text):
-    """Write only the controller block as four purposes; keep other text intact."""
+    """Write only the controller block as four purposes; keep other text intact"""
     original = yaml.safe_load(text)
     controller = four_mode_core(original)['control']['controller']
     return _controller_text(text, controller)
 
 
 def complete_mapping_values(text, parent, values):
-    """Fill missing authored fields before source-preserving leaf updates."""
+    """Fill missing authored fields before source-preserving leaf updates"""
     def filled(data, defaults):
         result = dict(data)
         for key, value in defaults.items():
@@ -460,7 +460,7 @@ def complete_mapping_values(text, parent, values):
 
 
 def effective_hardware(hardware, overrides=None):
-    """Resolve the connection overrides applied by HardwareLoader."""
+    """Resolve the connection overrides applied by HardwareLoader"""
     result = deepcopy(hardware)
     overrides = overrides or {}
     connection_keys = {'serial_port', 'baudrate', 'bus'}

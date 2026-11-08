@@ -167,7 +167,7 @@
 @media(max-width:1050px){.start-choice-grid{grid-template-columns:1fr}.start-choice{min-height:0}.description-layout{grid-template-columns:1fr}.description-preview #description-viewport{height:460px}.readiness-summary{align-items:flex-start;flex-direction:column}.library-card-main{align-items:flex-start;flex-direction:column}.library-actions{justify-content:flex-start}}
 @media(max-width:720px){.onboarding-content{padding:24px 14px 50px}.setup-stepper{grid-template-columns:repeat(2,minmax(0,1fr))}.lifecycle-step{grid-template-columns:18px minmax(0,1fr)}.lifecycle-actions{grid-column:2;justify-content:flex-start}.library-toolbar .hint{max-width:100%;margin-left:0}.description-preview #description-viewport{height:360px}}
 
-/* Critical errors always supersede both calibration and generic progress overlays. */
+/* Critical errors always supersede both calibration and generic progress overlays */
 .priority-error-overlay{position:fixed;inset:0;z-index:10000;display:grid;place-items:center;padding:24px;background:rgba(10,16,30,.70);backdrop-filter:blur(7px)}
 .priority-error-card{width:min(610px,95vw);max-height:90vh;overflow:auto;padding:26px;border:1px solid var(--red);border-radius:16px;background:var(--card);color:var(--text);box-shadow:0 20px 85px #0008}
 .priority-error-kicker{font-size:10px;letter-spacing:.12em;font-weight:750;color:var(--red);margin-bottom:12px}
@@ -176,12 +176,12 @@
 .priority-error-card p{font-size:12px;line-height:1.8;color:var(--muted)}
 .priority-error-card .actions{justify-content:flex-end;margin-top:18px}
 
-/* High-priority errors must be in the Chromium modal top layer, above any task UI. */
+/* High-priority errors must be in the Chromium modal top layer, above any task UI */
 .priority-error-overlay:not([open]){display:none!important}
 .priority-error-overlay[open]{position:fixed;inset:0;width:100%;height:100%;max-width:none;max-height:none;margin:0;padding:24px;border:0;border-radius:0;place-items:center;overflow:auto;z-index:10000;display:grid!important}
 .priority-error-overlay::backdrop{background:transparent;backdrop-filter:none}
 
-/* Animate only the alert card; a full-screen modal must not scale the backdrop. */
+/* Animate only the alert card; a full-screen modal must not scale the backdrop */
 .priority-error-overlay[open]{animation:none!important;transform:none!important}
 .priority-error-overlay[open] .priority-error-card{animation:dialog-spring-in .36s var(--spring-ui) both}
 @media(prefers-reduced-motion:reduce){.priority-error-overlay[open] .priority-error-card{animation:none!important}}
@@ -283,7 +283,7 @@
  .model-calibration-options label{grid-template-rows:auto 36px}
  .task-directory{grid-template-columns:minmax(0,1fr)}
 }
-/* Keep translated user-facing diagnostics primary; raw backend text is opt-in. */
+/* Keep translated user-facing diagnostics primary; raw backend text is opt-in */
 .priority-error-card .error-technical{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
 .priority-error-card .error-technical summary{cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
 .priority-error-card .error-technical pre{max-height:190px;overflow:auto;margin:9px 0 0;font-size:11px}
@@ -600,7 +600,7 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 
 /* Non-safety failures: contextual, dismissible, and not a motor-fault dialog */
 
-/* One consistent centred alert for operation errors and robot faults. */
+/* One consistent centred alert for operation errors and robot faults */
 .priority-error-card .error-technical{margin-top:14px}
 .priority-error-card .error-technical pre{max-height:42vh;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text}
 .priority-error-card #priority-error-detail{white-space:pre-wrap;font:inherit;background:transparent;border:0;padding:0;margin:0 0 12px;line-height:1.75;color:var(--text)}
@@ -608,7 +608,7 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 .priority-error-card #priority-error-copy{flex-shrink:0}
 @media(max-width:520px){.priority-error-card{padding:18px}.priority-error-card .actions{flex-wrap:wrap}}
 
-/* Motion setup and interaction targets share the calibration visual structure. */
+/* Motion setup and interaction targets share the calibration visual structure */
 .profile-motion-control{display:flex;flex-direction:column;gap:16px;min-width:0}
 .profile-motion-control>.calibration-step{margin:0}
 .motion-control-chain{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--subtle);color:var(--muted);font-size:11px;line-height:1.7}

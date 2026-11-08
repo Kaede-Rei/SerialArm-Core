@@ -1,8 +1,8 @@
-"""Offline, opt-in full-inertial URDF candidate from completed model calibration.
+"""Offline, opt-in full-inertial URDF candidate from completed model calibration
 
 Never modifies the source URDF or running robot. Rank-deficient fits are marked
 prior-constrained, not fully identified. Raw motor torques need verified signs,
-no external contacts, and accurate joint accelerations to be trusted.
+no external contacts, and accurate joint accelerations to be trusted
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import xml.etree.ElementTree as ET
 
 
 def physical_inertia(mass, com, inertia, *, min_mass=1e-7):
-    """Require SPD center inertia and principal-moment triangle inequalities."""
+    """Require SPD center inertia and principal-moment triangle inequalities"""
     import numpy as np
     if not np.isfinite(mass) or mass <= min_mass or not np.isfinite(com).all():
         return False
@@ -143,7 +143,7 @@ def _assign_configuration(model, target, indices, values):
     return target
 
 def _validate_dynamic_acceleration(rows):
-    """Diagnose historical broken acceleration without rewriting observations."""
+    """Diagnose historical broken acceleration without rewriting observations"""
     import numpy as np
     if not rows:
         return
@@ -169,7 +169,7 @@ def _extract_rows(csvpath, joints, limit=500):
         if missing:
             raise ValueError('标定帧缺少列'+', '.join(missing))
         for row in reader:
-            # Drag demonstration is not a closed-loop motor model identification dataset.
+            # Drag demonstration is not a closed-loop motor model identification dataset
             phase=row.get('phase', '')
             if phase not in ('static_reverse','friction_forward_fast') or row.get('valid') != '1':
                 continue
@@ -196,7 +196,7 @@ def _extract_rows(csvpath, joints, limit=500):
     if len(valid) > limit:
         # Preserve both replay directions and spread samples over each phase.
         # Excessive sequential samples can make a large CSV look informative
-        # even though the dynamic regressor is nearly rank deficient.
+        # even though the dynamic regressor is nearly rank deficient
         by_phase = {phase: [item for item in valid if item[0] == phase]
                     for phase in ('static_reverse', 'friction_forward_fast')}
         sampled = []
@@ -318,7 +318,7 @@ def _fit_regressor(rows, model, pin, moving_joints, *, regularization=0.15, acti
 
 
 def _validate_dynamic_candidate(fit, candidate):
-    """Evaluate each model using its own training-only nuisance estimate."""
+    """Evaluate each model using its own training-only nuisance estimate"""
     import numpy as np
     a, b = fit['train']
     v, measured = fit['validation']
@@ -334,7 +334,7 @@ def _validate_dynamic_candidate(fit, candidate):
 
 
 def _review_candidate(fit, model, pin, moving_joints=None):
-    """Return the numerical optimum unchanged; never gate it on a CAD delta or holdout score."""
+    """Return the numerical optimum unchanged; never gate it on a CAD delta or holdout score"""
     import numpy as np
     prior=np.asarray(fit['prior'],dtype=float)
     target=np.asarray(fit['candidate'],dtype=float)
@@ -370,12 +370,12 @@ def _review_candidate(fit, model, pin, moving_joints=None):
 
 
 def _dynamic_parameters_to_urdf_fields(parameters):
-    """Represent the unconstrained 10D Pinocchio inertial vector in the link frame.
+    """Represent the unconstrained 10D Pinocchio inertial vector in the link frame
 
     The dynamic parameter layout is [m, m*c_x, m*c_y, m*c_z,
     Ixx_origin, Ixy_origin, Iyy_origin, Ixz_origin, Iyz_origin, Izz_origin].
     Only finite and nonzero mass is required for the COM to be mathematically
-    defined; negative mass and non-SPD tensors are reported, never projected.
+    defined; negative mass and non-SPD tensors are reported, never projected
     """
     import numpy as np
     p=np.asarray(parameters,dtype=float).reshape(10)
@@ -445,7 +445,7 @@ def export_full_inertial_candidate(directory, destination=None):
     tree.write(tmp,encoding='utf-8',xml_declaration=True)
     # Parsing and roundtrip checking are diagnostics only; keep the raw
     # unconstrained result for human review even if the dynamics engine
-    # considers its physical inertias invalid.
+    # considers its physical inertias invalid
     try:
         parsed=pin.buildModelFromUrdf(str(tmp))
         if parsed.nv!=model.nv:

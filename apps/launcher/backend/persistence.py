@@ -126,11 +126,11 @@ def _runtime_text(text, joints, runtime, gravity_scale):
 
 
 def patch_text(text, targets):
-    """Patch existing YAML scalar leaves via parser source marks, preserving layout.
+    """Patch existing YAML scalar leaves via parser source marks, preserving layout
 
     Updates flow or block-style joint dictionaries without overwriting child
     lines, comments, anchors or unrelated settings. The complete parsed YAML
-    must differ *only* at explicitly requested paths.
+    must differ *only* at explicitly requested paths
     """
     import copy
     from yaml.nodes import MappingNode, ScalarNode
@@ -329,7 +329,7 @@ def _insert_or_replace_model_scalar(text, key, value):
 def _candidate_threshold(candidate, joints):
     # The observer subtracts torque_bias once. Its dead zone must describe
     # the residual *after* that subtraction, independently of the raw-URDF
-    # metric that decides whether a model update has improved prediction.
+    # metric that decides whether a model update has improved prediction
     evaluation = candidate.get('gravity_validation')
     if evaluation is not None:
         if (not isinstance(evaluation, dict) or
@@ -345,7 +345,7 @@ def _candidate_threshold(candidate, joints):
         p99 = metrics.get('p99', [])
     else:
         # Existing online and archived reports already use this field for
-        # bias-corrected errors; do not reinterpret historical records.
+        # bias-corrected errors; do not reinterpret historical records
         p99 = candidate.get('validation_candidate', {}).get('p99', [])
     noise = candidate.get('noise_rms', [])
     if (not isinstance(p99, (list, tuple)) or not isinstance(noise, (list, tuple))
@@ -356,7 +356,7 @@ def _candidate_threshold(candidate, joints):
         raise ValueError('candidate observer threshold metrics must be finite and nonnegative')
     # Keep the pre-existing scale/floor policy. For offline records noise_rms
     # is the bias-corrected baseline training residual scale with a floor,
-    # not a new estimate of sensor noise or the candidate's raw mean error.
+    # not a new estimate of sensor noise or the candidate's raw mean error
     return [max(0.02, 1.2 * float(p99[i]), 3.0 * float(noise[i])) for i in range(len(joints))]
 
 
@@ -392,7 +392,7 @@ def _recorded_joint_bias(directory, metadata, joints):
 
 
 def select_gravity_candidate(directory, source=None, candidate_path=None, run_id=None):
-    """Resolve one stored candidate; never silently fall back to online after a recompute."""
+    """Resolve one stored candidate; never silently fall back to online after a recompute"""
     folder = Path(directory).expanduser().resolve()
     if candidate_path and run_id:
         raise ValueError('候选路径与轮次只能指定一项')
@@ -433,7 +433,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             raise ValueError('此任务尚未生成离线重力候选，请先执行离线重算')
         # Bind the payload to the exact bytes parsed, not a later read of the
         # mutable latest-candidate pointer. Exporters compare this receipt to
-        # the report actually exported before assembling deployment artifacts.
+        # the report actually exported before assembling deployment artifacts
         report_bytes = recomputed.read_bytes()
         gravity = json.loads(report_bytes)
         candidate_report_sha256 = hashlib.sha256(report_bytes).hexdigest()
@@ -713,7 +713,7 @@ def _identifiable_links_from_snapshot(directory, metadata):
 
 
 def load_model_calibration_summary(directory):
-    """Inspect a task without changing native state or opening any hardware.
+    """Inspect a task without changing native state or opening any hardware
 
     Result files are optional: a demonstration becomes replayable as soon as
     trajectory.csv has been written. Partial recordings remain inspectable.
@@ -786,7 +786,7 @@ def load_model_calibration_summary(directory):
             '此任务未完整结束；可用轨迹可从头重新采集，不能直接接着中断点运动' if can_resume else
             '未发现可用轨迹或检查点，只能查看记录，无法恢复自动回放')
     # Stored result is never a live session; the GUI must not infer that the
-    # playback is ready until the native process explicitly imports it.
+    # playback is ready until the native process explicitly imports it
     display_result = dict(result) if result else {'phase': 'recorded_only' if can_resume else 'failed', 'task_id': task_id, 'joint_names': joint_names}
     if can_resume and trajectory['source'] == 'trajectory.checkpoint.csv':
         note = '仅保存了示教检查点，属于中断片段，必须重新校验运动范围和真机起点，再人工确认回放'
@@ -917,7 +917,7 @@ def restore_gravity_correction(core_path, task_directory):
     restored = backup.read_text()
     yaml.safe_load(restored)
     # Restoring a backup is not a new operator validation; a correction file
-    # referenced by it may itself have been replaced while applying a candidate.
+    # referenced by it may itself have been replaced while applying a candidate
     current_config = yaml.safe_load(core_path.read_text())
     gravity_changes = gravity_validation_changes(gravity_validation_context(current_config, core_path),
         gravity_validation_context(yaml.safe_load(restored), core_path))
