@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(serial_arm_hardware_damiao VERSION 0.7.0 LANGUAGES CXX)
+project(serial_arm_hardware_damiao VERSION 0.6.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
