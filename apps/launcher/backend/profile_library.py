@@ -654,6 +654,8 @@ class ProfileLibrary:
 
     @staticmethod
     def _gain_interaction_context(core, purpose):
+        # Receipt scopes retain their existing saved-configuration semantics;
+        # actual measured context is checked separately by _gain_binding.
         admittance = ((core.get('capability') or {}).get('admittance') or {})
         if purpose == 'SERVO_TRACKING':
             return {key: admittance.get(key) for key in ('joint_enabled', 'observer', 'calibration', 'controller')}
@@ -662,65 +664,8 @@ class ProfileLibrary:
         return None
 
     def _gain_binding(self, folder, info, core, hardware, purposes):
-        from model_calibration_source import matches_recorded_fingerprint
-        folder = Path(folder)
-        metadata_path = folder / 'metadata.json'
-        metadata = json.loads(metadata_path.read_text())
-        if not metadata.get('profile') or metadata['profile'] != info['profile']:
-            raise ValueError('增益记录属于其他机器人或未记录机器人名称；可查看历史数据，本机验证需要重新标定')
-        recorded_core = folder / 'source/core.yaml'
-        if not matches_recorded_fingerprint(recorded_core, metadata.get('core_fingerprint')):
-            raise ValueError('增益记录缺少可信 Core 快照；可查看历史数据，请重新标定后导入本机验证')
-        original = canonical_core(read_yaml(recorded_core))
-        if original.get('calibration') != core.get('calibration'):
-            raise ValueError('core.calibration.joints 当前映射与增益标定时不同，请重新标定本机增益')
-        for field in ('joint_names', 'base_frame', 'tool_frame', 'gravity', 'gravity_scale'):
-            if (original.get('model') or {}).get(field) != core['model'].get(field):
-                raise ValueError('core.model.' + field + ' 与增益标定时不同，请重新标定本机增益')
-        for field in ('model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha'):
-            if original['control']['runtime'].get(field) != core['control']['runtime'].get(field):
-                raise ValueError('core.control.runtime.' + field + ' 与增益标定时不同，请重新验证当前控制设置')
-        for purpose in purposes:
-            expected = self._gain_interaction_context(core, purpose)
-            if expected is not None:
-                recorded = ((original.get('capability') or {}).get('admittance') or {})
-                if {key: recorded.get(key) for key in expected} != expected:
-                    raise ValueError('core.capability.admittance 与增益验收使用的观测或导纳参数不同，请重新验证当前设置')
-        files = [metadata_path, recorded_core]
-        correction = (original.get('model') or {}).get('gravity_correction_path')
-        current_correction = core['model'].get('gravity_correction_path')
-        if bool(correction) != bool(current_correction):
-            raise ValueError('core.model.gravity_correction_path 与增益标定时不同，请重新标定')
-        if correction:
-            snapshot = folder / 'source/gravity-correction.yaml'
-            expected = metadata.get('gravity_correction_fingerprint')
-            current = (Path(info['resources']['core']).parent / current_correction).resolve()
-            if not matches_recorded_fingerprint(snapshot, expected) or not matches_recorded_fingerprint(current, expected):
-                raise ValueError('core.model.gravity_correction_path 缺少与本机一致的标定快照，请重新标定')
-            files.append(snapshot)
-        recorded_hardware = folder / 'source/hardware.yaml'
-        overrides = metadata.get('hardware_overrides')
-        if not isinstance(overrides, dict) or not matches_recorded_fingerprint(recorded_hardware, metadata.get('hardware_fingerprint')):
-            raise ValueError('历史增益记录未保存硬件配置与连接覆盖值；可查看或载入候选，请重新验证本机增益后导入')
-        before_hardware = effective_hardware(read_yaml(recorded_hardware), overrides)
-        current_hardware = effective_hardware(hardware, info.get('connection_overrides'))
-        if before_hardware != current_hardware:
-            raise ValueError('硬件配置与增益标定时不同，请检查执行器、总线及连接覆盖值后重新标定')
-        plugin = (metadata.get('runtime_provenance') or {}).get('hardware_plugin_file_path')
-        def plugin_name(value):
-            name = Path(str(value or '')).name
-            if name.startswith('lib'): name = name[3:]
-            return name.split('.so', 1)[0]
-        if not plugin or plugin_name(plugin) != plugin_name(info.get('hardware_plugin')):
-            raise ValueError('增益标定使用的硬件驱动与当前机器人不同或未记录，请重新标定')
-        files.append(recorded_hardware)
-        effective = folder / 'source/hardware-effective.yaml'
-        if effective.is_file() or metadata.get('hardware_effective_fingerprint'):
-            if not matches_recorded_fingerprint(effective, metadata.get('hardware_effective_fingerprint')):
-                raise ValueError('增益标定的实际硬件配置快照已变化，请恢复原始任务文件')
-            if effective_hardware(read_yaml(effective)) != before_hardware:
-                raise ValueError('实际硬件配置快照与标定连接覆盖值不一致，请检查原始任务')
-            files.append(effective)
+        from gain_context import verify_gain_context
+        files = verify_gain_context(folder, info, core, hardware, purposes)
         return {str(path.resolve()): _sha(path) for path in files}
 
     def approve_gain_mode(self, config, mode, path, native=None, gain_purposes=None):

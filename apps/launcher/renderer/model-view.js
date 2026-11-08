@@ -116,6 +116,7 @@ export class SerialArmModelView {
     this.onStatus = onStatus;
     this.disposed = false; this.running = true; this.needsRender = true;
     this.modelGeneration = 0; this.drawCount = 0; this.modelLoaded = false;
+    this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null;
     this.ghostLinkGroups = new Map();
     this.status = 'initializing'; this.error = null; this.suspended = false;
     this.diagnostics = {threeRevision: THREE.REVISION, mode: this.mode, creationErrors: []};
@@ -207,6 +208,8 @@ export class SerialArmModelView {
     let meshCount = 0;
     this.root?.traverse(node => { if (node.isMesh && node.userData.layer === 'visual') meshCount++; });
     return {status: this.status, mode: this.mode, drawCount: this.drawCount, modelLoaded: this.modelLoaded,
+      modelStatus: this.modelStatus, modelError: this.modelError ? {...this.modelError} : null,
+      modelErrors: this.modelErrors.map(error => ({...error})),
       meshCount, renderCalls: this.renderer?.info.render.calls || 0, triangles: this.renderer?.info.render.triangles || 0,
       suspended: this.suspended, error: this.error ? {...this.error} : null,
       diagnostics: structuredClone(this.diagnostics)};
@@ -278,7 +281,8 @@ export class SerialArmModelView {
     this.disposeRoot();
     const generation = this.modelGeneration;
     this.payload = payload;
-    this.modelLoaded = false;
+    this.modelLoaded = false; this.modelStatus = 'loading'; this.modelErrors = []; this.modelError = null;
+    this.emitStatus();
     const frames = new Map((payload.native?.state?.frames || []).map(x => [x.name, x]));
     for (const link of payload.model?.links || []) {
       const group = new THREE.Group(); group.name = link.name; group.userData.kind='link'; group.userData.name=link.name; group.userData.ownerKind='links'; group.userData.ownerName=link.name; this.objectVisibility.links.set(link.name,true);
@@ -306,41 +310,52 @@ export class SerialArmModelView {
     this.updateCenterOfMass(payload.native);
     this.setLayers(this.layers); this.refreshVisibility();
     this.resetView({immediate: !this.hasFramedModel}); this.hasFramedModel = true;
-    this.modelLoaded = true; this.modelStatusPending = true; this.requestRender();
-    return true;
+    this.modelLoaded = this.modelErrors.length === 0;
+    this.modelStatus = this.modelLoaded ? 'ready' : 'failed';
+    if (!this.modelLoaded) this.modelError = {category: 'model', code: 'MODEL_RESOURCE_LOAD_FAILED',
+      message: this.modelErrors.map(error => `${error.link} / ${error.name || error.layer}: ${error.message}`).join('\n')};
+    this.modelStatusPending = true; this.requestRender(); this.emitStatus();
+    return this.modelLoaded;
   }
 
   async addGeometry(group, item, collision, generation = this.modelGeneration) {
     const current = () => !this.disposed && this.running && generation === this.modelGeneration;
-    if (!current() || item.error || !item.geometry) return;
-    const holder = new THREE.Group(); holder.userData.layer = collision ? 'collision' : 'visual'; holder.matrix.copy(originMatrix(item.origin)); holder.matrixAutoUpdate=false;
-    const g = item.geometry; let object;
-    if (g.type === 'box') object = new THREE.Mesh(new THREE.BoxGeometry(...g.size), material(item.rgba, collision));
-    else if (g.type === 'cylinder') object = new THREE.Mesh(new THREE.CylinderGeometry(g.radius, g.radius, g.length, 32), material(item.rgba, collision));
-    else if (g.type === 'sphere') object = new THREE.Mesh(new THREE.SphereGeometry(g.radius, 32, 18), material(item.rgba, collision));
-    else if (g.type === 'mesh') {
-      try {
+    if (!current()) return;
+    let object;
+    try {
+      if (item.error) throw new Error(item.error.message || String(item.error));
+      if (!item.geometry) throw new Error('Missing URDF geometry');
+      const holder = new THREE.Group(); holder.userData.layer = collision ? 'collision' : 'visual'; holder.matrix.copy(originMatrix(item.origin)); holder.matrixAutoUpdate=false;
+      const g = item.geometry;
+      if (g.type === 'box') object = new THREE.Mesh(new THREE.BoxGeometry(...g.size), material(item.rgba, collision));
+      else if (g.type === 'cylinder') object = new THREE.Mesh(new THREE.CylinderGeometry(g.radius, g.radius, g.length, 32), material(item.rgba, collision));
+      else if (g.type === 'sphere') object = new THREE.Mesh(new THREE.SphereGeometry(g.radius, 32, 18), material(item.rgba, collision));
+      else if (g.type === 'mesh') {
         const resource = await this.resourceReader(g.path);
         if (!current()) return;
         const data = decode(resource.data);
         if (resource.extension === '.stl') {
           const geometry = new STLLoader().parse(data); object = new THREE.Mesh(geometry, material(item.rgba, collision));
-        } else {
+        } else if (resource.extension === '.glb') {
           const gltf = await new Promise((resolve,reject)=>new GLTFLoader().parse(data, '', resolve, reject)); object = gltf.scene;
           if (!current()) { disposeObject(object); return; }
           // The URDF material owns the display appearance; release the imported
           // materials/textures before replacing them instead of retaining them.
           disposeObject(object, {geometry: false});
           object.traverse(node => { if (node.isMesh) node.material = material(item.rgba, collision); });
-        }
+        } else throw new Error(`Unsupported model resource type: ${resource.extension}`);
         object.scale.set(...(g.scale || [1,1,1]));
-      } catch (error) {
-        disposeObject(object);
-        holder.userData.loadError = error.message; return;
-      }
+      } else throw new Error(`Unsupported URDF geometry: ${g.type}`);
+      if (!current()) { disposeObject(object); return; }
+      let renderable = false;
+      object.traverse(node => { if (node.isMesh && node.geometry?.getAttribute('position')?.count >= 3) renderable = true; });
+      if (!renderable) throw new Error('Model resource contains no renderable geometry');
+      const layer=collision?'collision':'visual'; holder.userData.ownerKind='links'; holder.userData.ownerName=group.name; object.traverse(node=>{if(node.isMesh){node.userData.layer=layer;node.userData.ownerKind='links';node.userData.ownerName=group.name;}}); object.userData.layer=layer; holder.add(object); group.add(holder);
+    } catch (error) {
+      disposeObject(object);
+      if (current()) this.modelErrors.push({link: group.name, name: item.name || '', layer: collision ? 'collision' : 'visual',
+        resource: item.geometry?.path || item.geometry?.source || '', message: error?.message || String(error)});
     }
-    if (!current()) { disposeObject(object); return; }
-    if (object) { const layer=collision?'collision':'visual'; holder.userData.ownerKind='links'; holder.userData.ownerName=group.name; object.traverse?.(node=>{if(node.isMesh){node.userData.layer=layer;node.userData.ownerKind='links';node.userData.ownerName=group.name;}}); object.userData.layer=layer; holder.add(object); group.add(holder); }
   }
 
   addFrame(frame, size) {
@@ -808,7 +823,7 @@ export class SerialArmModelView {
     this.clearGhostPose(); disposeObject(this.scene); this.scene?.clear();
     this.root?.clear(); this.linkGroups?.clear(); this.frameHelpers?.clear();
     this.jointAxes = []; this.effectiveGroups = []; this.labels = []; this.comparisonGroups = [];
-    this.modelLoaded = false; this.payload = null;
+    this.modelLoaded = false; this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null; this.payload = null;
     this.renderer?.dispose();
     // Detaching the canvas does not release its context immediately. Release
     // it explicitly so repeated retry/navigation cannot exhaust WebGL contexts.

@@ -19,6 +19,7 @@ from persistence import build_gravity_correction_payload, export_candidate_urdf,
 from workflow_registry import load, resolve_dynamics_candidate_path
 from control_parameters import (canonical_core, canonical_control_text, four_mode_control_text, complete_mapping_values,
                                 deployment_gain_groups, gain_measurement_available, gain_selection_report)
+from gain_context import recorded_gain_core, verify_gain_context
 
 GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking', 'identification_tracking', 'all'}
 GAIN_DESTINATIONS = {
@@ -168,15 +169,24 @@ def _gain_export(record, dest, gain_purposes=None):
         raise ValueError('增益候选与任务源模型不一致')
     # Selected groups are merged into the current compatible Core so an older
     # calibration cannot roll back unrelated gains adjusted since acquisition.
-    core,merge_source=_gravity_merge_source(folder,metadata,core)
+    groups = deployment_gain_groups(gain, gain_purposes)
+    core, merge_source, context_warnings = _gain_merge_source(folder, metadata, core, groups)
     cfg=yaml.safe_load(core.read_text(encoding='utf-8'))
+    source_text = core.read_text(encoding='utf-8')
+    if merge_source == 'task_snapshot':
+        measured = recorded_gain_core(cfg, metadata, gain)
+        if measured != canonical_core(cfg):
+            # A runtime setting can change without saving the Profile. Export
+            # the actual measured context, never the old file's defaults.
+            source_text = yaml.safe_dump(measured, allow_unicode=True, sort_keys=False)
+            cfg = measured
     category = gain.get('category')
     if category == 'identification_tracking': category = 'servo_tracking'
     if category not in GAIN_FIELDS:
         raise ValueError('未知增益标定目标')
     joints = metadata['joint_names']
     targets, hold_compensation = gain_candidate_targets(gain, cfg, joints, gain_purposes)
-    result = _replace_core(core.read_text(encoding='utf-8'), targets, hold_compensation=hold_compensation)
+    result = _replace_core(source_text, targets, hold_compensation=hold_compensation)
     # Keep model.urdf_path unchanged because this artifact intentionally contains
     # only core.yaml; changing to a missing relative URDF would break deployment
     (dest / 'core.yaml').write_text(result, encoding='utf-8')
@@ -189,9 +199,48 @@ def _gain_export(record, dest, gain_purposes=None):
     for name in ('core.yaml', 'model.urdf', 'hardware.yaml', 'hardware-effective.yaml', 'gravity-correction.yaml'):
         source = folder / 'source' / name
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, snapshots / name)
-    groups = deployment_gain_groups(gain,gain_purposes)
-    return {'target': category, 'gain_purposes':list(groups), **gain_selection_report(gain, groups),
-            'validation_scope':gain.get('validation_scope','recorded_scope'), 'merge_source':merge_source, 'files_only': ['core.yaml']}
+    quality = gain_selection_report(gain, groups)
+    summary = ['增益候选导出', '', '配置来源：' + ('当前兼容配置' if merge_source == 'current_core' else '标定任务快照与实测控制上下文'),
+               '任务：' + str(metadata.get('task_id') or ''),
+               '用途：' + '、'.join(groups), '',
+               'core.yaml 为独立导出文件，未修改当前机械臂配置；部署前请核对模型及资源路径。']
+    if context_warnings:
+        summary += ['', '上下文提示：', *context_warnings,
+                    '本文件保留标定时的映射、控制与硬件条件，未合并当前配置。']
+    if quality['warnings']:
+        summary += ['', '测量质量提示：', *quality['warnings']]
+    (dest / 'README.txt').write_text('\n'.join(summary) + '\n', encoding='utf-8')
+    return {'target': category, 'gain_purposes':list(groups), **quality,
+            'validation_scope':gain.get('validation_scope','recorded_scope'), 'merge_source':merge_source,
+            'context_warnings':context_warnings, 'files_only': ['core.yaml']}
+
+
+def _gain_merge_source(folder, metadata, source_core, purposes):
+    """Merge only when the recorded deployment context is still unchanged."""
+    current_path = metadata.get('core_config_path')
+    if not current_path:
+        return source_core, 'task_snapshot', []
+    current = Path(current_path).expanduser().resolve()
+    if not current.is_file() or current == source_core:
+        return source_core, 'task_snapshot', []
+    try:
+        live = yaml.safe_load(current.read_text(encoding='utf-8'))
+        if not isinstance(live, dict):
+            raise ValueError('当前 Core 配置不是有效映射')
+        runtime = ((live.get('control') or {}).get('runtime') or {})
+        hardware = {}
+        if runtime.get('write_enabled') is not False:
+            # Task metadata records the acquired driver, not a current Profile
+            # declaration. Reusing that value as the current driver would make
+            # the comparison tautological after a Profile switched backends.
+            raise ValueError('历史记录没有当前 Profile 的驱动声明，无法确认当前硬件上下文')
+        info = {'profile': metadata.get('profile'), 'resources': {'core': str(current)},
+                'hardware_plugin': (metadata.get('runtime_provenance') or {}).get('hardware_plugin_file_path'),
+                'connection_overrides': metadata.get('hardware_overrides')}
+        verify_gain_context(folder, info, live, hardware, purposes)
+    except (ValueError, OSError, yaml.YAMLError) as error:
+        return source_core, 'task_snapshot', ['当前配置未合并，导出采用标定时配置：' + str(error)]
+    return current, 'current_core', []
 
 
 def _gravity_merge_source(folder, metadata, source_core):

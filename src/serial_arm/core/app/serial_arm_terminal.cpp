@@ -2100,6 +2100,7 @@ private:
         model_calibration_resume_requires_confirmation_ = false;
         model_calibration_error_.clear();
         model_calibration_preview_error_.clear();
+        gain_control_context_.clear();
         model_calibration_trajectory_.reset();
         model_calibration_alignment_active_.store(false);
         model_calibration_source_reversed_.store(false);
@@ -4392,6 +4393,11 @@ private:
             if(want("rigid")) {
                 model_calibration_gain_stage_.store(0);auto& stage=stage_for("rigid_tracking");stage.error="measurement_in_progress";stage.gains=best;stage.native=native;stage.compensation=disabled;
                 stage.hold=gain_hold_trial(stage.hold_gains,false,disabled);
+                // Preserve the independently measured baseline before an optional
+                // compensation trial can exhaust the budget or lose feedback.
+                stage.available=stage.native.available && stage.hold.available;
+                stage.validated=stage.native.passed && stage.hold.validated;
+                stage.error=stage.validated?"":"rigid full-path tracking or independent hold verification did not qualify";
                 if(stage.hold.samples>=30 && stage.hold.worst_velocity<=gain_requirements_.hold_velocity_rad_s && stage.hold.worst_error>0.0005) {
                     auto trim=disabled;trim.enabled=true;trim.integral_gain.resize(n);trim.max_torque.resize(n);trim.max_rate.resize(n);trim.contact_threshold.resize(n);
                     for(std::size_t axis=0;axis<n;++axis) {
@@ -4401,10 +4407,18 @@ private:
                         trim.integral_gain[axis]=std::min(.25*stage.hold_gains.kp[axis],trim.max_torque[axis]/std::max(.001,std::abs(stage.hold.mean_error[axis])));
                     }
                     trim.velocity_threshold=gain_requirements_.hold_velocity_rad_s;trim.error_threshold=std::max(.01,2*gain_requirements_.hold_error_rad);
-                    auto checked=gain_hold_trial(stage.hold_gains,false,trim);
-                    stage.compensated_hold=checked;
-                    if(checked.validated && checked.worst_error<=.8*stage.hold.worst_error){stage.compensation=trim;stage.compensated_hold=checked;}
-                    {std::lock_guard<std::mutex> lock(mutex_);(void)robot_.set_hold_compensation_cfg(disabled);}
+                    try {
+                        auto checked=gain_hold_trial(stage.hold_gains,false,trim);
+                        stage.compensated_hold=checked;
+                        if(checked.validated && checked.worst_error<=.8*stage.hold.worst_error)stage.compensation=trim;
+                    } catch(...) {
+                        stage.warnings.push_back("hold_compensation_measurement_interrupted");
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        if(!robot_.set_hold_compensation_cfg(disabled))
+                            throw std::runtime_error("cannot disable interrupted hold compensation trial");
+                        throw;
+                    }
+                    {std::lock_guard<std::mutex> lock(mutex_);if(!robot_.set_hold_compensation_cfg(disabled))throw std::runtime_error("cannot disable hold compensation trial");}
                 }
                 stage.validated=stage.native.passed && (stage.hold.validated ||
                     (stage.compensation && stage.compensation->enabled && stage.compensated_hold && stage.compensated_hold->validated));
@@ -4532,6 +4546,7 @@ private:
         };
         out<<"{\"schema\":\"serial_arm_gain_candidate\",\"task_id\":\""<<machine_json_escape(model_calibration_task_id_)<<"\",\"urdf_fingerprint\":\""<<machine_json_escape(model_calibration_urdf_fingerprint_)<<"\",\"validated\":"<<(approved?"true":"false")<<",\"category\":\""<<(all?"all":stages.front().category)<<"\",\"joint_names\":[";
         for(std::size_t i=0;i<n;++i){if(i)out<<',';out<<'"'<<machine_json_escape(cfg_.joint_names[i])<<'"';}out<<"],\"passes\":"<<model_calibration_adaptation_passes_.load()<<",\"revisions\":"<<model_calibration_adaptation_revisions_.load()<<",\"validation_scope\":\"independent_demonstration_trajectory\",\"load_description\":\""<<machine_json_escape(model_calibration_options_.load_description)<<"\",\"seed_posture\":";machine_json_joint_vector(out,native.center.empty()?stages.front().native.center:native.center);
+        if(!gain_control_context_.empty())out<<",\"control_context\":"<<gain_control_context_;
         const auto& r=gain_requirements_;
         out<<",\"gain_requirements\":{\"peak_error_rad\":"<<r.peak_error_rad<<",\"rms_error_rad\":"<<r.rms_error_rad<<",\"velocity_rms_rad_s\":"<<r.velocity_rms_rad_s<<",\"overshoot_rad\":"<<r.overshoot_rad<<",\"settling_error_rad\":"<<r.settling_error_rad<<",\"settling_time_s\":"<<r.settling_time_s<<",\"hold_error_rad\":"<<r.hold_error_rad<<",\"hold_velocity_rad_s\":"<<r.hold_velocity_rad_s<<",\"amplitude_rad\":"<<r.amplitude_rad<<",\"local_range_rad\":"<<r.local_range_rad<<"}";
         out<<",\"probe_origin\":";machine_json_joint_vector(out,gain_probe_origin_);
@@ -4782,38 +4797,38 @@ private:
     void machine_model_calibration_start(const YAML::Node& params) {
         const auto request_started=Robot::Clock::now();
         model_calibration_require_task(params);
-        model_calibration_workflow_kind_ = params && params["workflow"] ? params["workflow"].as<std::string>() : "gravity";
-        if(model_calibration_workflow_kind_!="gravity" && model_calibration_workflow_kind_!="gain")
+        if(model_calibration_phase_.load() != ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION || !model_calibration_trajectory_)
+            throw std::runtime_error("model calibration is not waiting for replay confirmation");
+        if(model_calibration_alignment_active_.load())
+            throw std::runtime_error("finish manual endpoint alignment and hold before confirming replay");
+        if(model_calibration_worker_.joinable())throw std::runtime_error("model calibration worker is already running");
+        auto workflow = params && params["workflow"] ? params["workflow"].as<std::string>() : "gravity";
+        if(workflow!="gravity" && workflow!="gain")
             throw std::runtime_error("invalid calibration workflow target");
-        if(model_calibration_workflow_kind_=="gain" && std::any_of(dynamics_.get_info().joint_types.begin(),dynamics_.get_info().joint_types.end(),[](const auto& type){return type=="prismatic";}))
+        if(workflow=="gain" && std::any_of(dynamics_.get_info().joint_types.begin(),dynamics_.get_info().joint_types.end(),[](const auto& type){return type=="prismatic";}))
             throw std::runtime_error("automatic actuator gain calibration currently supports rotary joints only; prismatic axes require per-axis linear probe and acceptance requirements");
-        model_calibration_gain_mode_=params && params["gain_mode"] ? params["gain_mode"].as<std::string>() : "all";
-        if(model_calibration_gain_mode_=="identification" || model_calibration_gain_mode_=="identification_tracking" || model_calibration_gain_mode_=="servo")model_calibration_gain_mode_="servo_tracking";
-        if(model_calibration_gain_mode_=="compliant_drag")model_calibration_gain_mode_="drag";
-        model_calibration_gain_stage_.store(model_calibration_gain_mode_=="compliant"?1:model_calibration_gain_mode_=="drag"?3:2);
-        if(model_calibration_workflow_kind_=="gain" && model_calibration_gain_mode_!="rigid" && model_calibration_gain_mode_!="compliant" && model_calibration_gain_mode_!="drag" && model_calibration_gain_mode_!="servo_tracking" && model_calibration_gain_mode_!="all")throw std::runtime_error("unknown gain calibration purpose");
-        gain_requirements_=serial_arm::servo_tuning::Requirements{};
+        auto gain_mode=params && params["gain_mode"] ? params["gain_mode"].as<std::string>() : "all";
+        if(gain_mode=="identification" || gain_mode=="identification_tracking" || gain_mode=="servo")gain_mode="servo_tracking";
+        if(gain_mode=="compliant_drag")gain_mode="drag";
+        if(workflow=="gain" && gain_mode!="rigid" && gain_mode!="compliant" && gain_mode!="drag" && gain_mode!="servo_tracking" && gain_mode!="all")throw std::runtime_error("unknown gain calibration purpose");
+        auto requirements=serial_arm::servo_tuning::Requirements{};
         if(params["gain_requirements"]) {
             const auto r=params["gain_requirements"];
             const auto read=[&](const char* key,double& value,double maximum){if(!r[key])return;value=r[key].as<double>();if(!std::isfinite(value)||value<=0||value>maximum)throw std::runtime_error(std::string("invalid gain requirement: ")+key);};
-            read("peak_error_rad",gain_requirements_.peak_error_rad,.04);read("rms_error_rad",gain_requirements_.rms_error_rad,.02);
-            read("velocity_rms_rad_s",gain_requirements_.velocity_rms_rad_s,.20);read("overshoot_rad",gain_requirements_.overshoot_rad,.02);
-            read("settling_error_rad",gain_requirements_.settling_error_rad,.02);read("settling_time_s",gain_requirements_.settling_time_s,2.0);
-            read("hold_error_rad",gain_requirements_.hold_error_rad,.03);read("hold_velocity_rad_s",gain_requirements_.hold_velocity_rad_s,.10);
-            read("amplitude_rad",gain_requirements_.amplitude_rad,.02);
-            read("local_range_rad",gain_requirements_.local_range_rad,.04);
+            read("peak_error_rad",requirements.peak_error_rad,.04);read("rms_error_rad",requirements.rms_error_rad,.02);
+            read("velocity_rms_rad_s",requirements.velocity_rms_rad_s,.20);read("overshoot_rad",requirements.overshoot_rad,.02);
+            read("settling_error_rad",requirements.settling_error_rad,.02);read("settling_time_s",requirements.settling_time_s,2.0);
+            read("hold_error_rad",requirements.hold_error_rad,.03);read("hold_velocity_rad_s",requirements.hold_velocity_rad_s,.10);
+            read("amplitude_rad",requirements.amplitude_rad,.02);
+            read("local_range_rad",requirements.local_range_rad,.04);
         }
-        if(model_calibration_workflow_kind_=="gain" && (!params["gain_trajectory_confirmed"] || !params["gain_trajectory_confirmed"].as<bool>()))
+        if(workflow=="gain" && (!params["gain_trajectory_confirmed"] || !params["gain_trajectory_confirmed"].as<bool>()))
             throw std::runtime_error("explicit demonstrated trajectory replay confirmation is required");
-        if(model_calibration_workflow_kind_=="gain" && (!params["gain_motion_range_confirmed"] || !params["gain_motion_range_confirmed"].as<bool>()))
+        if(workflow=="gain" && (!params["gain_motion_range_confirmed"] || !params["gain_motion_range_confirmed"].as<bool>()))
             throw std::runtime_error("explicit gain local motion range confirmation is required");
-        if(model_calibration_phase_.load() != ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION || !model_calibration_trajectory_)throw std::runtime_error("model calibration is not waiting for replay confirmation");
-        if(model_calibration_alignment_active_.load())
-            throw std::runtime_error("finish manual endpoint alignment and hold before confirming replay");
         if(!params["released"] || !params["released"].as<bool>())throw std::runtime_error("explicit released confirmation is required");
-        if(model_calibration_worker_.joinable())throw std::runtime_error("model calibration worker is already running");
         std::optional<GainEndpointObservation> gain_endpoint;
-        if(model_calibration_workflow_kind_=="gain")gain_endpoint=gain_endpoint_observation(false,model_calibration_trajectory_->positions.back());
+        if(workflow=="gain")gain_endpoint=gain_endpoint_observation(false,model_calibration_trajectory_->positions.back());
         if(!model_calibration_source_task_id_.empty() || gain_endpoint) {
             // The first pass traverses the path in reverse, starting at its last
             // sample. A parked arm can be far away: NEVER jump to that target.
@@ -4836,6 +4851,13 @@ private:
                 throw std::runtime_error(message.str());
             }
         }
+        // Publish a complete accepted request only after all stage, parameter
+        // and endpoint checks pass. A duplicate or rejected request is read-only.
+        model_calibration_workflow_kind_=std::move(workflow);
+        model_calibration_gain_mode_=std::move(gain_mode);
+        gain_requirements_=requirements;
+        {std::lock_guard<std::mutex> lock(mutex_);gain_control_context_=gain_current_control_context_json();}
+        model_calibration_gain_stage_.store(model_calibration_gain_mode_=="compliant"?1:model_calibration_gain_mode_=="drag"?3:2);
         model_calibration_fault_interrupted_.store(false); model_calibration_cancel_.store(false); model_calibration_pause_.store(false); model_calibration_resume_confirmed_.store(false);
         if(model_calibration_workflow_kind_!="gain" && model_calibration_trajectory_ && model_calibration_trajectory_->positions.size()>=2) {
             const double one_way=model_calibration_trajectory_->sample_dt*static_cast<double>(model_calibration_trajectory_->positions.size()-1);
@@ -5041,6 +5063,147 @@ private:
         return false;
     }
 
+    // Compare decoded values, so formatting, key ordering and YAML anchors
+    // never invalidate a compatible recorded control context.
+    static bool gain_context_equal(const YAML::Node& a,const YAML::Node& b) {
+        if(!a || a.IsNull())return !b || b.IsNull();
+        if(!b || b.IsNull() || a.Type()!=b.Type())return false;
+        if(a.IsMap()) {
+            if(a.size()!=b.size())return false;
+            for(const auto& item:a)
+                if(!gain_context_equal(item.second,b[item.first.as<std::string>()]))return false;
+            return true;
+        }
+        if(a.IsSequence()) {
+            if(a.size()!=b.size())return false;
+            for(std::size_t i=0;i<a.size();++i)if(!gain_context_equal(a[i],b[i]))return false;
+            return true;
+        }
+        if(a.Scalar()==b.Scalar())return true;
+        try {const double x=a.as<double>(),y=b.as<double>();return std::isfinite(x) && std::isfinite(y) && x==y;}
+        catch(const YAML::Exception&){return false;}
+    }
+
+    std::string gain_current_control_context_json() const {
+        std::ostringstream out;out<<std::setprecision(17);
+        out<<"{\"runtime\":{\"ctrl_frequency_hz\":"<<cfg_.runtime.ctrl_frequency_hz
+            <<",\"joint_acc_filter_alpha\":"<<cfg_.runtime.joint_acc_filter_alpha
+            <<",\"write_enabled\":"<<(cfg_.runtime.write_enabled?"true":"false")
+            <<",\"model_feedforward_mode\":\""<<to_string(robot_.get_model_feedforward_mode())<<"\"},\"admittance\":{";
+        const auto& a=cfg_.capability.admittance;
+        out<<"\"enabled\":"<<(a.enabled?"true":"false")<<",\"joint_enabled\":";machine_json_vector(out,a.joint_enabled);
+        out<<",\"observer\":{\"mode\":\""<<observer_mode_name(a.observer.mode)<<"\",\"momentum_gain\":";machine_json_joint_vector(out,a.observer.momentum_gain);
+        out<<"},\"calibration\":{\"torque_bias\":";machine_json_joint_vector(out,a.calibration.torque_bias);
+        out<<",\"torque_threshold\":";machine_json_joint_vector(out,a.calibration.torque_threshold);
+        const auto& f=a.calibration.friction;
+        out<<",\"friction\":{\"enabled\":"<<(f.enabled?"true":"false")<<",\"velocity_transition\":"<<f.velocity_transition;
+        out<<",\"positive_coulomb\":";machine_json_joint_vector(out,f.positive_coulomb);
+        out<<",\"positive_viscous\":";machine_json_joint_vector(out,f.positive_viscous);
+        out<<",\"negative_coulomb\":";machine_json_joint_vector(out,f.negative_coulomb);
+        out<<",\"negative_viscous\":";machine_json_joint_vector(out,f.negative_viscous);
+        out<<"}},\"controller\":{\"mass\":";machine_json_joint_vector(out,a.controller.mass);
+        out<<",\"damping\":";machine_json_joint_vector(out,a.controller.damping);
+        out<<",\"stiffness\":";machine_json_joint_vector(out,a.controller.stiffness);
+        out<<",\"max_delta_q\":";machine_json_joint_vector(out,a.controller.max_delta_q);
+        out<<",\"max_delta_q_dot\":";machine_json_joint_vector(out,a.controller.max_delta_q_dot);
+        out<<"}}}";return out.str();
+    }
+
+    void gain_require_matching_context(const std::filesystem::path& folder,const YAML::Node& data,
+                                       const std::vector<std::string>& selected) const {
+        const auto fail=[](const std::string& field){throw std::runtime_error("gain candidate control context mismatch: "+field+"; recalibrate with the current configuration");};
+        const auto meta=YAML::LoadFile((folder/"metadata.json").string());
+        const auto trusted=[&](const char* file,const char* key) {
+            const auto path=folder/"source"/file;
+            if(!meta[key] || meta[key].as<std::string>().empty() ||
+               meta[key].as<std::string>()!=model_calibration_file_fingerprint(path.string()))
+                fail(std::string("missing or changed task snapshot ")+file);
+            return YAML::LoadFile(path.string());
+        };
+        const auto original=trusted("core.yaml","core_fingerprint");
+        if(!meta["task_id"] || !data["task_id"] || meta["task_id"].as<std::string>()!=data["task_id"].as<std::string>())fail("task_id");
+        if(!robot_profile_.empty() && meta["profile"].as<std::string>("")!=robot_profile_)fail("profile");
+        const auto vector_equal=[&](const YAML::Node& node,const auto& values) {
+            if(!node || !node.IsSequence() || node.size()!=values.size())return false;
+            for(std::size_t i=0;i<values.size();++i)
+                if(!std::isfinite(node[i].template as<double>()) || node[i].template as<double>()!=static_cast<double>(values[i]))return false;
+            return true;
+        };
+        if(!meta["joint_names"] || meta["joint_names"].as<std::vector<std::string>>()!=cfg_.joint_names)fail("joint_names");
+        const auto mapping=meta["mapping"];
+        if(!vector_equal(mapping["pos_ratio"],cfg_.mapper.pos_ratio) || !vector_equal(mapping["tor_ratio"],cfg_.mapper.tor_ratio) ||
+           !vector_equal(mapping["direction"],cfg_.mapper.direction) || !vector_equal(mapping["joint_zero_offset"],cfg_.mapper.joint_zero_offset) ||
+           !vector_equal(mapping["actuator_zero_offset"],cfg_.mapper.actuator_zero_offset))fail("calibration.joints");
+        if(meta["base_frame"].as<std::string>("")!=cfg_.dynamics.base_frame || meta["tool_frame"].as<std::string>("")!=cfg_.dynamics.tool_frame ||
+           !vector_equal(meta["gravity"],cfg_.dynamics.gravity) || !vector_equal(meta["original_gravity_scale"],dynamics_.get_gravity_scale()))fail("model frames, gravity or gravity_scale");
+        const auto current=YAML::Load(gain_current_control_context_json());
+        const auto runtime=original["control"]?original["control"]["runtime"]:original["runtime"];
+        const auto before=data["control_context"];
+        if(before) {
+            if(!gain_context_equal(before["runtime"],current["runtime"]))fail("control.runtime");
+        } else {
+            if(!runtime || runtime["ctrl_frequency_hz"].as<double>()!=cfg_.runtime.ctrl_frequency_hz ||
+               runtime["joint_acc_filter_alpha"].as<double>(.2)!=cfg_.runtime.joint_acc_filter_alpha ||
+               runtime["write_enabled"].as<bool>()!=cfg_.runtime.write_enabled ||
+               runtime["model_feedforward_mode"].as<std::string>()!=to_string(robot_.get_model_feedforward_mode()))fail("control.runtime");
+        }
+        const bool servo=std::find(selected.begin(),selected.end(),"servo_tracking")!=selected.end();
+        const auto rigid=data["category"].as<std::string>("")=="all"?data["targets"]["rigid_tracking"]:data;
+        const bool trim=std::find(selected.begin(),selected.end(),"rigid_tracking")!=selected.end() &&
+            rigid["hold_compensation"] && rigid["hold_compensation"]["enabled"].as<bool>(false);
+        if(servo || trim) {
+            if(before) {
+                const auto expected=before["admittance"],actual=current["admittance"];
+                if(servo && !gain_context_equal(expected["enabled"],actual["enabled"]))fail("capability.admittance.enabled");
+                const bool active=actual["enabled"].as<bool>(false);
+                if(trim || (servo && active))for(const auto* key:{"observer","calibration"})
+                    if(!gain_context_equal(expected[key],actual[key]))fail(std::string("capability.admittance.")+key);
+                if(servo && active)for(const auto* key:{"joint_enabled","controller"})
+                    if(!gain_context_equal(expected[key],actual[key]))fail(std::string("capability.admittance.")+key);
+            } else {
+                const auto loaded=YAML::Load(core_source_config_);
+                const auto expected=original["capability"]?original["capability"]["admittance"]:YAML::Node{};
+                const auto actual=loaded["capability"]?loaded["capability"]["admittance"]:YAML::Node{};
+                const bool expected_enabled=expected && expected["enabled"].as<bool>(false);
+                const bool actual_enabled=actual && actual["enabled"].as<bool>(false);
+                if(servo && expected_enabled!=actual_enabled)fail("capability.admittance.enabled");
+                if(trim || (servo && actual_enabled))for(const auto* key:{"observer","calibration"})
+                    if(!gain_context_equal(expected?expected[key]:YAML::Node{},actual?actual[key]:YAML::Node{}))fail(std::string("capability.admittance.")+key);
+                if(servo && actual_enabled)for(const auto* key:{"joint_enabled","controller"})
+                    if(!gain_context_equal(expected[key],actual[key]))fail(std::string("capability.admittance.")+key);
+                if(servo && actual_enabled && data["admittance_parameters"]) {
+                    const auto measured=data["admittance_parameters"];const auto& a=cfg_.capability.admittance;
+                    if(!vector_equal(measured["mass"],a.controller.mass) || !vector_equal(measured["damping"],a.controller.damping) ||
+                       !vector_equal(measured["stiffness"],a.controller.stiffness) || !vector_equal(measured["joint_enabled"],a.joint_enabled) ||
+                       measured["observer_mode"].as<std::string>("")!=observer_mode_name(a.observer.mode))fail("measured admittance parameters");
+                }
+            }
+        }
+        const auto model=original["model"]?original["model"]:original["dynamics"];
+        const bool correction=model["gravity_correction_path"] && !model["gravity_correction_path"].as<std::string>().empty();
+        if(correction!=!gravity_correction_source_config_.empty())fail("gravity_correction_path");
+        if(correction) {
+            (void)trusted("gravity-correction.yaml","gravity_correction_fingerprint");
+            if(meta["gravity_correction_fingerprint"].as<std::string>()!=source_text_fingerprint(gravity_correction_source_config_))fail("gravity correction");
+        }
+        if(runtime_gravity_applied_ || runtime_dynamics_applied_ || (model_calibration_candidate_applied_ && !persistent_gravity_correction_loaded_))fail("temporary model override");
+        // Offline recordings remain usable offline, but never qualify a hardware
+        // session; a real session must match its effective connection snapshot.
+        if(runtime["write_enabled"].as<bool>()!=cfg_.runtime.write_enabled)fail("hardware/mock backend");
+        if(cfg_.runtime.write_enabled) {
+            (void)trusted("hardware.yaml","hardware_fingerprint");
+            const auto effective=trusted("hardware-effective.yaml","hardware_effective_fingerprint");
+            if(!gain_context_equal(effective,YAML::Load(hardware_loader_.effective_config())))fail("hardware configuration or connection overrides");
+            const auto identity=[](const std::string& path) {
+                auto name=std::filesystem::path(path).filename().string();
+                if(name.rfind("lib",0)==0)name.erase(0,3);
+                const auto suffix=name.find(".so");if(suffix!=std::string::npos)name.resize(suffix);return name;
+            };
+            const auto recorded=meta["runtime_provenance"]["hardware_plugin_file_path"].as<std::string>("");
+            if(recorded.empty() || identity(recorded)!=identity(hardware_plugin_))fail("hardware driver");
+        }
+    }
+
     void machine_candidate_gain_apply(const YAML::Node& params) {
         if(!params || !params["path"])throw std::runtime_error("gain candidate path is required");
         std::lock_guard<std::mutex> lock(mutex_);
@@ -5133,6 +5296,7 @@ private:
             for(const auto& target:order)if(gain_target_available(data,data["targets"][target],target,cfg_.joint_names.size()))selected.push_back(target);
             if(selected.empty())throw std::runtime_error("gain candidate has no complete measured purpose");
         } else selected={category};
+        gain_require_matching_context(path.parent_path(),data,selected);
         for(const auto& purpose:order)if(std::find(selected.begin(),selected.end(),purpose)!=selected.end()) {
             if(category=="all") {
                 if(!data["targets"] || !data["targets"].IsMap() || !data["targets"][purpose])throw std::runtime_error("selected gain purpose missing from candidate");
@@ -8660,6 +8824,7 @@ private:
     std::string model_calibration_directory_;
     std::string model_calibration_core_fingerprint_;
     std::string model_calibration_urdf_fingerprint_;
+    std::string gain_control_context_;
     std::optional<FrictionCalibrationTrajectory> model_calibration_trajectory_;
     std::vector<ModelCalibrationPoseTarget> model_calibration_pose_targets_;
     double model_calibration_replay_rate_{ 0.0 };

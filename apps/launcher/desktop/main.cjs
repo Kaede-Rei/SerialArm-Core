@@ -48,8 +48,8 @@ function trusted(event) {
 }
 function waitForSessionExit() {
     return new Promise(resolve => {
-        if (bridge.session.state === 'exited') return resolve();
-        const done = message => { if (message.event === 'session' && message.state === 'exited') { clearTimeout(timer); bridge.off('event', done); resolve(); } };
+        if (bridge.dead || bridge.session.state === 'exited') return resolve();
+        const done = message => { if (bridge.dead || (message.event === 'session' && message.state === 'exited')) { clearTimeout(timer); bridge.off('event', done); resolve(); } };
         const timer = setTimeout(() => { bridge.off('event', done); resolve(); }, 8000);
         bridge.on('event', done);
     });
@@ -71,7 +71,7 @@ async function closeWindow(options = {}) {
             if (choice.response !== 0) return;
             const stopMethod = bridge.session.mode === 'workbench' ? 'workbench_stop' : 'stop';
             let stopError;
-            try { await bridge.request(stopMethod); }
+            try { if (bridge.dead) throw new Error('后台已断开，无法确认机械臂状态 / Backend disconnected; robot state is unverified'); await bridge.request(stopMethod); }
             catch (error) { stopError = error; }
             if (!stopError) await waitForSessionExit();
             if (bridge.session.state !== 'exited') {
@@ -82,13 +82,17 @@ async function closeWindow(options = {}) {
                         (stopError ? '\n\n' + String(stopError.message || stopError).slice(0, 1200) : '')
                 });
                 if (force.response !== 0) return;
-                await bridge.request(stopMethod, { force: true });
-                await waitForSessionExit();
-                if (bridge.session.state !== 'exited') throw new Error('控制进程尚未退出，请检查机器人状态后重试 / Control process has not exited, check the robot before retrying');
+                if (!bridge.dead) {
+                    try { await bridge.request(stopMethod, { force: true }); }
+                    catch (error) { if (!bridge.dead) throw error; }
+                    await waitForSessionExit();
+                }
+                if (!bridge.dead && bridge.session.state !== 'exited') throw new Error('控制进程尚未退出，请检查机器人状态后重试 / Control process has not exited, check the robot before retrying');
             }
         }
         savePrefs({ bounds: win.getBounds() });
-        await bridge.close();
+        if (bridge.dead) await bridge.forceClose();
+        else await bridge.close();
         if (options.graphicsRestart) app.relaunch({ args: process.argv.slice(1).filter(arg => !arg.startsWith('--graphics-mode') && arg !== '--enable-unsafe-swiftshader' && !arg.startsWith('--use-gl=') && !arg.startsWith('--use-angle=')) });
         win.destroy(); app.quit();
         return true;

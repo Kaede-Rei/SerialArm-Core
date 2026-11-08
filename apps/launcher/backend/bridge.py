@@ -127,6 +127,11 @@ _GRAVITY_VERIFY_MACHINE = {
 }
 
 
+def gain_mode_configured(readiness, mode):
+    # Measurement quality is reported separately from valid configured gains.
+    return readiness.get('modes', {}).get(mode) in ('configured', 'verified', 'warning', 'stale')
+
+
 def verify_machine_admission(library, config, method, params, native):
     # Keep exit and read-only operations available even when the Profile is invalid
     if method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE:
@@ -139,10 +144,8 @@ def verify_machine_admission(library, config, method, params, native):
         raise ValueError('Core、硬件映射或 Safety 配置无效，请先修正实际加载所需参数')
     status = native.request('status', {}, timeout=8)
     robot_state = status.get('robot_state')
-    modes = readiness['modes']
-
     def configured(mode):
-        return modes.get(mode) in ('configured', 'verified', 'stale')
+        return gain_mode_configured(readiness, mode)
 
     def require_hold():
         if not configured('RIGID_HOLD'):
@@ -711,7 +714,7 @@ def main():
                             if not force and native.status().get('state') == 'running':
                                 admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
                                 safe_park = (admission.get('control_available') is True and
-                                    all(admission.get('modes', {}).get(mode) in ('configured', 'verified', 'stale')
+                                    all(gain_mode_configured(admission, mode)
                                         for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
                                 state_before = native.request('status', {}, timeout=8)
                                 if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
@@ -781,7 +784,12 @@ def main():
                                              'candidate_' + str(params.get('kind', '')) + '_apply', {}, native)
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')
-                    if kind == 'gain': result_path=prepare_gain_candidate(params.get('directory', ''), gain_purposes=params.get('gain_purposes'))['candidate_path'];native_args={'path':result_path, **({'gain_purposes':params['gain_purposes']} if params.get('gain_purposes') is not None else {})}
+                    if kind == 'gain':
+                        prepared = prepare_gain_candidate(params.get('directory', ''), gain_purposes=params.get('gain_purposes'))
+                        result_path = prepared['candidate_path']
+                        # Native applies against the loaded model, effective hardware
+                        # and live control settings, which may differ from saved defaults.
+                        native_args = {'path': result_path, **({'gain_purposes':params['gain_purposes']} if params.get('gain_purposes') is not None else {})}
                     elif kind == 'gravity': result_path=prepare_gravity_candidate(params.get('directory', ''), prefer_recomputed=params.get('prefer_recomputed') is True, candidate_path=params.get('candidate_path'), candidate_source=params.get('candidate_source'))['candidate_path'];native_args={'path':result_path}
                     elif kind == 'dynamics': result_path=prepare_dynamics_candidate(params.get('report', ''))['report'];native_args={'report':result_path}
                     else: raise ValueError('未知的候选类型')

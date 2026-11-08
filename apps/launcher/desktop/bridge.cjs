@@ -1,17 +1,35 @@
 const { spawn } = require('node:child_process');
 const readline = require('node:readline');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+
+// Linux sessions already use start_new_session in the backend. Retain the
+// process start time as well as its PID so local cleanup cannot target a reused
+// PID after the backend has disappeared.
+function processIdentity(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    if (!/^\d+$/.test(fields[19] || '')) return null;
+    return {pid, state: fields[0], parent: Number(fields[1]), group: Number(fields[2]), session: Number(fields[3]), started: fields[19]};
+  } catch (error) { if (['ENOENT', 'ESRCH', 'EACCES', 'EPERM'].includes(error.code)) return null; throw error; }
+}
+const sameProcess = (a, b) => a && b && a.pid === b.pid && a.started === b.started;
 
 class Bridge extends EventEmitter {
   constructor(python, script, options = {}) {
     super(); this.pending = new Map(); this.seq = 0; this.output = ''; this.session = {state: 'idle'}; this.stderr = ''; this.dead = false;
+    this.ownedProcesses = new Map();
     let readyResolve, readyReject;
     this.ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
     this.ready.catch(() => {});
     this._readyResolve = readyResolve; this._readyReject = readyReject;
     this._readyTimer = setTimeout(() => this._fail(new Error('Backend startup timed out')), 8000);
     this.child = spawn(python, ['-u', script], { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.backendIdentity = processIdentity(this.child.pid);
     const lines = readline.createInterface({input: this.child.stdout});
+    this.lines = lines;
     lines.on('line', line => {
       try {
         const message = JSON.parse(line);
@@ -21,7 +39,12 @@ class Bridge extends EventEmitter {
             if (this._readyResolve) { this._readyResolve(); this._readyResolve = null; this._readyReject = null; }
           }
           if (message.event === 'output') this.output = (this.output + message.data).slice(-1024 * 1024);
-          if (message.event === 'session') this.session = message;
+          if (message.event === 'session') {
+            this.session = message;
+            const identity = processIdentity(message.pid);
+            if (sameProcess(this.backendIdentity, processIdentity(this.child.pid)) && identity?.parent === this.child.pid && identity.group === identity.pid && identity.session === identity.pid)
+              this.ownedProcesses.set(identity.pid, identity);
+          }
           this.emit('event', message); return;
         }
         const request = this.pending.get(message.id);
@@ -53,11 +76,53 @@ class Bridge extends EventEmitter {
   }
   _fail(error) {
     if (this.dead) return;
+    this.captureOwnedProcesses();
     this.dead = true;
     clearTimeout(this._readyTimer); this._readyTimer = null;
     if (this._readyReject) { this._readyReject(error); this._readyResolve = null; this._readyReject = null; }
     for (const r of this.pending.values()) { clearTimeout(r.timer); r.reject(error); }
     this.pending.clear(); this.emit('event', {event: 'error', error: error.message});
+  }
+  captureOwnedProcesses() {
+    const processes = new Map();
+    for (const name of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(name)) continue;
+      const identity = processIdentity(Number(name));
+      if (identity) processes.set(identity.pid, identity);
+    }
+    const known = new Map([...this.ownedProcesses].filter(([pid, identity]) => sameProcess(identity, processes.get(pid))));
+    if (sameProcess(this.backendIdentity, processes.get(this.child.pid))) known.set(this.child.pid, this.backendIdentity);
+    const sessions = new Set([...known.values()].filter(p => p.group === p.pid && p.session === p.pid).map(p => p.pid));
+    let added;
+    do {
+      added = false;
+      for (const identity of processes.values()) {
+        if (!known.has(identity.pid) && (known.has(identity.parent) || sessions.has(identity.session))) {
+          known.set(identity.pid, identity); added = true;
+        }
+      }
+    } while (added);
+    for (const [pid, identity] of known) this.ownedProcesses.set(pid, identity);
+  }
+  async forceClose() {
+    if (!this.dead) throw new Error('Local cleanup is only available after the backend has disconnected');
+    this.captureOwnedProcesses(); this.closing = true;
+    const targets = [...this.ownedProcesses.values()].filter(identity => sameProcess(identity, processIdentity(identity.pid)));
+    // Terminate only observed members of this launcher's process tree/session,
+    // never a negative PID or an unverified process group.
+    for (const identity of targets.sort((a, b) => (a.pid === this.child.pid) - (b.pid === this.child.pid))) {
+      if (!sameProcess(identity, processIdentity(identity.pid))) continue;
+      try { process.kill(identity.pid, 'SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') throw error; }
+    }
+    const deadline = Date.now() + 1500;
+    while (targets.some(identity => { const live = processIdentity(identity.pid); return sameProcess(identity, live) && !['Z', 'X'].includes(live.state); })) {
+      if (Date.now() >= deadline) throw new Error('Known launcher processes have not exited after local cleanup');
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    this.lines.close();
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) stream.destroy();
+    return {terminatedPids: targets.map(identity => identity.pid), force_stop_unverified: true};
   }
   request(method, params = {}) {
     if (this.dead) {

@@ -329,13 +329,16 @@ def _controller_text(text, controller):
             for child in value.value:
                 unique_keys(child)
     unique_keys(node)
-    if original['control']['controller'] == controller:
-        return text
     tokens = list(yaml.scan(text))
     if node.start_mark.index <= key.end_mark.index or any(
             isinstance(token, (AnchorToken, AliasToken)) and
             node.start_mark.index <= token.start_mark.index < node.end_mark.index for token in tokens):
-        raise ValueError('control.controller 含 YAML 锚点或共享别名，请先展开为独立映射后再保存四用途配置')
+        # Older GUI profiles shared gain dictionaries, including aliases from
+        # fault_recovery into this block. Expand references before replacing
+        # their definitions so the rest of the document retains its values.
+        return _controller_text(_expand_yaml_aliases(text), controller)
+    if original['control']['controller'] == controller:
+        return text
     start = node.start_mark.index
     if node.flow_style:
         end = node.end_mark.index
@@ -362,6 +365,53 @@ def _controller_text(text, controller):
     if parsed != expected:
         raise ValueError('YAML 共享别名会影响其他配置，请先拆分为独立映射后再保存')
     return result
+
+
+def _expand_yaml_aliases(text):
+    """Expand shared YAML values without rewriting unrelated text or comments."""
+    root = yaml.compose(text)
+    nodes = {}
+    def collect(node):
+        if id(node) in nodes:
+            return
+        nodes[id(node)] = node
+        if isinstance(node, MappingNode):
+            for key, value in node.value:
+                collect(key)
+                collect(value)
+        elif isinstance(node, yaml.SequenceNode):
+            for value in node.value:
+                collect(value)
+    collect(root)
+    by_start = {node.start_mark.index: node for node in nodes.values()}
+    anchors = {event.anchor: by_start[event.start_mark.index]
+               for event in yaml.parse(text)
+               if getattr(event, 'anchor', None) and not isinstance(event, yaml.AliasEvent)}
+
+    class InlineDumper(yaml.SafeDumper):
+        def ignore_aliases(self, data):
+            return True
+
+    def string(dumper, value):
+        return dumper.represent_scalar('tag:yaml.org,2002:str', value,
+                                       style='"' if '\n' in value or '\r' in value else None)
+    InlineDumper.add_representer(str, string)
+    replacements = []
+    try:
+        for token in yaml.scan(text):
+            if isinstance(token, AnchorToken):
+                replacements.append((token.start_mark.index, token.end_mark.index, ''))
+            elif isinstance(token, AliasToken):
+                value = yaml.safe_load(yaml.serialize(anchors[token.value]))
+                encoded = yaml.dump(value, Dumper=InlineDumper, allow_unicode=True,
+                                    default_flow_style=True, sort_keys=False, width=1000000)
+                encoded = encoded.removesuffix('...\n').rstrip('\n')
+                replacements.append((token.start_mark.index, token.end_mark.index, encoded))
+    except RecursionError as error:
+        raise ValueError('控制配置不支持循环 YAML 别名，请使用独立参数映射') from error
+    for start, end, value in reversed(replacements):
+        text = text[:start] + value + text[end:]
+    return text
 
 
 def canonical_control_text(text, servo=None):

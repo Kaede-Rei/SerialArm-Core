@@ -1337,7 +1337,10 @@ function disposeModelPreview() {
     restoreCalibrationTaskPreview();
     if (!modelView) return;
     const record = graphicsState.current;
-    if (record?.payload === modelView.payload) record.viewState = modelView.captureViewState?.() || record.viewState;
+    if (record?.payload === modelView.payload) {
+        const viewState = modelView.captureViewState?.();
+        record.viewState = modelView.getRenderState?.().modelStatus === 'failed' ? record.viewState || viewState : viewState || record.viewState;
+    }
     const old = modelView; modelView = null; graphicsState.ghostKey = '';
     if (ghostPending?.view === old) { ghostPending.resolve(); ghostPending = null; }
     if (ghostDrawnView === old) { ghostDrawnView = null; ghostDrawnAt = 0; ghostDrawnKey = ''; }
@@ -1345,6 +1348,8 @@ function disposeModelPreview() {
 }
 function graphicsAvailabilityProblem(requireGhost = false) {
     const report = modelView?.getRenderState?.();
+    if (report?.modelStatus === 'failed')
+        return busyText('模型资源未完整加载，请重新加载模型后再确认目标或路径', 'Reload the complete model before confirming a target or path');
     if (graphicsState.effectiveMode === 'rescue' || report?.status !== 'ready' || !report.modelLoaded || modelView?.gl?.isContextLost())
         return busyText('三维预览不可用，请先恢复预览，再确认目标或路径', 'Restore the 3D preview before confirming a target or path');
     const targetChanged = state.page === 'workbench' && state.workbenchTab === 'control' && !state.ghostRequestKey?.endsWith(':' + JSON.stringify(state.workbenchTargets));
@@ -1392,12 +1397,15 @@ function graphicsActionsHtml() {
 }
 function graphicsFailureHtml(record) {
     const rescue = graphicsState.effectiveMode === 'rescue';
-    const title = rescue ? busyText('无三维救援模式', 'Rescue mode without 3D') : busyText('三维预览不可用', '3D preview unavailable');
-    const detail = record?.fault?.message || busyText('当前不创建三维渲染器', 'The 3D renderer is disabled');
+    const modelFailure = record?.fault?.category === 'model';
+    const title = rescue ? busyText('无三维救援模式', 'Rescue mode without 3D') : modelFailure ? busyText('模型资源未完整加载', 'Model resources could not be loaded') : busyText('三维预览不可用', '3D preview unavailable');
+    const resources = record?.fault?.modelErrors || [];
+    const detail = [record?.fault?.message || busyText('当前不创建三维渲染器', 'The 3D renderer is disabled'),
+        ...resources.map(item => [item.link, item.layer, item.resource, item.message].filter(Boolean).join(' · '))].join('\n');
     return '<section class="graphics-failure" data-graphics-panel role="region" aria-label="' + title + '"><h3>' + title + '</h3><p>' +
         busyText('配置、数值状态、记录和导出仍可使用；需要目标或路径预览的执行确认，请先恢复三维', 'Configuration, numeric status, records and exports remain available. Restore 3D before confirming motions that require a target or path preview') +
         '</p><details><summary>' + busyText('错误详情', 'Error details') + '</summary><pre>' + esc(detail) + '</pre></details>' +
-        '<div class="workspace-actions"><button type="button" class="button" data-graphics-retry>' + busyText('重试三维预览', 'Retry 3D preview') + '</button><button type="button" class="button" data-graphics-diagnostics>' + busyText('查看图形诊断', 'View graphics diagnostics') +
+        '<div class="workspace-actions"><button type="button" class="button" data-graphics-retry>' + (modelFailure ? busyText('重新加载模型', 'Reload model') : busyText('重试三维预览', 'Retry 3D preview')) + '</button><button type="button" class="button" data-graphics-diagnostics>' + busyText('查看图形诊断', 'View graphics diagnostics') +
         '</button><button type="button" class="button" data-graphics-export>' + busyText('导出诊断', 'Export diagnostics') + '</button></div>' + graphicsActionsHtml() + '</section>';
 }
 function showGraphicsFailure(record) {
@@ -1408,13 +1416,16 @@ function showGraphicsFailure(record) {
 }
 function reportPreviewState(record, view, report) {
     record.report = report;
-    if (report.status === 'ready' && report.modelLoaded) {
+    if (report.status === 'ready' && report.modelLoaded && report.modelStatus !== 'failed') {
         record.fault = null;
         api.graphics?.report({...report, page: state.page}).catch(() => {});
         refreshGraphicsDependentActions();
-    } else if (['failed', 'lost'].includes(report.status)) {
-        record.viewState = view?.captureViewState?.() || record.viewState;
-        record.fault = {message: report.error?.message || report.error || busyText('WebGL 图形上下文已失效', 'The WebGL context is unavailable'), category: 'graphics'};
+    } else if (['failed', 'lost'].includes(report.status) || report.modelStatus === 'failed') {
+        const modelFailure = !['failed', 'lost'].includes(report.status) && report.modelStatus === 'failed';
+        const viewState = view?.captureViewState?.();
+        record.viewState = modelFailure ? record.viewState || viewState : viewState || record.viewState;
+        record.fault = modelFailure ? {...report.modelError, category: 'model', modelErrors: report.modelErrors || []}
+            : {message: report.error?.message || report.error || busyText('WebGL 图形上下文已失效', 'The WebGL context is unavailable'), category: 'graphics'};
         api.graphics?.report({...report, page: state.page}).catch(() => {});
         queueMicrotask(() => {
             if (modelView !== view || graphicsState.current !== record) return;
@@ -1423,11 +1434,14 @@ function reportPreviewState(record, view, report) {
     }
 }
 function failModelPreview(record, error, view, phase) {
-    record.viewState = view?.captureViewState?.() || record.viewState;
+    const report = view?.getRenderState?.();
+    record.viewState = record.viewState || view?.captureViewState?.();
     if (modelView === view) modelView = null;
     view?.dispose(); graphicsState.ghostKey = '';
     record.fault = {message: error.message || String(error), category: error.category || (phase === 'renderer' ? 'graphics' : 'model')};
-    api.graphics?.report({status: 'failed', page: state.page, phase, error: record.fault, diagnostics: error.diagnostics}).catch(() => {});
+    api.graphics?.report(phase === 'model'
+        ? {...report, status: report?.status || 'initializing', page: state.page, modelLoaded: false, modelStatus: 'failed', modelError: record.fault}
+        : {status: 'failed', page: state.page, phase, error: record.fault, diagnostics: error.diagnostics}).catch(() => {});
     showGraphicsFailure(record);
 }
 async function refreshGraphicsStatus() {
@@ -1444,10 +1458,29 @@ function mountCurrentPreview() {
 }
 async function retryModelPreview() {
     if (graphicsState.effectiveMode === 'rescue') return changeGraphicsMode(graphicsState.status?.backendMode || 'normal');
-    const record = graphicsState.current;
+    const record = graphicsState.current, page = state.page, epoch = state.workbenchEpoch;
+    if (record?.retrying) return;
+    const reloadModel = record?.fault?.category === 'model';
+    if (record) record.retrying = true;
     if (record) record.fault = null;
     pageModelMount = null; workspaceMount = null; disposeModelPreview();
-    await mountCurrentPreview();
+    try {
+        if (reloadModel) {
+            const description = page === 'description';
+            const payload = await api.request(description ? 'description_inspect' : 'model', description
+                ? {source: state.descriptionDraft.source, model_relative: state.descriptionDraft.model_relative || ''}
+                : {config: state.config, positions: state.modelPositions.slice()});
+            if (graphicsState.current !== record || state.page !== page || state.workbenchEpoch !== epoch) return;
+            if (description) state.descriptionAnalysis = payload;
+            else state.modelData = payload;
+            // Keep the camera, layers and selection when retrying the same preview.
+            record.payload = description ? payload.preview : payload;
+        }
+        if (state.page === page && state.workbenchEpoch === epoch) await mountCurrentPreview();
+    } catch (error) {
+        if (graphicsState.current === record && state.page === page && state.workbenchEpoch === epoch)
+            failModelPreview(record, error, null, 'model');
+    } finally { if (record) record.retrying = false; }
 }
 async function changeGraphicsMode(mode, restart = false) {
     graphicsState.actionError = '';
@@ -1487,11 +1520,12 @@ function graphicsDiagnosticsHtml(status = {}) {
         : '<section class="graphics-diagnostic-section"><h4>' + esc(title) + '</h4>' + body + '</section>';
     const result = report => {
         if (!report) return badge(busyText('尚无预览记录', 'No preview recorded'));
+        if (report.modelStatus === 'failed') return badge(busyText('模型加载失败', 'Model loading failed'), 'error');
         const labels = {ready: report.modelLoaded && report.drawCount > 0 ? busyText('模型已绘制', 'Model rendered') : busyText('渲染器已就绪', 'Renderer ready'), initializing: busyText('正在初始化', 'Initializing'), failed: busyText('预览失败', 'Preview failed'), lost: busyText('图形上下文丢失', 'Graphics context lost'), disposed: busyText('预览已关闭', 'Preview closed')};
         return badge(labels[report.status] || busyText('未完成绘制', 'Rendering incomplete'), ['failed', 'lost'].includes(report.status) ? 'error' : report.status === 'ready' ? 'ok' : 'neutral');
     };
     const pageLabel = page => ({model: t('model'), description: t('descriptionImport'), workbench: t('workbenchNav'), geometry: t('geometryNav'), calibration: t('calibrationNav')})[page] || value(page);
-    const errorText = report => typeof report?.error === 'string' ? report.error : report?.error?.message || '';
+    const errorText = report => (typeof report?.error === 'string' ? report.error : report?.error?.message) || report?.modelError?.message || '';
     const summary = [
         [busyText('当前模式', 'Current mode'), esc(graphicsModeLabel(status.effectiveMode || 'normal'))],
         [busyText('最近一次预览', 'Latest preview'), result(latest)],
@@ -1515,10 +1549,14 @@ function graphicsDiagnosticsHtml(status = {}) {
         [busyText('像素比例', 'Pixel ratio'), gl.pixelRatio],
         [busyText('绘图缓冲区', 'Drawing buffer'), Array.isArray(gl.drawingBuffer) ? gl.drawingBuffer.join(' × ') : null],
         [busyText('模型网格数', 'Model meshes'), latest.meshCount], [busyText('绘制次数', 'Draw count'), latest.drawCount],
+        [busyText('模型资源', 'Model resources'), ({empty:busyText('尚未加载', 'Not loaded'), loading:busyText('正在加载', 'Loading'), ready:busyText('已完整加载', 'Loaded'), failed:busyText('加载失败', 'Failed')})[latest.modelStatus]],
         [busyText('单帧绘制调用', 'Draw calls per frame'), latest.renderCalls], [busyText('单帧三角形数', 'Triangles per frame'), latest.triangles],
         ...(errorText(latest) ? [[busyText('错误原因', 'Error'), errorText(latest)]] : []),
         ...(gl.creationErrors?.length ? [[busyText('上下文创建错误', 'Context creation errors'), gl.creationErrors.join('\n')]] : [])
     ]) : empty(busyText('尚未创建三维预览；打开模型或标定页面后，可在这里查看实际绘制结果', 'No 3D preview has been created yet. Open a model or calibration page to record an actual rendering result')));
+    if (latest?.modelErrors?.length) html += section(busyText('模型资源错误', 'Model resource errors'), table(
+        [busyText('连杆', 'Link'), busyText('图层', 'Layer'), busyText('资源', 'Resource'), busyText('原因', 'Reason')],
+        latest.modelErrors.map(item => [cell(item.link), cell(item.layer), cell(item.resource), cell(item.message)])));
     const devices = gpu.gpuDevice || [], aux = gpu.auxAttributes || {};
     const hex = item => Number.isInteger(item) ? '0x' + item.toString(16) : value(item);
     html += section(busyText('显卡与驱动', 'GPU and driver'), (d.gpuInfoWaitTimedOut || d.gpuInfoPending || d.gpuInfoError ? '<p class="graphics-diagnostic-note">' + cell(d.gpuInfoError || (d.gpuInfoWaitTimedOut ? busyText('显卡信息读取超时；已获取的信息显示如下', 'GPU information timed out; available information is shown below') : busyText('显卡信息仍在读取', 'GPU information is still loading'))) + '</p>' : '') +
@@ -1562,7 +1600,10 @@ async function showGraphicsDiagnostics() {
 }
 function bindGraphicsActions(root = document) {
     root.querySelectorAll('[data-graphics-mode]').forEach(button => button.onclick = () => changeGraphicsMode(button.dataset.graphicsMode));
-    root.querySelectorAll('[data-graphics-retry]').forEach(button => button.onclick = () => retryModelPreview());
+    root.querySelectorAll('[data-graphics-retry]').forEach(button => button.onclick = async () => {
+        button.disabled = true;
+        try { await retryModelPreview(); } finally { button.disabled = false; }
+    });
     root.querySelectorAll('[data-graphics-restart]').forEach(button => button.onclick = () => changeGraphicsMode(graphicsState.requestedMode, true));
     root.querySelectorAll('[data-graphics-diagnostics]').forEach(button => button.onclick = showGraphicsDiagnostics);
     root.querySelectorAll('[data-graphics-close]').forEach(button => button.onclick = () => button.closest('dialog').close());
@@ -1743,7 +1784,7 @@ function workbenchTargetMayMove() {
         && !workbenchRecoveryRequired() && !modelCalibrationActive() && x.gravity_verification?.active !== true
         && !['recording', 'playing'].includes(x.teach_replay?.phase)
         && ['RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_TRACKING'].includes(x.impedance_mode)
-        && ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.[x.gain_profile === 'SERVO_TRACKING' ? 'SERVO_TRACKING' : x.impedance_mode.includes('COMPLIANT') ? 'COMPLIANT_TRACKING' : 'RIGID_TRACKING']);
+        && gainModeConfigured(x.gain_profile === 'SERVO_TRACKING' ? 'SERVO_TRACKING' : x.impedance_mode.includes('COMPLIANT') ? 'COMPLIANT_TRACKING' : 'RIGID_TRACKING');
 }
 function workbenchJointRows() {
     ensureWorkbenchTargetDraft();
@@ -2045,7 +2086,7 @@ function gravityVerificationPanelHtml() {
     const inactive = x.robot_state === 'INACTIVE';
     const dragging = active && phase === 'dragging' && x.impedance_mode === 'COMPLIANT_DRAG';
     const connection = readinessConnectionState();
-    const prerequisites = connection.basic_calibration_ready ?? ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.RIGID_HOLD);
+    const prerequisites = connection.basic_calibration_ready ?? gainModeConfigured('RIGID_HOLD');
     const preflight = [];
     if (!active) {
         if (!connection.structurally_valid) {
@@ -2427,7 +2468,7 @@ function gainWarningLabel(warning) {
     const compensation = parts[0] === 'hold_compensation'; if (compensation) parts.shift();
     if (parts[0] === 'endpoint_alignment_required') return [purpose,busyText('端点尚未回稳，后续回放未开始；已完成的测量仍可采用，请查看关节目标与偏差','The endpoint has not settled; later replay did not start. Completed measurements remain usable; review joint targets and differences')].filter(Boolean).join(' · ');
     if (['observer_unavailable','hold_compensation_inactive'].includes(parts[0])) return [purpose,compensation ? busyText('保持补偿','Hold compensation') : '',parts[0] === 'observer_unavailable' ? busyText('观测器有效采样未达参考要求','Observer samples are below the reference requirement') : busyText('保持补偿未充分建立','Hold compensation did not fully establish')].filter(Boolean).join(' · ');
-    const labels = {tracking_reference_not_met:['跟踪未达参考指标','Tracking is outside reference limits'],drag_reference_not_met:['拖拽释放未达参考指标','Drag release is outside reference limits'],admittance_reference_not_met:['导纳未达参考指标','Admittance is outside reference limits'],hold_position_error:['保持位置误差超出参考指标','Hold position error exceeds the reference limit'],hold_velocity_exceeded:['保持速度超出参考指标','Hold speed exceeds the reference limit'],hold_not_stationary:['保持阶段仍有运动','Movement remained during the hold check'],insufficient_measurements:['采样量未达参考要求','The sample count is below the reference requirement'],limited:['测量期间出现限幅','Limiting occurred during measurement'],measurement_incomplete:['测量未完成','Measurement is incomplete'],not_started:['尚未测量','Not measured'],measurement_in_progress:['测量未完成','Measurement is incomplete'],time_budget_reached:['已到本次标定时限，未完成用途保留为未测量','The time budget was reached; unfinished uses remain unmeasured'],time_budget_may_limit_measurements:['按当前安全重定时，部分测量可能超出本次时限','With the current safety retiming, some measurements may exceed this time budget']};
+    const labels = {hold_compensation_measurement_interrupted:['可选保持补偿复测已中断，已完成的基线结果仍可采用','Optional hold compensation measurement was interrupted; the completed baseline remains available'],tracking_reference_not_met:['跟踪未达参考指标','Tracking is outside reference limits'],drag_reference_not_met:['拖拽释放未达参考指标','Drag release is outside reference limits'],admittance_reference_not_met:['导纳未达参考指标','Admittance is outside reference limits'],hold_position_error:['保持位置误差超出参考指标','Hold position error exceeds the reference limit'],hold_velocity_exceeded:['保持速度超出参考指标','Hold speed exceeds the reference limit'],hold_not_stationary:['保持阶段仍有运动','Movement remained during the hold check'],insufficient_measurements:['采样量未达参考要求','The sample count is below the reference requirement'],limited:['测量期间出现限幅','Limiting occurred during measurement'],measurement_incomplete:['测量未完成','Measurement is incomplete'],not_started:['尚未测量','Not measured'],measurement_in_progress:['测量未完成','Measurement is incomplete'],time_budget_reached:['已到本次标定时限，未完成用途保留为未测量','The time budget was reached; unfinished uses remain unmeasured'],time_budget_may_limit_measurements:['按当前安全重定时，部分测量可能超出本次时限','With the current safety retiming, some measurements may exceed this time budget']};
     const text = labels[parts[0]]?.[state.language === 'en' ? 1 : 0] || String(warning);
     return [purpose,compensation ? busyText('保持补偿','Hold compensation') : '',text].filter(Boolean).join(' · ');
 }
@@ -3503,10 +3544,13 @@ function teachReplayShortError(raw) {
         return en ? 'Playback stopped at the hard following-error limit' : '回放已因触及硬跟踪误差上限而停止';
     return en ? 'Playback stopped · Review the error dialog for details' : '回放未完成 · 请查看错误弹窗中的详细原因';
 }
+function gainModeConfigured(mode) {
+    return ['configured', 'verified', 'warning', 'stale'].includes(state.readiness?.modes?.[mode]);
+}
 function gainPurposeConfigured(purpose, tracking = true) {
-    if (purpose === 'SERVO_TRACKING') return ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.SERVO_TRACKING);
+    if (purpose === 'SERVO_TRACKING') return gainModeConfigured('SERVO_TRACKING');
     const mode = purpose === 'DRAG' ? 'COMPLIANT_DRAG' : (purpose === 'COMPLIANT' ? 'COMPLIANT' : 'RIGID') + (tracking ? '_TRACKING' : '_HOLD');
-    return ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.[mode]);
+    return gainModeConfigured(mode);
 }
 function controlGainPurposeMayChange(purpose) {
     const x = state.telemetry || {};
@@ -4364,7 +4408,7 @@ function controlOperationProblem(action) {
     if (!emergency && !['park','hold','rigid_hold'].includes(action) && state.modelReloadPending) return msg('模型已修改，请断开并重新连接', 'The model changed; disconnect and reconnect');
     if (!emergency && (x.write_enabled ?? state.readiness?.connection_readiness?.write_enabled) === false) return msg('当前使用离线后端，不读取电机反馈；在运动与交互控制中开放写入并重新连接后使用实机', 'This is an offline backend without motor feedback; enable writing in Motion and reconnect for hardware control');
     const fault = x.robot_state === 'FAULT', active = x.robot_state === 'ACTIVE', inactive = x.robot_state === 'INACTIVE';
-    const configured = mode => ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.[mode]);
+    const configured = mode => gainModeConfigured(mode);
     if (action === 'deactivate') return active || fault ? '' : msg('机械臂已失能', 'The robot is already disabled');
     if (['clear_fault','fault_compliant','fault_rigid'].includes(action) || (fault && action === 'rigid_hold')) {
         if (!fault) return msg('当前没有故障', 'There is no active fault');
@@ -4391,7 +4435,7 @@ function updateWorkbenchControlState() {
     });
     if ($('control-operation-hint')) $('control-operation-hint').textContent = !workbenchConnected() ? busyText('连接工作台后可使能机械臂', 'Connect the workspace to activate the robot') : state.modelReloadPending ? busyText('模型已修改，请停放并重新连接后使用新模型', 'The model changed; park and reconnect to load it') : x.robot_state === 'FAULT' ? busyText('处理故障原因后选择恢复方式；立即失能可释放执行器', 'Resolve the fault, then choose recovery; Disable releases the actuators') : controlOperationProblem(x.robot_state === 'ACTIVE' ? 'park' : 'activate');
     if ($('control-operation-next')) {
-        const field = state.readiness?.connection_readiness?.write_enabled === false ? 'core.control.runtime.write_enabled' : !['configured','verified','stale'].includes(state.readiness?.modes?.RIGID_HOLD) ? 'core.control.controller.rigid_hold.kp' : '';
+        const field = state.readiness?.connection_readiness?.write_enabled === false ? 'core.control.runtime.write_enabled' : !gainModeConfigured('RIGID_HOLD') ? 'core.control.controller.rigid_hold.kp' : '';
         const node=$('control-operation-next');
         node.innerHTML = field && workbenchConnected() ? setupActionHtml({page:'profile_setup',group:'motion',field},busyText('前往配置','Open configuration')) : '';
         node.querySelectorAll('[data-setup-target]').forEach(button=>button.onclick=()=>operation(()=>openSetupTarget(JSON.parse(button.dataset.setupTarget))));
@@ -4402,7 +4446,7 @@ function updateWorkbenchControlState() {
         button.title=!button.disabled ? '' : !workbenchConnected() ? busyText('请先连接工作台','Connect first') : x.robot_state!=='ACTIVE' ? busyText('请先使能机械臂','Activate first') : referenceBehavior()==='MODEL_ADMITTANCE' && !['SERVO_TRACKING','DRAG'].includes(purpose) ? busyText('模型导纳使用伺服跟踪增益','Model admittance uses servo gains') : !gainPurposeConfigured(purpose,x.impedance_mode?.endsWith('_TRACKING')) ? busyText('请先配置该用途的增益','Configure gains for this use first') : busyText('请先结束当前任务','Finish the current task first');
     });
     document.querySelectorAll('[data-impedance-mode]').forEach(button => {
-        const mode=button.dataset.impedanceMode, configured=['configured','verified','stale'].includes(state.readiness?.modes?.[mode]);
+        const mode=button.dataset.impedanceMode, configured=gainModeConfigured(mode);
         button.classList.toggle('active',x.impedance_mode===mode);button.disabled=recovering || x.robot_state!=='ACTIVE' || pending.kind==='impedance' || !configured;
         button.title=!configured ? readinessResultLabel(state.readiness?.modes?.[mode]) : x.robot_state==='ACTIVE' ? '' : busyText('请先使能机械臂','Activate first');
     });
@@ -5660,7 +5704,7 @@ function bindPage() {
             const gainPurposes = kind === 'gain' ? selectedGainPurposes() : null;
             if (gainPurposes && !gainPurposes.length) throw new Error(busyText('请先勾选已完成测量的用途','Select measured gain uses first'));
             const result = await api.request('calibration_tool_export', { kind, directory, destination, report, candidate_source: kind === 'gravity' ? state.modelCalibrationCandidateSource : 'online', ...selectedCandidateParams(kind), ...(gainPurposes ? {gain_purposes:gainPurposes} : {}) });
-            toast((state.language === 'en' ? 'Calibration result exported: ' : '标定成果已导出 ') + result.path + (result.review_required ? (state.language === 'en' ? ' · Review only, friction disabled when unverified' : ' · 仅供人工审核，未通过的摩擦补偿已禁用') : ''));
+            toast((state.language === 'en' ? 'Calibration result exported: ' : '标定成果已导出 ') + result.path + (result.context_warnings?.length ? busyText(' · 当前配置已变化或无法完整核对；导出采用标定时配置，详情见包内 README.txt', ' · Current settings changed or could not be fully checked; exported settings come from the calibration snapshot. See README.txt in the archive') : '') + (result.review_required ? (state.language === 'en' ? ' · Review only, friction disabled when unverified' : ' · 仅供人工审核，未通过的摩擦补偿已禁用') : ''));
         }));
         if ($('calibration-finish-teaching')) $('calibration-finish-teaching').onclick = () => blockingOperation(busyText('正在保存示教任务...', 'Saving demonstration...'), async () => {
             const result = await workbenchRequest('model_calibration_finish_teaching', modelCalibrationTaskParams());
@@ -5924,7 +5968,7 @@ function confirmWorkbenchDisconnect() {
     if (workbenchRecoveryRequired() || state.session?.disconnect_blocked === true) return confirmUnresponsiveDisconnect();
     const en = state.language === 'en';
     const kinds = activeTemporaryOverrides();
-    const safePark = (state.readiness?.control_available === true && ['RIGID_TRACKING', 'COMPLIANT_TRACKING'].every(mode => ['configured', 'verified', 'stale'].includes(state.readiness?.modes?.[mode])));
+    const safePark = (state.readiness?.control_available === true && ['RIGID_TRACKING', 'COMPLIANT_TRACKING'].every(mode => gainModeConfigured(mode)));
     if (state.telemetry?.robot_state === 'ACTIVE' && (!safePark || kinds.length)) {
         return toast(en ? 'Support the robot and disable it before disconnecting, as automatic parking is not safe for this session' : '当前不能使用未验收的自动停放，请先可靠支撑机械臂，执行立即失能，再断开工作台', true);
     }

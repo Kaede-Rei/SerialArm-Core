@@ -116,6 +116,12 @@ def describe(error, method='', params=None):
     machine = _machine_reason(technical)
     if machine:
         code, category, reason, advice, action = machine
+    elif 'gain candidate control context mismatch:' in original_message:
+        code, category = 'GAIN_CANDIDATE_CONTEXT_CHANGED', 'configuration'
+        field = original_message.split('gain candidate control context mismatch:', 1)[1].split(';', 1)[0].strip()
+        reason = '当前控制配置与增益标定时不一致，未应用候选（' + field + '）'
+        advice = '使用与当前机械臂配置及会话参数一致的标定记录，或在当前设置下重新标定；历史结果仍可查看和导出'
+        details['context_field'] = field
     elif isinstance(error, ValueError) and ('尚未选择机器人 Profile' in original_message or 'robot profile not found:' in original_message):
         code, category = 'PROFILE_NOT_SELECTED', 'configuration'
         reason = '尚未选择机器人 Profile，无法扫描对应机器人的历史任务'
