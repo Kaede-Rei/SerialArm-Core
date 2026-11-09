@@ -329,6 +329,8 @@ if(!held) return 1;
 
 `set_calibration_disturbance(torque, now)` 为独立扰动短测提供有界关节力矩入口，`clear_calibration_disturbance()` 清除该输入；扰动仍经过原有力矩、参考与 Safety 约束，调用方需按周期刷新并在所有退出路径清除；周期输出的 `calibration_disturbance` 记录本周期实际叠加的扰动，不以请求值代替执行值
 
+HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；`ControlRuntime::submit_reference()` 在 HOLD 中仍返回 `CMD_NOT_ALLOWED_IN_MODE`；候选的 `available`、`qualification_complete` 与 `validated` 分别表示参数测量完整、验收证据完整与达标，见 [时间与结果语义](calibration.md#时间与结果语义)
+
 自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
 
 机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据

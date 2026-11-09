@@ -224,6 +224,8 @@ def short_probe_diagnostics(source: Evidence, candidate: dict[str, Any], peak_ta
             axis['archived_disturbance_goal_met'] = model.get('disturbance_goal_met')
             axis['archived_static_measurement_complete'] = recovery.get('static_measurement_complete')
             axis['archived_motion_observed'] = recovery.get('motion_observed')
+            axis['archived_disturbance_encoder_step_rad'] = recovery.get('encoder_step_rad')
+            axis['archived_disturbance_motion_floor_rad'] = recovery.get('motion_floor_rad')
             axis['archived_disturbance_measurement_complete'] = recovery.get('measurement_complete')
             axis['archived_disturbance_assessment_reason'] = recovery.get('reason')
             axis['archived_identifiable'] = model.get('identifiable')
@@ -552,6 +554,61 @@ def direction_comparisons(records: dict[str, Any]) -> list[dict[str, Any]]:
     return comparisons
 
 
+def nested_parameter_measurement_complete(candidate: dict[str, Any], purpose: str, target: dict[str, Any]) -> bool | None:
+    """Describe modern nested measurements while retaining archived flags.
+
+    This is evidence coverage, not a qualification or an application operation.
+    Legacy local-probe formats keep their original scope instead of receiving
+    an inferred modern full-path result.
+    """
+    if candidate.get('validation_scope') != 'independent_demonstration_trajectory':
+        return None
+    n = len(candidate.get('joint_names', []))
+    def number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0
+    def gains(value):
+        return isinstance(value, dict) and all(isinstance(value.get(term), list) and len(value[term]) == n
+            and all(number(v) for v in value[term]) for term in ('kp', 'kd'))
+    def complete(value, kind):
+        if not isinstance(value, dict) or value.get('completed') is not True or value.get('available') is not True:
+            return False
+        if kind == 'tracking':
+            rows = value.get('metrics')
+            return (value.get('independent') is True and number(value.get('duration_s')) and value['duration_s'] > 0
+                and number(value.get('measured_duration_s')) and value['measured_duration_s'] >= value['duration_s']-.06
+                and isinstance(rows, list) and len(rows) == n and all(isinstance(row, dict)
+                and number(row.get('samples')) and row['samples'] > 0
+                and number(row.get('measurement_samples')) and row['measurement_samples'] > 0
+                and all(number(row.get(key)) for key in ('rms_error_rad','peak_error_rad','velocity_rms_rad_s','tail_error_rad','settling_s'))
+                for row in rows))
+        if not number(value.get('samples')) or value['samples'] <= 0:
+            return False
+        if kind == 'hold':
+            fresh = value.get('fresh_samples')
+            return (isinstance(fresh, list) and len(fresh) == n and all(number(v) and v > 0 for v in fresh)
+                    and all(number(value.get(key)) for key in ('worst_error_rad','worst_velocity_rad_s')))
+        axes = value.get('axes')
+        return (isinstance(axes, list) and len(axes) == n and all(isinstance(axis, dict)
+            and number(axis.get('samples')) and axis['samples'] > 0
+            and all(number(axis.get(key)) for key in ('initial_velocity_rad_s','peak_velocity_rad_s','final_velocity_rad_s','decay_s'))
+            for axis in axes))
+    if n == 0 or not gains(target) or target.get('error') in ('not_started', 'measurement_in_progress'):
+        return False
+    if purpose == 'compliant_drag':
+        return all(v == 0 for v in target['kp']) and complete(target.get('drag_validation'), 'drag')
+    if not complete(target.get('native_validation'), 'tracking'):
+        return False
+    if purpose == 'servo_tracking':
+        admittance = target.get('admittance_validation') or {}
+        native_only = target.get('admittance_required') is False and admittance.get('required') is False and admittance.get('status') == 'not_requested'
+        return native_only or complete(admittance, 'tracking')
+    if purpose not in ('rigid_tracking', 'compliant_tracking') or not gains(target.get('hold_gains')):
+        return False
+    hold_key = ('hold_compensation_verification' if (target.get('hold_compensation') or {}).get('enabled') is True
+                else 'hold_verification')
+    return complete(target.get(hold_key), 'hold')
+
+
 def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
     candidate = source.json('gain-candidate.json')
     if not candidate:
@@ -568,8 +625,12 @@ def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
         for key in ('hold_verification', 'hold_compensation_verification'):
             if key in target:
                 holds[key] = target[key]
+        parameter_complete = nested_parameter_measurement_complete(candidate, name, target)
         targets[name] = {
             'archived_available': target.get('available'), 'archived_validated': target.get('validated'),
+            'archived_qualification_complete':target.get('qualification_complete'), 'archived_error':target.get('error'),
+            'nested_parameter_measurement_complete':parameter_complete,
+            'legacy_available_aggregation_conflict':parameter_complete is True and target.get('available') is False,
             'warnings': target.get('warnings', []), 'kp': target.get('kp'), 'kd': target.get('kd'),
             'hold_gains': target.get('hold_gains'), 'hold_trials': holds,
             'hold_compensation_saved': target.get('hold_compensation'),
@@ -584,7 +645,7 @@ def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
             'native_validation_record': target.get('native_validation', {}).get('record_path'),
             'measurement_state': ('not_started' if 'not_started' in target.get('warnings', [])
                                   or target.get('error') == 'not_started' else
-                                  'complete' if target.get('available') is True else 'incomplete_or_not_recorded'),
+                                  'complete' if parameter_complete is True or target.get('available') is True else 'incomplete_or_not_recorded'),
         }
     records = {name: trajectory(source, name, math.radians(peak_target_deg))
                for name in sorted(source.names)
@@ -654,12 +715,19 @@ def compact_summary(report: dict[str, Any]) -> dict[str, Any]:
             'archived_identification_reason', 'archived_model_definition', 'planned_motion_probe', 'evidence_scope',
             'response_window', 'archived_disturbance_valid', 'archived_disturbance_goal_met',
             'archived_static_measurement_complete', 'archived_motion_observed',
+            'archived_disturbance_encoder_step_rad', 'archived_disturbance_motion_floor_rad',
             'archived_disturbance_measurement_complete', 'archived_disturbance_assessment_reason')
     for name, record in report['short_probe_records'].items():
         probes[name] = {joint: {key: axis.get(key) for key in keys} for joint, axis in record.get('axes', {}).items()}
     result = {key: report[key] for key in ('task_id', 'policy', 'archived_available', 'archived_validated',
                                          'gain_tuning_mode', 'seed', 'execution_summary', 'response_guard_events')}
     result['short_probe_diagnostics'] = probes
+    coverage_keys = ('archived_available','archived_validated','archived_qualification_complete','archived_error',
+                     'nested_parameter_measurement_complete','legacy_available_aggregation_conflict','measurement_state')
+    result['measurement_coverage'] = {name:{key:target.get(key) for key in coverage_keys}
+                                      for name,target in report['targets'].items()}
+    result['full_path_correction_plans'] = [item for item in report.get('candidate_comparisons') or []
+                                            if item.get('kind') == 'full_path_correction_plan']
     result['establishment_progression'] = {joint:{
         'actual_kp_steps':[row['kp'] for row in axis['rounds']],
         'actual_kd_steps':[row['kd'] for row in axis['rounds']],
@@ -722,6 +790,8 @@ def check_establishment_regression(report: dict[str, Any]) -> dict[str, Any]:
     task = report['task_id']
     if task == 'model-calibration-1794236700517':
         return check_fifteen_probe_regression(report)
+    if task == 'model-calibration-1794241207035':
+        return check_hold_entry_regression(report)
     if task not in ('model-calibration-1794238166406', 'model-calibration-1794238336638'):
         raise ValueError('No establishment regression for task '+str(task))
     checks = []
@@ -781,6 +851,51 @@ def check_establishment_regression(report: dict[str, Any]) -> dict[str, Any]:
               and summary['error'] == 'short response experiment interrupted')
     return {'status':'passed', 'checks':checks,
             'scope':'original_read_only_CSV_and_archived_decisions_not_hardware_reexecution'}
+
+
+def check_hold_entry_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the original complete path/hold and rejected HOLD entry."""
+    checks = []
+    def check(label, condition):
+        if not condition:
+            raise ValueError('HOLD-entry reference regression failed: '+label)
+        checks.append(label)
+    summary = report['execution_summary']
+    check('original_software_execution_error_without_robot_fault', summary['archived_phase'] == 'failed'
+          and summary['error'] == 'short response input rejected' and summary['archived_fault_interrupted'] is False
+          and summary['termination_objects_match'] and not report['response_guard_events'])
+    check('original_budget_and_elapsed_preserved', report['budget']['recorded_source_duration_s'] == 23
+          and summary['hard_budget_s'] == 345 and not summary['budget_exhausted']
+          and math.isclose(summary['actual_elapsed_s'],220.332346088,abs_tol=1e-9))
+    check('hold_disturbance_rejected_before_any_sample', summary['last_probe_kind'] == 'rigid_tracking-hold-disturbance'
+          and report['short_probe_records']['servo-probe-rigid_tracking-hold-disturbance.csv']['status'] == 'no_valid_samples')
+    path = report['trajectory_records']['gain-trajectory-native-frozen.csv']['axes']
+    expected = [1.6008196533219479,1.044294911826663,1.077334653372139,1.202442687731282,1.2151474508579305,1.9066086547415753]
+    check('complete_native_path_retains_all_cycle_peaks', len(path) == 6 and all(
+        axis['samples'] == axis['fresh_samples'] == 6347 and axis['limited_samples'] == 0
+        and math.isclose(axis['peak_error_deg'],peak,abs_tol=1e-9)
+        for axis,peak in zip(path.values(),expected)))
+    check('rigid_and_servo_parameter_measurements_are_complete', all(
+        report['targets'][key]['nested_parameter_measurement_complete'] is True
+        and report['targets'][key]['legacy_available_aggregation_conflict']
+        and report['targets'][key]['archived_available'] is False and report['targets'][key]['archived_validated'] is False
+        for key in ('rigid_tracking','servo_tracking')))
+    rigid = report['targets']['rigid_tracking']
+    check('actual_second_baseline_hold_complete_without_integral', rigid['hold_trials']['hold_verification']['available'] is True
+          and rigid['hold_trials']['hold_verification']['validated'] is True
+          and rigid['hold_trials']['hold_verification']['integral_samples'] == 0
+          and rigid['hold_compensation_saved']['enabled'] is False)
+    check('unstarted_compliant_and_drag_remain_unmeasured', all(
+        report['targets'][key]['nested_parameter_measurement_complete'] is False
+        and report['targets'][key]['measurement_state'] == 'not_started'
+        for key in ('compliant_tracking','compliant_drag')))
+    one_code = report['short_probe_records']['servo-probe-native-established-disturbance.csv']['axes']['joint1']
+    check('original_one_code_disturbance_misclassification_is_not_rewritten', one_code['actual_span_rad'] == .0003814697265625
+          and one_code['archived_motion_observed'] is True
+          and one_code['archived_disturbance_assessment_reason'] == 'sustained_oscillation_after_release')
+    check('missing_original_correction_plan_is_not_invented', not compact_summary(report)['full_path_correction_plans'])
+    return {'status':'passed', 'checks':checks,
+            'scope':'original_read_only_path_hold_and_rejected_entry_not_new_hardware_execution'}
 
 
 def self_test():
@@ -942,7 +1057,22 @@ def self_test():
         mixed = establishment_progression(candidate,{name:record})['axes']['j1']['rounds'][-1]
         assert not mixed['motion_probe'] and mixed['frequencies_hz'] == [.4,.8,1.2]
         source.close()
-    return {'self_test': 'passed', 'checks': 44}
+        modern = {'validation_scope':'independent_demonstration_trajectory','joint_names':['j1']}
+        measured = {'available':False,'validated':False,'kp':[10],'kd':[.2],'hold_gains':{'kp':[10],'kd':[.2]},
+            'native_validation':{'available':True,'completed':True,'independent':True,'duration_s':1,'measured_duration_s':1,
+                'metrics':[dict.fromkeys(('samples','measurement_samples','rms_error_rad','peak_error_rad','velocity_rms_rad_s','tail_error_rad','settling_s'),1)]},
+            'hold_verification':{'available':True,'completed':True,'samples':100,'fresh_samples':[100],
+                'worst_error_rad':.01,'worst_velocity_rad_s':0},
+            'admittance_required':False,'admittance_validation':{'required':False,'status':'not_requested'}}
+        assert nested_parameter_measurement_complete(modern,'rigid_tracking',measured) is True and measured['available'] is False and measured['validated'] is False
+        assert nested_parameter_measurement_complete(modern,'servo_tracking',measured) is True
+        incomplete = json.loads(json.dumps(measured));incomplete['native_validation']['metrics'][0]['measurement_samples'] = 0
+        assert nested_parameter_measurement_complete(modern,'rigid_tracking',incomplete) is False
+        incomplete = dict(measured,admittance_required=True)
+        assert nested_parameter_measurement_complete(modern,'servo_tracking',incomplete) is False
+        assert nested_parameter_measurement_complete({'joint_names':['j1']},'rigid_tracking',measured) is None
+        assert compact_summary(report)['measurement_coverage']['rigid_tracking']['archived_validated'] is False
+    return {'self_test': 'passed', 'checks': 50}
 
 
 def main() -> int:
@@ -953,7 +1083,7 @@ def main() -> int:
     parser.add_argument('--summary', action='store_true', help='Print startup/exit, timing and short-response diagnostics without raw experiment details')
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--check-establishment-regression', action='store_true',
-                        help='Check known original 15-probe, 12-probe plateau or cancelled partial-probe task, read-only')
+                        help='Check a known original establishment, cancellation or rejected HOLD-entry task, read-only')
     args = parser.parse_args()
     if args.self_test:
         print(json.dumps(self_test(), indent=2))

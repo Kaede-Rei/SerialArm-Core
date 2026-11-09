@@ -186,6 +186,10 @@ DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
 # 增益历史证据审计器自测，无原生依赖
 python3 tools/audit_gain_calibration.py --self-test
 
+# 实际原生 Mock 的固定 HOLD 扰动采集、记录与取消；需本次构建
+./.install/run .install/gui-venv/bin/python tools/check_gain_hold_disturbance.py \
+  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
+
 # 模型、辨识、候选、预算与内存 Robot 的行为检查
 python3 tools/check_adaptive_gain_core.py
 
@@ -259,6 +263,14 @@ Mock 的理想位置跟随不能验证执行器起动能力；编码器分辨率
 本次多频平台与取消分类修正后，审计器 44 项自测、三份原任务的 12／9／8 组只读回归及旧 ZIP 兼容检查通过，66 个原始文件读取前后哈希一致；回归分别保留旧 15 趟升参平台、同组增益慢测 12 趟及取消后的部分第二趟，不把历史 CSV 视为新单频条件的实测结果；核心离线检查覆盖同组单频运动补证成功与仍不足两种情况，六轴运动建立经 14 趟、106.4 秒完成，原异常位置记录的监督触发仍为 0.905995 秒；真实机械臂效果尚待操作者主动发起验证
 
 本次原生构建、本地安装、后端 `--check` 与安装环境检查通过；实际原生 Mock `--full-probes` 12 项及终止字段断言通过，主动停止的状态与候选共同记录 `cancelled/stop_requested/fault_interrupted=false`；T=0.2 秒、硬预算 3 秒的合成任务在 0.502098 秒结束，两处共同记录 `budget_exhausted`，`available=false/validated=false`；两份历史终态的界面检查共 218 项通过，1555／1280／375 宽度与明暗主题共 12 张终态截图、12 次零裁切检查，另核对关闭后主页面；原增益页 25 项交互与 2 次定向渲染、Launcher 及语法检查通过
+
+本轮在 `360f329` 检查点后修正 HOLD 扰动入口、可用性聚合和整轨局部修正；原生构建与本地安装通过，`check_adaptive_gain_core.py` 的确定性 MIT 模型 RMS 从 `0.00434789` 降至 `0.00329732 rad`，内存 Robot 验证 HOLD 可刷新独立扰动、普通 HOLD 仍拒绝跟踪参考，并保留原命令超时语义；这些是离线模型与接口结果，未执行新的真机验收
+
+实际原生 Mock `--full-probes` 12 项通过，包含显式聚合 `available=false` 的现代实测伺服候选警告应用／恢复、旧增益独立性与停止预算；T=0.2 秒、硬预算 3 秒的任务在 `0.503206 s` 退出；后端 `--check` 与 Launcher 检查通过；原任务只读审计 9 组回归、审计器 50 项自测和旧 ZIP 兼容检查通过，原任务与 ZIP 共 41 个文件前后哈希一致
+
+本轮完整生产页面的 Electron 离线检查 90 项通过，8 张有效截图且控制台错误为零，覆盖 1280／375 宽度下自查保存、参数保存／重载、连接检查与列表刷新时的真实滚动、展开状态和焦点，以及原失败任务已测用途的警告应用入口与未达标原因；主动导航仍按导航语义切换页面，不沿用原页面滚动位置
+
+`check_gain_hold_disturbance.py` 的实际原生 Mock 回归 7 项通过，单刚性精调使用原始 T=25 秒、硬预算 600 秒；约 `181.167 s` 后取得 1968 个 HOLD 周期及每轴 1870 个新鲜短测样本，名义／接受参考保持同一实际 HOLD 目标，独立力矩输入非零，未再出现 `short response input rejected`；Mock 位移为零，因此参数 `available=true`，`qualification_complete=false/validated=false`，随后正常取消并保存一致的终止对象；初次较大幅度合成路径触发了实际整轨修正，超过测试原先 180 秒等候，最终将专用 HOLD fixture 改为较缓路径并将外层等待设为 300 秒，原 T、验收与 Safety 未变，未减少生产扰动补测
 
 ## 构建发行包
 

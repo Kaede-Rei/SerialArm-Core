@@ -168,7 +168,7 @@ def application_fixture(folder: Path, meta: dict, original_gains: dict, names: l
               'peak_error_rad': .04, 'velocity_rms_rad_s': .02, 'settling_s': 1, 'tail_error_rad': .01}
     data = {'schema': 'serial_arm_gain_candidate', 'task_id': meta['task_id'],
             'urdf_fingerprint': meta['urdf_fingerprint'], 'joint_names': names,
-            'category': 'servo_tracking', 'available': True, 'validated': False,
+            'category': 'servo_tracking', 'available': False, 'validated': False,
             'validation_scope': 'independent_demonstration_trajectory',
             'warnings': ['synthetic_application_compatibility_fixture_not_a_physical_measurement'],
             'kp': gains['kp'], 'kd': gains['kd'], 'admittance_required': False,

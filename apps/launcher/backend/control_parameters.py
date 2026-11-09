@@ -178,7 +178,9 @@ def gain_measurement_available(validation, joint_count, kind):
 
 
 def gain_purpose_available(candidate, purpose, fields):
-    if not isinstance(fields, dict) or fields.get('available') is False or fields.get('error') in ('not_started', 'measurement_in_progress'):
+    if not isinstance(fields, dict) or fields.get('error') in ('not_started', 'measurement_in_progress'):
+        return False
+    if fields.get('available') is False and candidate.get('validation_scope') != 'independent_demonstration_trajectory':
         return False
     names = candidate.get('joint_names')
     count = len(names) if isinstance(names, list) else 0
@@ -220,6 +222,10 @@ def gain_selection_report(candidate, groups):
         warnings.extend(value for value in fields.get('warnings', []) if isinstance(value, str))
         if fields.get('validated') is not True:
             warnings.append(purpose + ' 未达参考指标，保留实测结果，可应用或导出')
+        if (fields.get('disturbance_verification') or {}).get('available') is False:
+            warnings.append(purpose + ' 独立扰动测量不足，尚未完成抗扰验收')
+        if purpose in ('rigid_tracking', 'compliant_tracking') and (fields.get('hold_disturbance_verification') or {}).get('available') is False:
+            warnings.append(purpose + ' 保持扰动测量未完成')
     rigid, soft = groups.get('rigid_tracking'), groups.get('compliant_tracking')
     if soft and soft.get('compliant_separation_validated') is not True:
         warnings.append('柔性增益未达刚柔分离参考指标')

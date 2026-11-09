@@ -30,10 +30,22 @@ const tracking = {independent:true,duration_s:1,measured_duration_s:1,metrics:[{
 const warning = {category:'servo_tracking',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[3],kd:[.4],validated:false,available:true,native_validation:tracking,admittance_required:false,admittance_validation:{required:false,status:'not_requested'}};
 context.candidate=warning;
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Measured warnings remain usable without extra approval');
+context.candidate={...warning,available:false};
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Modern aggregate unavailability cannot hide independently complete parameter measurements');
+context.candidate={...warning,available:false,error:'measurement_in_progress'};
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Parameters still being measured remain unavailable');
+context.candidate={...warning,available:false,warnings:['not_started']};
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'An explicit unmeasured use remains unavailable even with leftover nested fields');
+context.candidate={...warning,available:false,native_validation:{...tracking,available:false}};
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Nested incomplete measurement remains unavailable');
 context.candidate={...warning,native_validation:{...tracking,completed:false}};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false);
 context.candidate={...warning,validation_scope:'legacy_local_probe'};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Legacy records never acquire missing validation');
+context.candidate={category:'compliant_drag',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[0],kd:[.4],validated:false,available:false,drag_validation:{available:true,completed:true,samples:100,initial_velocity_rad_s:[.1],decay_s:[.8]}};
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Historical completed drag vectors retain their measured parameter contract');
+context.candidate.drag_validation.completed=false;
+assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Incomplete historical drag is not available');
 // Match the terminal's heterogeneous experiment records: parameter rows have
 // no measurement conclusion; disturbance axes alternate FRF and recovery rows.
 Object.assign(context,{t:key=>key,localizedError:String,gainProbeMessageLabel:String,gainPurposeLabel:String,
@@ -46,6 +58,9 @@ context.terminalStatus={task_id:'cancelled-task',phase:'cancelled',error:'short 
 context.terminalCandidate={task_id:'cancelled-task',outcome:'execution_fault',available:false};
 const historicalStop=vm.runInContext('gainTaskConclusion(terminalStatus,terminalCandidate)',context);
 assert(historicalStop.outcome==='cancelled'&&historicalStop.review&&historicalStop.title==='标定已停止'&&historicalStop.reason.includes('短测响应试验已中断'),'Historical result cancellation takes precedence over the old candidate fault classification');
+context.terminalStatus={phase:'failed',error:'short response input rejected'};
+const inputRejected=vm.runInContext('gainTaskConclusion(terminalStatus)',context);
+assert(inputRejected.reason.includes('短测输入被拒绝')&&!inputRejected.reason.includes('short response')&&inputRejected.rawReason==='short response input rejected','Known task reasons are translated before a generic error wrapper and retain their raw tooltip');
 context.terminalStatus={task_id:'x',phase:'complete',gain_available:false,termination:{kind:'insufficient_measurement',reason:'axis_excitation_input_budget_plateau_at_low_frequency_boundary',blocked_joint_names:['joint3']}};
 const terminalLimit=vm.runInContext('gainTaskConclusion(terminalStatus)',context);
 assert(terminalLimit.review&&!terminalLimit.success&&terminalLimit.reason.includes('joint3')&&terminalLimit.reason.includes('低频激励与输入预算边界'));
@@ -55,6 +70,11 @@ context.motionProbe={kind:'motion_establishment_probe',kp:[20],kd:[.4],axes:[]};
 const motionProbe=vm.runInContext("gainExperimentHtml(motionProbe,['J1'])",context);
 assert(motionProbe.includes('双向运动建立短测')&&motionProbe.includes('仍需多频辨识与用途验证')&&!motionProbe.includes('通过'));
 for(const reason of ['motion_establishment_only_no_spectral_fit','spectral_excitation_boundary_requires_symmetric_motion_probe_at_same_complete_gains','confirmed_response_plateau_requires_symmetric_motion_probe_at_same_complete_gains','symmetric_motion_probe_insufficient_at_tested_input_not_hardware_capability']){
+  context.reason=reason;
+  for(const language of ['zh-CN','en']){context.state.language=language;assert.notEqual(vm.runInContext('gainWarningLabel(reason)',context),reason);}
+}
+context.state.language='zh-CN';
+for(const reason of ['disturbance_measurement_incomplete','hold_disturbance_measurement_incomplete','short response input rejected','native servo tracking reference did not qualify']){
   context.reason=reason;
   for(const language of ['zh-CN','en']){context.state.language=language;assert.notEqual(vm.runInContext('gainWarningLabel(reason)',context),reason);}
 }

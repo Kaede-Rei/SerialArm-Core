@@ -358,6 +358,8 @@ function shell() {
     if ($('model-calibration-task-cancel')) $('model-calibration-task-cancel').onclick = () => calibrationTaskAction('cancel');
     if ($('model-calibration-task-disable')) $('model-calibration-task-disable').onclick = () => calibrationTaskAction('deactivate');
     if ($('model-calibration-task-close')) $('model-calibration-task-close').onclick = dismissCalibrationTaskReview;
+    $('model-calibration-task-close')?.insertAdjacentHTML('beforebegin', `<button id="model-calibration-task-candidate" class="button" hidden>${busyText('查看已测候选','Review measured candidates')}</button>`);
+    $('model-calibration-task-candidate').onclick = reviewCalibrationTaskCandidate;
     if ($('operation-hold')) $('operation-hold').onclick = () => interruptParking('hold');
     if ($('operation-disable')) $('operation-disable').onclick = () => interruptParking('deactivate');
     if ($('operation-force-disconnect')) $('operation-force-disconnect').onclick = confirmUnresponsiveDisconnect;
@@ -2444,9 +2446,10 @@ function gainCandidatePurposeAvailable(candidate, key) {
     const item = gainCandidateGroups(candidate)[key], count = Array.isArray(candidate?.joint_names) ? candidate.joint_names.length : 0;
     const finite = value => typeof value === 'number' && Number.isFinite(value);
     const vector = value => Array.isArray(value) && value.length === count && value.every(value => finite(value) && value >= 0);
-    if (!item || item.available === false || !count || !vector(item.kp) || !vector(item.kd) || ['not_started','measurement_in_progress'].includes(item.error)) return false;
+    const modern=candidate?.validation_scope==='independent_demonstration_trajectory';
+    if (!item || (!modern&&item.available === false) || !count || !vector(item.kp) || !vector(item.kd) || ['not_started','measurement_in_progress'].includes(item.error) || item.warnings?.some(value=>['not_started','measurement_in_progress'].includes(value))) return false;
     if (Object.hasOwn(item,'hold_compensation') && (!item.hold_compensation || typeof item.hold_compensation !== 'object' || Array.isArray(item.hold_compensation) || typeof item.hold_compensation.enabled !== 'boolean')) return false;
-    if (candidate.validation_scope === 'independent_demonstration_trajectory') {
+    if (modern) {
         const path = value => value?.available !== false && value?.completed !== false && value?.independent === true && finite(value.duration_s) && value.duration_s > 0 &&
             (!Object.hasOwn(value,'measured_duration_s') || finite(value.measured_duration_s) && value.measured_duration_s >= value.duration_s - .06) &&
             Array.isArray(value.metrics) && value.metrics.length === count && value.metrics.every(row =>
@@ -2464,8 +2467,9 @@ function gainCandidatePurposeAvailable(candidate, key) {
         }
         if (key === 'compliant_drag') {
             const value = item.drag_validation;
-            return item.kp.every(value=>value === 0) && value?.available !== false && value?.completed === true && finite(value.samples) && value.samples > 0 && Array.isArray(value.axes) && value.axes.length === count && value.axes.every(axis =>
+            const measured=value?.axes===undefined?['decay_s','initial_velocity_rad_s'].every(field=>vector(value?.[field])):Array.isArray(value.axes) && value.axes.length === count && value.axes.every(axis =>
                 axis && typeof axis === 'object' && finite(axis.samples) && axis.samples > 0 && ['initial_velocity_rad_s','peak_velocity_rad_s','final_velocity_rad_s','decay_s'].every(field => finite(axis[field]) && axis[field] >= 0));
+            return item.kp.every(value=>value === 0) && value?.available !== false && value?.completed === true && finite(value.samples) && value.samples > 0 && measured;
         }
         return false;
     }
@@ -2488,7 +2492,7 @@ function gainCandidateDeployable(candidate, purposes = null) {
 function gainCandidateAvailabilityLabel(candidate, key) {
     const item = gainCandidateGroups(candidate)[key];
     if (!gainCandidatePurposeAvailable(candidate,key)) return busyText(item?.error === 'not_started' || item?.warnings?.includes('not_started') ? '未测量　不可选' : '测量不完整或参数不可用', item?.error === 'not_started' || item?.warnings?.includes('not_started') ? 'Not measured　unavailable' : 'Incomplete measurement or unavailable parameters');
-    return item.validated === true ? busyText('达到参考指标　可应用/导出','Within reference limits　apply/export available') : busyText('未达参考指标　可应用/导出','Outside reference limits　apply/export available');
+    return item.validated === true ? busyText('达到参考指标　可应用/导出','Within reference limits　apply/export available') : busyText('参数已实测　可带警告临时应用/导出','Parameters measured　temporary apply/export with warnings');
 }
 function gainCalibrationQualityWarning(status) {
     return status?.workflow_kind === 'gain' && /^gain candidate failed continuous measured qualification:/i.test(status.error || '');
@@ -2506,7 +2510,8 @@ function gainTaskConclusion(status = {}, candidate = null) {
     const rawReason=termination?.reason||status.error||warnings.find(value=>typeof value==='string'&&!value.endsWith(':not_started'))||'';
     const success=terminal&&status.phase!=='failed'&&status.phase!=='cancelled'&&status.gain_available!==false&&!candidateUnavailable&&(outcome==='qualified'||outcome==='passed'||outcome==='success'||candidate?.validated===true);
     const userCancelled=outcome==='user_cancelled'||status.user_cancelled===true;
-    let reason=rawReason.includes('motion_establishment_incomplete')?gainWarningLabel(rawReason):rawReason==='short response experiment interrupted'?(en?'The short response experiment was interrupted before this measurement finished':'短测响应试验已中断，本轮测量尚未完成'):rawReason?gainWarningLabel(localizedError(rawReason)):'';
+    const warningReason=rawReason?gainWarningLabel(rawReason):'';
+    let reason=rawReason==='short response experiment interrupted'?(en?'The short response experiment was interrupted before this measurement finished':'短测响应试验已中断，本轮测量尚未完成'):rawReason?(warningReason!==rawReason?warningReason:gainWarningLabel(localizedError(rawReason))):'';
     const blocked=termination?.blocked_joint_names;
     if(Array.isArray(blocked)&&blocked.length&&!blocked.some(name=>reason.includes(name)))reason=`${blocked.join(en?', ':'、')}　${reason}`;
     if(!reason&&!success){
@@ -2519,6 +2524,11 @@ function gainTaskConclusion(status = {}, candidate = null) {
     return {terminal,success,userCancelled,outcome,title,reason,rawReason,review:terminal&&!success&&!userCancelled};
 }
 function gainWarningLabel(warning) {
+    const terminalLabels={
+        'short response input rejected':['短测输入被拒绝，本轮试验已停止；请查看运行故障与技术诊断','The short-probe input was rejected; this trial stopped. Review the runtime fault and technical diagnostics'],
+        'native servo tracking reference did not qualify':['原生伺服跟踪未达参考指标','Native servo tracking is outside the reference limits'],
+    };
+    if(terminalLabels[warning])return terminalLabels[warning][state.language==='en'?1:0];
     const motionMarker='motion_establishment_incomplete',motionIndex=String(warning).indexOf(motionMarker);
     if(motionIndex>=0){
         const reasons=String(warning).slice(motionIndex+motionMarker.length).split(';').filter(Boolean).map(item=>{const separator=item.indexOf(':');return separator<0?gainWarningLabel(item):`${item.slice(0,separator)}　${gainWarningLabel(item.slice(separator+1))}`;});
@@ -2530,6 +2540,8 @@ function gainWarningLabel(warning) {
     if (parts[0] === 'endpoint_alignment_required') return [purpose,busyText('端点尚未回稳，后续回放未开始；已完成的测量仍可采用，请查看关节目标与偏差','The endpoint has not settled; later replay did not start. Completed measurements remain usable; review joint targets and differences')].filter(Boolean).join('　');
     if (['observer_unavailable','hold_compensation_inactive'].includes(parts[0])) return [purpose,compensation ? busyText('保持补偿','Hold compensation') : '',parts[0] === 'observer_unavailable' ? busyText('观测器有效采样未达参考要求','Observer samples are below the reference requirement') : busyText('保持补偿未充分建立','Hold compensation did not fully establish')].filter(Boolean).join('　');
     const establishmentLabels={
+        disturbance_measurement_incomplete:['独立扰动测量不足，抗扰验收未完成','Independent disturbance measurements are insufficient; disturbance qualification is incomplete'],
+        hold_disturbance_measurement_incomplete:['保持扰动测量未完成','Hold disturbance measurement is incomplete'],
         stop_requested:['收到停止请求，本轮试验已停止','A stop was requested; this trial has stopped'],
         motion_establishment_only_no_spectral_fit:['仅有双向运动证据，尚未测量三频响应','Only bidirectional-motion evidence is available; the three-frequency response is unmeasured'],
         spectral_excitation_boundary_requires_symmetric_motion_probe_at_same_complete_gains:['多频激励已到当前边界，保持整组增益补测对称运动','Multifrequency excitation reached its current boundary; test symmetric motion with the same complete gain set'],
@@ -2954,14 +2966,14 @@ async function selectCalibrationToolRecord(kind,selection,candidate=null) {
         if(kind==='dynamics' && record.dynamic_candidates?.length)state.advancedReport={...record.dynamic_candidates[0],task_id:record.task_id};
         state.modelCalibrationSavePreview=null;state.modelCalibrationExport=null;
     }
-    render();
+    render({resetScroll:true});
 }
 
 // Read terminal task records without changing motor state. Failure dialogs keep
 // their own task-bound copy even if a later task starts before this read ends.
 function syncCompletedGainCandidate(calibration = state.telemetry?.model_calibration) {
     if (!workbenchConnected() || calibration?.workflow_kind !== 'gain' ||
-        !['complete','failed'].includes(calibration?.phase) || !calibration.directory) return;
+        !['complete','failed','cancelled'].includes(calibration?.phase) || !calibration.directory) return;
     const directory = calibration.directory, task_id = calibration.task_id, epoch = state.workbenchEpoch;
     const task = {directory,task_id}, current = () => epoch === state.workbenchEpoch && state.telemetry?.model_calibration?.task_id === task_id && state.telemetry.model_calibration.directory === directory;
     const selected = state.calibrationToolSelected.gain;
@@ -3483,22 +3495,24 @@ function gainCandidateReviewHtml(candidate) {
     const empty=counts.available===0;
     const conclusion=gainTaskConclusion({},candidate);
     const metric=(value,key)=>{const rows=value.native_validation?.metrics||[],numbers=rows.map(row=>row[key]).filter(value=>typeof value==='number'&&Number.isFinite(value));return numbers.length?`${(Math.max(...numbers)*180/Math.PI).toFixed(4)}°`:'—';};
-    const title=empty?conclusion.title:counts.passed===counts.available&&counts.available===counts.total?(en?'All measured uses met their targets':'已测用途均已达标'):(en?`${counts.available} uses have complete measurements`:`${counts.available} 种用途已完成测量`);
+    const title=empty?conclusion.title:counts.passed===counts.available&&counts.available===counts.total?(en?'All measured uses met their targets':'已测用途均已达标'):(en?`${counts.available} uses have measured parameters`:`${counts.available} 种用途参数已实测`);
     const rows=targets.map(([key,value])=>{
         const available=gainCandidatePurposeAvailable(candidate,key),passed=available&&value.validated===true;
         const warning=value.warnings?.find(item=>typeof item==='string')||warnings.find(item=>typeof item==='string'&&item.startsWith(key+':'));
-        const reason=value.error||warning||(available&&!passed?'tracking_reference_not_met':'');
+        const missingScopes=available&&!passed?[['disturbance_verification','disturbance_measurement_incomplete'],...(['rigid_tracking','compliant_tracking'].includes(key)?[['hold_disturbance_verification','hold_disturbance_measurement_incomplete']]:[])].filter(([field])=>value[field]&&value[field].available!==true).map(([,code])=>code):[];
+        const reasonCodes=[value.error||warning||(available&&!passed&&!missingScopes.length?'tracking_reference_not_met':''),...missingScopes].filter(value=>value&&value!=='not_started');
+        const reason=[...new Set(reasonCodes.map(gainWarningLabel))].join('；');
         const notStarted=value.error==='not_started'||value.warnings?.includes('not_started')||warnings.includes(key+':not_started');
         const stateText=available?(passed?(en?'Target met':'已达标'):(en?'Target not met':'未达标')):notStarted?(en?'Not measured':'未测量'):(en?'Measurement incomplete':'测量不完整');
         const hasLegacyDiagnostics=!candidate.experiments?.length&&((Array.isArray(value.response_model)?value.response_model.length:value.response_model?.joints?.length)||(Array.isArray(value.observer_model)&&value.observer_model.length));
         const canInspect=available||value.native_validation?.metrics?.length||value.drag_validation?.samples>0||hasLegacyDiagnostics;
         const hold=value.hold_compensation?.enabled===true?value.hold_compensation_verification:value.hold_verification;
         const details=canInspect?`<details class="gain-purpose-details"><summary>${en?'Parameters and validation':'参数与用途验证'}</summary>${gainCandidateParametersHtml(value,candidate.joint_names)}${value.native_validation?gainTaughtPathMetricsHtml(value,candidate.joint_names):''}${value.admittance_required?`<h5>${en?'Admittance tracking':'导纳跟踪'}</h5>${gainTaughtPathMetricsHtml({...value,native_validation:value.admittance_validation},candidate.joint_names)}`:''}${hold?`<dl class="gain-purpose-checks"><div><dt>${en?'Hold validation':'保持验证'}</dt><dd>${gainCheckStatus(hold)}</dd></div><div><dt>${en?'Final hold error':'最终保持误差'}</dt><dd>${jointDisplayValue(hold.worst_error_rad,candidate.joint_names?.[0],'position',4)}</dd></div><div><dt>${en?'Position drift':'位置漂移'}</dt><dd>${jointDisplayValue(hold.worst_drift_rad,candidate.joint_names?.[0],'position',4)}</dd></div></dl>`:''}<p class="hint">${gainQualificationScopeHtml(value.qualification_scope)}</p>${hasLegacyDiagnostics?`<details class="gain-experiment-detail"><summary>${en?'Recorded response diagnostics':'历史响应诊断'}</summary>${value.response_model?gainResponseModelsHtml(value.response_model,candidate.joint_names):''}${gainObserverAndBoundsHtml(value,candidate.joint_names)}</details>`:''}</details>`:'';
-        return `<article class="gain-purpose-result" data-gain-result="${esc(key)}"><div class="gain-purpose-summary"><div class="gain-purpose-name">${available?`<input type="checkbox" data-gain-candidate-purpose="${esc(key)}" aria-label="${esc((en?'Use ':'采用')+gainPurposeLabel(key))}" ${selected.includes(key)?'checked':''}>`:''}<h5>${esc(gainPurposeLabel(key))}</h5><span class="gain-result-state ${passed?'is-pass':available?'is-warning':'is-pending'}">${stateText}</span></div><div class="gain-purpose-metric">${!canInspect?`<span>${en?'No measured data':'暂无实测数据'}</span>`:key==='compliant_drag'?`<span>${en?'Release decay':'释放衰减'}</span><strong>${gainCheckStatus(value.drag_validation)}</strong>`:`<span>${en?'Maximum absolute error':'最大绝对误差'}</span><strong>${metric(value,'peak_error_rad')}</strong><small>RMS ${metric(value,'rms_error_rad')}</small>`}</div></div>${reason&&reason!=='not_started'?`<p class="gain-purpose-reason">${esc(gainWarningLabel(reason))}</p>`:''}${details}</article>`;
+        return `<article class="gain-purpose-result" data-gain-result="${esc(key)}"><div class="gain-purpose-summary"><div class="gain-purpose-name">${available?`<input type="checkbox" data-gain-candidate-purpose="${esc(key)}" aria-label="${esc((en?'Use ':'采用')+gainPurposeLabel(key))}" ${selected.includes(key)?'checked':''}>`:''}<h5>${esc(gainPurposeLabel(key))}</h5><span class="gain-result-state ${passed?'is-pass':available?'is-warning':'is-pending'}">${stateText}</span></div><div class="gain-purpose-metric">${!canInspect?`<span>${en?'No measured data':'暂无实测数据'}</span>`:key==='compliant_drag'?`<span>${en?'Release decay':'释放衰减'}</span><strong>${gainCheckStatus(value.drag_validation)}</strong>`:`<span>${en?'Maximum absolute error':'最大绝对误差'}</span><strong>${metric(value,'peak_error_rad')}</strong><small>RMS ${metric(value,'rms_error_rad')}</small>`}</div></div>${reason&&reason!=='not_started'?`<p class="gain-purpose-reason" title="${esc(reasonCodes.join(';'))}">${esc(reason)}</p>`:''}${details}</article>`;
     }).join('');
     const diagnosticItems=(Array.isArray(candidate.experiments)?candidate.experiments:[]).map((experiment,index)=>`<details class="gain-experiment-detail"><summary>${esc(experiment.label||experiment.kind||(en?'Measurement':'测量'))} ${index+1}</summary>${gainExperimentHtml(experiment,candidate.joint_names)}</details>`).join('');
     const budget=gainBudgetValues(candidate,true);
-    return `<div class="gain-results"><div class="gain-results-head"><h4>${en?'Calibration results':'标定结果'}</h4><span>${en?'Actual duration':'实际用时'} ${gainTimeText(candidate.actual_elapsed_s)}</span></div><div class="gain-result-outcome ${empty?'is-empty':counts.passed<counts.available?'is-warning':'is-pass'}" role="status"><strong>${title}</strong><p title="${esc(conclusion.rawReason)}">${empty?esc(conclusion.reason|| (en?'Measurements did not finish. Review diagnostics or run calibration again.':'各用途尚无完整测量结果；可查看诊断记录或重新标定')):counts.passed<counts.available?(en?'Measured results outside the targets remain available to apply or export.':'未达标的完整实测结果仍可应用或导出'):(en?'Select the measured uses to apply or export.':'勾选需要应用或导出的已测用途')}</p></div><div class="gain-purpose-list">${rows}</div>${counts.available?`<div class="gain-export-actions workspace-actions"><button class="button" data-tool-export="gain" ${selected.length?'':'disabled'}>${en?'Export selected gains':'导出所选增益'}</button>${state.calibrationRuntimeCandidates?.gain_applied?setupActionHtml({page:'profile_setup',group:'motion',anchor:'preview-config'},en?'Save applied gains as defaults':'将已应用增益保存为默认'):''}</div>`:''}<details class="gain-details gain-diagnostics"><summary>${en?'Task details and diagnostics':'任务详情与诊断'}</summary><dl class="gain-purpose-checks"><div><dt>${en?'Task':'任务编号'}</dt><dd>${esc(candidate.task_id||'—')}</dd></div><div><dt>${en?'Mode':'标定模式'}</dt><dd>${candidate.gain_tuning_mode==='fine'?(en?'Single-use fine':'单用途精调'):candidate.gain_tuning_mode==='quick'?(en?'Four-use quick':'四用途快标'):(en?'Not recorded':'历史记录未注明')}</dd></div><div><dt>${en?'Original recording T':'原始录制时长 T'}</dt><dd>${gainTimeText(budget.original>0?budget.original:null)}</dd></div><div><dt>${en?'Target duration':'目标用时'}</dt><dd>${gainTimeText(budget.target>0?budget.target:null)}</dd></div><div><dt>${en?'Maximum duration':'最长用时'}</dt><dd>${gainTimeText(budget.maximum>0?budget.maximum:null)}</dd></div><div><dt>${en?'Actual duration':'实际用时'}</dt><dd>${gainTimeText(candidate.actual_elapsed_s)}</dd></div></dl>${gainModelInitializationHtml(candidate.model_initialization,candidate.joint_names)}${warnings.length?`<ul class="gain-diagnostic-warnings">${warnings.map(value=>`<li title="${esc(value)}">${esc(gainWarningLabel(value))}</li>`).join('')}</ul>`:''}${diagnosticItems}${targets.some(([key])=>key!=='compliant_drag'&&gainCandidatePurposeAvailable(candidate,key))?`<details class="gain-experiment-detail"><summary>${en?'Optional supplementary path validation':'补充路径验收（可选）'}</summary>${gainPathValidationHtml(candidate)}</details>`:''}${candidate.candidate_comparisons?.length?`<details class="gain-experiment-detail"><summary>${en?'Candidate comparisons':'候选比较'}</summary>${candidate.candidate_comparisons.map((note,index)=>note.kind==='motion_establishment'?`<details class="gain-experiment-detail"><summary>${en?'Motion establishment':'起动测量决策'} ${index+1}</summary>${gainMotionEstablishmentHtml(note,candidate.joint_names,candidate.experiments)}</details>`:'').join('')}<details class="gain-experiment-detail"><summary>${en?'Original comparison records':'原始比较记录'}</summary><pre class="gain-record-json">${esc(JSON.stringify(candidate.candidate_comparisons,null,2))}</pre></details></details>`:''}</details></div>`;
+    return `<div class="gain-results"><div class="gain-results-head"><h4>${en?'Calibration results':'标定结果'}</h4><span>${en?'Actual duration':'实际用时'} ${gainTimeText(candidate.actual_elapsed_s)}</span></div><div class="gain-result-outcome ${empty?'is-empty':counts.passed<counts.available?'is-warning':'is-pass'}" role="status"><strong>${title}</strong><p title="${esc(conclusion.rawReason)}">${empty?esc(conclusion.reason|| (en?'Measurements did not finish. Review diagnostics or run calibration again.':'各用途尚无完整测量结果；可查看诊断记录或重新标定')):counts.passed<counts.available?(en?'Measured parameters remain available for temporary application or export with unmet-use warnings.':'参数已实测但用途验收未达标的结果仍可带警告临时应用或导出'):(en?'Select the measured uses to apply or export.':'勾选需要应用或导出的已测用途')}</p></div><div class="gain-purpose-list">${rows}</div>${counts.available?`<div class="gain-export-actions workspace-actions"><button class="button" data-tool-export="gain" ${selected.length?'':'disabled'}>${en?'Export selected gains':'导出所选增益'}</button>${state.calibrationRuntimeCandidates?.gain_applied?setupActionHtml({page:'profile_setup',group:'motion',anchor:'preview-config'},en?'Save applied gains as defaults':'将已应用增益保存为默认'):''}</div>`:''}<details class="gain-details gain-diagnostics"><summary>${en?'Task details and diagnostics':'任务详情与诊断'}</summary><dl class="gain-purpose-checks"><div><dt>${en?'Task':'任务编号'}</dt><dd>${esc(candidate.task_id||'—')}</dd></div><div><dt>${en?'Mode':'标定模式'}</dt><dd>${candidate.gain_tuning_mode==='fine'?(en?'Single-use fine':'单用途精调'):candidate.gain_tuning_mode==='quick'?(en?'Four-use quick':'四用途快标'):(en?'Not recorded':'历史记录未注明')}</dd></div><div><dt>${en?'Original recording T':'原始录制时长 T'}</dt><dd>${gainTimeText(budget.original>0?budget.original:null)}</dd></div><div><dt>${en?'Target duration':'目标用时'}</dt><dd>${gainTimeText(budget.target>0?budget.target:null)}</dd></div><div><dt>${en?'Maximum duration':'最长用时'}</dt><dd>${gainTimeText(budget.maximum>0?budget.maximum:null)}</dd></div><div><dt>${en?'Actual duration':'实际用时'}</dt><dd>${gainTimeText(candidate.actual_elapsed_s)}</dd></div></dl>${gainModelInitializationHtml(candidate.model_initialization,candidate.joint_names)}${warnings.length?`<ul class="gain-diagnostic-warnings">${warnings.map(value=>`<li title="${esc(value)}">${esc(gainWarningLabel(value))}</li>`).join('')}</ul>`:''}${diagnosticItems}${targets.some(([key])=>key!=='compliant_drag'&&gainCandidatePurposeAvailable(candidate,key))?`<details class="gain-experiment-detail"><summary>${en?'Optional supplementary path validation':'补充路径验收（可选）'}</summary>${gainPathValidationHtml(candidate)}</details>`:''}${candidate.candidate_comparisons?.length?`<details class="gain-experiment-detail"><summary>${en?'Candidate comparisons':'候选比较'}</summary>${candidate.candidate_comparisons.map((note,index)=>note.kind==='motion_establishment'?`<details class="gain-experiment-detail"><summary>${en?'Motion establishment':'起动测量决策'} ${index+1}</summary>${gainMotionEstablishmentHtml(note,candidate.joint_names,candidate.experiments)}</details>`:'').join('')}<details class="gain-experiment-detail"><summary>${en?'Original comparison records':'原始比较记录'}</summary><pre class="gain-record-json">${esc(JSON.stringify(candidate.candidate_comparisons,null,2))}</pre></details></details>`:''}</details></div>`;
 }
 
 function gainPathValidationHtml(candidate) {
@@ -3544,7 +3558,7 @@ function calibrationStandalonePanelHtml(kind) {
         buttons.push(`<button id="model-calibration-replay-confirm" class="button primary" ${status.source_task_id && !calibrationAlignment(status).aligned ? 'disabled' : ''}>${en ? 'Confirm automatic calibration' : '开始标定'}</button>`);
     if (kind === 'gain' && selected && live && ['idle', 'complete', 'failed', 'cancelled'].includes(phase))
         buttons.push(`<button id="calibration-tool-import" class="button primary" ${robotActive ? '' : 'disabled'} title="${robotActive ? '' : (en ? 'Activate the robot before importing the trajectory' : '请先使能机械臂再导入轨迹')}">${en ? 'Import selected trajectory (no motion)' : '导入所选示教轨迹（不运动）'}</button>`);
-    if (kind === 'gain' && live && status.workflow_kind === 'gain' && status.directory && ['complete', 'failed'].includes(phase))
+    if (kind === 'gain' && live && status.workflow_kind === 'gain' && status.directory && ['complete', 'failed', 'cancelled'].includes(phase))
         buttons.push(`<button id="calibration-gain-load-live" class="button">${en ? 'Review this gain task' : '查看本次增益候选'}</button>`);
     if (active && kind === 'gain')
         buttons.push(`<button id="model-calibration-cancel" class="button danger">${en ? 'Cancel current task' : '取消当前任务'}</button>`);
@@ -4068,6 +4082,7 @@ function teachSafetyConfirm(direction) {
 function refreshTeachReplayPanel() {
     if (state.page !== 'workbench' || state.workbenchTab !== 'replay') return;
     const task = document.querySelector('.workbench-task-content'); if (!task) return;
+    const view=capturePageView(task);
     const scrollContainer = task.closest('.content'), scroll = scrollContainer?.scrollTop || 0;
     const active = document.activeElement, selectId = active?.closest?.('.studio-select')?.querySelector('select')?.id;
     const focusedId = selectId || (task.contains(active) ? active?.id : null);
@@ -4078,6 +4093,7 @@ function refreshTeachReplayPanel() {
     const focused = focusedId ? $(focusedId) : null;
     if (focused && !focused.disabled) (selectId ? focused.nextElementSibling : focused)?.focus({preventScroll:true});
     if (scrollContainer) scrollContainer.scrollTop = scroll;
+    restorePageView(view,task);
 }
 function wireTeachReplay() {
     if (state.page !== 'workbench' || state.workbenchTab !== 'replay') return;
@@ -4571,6 +4587,7 @@ function refreshGeometryPanel(resetScroll = false) {
     if (state.page !== 'geometry') return;
     const panel = document.querySelector('.geometry-panel');
     if (!panel) return;
+    const view=resetScroll?null:capturePageView(panel);
     const scrollContainer = panel.closest('.content');
     const scroll = resetScroll ? 0 : scrollContainer?.scrollTop || 0;
     const details = new Map([...panel.querySelectorAll('details')].map((item, index) => [item.id || item.querySelector('summary')?.textContent.trim() || String(index), item.open]));
@@ -4596,6 +4613,7 @@ function refreshGeometryPanel(resetScroll = false) {
         }
     }
     if (scrollContainer) scrollContainer.scrollTop = scroll;
+    if(view)restorePageView(view,panel);else {const inner=panel.closest('.studio-page-body');if(inner)inner.scrollTop=0;}
 }
 function geometryPage() {
     const tr = (zh, en) => state.language === 'en' ? en : zh;
@@ -4851,6 +4869,29 @@ function dismissCalibrationTaskReview() {
     gainTaskWindowMemory.dismissed.add(review.key);gainTaskWindowMemory.review=null;
     updateModelCalibrationTaskOverlay();
 }
+async function reviewCalibrationTaskCandidate() {
+    const status=calibrationTaskReviewWindow()?.status;
+    if(!status?.directory)return;
+    return blockingOperation(busyText('正在读取已测候选','Loading measured candidates'),async()=>{
+        let record=state.calibrationToolSelected.gain;
+        if(record?.directory!==status.directory||record?.gain_candidate?.task_id!==status.task_id){
+            record=await api.request('calibration_tool_load',{kind:'gain',directory:status.directory});
+            if(record?.directory!==status.directory||record?.gain_candidate?.task_id!==status.task_id)throw new Error(busyText('读取的候选与本任务不一致','The candidate does not match this task'));
+        }
+        if(state.page!=='calibration')await navigate('calibration');
+        if(state.page!=='calibration')return;
+        dismissCalibrationTaskReview();
+        state.calibrationEntry='gain';
+        await selectCalibrationToolRecord('gain',record);
+        const results=document.querySelector('.gain-results'),scroll=results?.closest('.content');
+        results?.scrollIntoView({block:'start'});
+        if(results&&scroll){
+            const top=Math.max(scroll.getBoundingClientRect().top,document.querySelector('.workspace-operation-panel')?.getBoundingClientRect().bottom||0)+16;
+            scroll.scrollTop-=Math.max(0,top-results.getBoundingClientRect().top);
+        }
+        (document.querySelector('[data-gain-candidate-purpose]')||$('calibration-gain-temp-restore'))?.focus({preventScroll:true});
+    });
+}
 function restoreCalibrationTaskPreview() {
     if (!calibrationTaskPreview) return;
     const {node, marker} = calibrationTaskPreview; calibrationTaskPreview = null;
@@ -4944,6 +4985,9 @@ function updateModelCalibrationTaskOverlay() {
     setCalibrationTaskModalState(show, !ended);
     const window=overlay.querySelector('.model-calibration-task-window');window.classList.toggle('is-ended',ended);
     $('model-calibration-task-close').hidden=!ended;
+    $('model-calibration-task-candidate').hidden=!ended||!status?.directory;
+    const candidate=state.calibrationToolSelected?.gain;
+    $('model-calibration-task-candidate').textContent=candidate?.directory===status?.directory&&gainCandidateResultCounts(candidate?.gain_candidate).available?busyText('查看已测候选','Review measured candidates'):busyText('查看候选与记录','Review candidates and records');
     $('model-calibration-task-conclusion').hidden=!ended;
     overlay.querySelector('.task-joint-values').hidden=ended;
     refreshGainProbeStatus(task?.kind === 'model' ? status : {});
@@ -5417,6 +5461,41 @@ function readProfileInput(input) {
 
 let previewFrame = 0, previewInFlight = false, previewDirty = false;
 let renderedPage = '';
+let renderedPageViewKey = '';
+function pageViewKey() {
+    const subview=state.page==='profile_setup'?state.profileGroup:state.page==='calibration'?state.calibrationEntry:state.page==='workbench'?state.workbenchTab:state.page==='geometry'?state.geometryTab:state.page==='description'?state.descriptionStep:'';
+    return JSON.stringify([state.page,state.config?.profile_file,state.config?.profile,subview]);
+}
+function capturePageView(root = $('page')) {
+    if(!root)return null;
+    const locate=node=>{
+        if(node===root)return {root:true};
+        if(!root.contains(node))return {outside:true};
+        for(const attr of ['id','data-readiness-section','data-lifecycle-stage','data-profile-field','data-review-stage','data-profile-group','data-gain-purpose','data-gain-result','data-tool-query']){
+            if(!node.hasAttribute(attr))continue;
+            const selector=`[${attr}="${CSS.escape(node.getAttribute(attr))}"]`;
+            return {selector,index:[...root.querySelectorAll(selector)].indexOf(node)};
+        }
+        for(const selector of ['.studio-page-body','.table-scroll','details'])if(node.matches(selector))return {selector,index:[...root.querySelectorAll(selector)].indexOf(node)};
+        const parts=[];for(let n=node;n&&n!==root;n=n.parentElement)parts.unshift(`:nth-child(${[...n.parentElement.children].indexOf(n)+1})`);
+        return {selector:':scope > '+parts.join(' > '),index:0};
+    };
+    const target=node=>({node,location:locate(node)});
+    const scrollers=new Set([...root.querySelectorAll('*')].filter(node=>node.scrollTop||node.scrollLeft));
+    for(let node=root.parentElement;node;node=node.parentElement)if(node.scrollTop||node.scrollLeft)scrollers.add(node);
+    const active=document.activeElement,field=active?.closest?.('.studio-select')?.querySelector('select')||active;
+    return {root,scroll:[...scrollers].map(node=>({...target(node),top:node.scrollTop,left:node.scrollLeft})),details:[...root.querySelectorAll('details')].map(node=>({...target(node),open:node.open})),focus:root.contains(field)?{...target(field),selectProxy:field!==active,start:field.selectionStart,end:field.selectionEnd}:null};
+}
+function restorePageView(view,root = $('page')) {
+    if(!view||!root)return;
+    const find=item=>item.node.isConnected?item.node:item.location.root?root:item.location.index>=0?root.querySelectorAll(item.location.selector)[item.location.index]:null;
+    for(const item of view.details){const node=find(item);if(node)node.open=item.open;}
+    if(view.focus){
+        const field=find(view.focus),focus=view.focus.selectProxy?field?.closest('.studio-select')?.querySelector('.ros-select-trigger'):field;
+        if(focus&&!focus.disabled){focus.focus({preventScroll:true});if(field?.setSelectionRange&&view.focus.start!=null&&(field.tagName==='TEXTAREA'||['text','search','url','tel','password'].includes(field.type)))field.setSelectionRange(view.focus.start,view.focus.end);}
+    }
+    for(const item of view.scroll){const node=find(item);if(node){node.scrollTop=item.top;node.scrollLeft=item.left;}}
+}
 let calibrationRefreshPending = false;
 function calibrationDialogOpen() {
     return !!$('confirm-dialog')?.open;
@@ -5451,12 +5530,13 @@ function pageEnter(pageChanged = true) {
     page.classList.add('page-transition-in');
 }
 let workspaceRenderHost = null, workspaceRenderModel = null, workspaceRenderSubview = '';
-function refreshWorkspacePanel() {
+function refreshWorkspacePanel(resetScroll = false) {
     if (!['workbench', 'calibration'].includes(state.page)) return false;
     const host = $('workbench-viewport'), task = document.querySelector('.workbench-task');
     if (!host || !task || host !== workspaceRenderHost || state.modelData !== workspaceRenderModel) return false;
     const subview = state.page + ':' + (state.page === 'calibration' ? state.calibrationEntry : state.workbenchTab);
-    const samePanel = subview === workspaceRenderSubview;
+    const samePanel = subview === workspaceRenderSubview && renderedPageViewKey === pageViewKey();
+    const view=samePanel&&!resetScroll?capturePageView(task):null;
     const scroll = task.closest('.content'), top = scroll?.scrollTop || 0;
     const details = samePanel ? new Map([...task.querySelectorAll('details')].map((item, index) => [item.id || item.querySelector('summary')?.textContent.trim() || String(index), item.open])) : new Map();
     const active = document.activeElement, select = active?.closest?.('.studio-select')?.querySelector('select');
@@ -5483,6 +5563,9 @@ function refreshWorkspacePanel() {
         if (focus && !focus.disabled) focus.focus({preventScroll:true});
     }
     if (scroll) scroll.scrollTop = top;
+    if(view)restorePageView(view,task);
+    else {if(scroll)scroll.scrollTop=0;const inner=task.closest('.studio-page-body');if(inner)inner.scrollTop=0;}
+    renderedPageViewKey=pageViewKey();
     if (state.page === 'calibration') updateModelCalibrationComparison();
     else modelView?.clearGravityComparison?.();
     updateStartGhost(true);
@@ -5492,8 +5575,10 @@ function refreshWorkspacePanel() {
     if (state.modelData && !modelView && !workspaceMount) operation(mountWorkbenchView);
     return true;
 }
-function render() {
-    if (renderedPage === state.page && refreshWorkspacePanel()) return;
+function render(options = {}) {
+    if (renderedPage === state.page && refreshWorkspacePanel(options.resetScroll===true)) return;
+    const sameView=renderedPageViewKey===pageViewKey()&&!options.resetScroll&&!state.setupFocus;
+    const view=sameView?capturePageView():null;
     workspaceMount = null;
     pageModelMount = null;
     disposeModelPreview();
@@ -5520,6 +5605,7 @@ function render() {
     document.querySelector('.shell').dataset.page = state.page;
     pageEnter(pageChanged);
     renderedPage = state.page;
+    renderedPageViewKey=pageViewKey();
     workspaceRenderHost = ['workbench', 'calibration'].includes(state.page) ? $('workbench-viewport') : null;
     workspaceRenderModel = state.modelData;
     workspaceRenderSubview = state.page + ':' + (state.page === 'calibration' ? state.calibrationEntry : state.workbenchTab);
@@ -5535,6 +5621,7 @@ function render() {
     statusUI(); bindPage();
     window.serialArmStudio?.enhanceSelects();
     if (state.page === 'profile_setup') restoreProfileFields();
+    if(view)restorePageView(view);else if(!sameView)main.scrollTop=0;
     if (state.setupFocus?.page === state.page) focusSetupTarget();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
@@ -5771,7 +5858,7 @@ function bindPage() {
         state.profileDirty = true; render();
     };
     bindHardwareTools();
-    if($('control-settings'))$('control-settings').ontoggle=()=>{state.controlSettingsOpen=$('control-settings').open;};
+    if($('control-settings'))$('control-settings').ontoggle=event=>{if(event.currentTarget.isConnected)state.controlSettingsOpen=event.currentTarget.open;};
     if ($('profile-reload')) $('profile-reload').onclick = () => operation(async () => {
         if (state.profileDirty && !await safetyConfirmation(state.language === 'en' ? 'Reload Profile' : '重新加载 Profile', state.language === 'en' ? 'Unsaved changes will be discarded before reloading' : '重新读取磁盘配置前将放弃未保存的参数', '', [], 'general')) return;
         state.profileInteractionGoal = null; state.profileEditor = await api.request('profile_editor_load', { config: state.config });

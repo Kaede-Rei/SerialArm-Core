@@ -86,6 +86,14 @@ int main() {
         check(bool(runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION)),"assessment input rejected");
         check(runtime.step(assessment.robot).cycle.has_value(),"assessment tracking cycle failed");
         check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID_HOLD)),"analysis HOLD failed");
+        const auto hold_reference=runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION);
+        check(!hold_reference && hold_reference.error().ctrller_err==JointCtrllerErr::CMD_NOT_ALLOWED_IN_MODE,
+              "HOLD must still reject the tracking-reference interface");
+        check(bool(assessment.robot.set_calibration_disturbance({.03,0})),"HOLD must accept the bounded independent disturbance channel");
+        const auto hold_disturbed=runtime.step(assessment.robot);
+        check(hold_disturbed.cycle && std::abs(hold_disturbed.cycle->calibration_disturbance[0]-.03)<1e-12 &&
+              std::abs(hold_disturbed.cycle->joint_cmd.pos[0]-.002)<1e-12,"independent HOLD input must preserve the nominal hold target");
+        assessment.robot.clear_calibration_disturbance();
         for(unsigned i=0;i<30;++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));check(runtime.step(assessment.robot).state==RobotState::ACTIVE,"stationary analysis HOLD must not expire a streaming command");}
         check(std::abs(assessment.robot.get_hold_target()[0]-.002)<1e-12,"analysis HOLD must preserve final nominal reference");
         check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID_TRACKING)),"stream timeout setup failed");

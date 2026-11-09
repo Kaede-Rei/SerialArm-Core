@@ -571,12 +571,118 @@ void check_symmetric_motion_establishment(const std::string& recorded_directory)
     std::cout<<"1794238166406 recorded-window counterfactual: same gains, symmetric +/-"<<positive<<" Nm reference drive; separate asymmetric-friction plant established motion, blocked plant retained insufficiency\n";
 }
 
+std::vector<std::vector<Sample>> read_joint_evidence_csv(const std::string& path) {
+    std::ifstream input(path);check(bool(input),"recorded calibration CSV must be readable");
+    const auto split=[](const std::string& line){std::vector<std::string> out;std::stringstream stream(line);std::string value;while(std::getline(stream,value,','))out.push_back(value);return out;};
+    std::string line;std::getline(input,line);const auto fields=split(line);
+    const auto column=[&](const std::string& key){const auto it=std::find(fields.begin(),fields.end(),key);check(it!=fields.end(),"recorded calibration CSV lacks required evidence");return std::size_t(it-fields.begin());};
+    const auto ti=column("time_s"),ji=column("joint"),ri=column("reference"),vi=column("reference_velocity"),qi=column("actual"),di=column("velocity"),ni=column("new_measurement"),li=column("limited");
+    const auto ki=column("actual_kp"),kdi=column("actual_kd"),gi=column("actual_gains_known"),fi=column("feedforward_nm"),ii=column("independent_disturbance_nm");
+    const auto ci=column("command_time_s"),fti=column("feedback_time_s"),si=column("feedback_sequence");
+    std::vector<std::vector<Sample>> rows(6);
+    while(std::getline(input,line)){const auto v=split(line);if(v[ji].size()<6)continue;const auto axis=std::stoul(v[ji].substr(5))-1;check(axis<rows.size(),"recorded joint mapping must match six-axis fixture");
+        Sample row;row.time_s=std::stod(v[ti]);row.reference=std::stod(v[ri]);row.reference_velocity=std::stod(v[vi]);row.actual=std::stod(v[qi]);row.velocity=std::stod(v[di]);
+        row.new_measurement=v[ni]=="1";row.limited=v[li]=="1";row.actual_gains_known=v[gi]=="1";row.actual_kp=std::stod(v[ki]);row.actual_kd=std::stod(v[kdi]);
+        row.applied_feedforward_nm=std::stod(v[fi]);row.feedforward_known=true;row.independent_disturbance_nm=std::stod(v[ii]);row.independent_disturbance_known=true;
+        row.command_time_s=std::stod(v[ci]);row.feedback_time_s=std::stod(v[fti]);row.feedback_sequence=std::stoull(v[si]);rows[axis].push_back(row);
+    }
+    return rows;
+}
+
+void check_disturbance_resolution_and_residual_correction(const std::string& recorded_directory) {
+    Requirements req;req.probe_duration_s=5.5;const double encoder=25.0/65536;
+    for(unsigned kind=0;kind<4;++kind) {
+        std::vector<Sample> rows;
+        for(unsigned k=0;k<=3500;++k){Sample row;row.time_s=.002*k;row.new_measurement=true;row.independent_disturbance_known=true;
+            row.independent_disturbance_nm=row.time_s<5.5?.7*std::sin(2*pi*.45*row.time_s):0;
+            if(kind<2)row.actual=row.time_s>.7?(k/10%2)*encoder:0;
+            else if(row.time_s<5.5){row.actual=8*encoder*std::sin(2*pi*.45*row.time_s);row.velocity=8*encoder*2*pi*.45*std::cos(2*pi*.45*row.time_s);}
+            else if(kind==2){row.actual=8*encoder*std::sin(2*pi*.45*5.5)*std::exp(-9*(row.time_s-5.5));row.velocity=-9*row.actual;}
+            else {row.actual=8*encoder*std::sin(2*pi*10*(row.time_s-5.5));row.velocity=8*encoder*20*pi*std::cos(2*pi*10*(row.time_s-5.5));}
+            rows.push_back(row);
+        }
+        auto plan=req;NoiseEstimate baseline;
+        if(kind==1)plan.encoder_step_rad=2*encoder;
+        if(kind>=2)baseline.encoder_step_rad=encoder;
+        const auto measured=assess_disturbance(rows,plan,baseline,5.5,.004);
+        if(kind<2)check(!measured.motion_observed && !measured.sustained_oscillation && !measured.measurement_complete && measured.static_measurement_complete &&
+            measured.encoder_step_rad>0 && measured.motion_floor_rad>=3*encoder,
+            "an initially constant baseline followed by one actual position code cannot identify stiffness or sustained release oscillation");
+        else if(kind==2)check(measured.motion_observed && measured.measurement_complete && measured.passed,
+            "a genuinely resolved disturbance response and release must retain the original physical acceptance");
+        else check(measured.motion_observed && measured.sustained_oscillation && !measured.passed,
+            "resolving encoder grain must not hide genuine multi-code release oscillation");
+    }
+    const ModelAxisLimits limit{.04,1.62,3.24,7,500,5,{500.0/4095,5.0/4095}};
+    const Gains incumbent{{1977*500.0/4095},{5}},requested{{1.1*incumbent.kp[0]},{5}};
+    const double E=1.25*.018803036847175658,V=1.25*.202103;
+    const auto local=constrain_measured_gain_step(incumbent,requested,{limit},{E},{V});
+    check(local.changed && local.gains.kp[0]>incumbent.kp[0] && local.gains.kp[0]<requested.kp[0] && local.gains.kd==incumbent.kd && local.predicted_effort_nm[0]<=7+1e-10,
+        "the real full-path local step must preserve measured damping and constrain the requested increase without reversing its direction");
+    const auto unsupported=constrain_measured_gain_step(incumbent,requested,{limit},{.04},{V});
+    check(!unsupported.changed && unsupported.gains.kp==incumbent.kp && unsupported.gains.kd==incumbent.kd,
+        "an unsupported robust error envelope must report no increase rather than project a stiffness trial into an unrequested P/D decrease");
+    const auto old_budget=plan_residual_correction_budget(159.15,34.74481,34.74481,93.2997,2);
+    const auto remaining_costs=plan_residual_correction_budget(159.15,32.7464,32.7464,90.2997,2);
+    check(!old_budget.fits && old_budget.deficit_s>5 && remaining_costs.fits && remaining_costs.required_s<159.15,
+        "correction scheduling must expose real return/comparison/reserve costs, not silently disappear over a few seconds or extend the original deadline");
+
+    // Retention considers full-cycle peaks before the auxiliary RMS objective.
+    TrajectoryAssessment good;good.reference_coverage=good.responsive=true;good.metrics.samples=good.metrics.measurement_samples=1000;
+    good.metrics.rms_error=.01;good.metrics.peak_error=.02;good.tuning.valid=true;good.tuning.samples=1000;
+    good.tuning.reference_rms_rad=.1;good.tuning.centered_rms_rad=.01;good.tuning.position_floor_rad=.0002;
+    auto peak_improvement=good;peak_improvement.metrics.peak_error=.015;
+    auto rms_only=good;rms_only.metrics.rms_error=.007;rms_only.tuning.centered_rms_rad=.007;rms_only.metrics.peak_error=.025;
+    check(trajectory_trial_preferred(Gains{{11},{1}},{peak_improvement},Gains{{10},{1}},{good},Gains{{1},{.1}},req),
+        "a resolved all-cycle peak improvement may retain a complete candidate without requiring an unrelated RMS improvement");
+    check(!trajectory_trial_preferred(Gains{{11},{1}},{rms_only},Gains{{10},{1}},{good},Gains{{1},{.1}},req),
+        "RMS improvement must never hide a worsened all-cycle peak");
+
+    if(!recorded_directory.empty()) {
+        const auto small=read_joint_evidence_csv(recorded_directory+"/servo-probe-native-established-disturbance.csv");
+        const auto large=read_joint_evidence_csv(recorded_directory+"/servo-probe-native-established-disturbance-supplement.csv");
+        const auto unresolved=assess_disturbance(small[0],req,NoiseEstimate{},5.5,.004);
+        const auto resolved=assess_disturbance(large[0],req,NoiseEstimate{},5.5,.004);
+        check(!unresolved.motion_observed && !unresolved.sustained_oscillation && !unresolved.measurement_complete && unresolved.static_measurement_complete,
+            "1794241207035 actual one-code joint1 disturbance must remain static evidence, not a false motion/release-oscillation measurement");
+        close(unresolved.encoder_step_rad,encoder,1e-12,"the actual disturbance window must recover the encoder grain absent from the initial stationary baseline");
+        check(resolved.motion_observed && resolved.measurement_complete,"actual multi-code supplemented disturbance must retain its resolved measurement");
+        const auto path=read_joint_evidence_csv(recorded_directory+"/gain-trajectory-native-frozen.csv");
+        std::ifstream result(recorded_directory+"/result.json");const std::string json((std::istreambuf_iterator<char>(result)),std::istreambuf_iterator<char>());
+        const auto key=json.find("\"gain_trajectory_duration_s\"");check(key!=std::string::npos,"actual task metadata must supply its executed path duration");
+        const double duration=std::stod(json.substr(json.find(':',key)+1));
+        Gains current;std::vector<TrajectoryAssessment> assessments;std::vector<double> error_bounds,velocity_bounds;std::vector<ModelAxisLimits> limits;
+        for(std::size_t i=0;i<path.size();++i) {
+            check(!path[i].empty(),"actual native path needs all six joint rows");current.kp.push_back(path[i][0].actual_kp);current.kd.push_back(path[i][0].actual_kd);
+            NoiseEstimate n;n.encoder_step_rad=encoder;auto a=assess_trajectory(path[i],req,n,duration);assessments.push_back(a);
+            double velocity_error=0;for(const auto& row:path[i])velocity_error=std::max(velocity_error,std::abs(row.reference_velocity-row.velocity));
+            error_bounds.push_back(std::max(1.25*a.metrics.peak_error,a.metrics.peak_error+3*encoder));velocity_bounds.push_back(std::max(.01,1.25*velocity_error));
+            auto x=limit;x.effort_budget=i<3?7:2.5;limits.push_back(x);
+            check(a.tuning.valid && a.tuning.velocity_error_rms_rad>a.tuning.amplitude_error_rms_rad+a.tuning.position_floor_rad && !a.metrics.limited_samples && !a.metrics.oscillating && !a.passed,
+                "the actual full path must retain its valid velocity-related residual, strict failure, and absence of saturation/oscillation");
+        }
+        const auto proposal=trajectory_candidate_report(current,std::vector<double>(6,500),std::vector<double>(6,5),assessments,req);
+        const auto bounded=constrain_measured_gain_step(current,proposal.gains,limits,error_bounds,velocity_bounds);
+        check(proposal.changed && bounded.changed,"actual failed native tracking must generate an evidence-driven bounded local comparison without a successful physical fit");
+        std::cout<<"1794241207035 actual disturbance resolution="<<unresolved.encoder_step_rad<<", floor="<<unresolved.motion_floor_rad<<"; one-code false motion/oscillation removed\n";
+        for(std::size_t i=0;i<path.size();++i) {
+            check(bounded.gains.kp[i]>=current.kp[i] && bounded.gains.kp[i]<=1.1*current.kp[i]+1e-10 && bounded.gains.kd[i]>=current.kd[i] && bounded.predicted_effort_nm[i]<=limits[i].effort_budget+1e-9,
+                "every actual-path suggestion must remain a small local step within its measured joint-effort envelope");
+            std::cout<<"path axis "<<i+1<<": lag="<<assessments[i].tuning.lag_s<<", E="<<error_bounds[i]<<", V="<<velocity_bounds[i]
+                <<", proposed="<<bounded.gains.kp[i]<<'/'<<bounded.gains.kd[i]<<", predicted envelope="<<bounded.predicted_effort_nm[i]<<" Nm (unexecuted)\n";
+        }
+    }
+    std::cout<<"disturbance encoder floor, measured local-step direction, peak-first retention and explicit correction cost checks passed\n";
+}
+
 int main(int argc,char** argv) {
     try {
+        const bool latest=argc>2 && std::string(argv[1])=="--latest-task";
         check_protocol_demand_and_working_domain();check_recorded_quantization_boundary();
-        check_unidentified_response_and_execution_guard(argc>1?argv[1]:"");
-        check_establishment_input_plateaus(argc>2?argv[2]:"");
-        check_symmetric_motion_establishment(argc>3?argv[3]:"");
+        check_unidentified_response_and_execution_guard(!latest && argc>1?argv[1]:"");
+        check_establishment_input_plateaus(!latest && argc>2?argv[2]:"");
+        check_symmetric_motion_establishment(!latest && argc>3?argv[3]:"");
+        check_disturbance_resolution_and_residual_correction(latest?argv[2]:"");
         check_six_axis_motion_establishment();
         const ModelAxisLimits limit{.2,1.5,4,8,150,4,{}};
         ModelResponseDemand model_demand;model_demand.frequency_hz={.4,.4};model_demand.velocity_peak={.02,.02};model_demand.acceleration_peak={.02,.02};

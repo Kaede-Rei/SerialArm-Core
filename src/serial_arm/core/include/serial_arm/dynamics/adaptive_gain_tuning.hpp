@@ -76,6 +76,51 @@ inline std::pair<double,double> constrain_candidate(double kp,double kd,const Mo
     }
     return {kp,kd};
 }
+struct ConstrainedMeasuredGainStep {
+    Gains gains;std::vector<std::string> reasons;
+    std::vector<double> predicted_effort_nm;bool changed{false};
+};
+// Constrain a local comparison around an actually measured complete controller.
+// The error bounds describe that experiment, not the local probe's position
+// range. A stiffness-increase proposal must not silently turn into a large
+// decrease of both P and D through radial projection.
+inline ConstrainedMeasuredGainStep constrain_measured_gain_step(const Gains& current,const Gains& requested,
+    const std::vector<ModelAxisLimits>& limits,const std::vector<double>& error_bound_rad,
+    const std::vector<double>& velocity_error_bound_rad) {
+    const auto n=limits.size();
+    if(!n || current.kp.size()!=n || current.kd.size()!=n || requested.kp.size()!=n || requested.kd.size()!=n ||
+       error_bound_rad.size()!=n || velocity_error_bound_rad.size()!=n)throw std::invalid_argument("measured gain step mapping mismatch");
+    ConstrainedMeasuredGainStep out;out.gains=current;out.reasons.resize(n);out.predicted_effort_nm.resize(n);
+    for(std::size_t i=0;i<n;++i) {
+        const auto& x=limits[i];const double E=error_bound_rad[i],V=velocity_error_bound_rad[i];
+        for(double value:{x.effort_budget,x.kp_max,x.kd_max})
+            if(!std::isfinite(value) || value<=0)throw std::invalid_argument("invalid measured gain capability");
+        (void)gain_working_domain(x,E,V);
+        for(double value:{current.kp[i],current.kd[i],requested.kp[i],requested.kd[i]})
+            if(!std::isfinite(value) || value<0)throw std::invalid_argument("invalid measured gain step");
+        if(current.kp[i]>x.kp_max || current.kd[i]>x.kd_max)throw std::invalid_argument("measured controller outside protocol capability");
+        double kp=std::min(requested.kp[i],x.kp_max),kd=std::min(requested.kd[i],x.kd_max);
+        if(kp>=current.kp[i] && kd>=current.kd[i]) {
+            if(current.kp[i]*E+current.kd[i]*V>x.effort_budget*(1+1e-10)) {
+                kp=current.kp[i];kd=current.kd[i];out.reasons[i]="measured_error_envelope_has_no_effort_room_for_increase";
+            } else {
+                kp=quantize_gain(std::min(kp,std::max(0.0,(x.effort_budget-current.kd[i]*V)/E)),x.grid.kp_step,x.kp_max);
+                kp=std::max(current.kp[i],kp);
+                kd=quantize_gain(std::min(kd,V>0?std::max(0.0,(x.effort_budget-kp*E)/V):x.kd_max),x.grid.kd_step,x.kd_max);
+                kd=std::max(current.kd[i],kd);
+                if(kp*E+kd*V>x.effort_budget*(1+1e-10)){kp=current.kp[i];kd=current.kd[i];}
+                out.reasons[i]=(kp<requested.kp[i] || kd<requested.kd[i])?
+                    "measured_joint_effort_envelope_bounds_local_increase_preserve_measured_damping":"measured_joint_effort_envelope_allows_local_step";
+            }
+        } else {
+            const auto bounded=constrain_candidate(kp,kd,x,E,V);kp=bounded.first;kd=bounded.second;
+            out.reasons[i]="evidence_requested_feedback_reduction_within_joint_effort_envelope";
+        }
+        out.gains.kp[i]=kp;out.gains.kd[i]=kd;out.predicted_effort_nm[i]=kp*E+kd*V;
+        out.changed=out.changed || kp!=current.kp[i] || kd!=current.kd[i];
+    }
+    return out;
+}
 struct ModelResponseDemand {
     std::vector<double> frequency_hz,velocity_peak,acceleration_peak,coupled_acceleration_torque,error_velocity_bound;
     std::vector<std::vector<std::vector<double>>> mass_matrix_samples;
@@ -682,6 +727,7 @@ struct DisturbanceAssessment {
     bool measurement_complete{false},passed{false},limited{false},sustained_oscillation{false},motion_observed{false},static_measurement_complete{false};
     double input_peak_nm{0},initial_error_rad{0},peak_displacement_rad{0},release_recovery_s{0};
     double final_error_rad{0},final_drift_rad{0},final_peak_velocity{0},peak_limit_rad{0},final_window_s{0};
+    double encoder_step_rad{0},motion_floor_rad{0};
     std::size_t fresh_samples{0};std::string reason{"insufficient_measurements"};
 };
 // This assesses a separately commanded torque at a fixed MIT reference. The
@@ -693,7 +739,11 @@ inline DisturbanceAssessment assess_disturbance(const std::vector<Sample>& rows,
     if(rows.empty() || !std::isfinite(excitation_end_s) || excitation_end_s<=0 ||
        !std::isfinite(max_displacement_rad) || max_displacement_rad<=0)return out;
     if(rows.front().time_s>.06 || rows.back().time_s<excitation_end_s+req.tail_s-.06)return out;
-    const double floor=std::max({3*noise.encoder_step_rad,6*noise.rms_rad,1e-6});
+    std::vector<double> fresh_positions;
+    for(const auto& row:rows)if(row.new_measurement && std::isfinite(row.actual))fresh_positions.push_back(row.actual);
+    out.encoder_step_rad=std::max({noise.encoder_step_rad,req.encoder_step_rad,observed_encoder_step(fresh_positions)});
+    const double floor=std::max({3*out.encoder_step_rad,6*std::max(noise.rms_rad,req.noise_rms_rad),1e-6});
+    out.motion_floor_rad=floor;
     double origin=0,initial_reference=0,count=0;
     for(const auto& row:rows)if(row.new_measurement && row.time_s<=.15) {
         origin+=row.actual;initial_reference+=row.reference;++count;

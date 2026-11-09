@@ -4578,6 +4578,14 @@ private:
         const auto n=cfg_.joint_names.size();ServoTrial trial;trial.rows.resize(n);trial.models.resize(n);trial.metrics.resize(n);trial.motion.resize(n);trial.plans.resize(n);trial.trajectory_assessments.resize(n);trial.disturbance_assessments.resize(n);
         JointVector torque_amplitude(n),center;auto local_limits=gain_model_limits_;
         center=fixed_center?*fixed_center:gain_fresh_short_center();
+        const auto experiment_mode=hold_path?(compliant_hold?JointImpedanceMode::COMPLIANT_HOLD:JointImpedanceMode::RIGID_HOLD):JointImpedanceMode::RIGID_TRACKING;
+        if(hold_path) {
+            std::lock_guard<std::mutex> lock(mutex_);clear_command_sources();
+            const auto held=runtime_.set_impedance_mode(robot_,experiment_mode);
+            if(!held)throw machine_robot_error("hold disturbance mode",held.error());
+            center=robot_.get_hold_target();
+            center_source="preserved_nominal_hold_target";
+        }
         if(center.size()!=n)throw std::runtime_error("short experiment center mapping invalid");
         const auto gravity_terms=gain_short_gravity_terms(center);
         for(std::size_t axis=0;axis<n;++axis) {
@@ -4601,9 +4609,8 @@ private:
         if(motion_only && disturbance)throw GainQualificationFailure("motion establishment excitation cannot replace independent disturbance identification");
         gain_require_trial(trial.duration_s+gain_requirements_.tail_s+.6);
         const auto start=Robot::Clock::now()+std::chrono::milliseconds(500);
-        const auto experiment_mode=hold_path?(compliant_hold?JointImpedanceMode::COMPLIANT_HOLD:JointImpedanceMode::RIGID_HOLD):JointImpedanceMode::RIGID_TRACKING;
         {std::lock_guard<std::mutex> lock(mutex_);clear_command_sources();
-            if(robot_.get_state()!=RobotState::ACTIVE || !runtime_.set_impedance_mode(robot_,experiment_mode) ||
+            if(robot_.get_state()!=RobotState::ACTIVE || (!hold_path && !runtime_.set_impedance_mode(robot_,experiment_mode)) ||
                !robot_.set_execution_gain_profile(hold_path?(compliant_hold?JointGainProfile::COMPLIANT:JointGainProfile::RIGID):JointGainProfile::SERVO_TRACKING) || !robot_.set_calibration_reference_behavior(ReferenceBehavior::NATIVE_IMPEDANCE) ||
                !robot_.set_calibration_tracking_gains(gains,experiment_mode))throw std::runtime_error("cannot select bounded short response experiment");
             robot_.set_admittance_suspended(!hold_path);
@@ -4614,7 +4621,7 @@ private:
         {std::lock_guard<std::mutex> lock(model_calibration_mutex_);gain_probe_stage_=disturbance?"disturbance_identification":motion_only?"motion_establishment":"short_identification";}
         gain_probe_begin(label,"all",trial.duration_s+gain_requirements_.tail_s,trial.plans.front().amplitude_rad,
             disturbance?"known_torque_disturbance":motion_only?"bounded_symmetric_motion_establishment":"bounded_reference_identification");
-        {std::ostringstream actual;actual<<std::setprecision(17)<<"{\"kind\":\"short_experiment_parameters\",\"record_path\":\""<<trial.record_path<<"\",\"label\":\""<<label<<"\",\"full_cycle_evidence\":\"frames.csv\",\"independent_disturbance\":"<<(disturbance?"true":"false")<<",\"hold_path\":"<<(hold_path?"true":"false")<<",\"duration_s\":"<<trial.duration_s<<",\"kp\":";machine_json_joint_vector(actual,gains.kp);actual<<",\"kd\":";machine_json_joint_vector(actual,gains.kd);actual<<",\"torque_amplitude_nm\":";machine_json_joint_vector(actual,torque_amplitude);actual<<",\"center_rad\":";machine_json_joint_vector(actual,center);actual<<",\"center_source\":\""<<center_source<<"\",\"plans\":[";for(std::size_t i=0;i<n;++i){if(i)actual<<',';const auto& r=trial.plans[i];actual<<"{\"amplitude_rad\":"<<r.amplitude_rad<<",\"frequencies_hz\":["<<r.frequencies_hz[0]<<','<<r.frequencies_hz[1]<<','<<r.frequencies_hz[2]<<"],\"motion_probe\":"<<(r.motion_probe?"true":"false")<<",\"duration_s\":"<<r.probe_duration_s<<"}";}actual<<"],\"nominal_gravity_gradient\":";machine_json_joint_vector(actual,gravity_terms.first);actual<<",\"executed_state_feedforward_gradient\":";machine_json_joint_vector(actual,gravity_terms.second);actual<<",\"working_domain\":[";
+        {std::ostringstream actual;actual<<std::setprecision(17)<<"{\"kind\":\"short_experiment_parameters\",\"record_path\":\""<<trial.record_path<<"\",\"label\":\""<<label<<"\",\"full_cycle_evidence\":\"frames.csv\",\"independent_disturbance\":"<<(disturbance?"true":"false")<<",\"hold_path\":"<<(hold_path?"true":"false")<<",\"reference_execution\":\""<<(hold_path?"fixed_hold_target":"streamed_tracking_reference")<<"\",\"duration_s\":"<<trial.duration_s<<",\"kp\":";machine_json_joint_vector(actual,gains.kp);actual<<",\"kd\":";machine_json_joint_vector(actual,gains.kd);actual<<",\"torque_amplitude_nm\":";machine_json_joint_vector(actual,torque_amplitude);actual<<",\"center_rad\":";machine_json_joint_vector(actual,center);actual<<",\"center_source\":\""<<center_source<<"\",\"plans\":[";for(std::size_t i=0;i<n;++i){if(i)actual<<',';const auto& r=trial.plans[i];actual<<"{\"amplitude_rad\":"<<r.amplitude_rad<<",\"frequencies_hz\":["<<r.frequencies_hz[0]<<','<<r.frequencies_hz[1]<<','<<r.frequencies_hz[2]<<"],\"motion_probe\":"<<(r.motion_probe?"true":"false")<<",\"duration_s\":"<<r.probe_duration_s<<"}";}actual<<"],\"nominal_gravity_gradient\":";machine_json_joint_vector(actual,gravity_terms.first);actual<<",\"executed_state_feedforward_gradient\":";machine_json_joint_vector(actual,gravity_terms.second);actual<<",\"working_domain\":[";
             for(std::size_t i=0;i<n;++i){if(i)actual<<',';const auto& r=trial.plans[i];const double w=2*pi*(r.motion_probe?r.frequencies_hz.front():r.frequencies_hz.back());
                 const double error_bound=2*r.amplitude_rad,velocity_bound=std::min(local_limits[i].max_velocity,2*r.amplitude_rad*(w+3));
                 const auto domain=gain_working_domain(local_limits[i],error_bound,velocity_bound);
@@ -4636,7 +4643,12 @@ private:
                     else {q[axis]+=offset.first;v[axis]=offset.second;}
                     if(last_output_ && std::abs(last_output_->joint_state.pos[axis]-center[axis])>local_limits[axis].position_margin_rad)throw GainQualificationFailure("short response exceeded bounded local envelope at "+cfg_.joint_names[axis]);
                 }
-                if(!robot_.set_calibration_disturbance(tau,now) || !runtime_.submit_reference(robot_,JointPosVelCmd{q,v},now,MotionSource::CALIBRATION))throw std::runtime_error("short response input rejected");
+                const auto disturbance_command=robot_.set_calibration_disturbance(tau,now);
+                if(!disturbance_command)throw machine_robot_error("short response disturbance",disturbance_command.error());
+                if(!hold_path) {
+                    const auto reference_command=runtime_.submit_reference(robot_,JointPosVelCmd{q,v},now,MotionSource::CALIBRATION);
+                    if(!reference_command)throw machine_robot_error("short response tracking reference",reference_command.error());
+                }
                 gain_probe_update(std::max(0.0,t),q,disturbance?"known_torque_disturbance":"bounded_reference_identification");
                 if(!cycle_cv_.wait_for(lock,std::chrono::milliseconds(60),[&]{return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE || model_calibration_cancel_.load();}))throw std::runtime_error("short response lost control feedback");
                 cursor=cycle_counter_;
@@ -4671,7 +4683,7 @@ private:
             trial.available=trial.available && valid;trial.passed=trial.passed && response_pass;
             if(axis)experiment<<',';
             gain_response_json(experiment,m);
-            if(disturbance){const auto& d=trial.disturbance_assessments[axis];experiment<<",{\"kind\":\"disturbance_recovery\",\"measurement_complete\":"<<(d.measurement_complete?"true":"false")<<",\"validated\":"<<(d.passed?"true":"false")<<",\"static_measurement_complete\":"<<(d.static_measurement_complete?"true":"false")<<",\"motion_observed\":"<<(d.motion_observed?"true":"false")<<",\"input_peak_nm\":"<<d.input_peak_nm<<",\"peak_displacement_rad\":"<<d.peak_displacement_rad<<",\"peak_limit_rad\":"<<d.peak_limit_rad<<",\"release_recovery_s\":"<<d.release_recovery_s<<",\"final_error_rad\":"<<d.final_error_rad<<",\"final_drift_rad\":"<<gain_finite_json(d.final_drift_rad)<<",\"reason\":\""<<d.reason<<"\"}";}
+            if(disturbance){const auto& d=trial.disturbance_assessments[axis];experiment<<",{\"kind\":\"disturbance_recovery\",\"measurement_complete\":"<<(d.measurement_complete?"true":"false")<<",\"validated\":"<<(d.passed?"true":"false")<<",\"static_measurement_complete\":"<<(d.static_measurement_complete?"true":"false")<<",\"motion_observed\":"<<(d.motion_observed?"true":"false")<<",\"input_peak_nm\":"<<d.input_peak_nm<<",\"encoder_step_rad\":"<<d.encoder_step_rad<<",\"motion_floor_rad\":"<<d.motion_floor_rad<<",\"peak_displacement_rad\":"<<d.peak_displacement_rad<<",\"peak_limit_rad\":"<<d.peak_limit_rad<<",\"release_recovery_s\":"<<d.release_recovery_s<<",\"final_error_rad\":"<<d.final_error_rad<<",\"final_drift_rad\":"<<gain_finite_json(d.final_drift_rad)<<",\"reason\":\""<<d.reason<<"\"}";}
         }
         experiment<<"]}";gain_experiment_records_.push_back(experiment.str());
         gain_probe_end(trial.available?"response_measured":"identification_insufficient",true);
@@ -4706,10 +4718,11 @@ private:
         const auto want=[&](const char* key){return all || model_calibration_gain_mode_==key;};
         JointImpedanceGains best=seed;
         ServoTrial native,native_disturbance;std::vector<ResponseModel> native_models;JointImpedanceGains compliant_rigid_reference=seed;
+        std::vector<std::pair<JointImpedanceGains,ServoTrial>> measured_native_disturbances;
         struct Stage {
             std::string category;JointImpedanceGains gains;ServoTrial native,admittance,disturbance,hold_disturbance;std::vector<ResponseModel> identification_models;
             JointImpedanceGains hold_gains;GainHoldResult hold;std::optional<HoldCompensationCfg> compensation;std::optional<GainHoldResult> compensated_hold;std::optional<HoldCompensationCfg> attempted_compensation;
-            std::optional<DragTrial> drag;bool validated{false},available{false};std::string error{"not_started"};std::vector<std::string> warnings;
+            std::optional<DragTrial> drag;bool validated{false},available{false},qualification_complete{false};std::string error{"not_started"};std::vector<std::string> warnings;
         };
         std::vector<Stage> stages;
         const auto append=[&](const char* key){Stage stage;stage.category=key;stage.gains=best;if(stage.category=="rigid_tracking" || stage.category=="compliant_tracking"){stage.hold_gains=seed;const double factor=stage.category=="rigid_tracking"?1.25:.35;for(std::size_t i=0;i<n;++i){stage.hold_gains.kp[i]=std::min(cfg_.safety.limits.max_kp[i],factor*seed.kp[i]);stage.hold_gains.kd[i]=std::min(cfg_.safety.limits.max_kd[i],2*.9*std::sqrt(inertia[i]*stage.hold_gains.kp[i]));}}if(stage.category=="compliant_drag")stage.drag=DragTrial(n);stages.push_back(std::move(stage));};
@@ -4831,6 +4844,7 @@ private:
                 const bool establish_input=comparison_disturbance_input.empty();
                 const auto stiffness=gain_short_trial(tested,true,name,&plans,false,false,&center,"established_comparison_center",
                     establish_input?nullptr:&comparison_disturbance_input,path_cost+verification_reserve(),establish_input);
+                if(profile==JointGainProfile::SERVO_TRACKING)measured_native_disturbances.emplace_back(tested,stiffness);
                 if(establish_input)comparison_disturbance_input=stiffness.disturbance_torque_amplitude;
                 for(std::size_t i=0;i<n;++i) {
                     auto& m=measured.models[i];const auto& d=stiffness.models[i];m.disturbance_valid=d.disturbance_valid;
@@ -4901,24 +4915,46 @@ private:
             }
             gains=incumbent;gain_response_models_=incumbent_trial->models;
             // One fixed complete gain set, followed by real-use full-path verification
+            const auto full_path_started=Robot::Clock::now();
             auto verified=gain_trajectory_trial(gains,profile,false,false,label+"-frozen","trajectory_frozen");
-            if(!verified.passed && verified.available && gain_trial_fits(2*path_cost+verification_reserve())) {
-                auto correction=trajectory_candidate({gains.kp,gains.kd},kp_limit,kd_limit,verified.trajectory_assessments,gain_requirements_);
-                for(std::size_t i=0;i<n;++i){double velocity_error=0;for(const auto& row:verified.rows[i])velocity_error=std::max(velocity_error,std::abs(row.reference_velocity-row.velocity));
-                    const auto bounded=constrain_candidate(correction.kp[i],correction.kd[i],limits[i],std::max(gain_requirements_.local_range_rad,1.25*verified.metrics[i].peak_error),std::max(.01,1.25*velocity_error));
-                    correction.kp[i]=bounded.first;correction.kd[i]=bounded.second;}
-                if(correction.kp!=gains.kp || correction.kd!=gains.kd) {
+            const double observed_pass_cost=std::chrono::duration<double>(Robot::Clock::now()-full_path_started).count();
+            if(!verified.passed && verified.available) {
+                const double remaining=gain_deadline_?std::max(0.0,std::chrono::duration<double>(*gain_deadline_-Robot::Clock::now()).count()):1000;
+                // The measured pass includes endpoint checks, gain transition,
+                // execution, tail and recording. Exit is reserved once here.
+                const auto budget=plan_residual_correction_budget(remaining,observed_pass_cost,observed_pass_cost,
+                    std::max(0.0,verification_reserve()-3.0),2.0);
+                const auto proposal=trajectory_candidate_report({gains.kp,gains.kd},kp_limit,kd_limit,verified.trajectory_assessments,gain_requirements_);
+                JointVector error_bounds(n),velocity_bounds(n);
+                for(std::size_t i=0;i<n;++i) {
+                    double velocity_error=0;for(const auto& row:verified.rows[i])velocity_error=std::max(velocity_error,std::abs(row.reference_velocity-row.velocity));
+                    const auto& m=verified.metrics[i];const double step=std::max(gain_noise_[i].encoder_step_rad,verified.motion[i].encoder_step_rad);
+                    error_bounds[i]=std::max({1.25*m.peak_error,m.peak_error+3*step,m.peak_error+6*gain_noise_[i].rms_rad,1e-5});
+                    velocity_bounds[i]=std::max(.01,1.25*velocity_error);
+                }
+                const auto bounded=constrain_measured_gain_step({gains.kp,gains.kd},proposal.gains,limits,error_bounds,velocity_bounds);
+                const auto adjusted=gain_protocol_gains({bounded.gains.kp,bounded.gains.kd});
+                const bool changed=adjusted.kp!=gains.kp || adjusted.kd!=gains.kd;
+                std::ostringstream plan;plan<<std::setprecision(17)<<"{\"kind\":\"full_path_correction_plan\",\"incumbent_record_path\":\""<<verified.record_path
+                    <<"\",\"fits\":"<<(budget.fits?"true":"false")<<",\"candidate_changed\":"<<(changed?"true":"false")
+                    <<",\"remaining_s\":"<<budget.remaining_s<<",\"required_s\":"<<budget.required_s<<",\"deficit_s\":"<<budget.deficit_s
+                    <<",\"return_cost_s\":"<<budget.return_cost_s<<",\"comparison_cost_s\":"<<budget.comparison_cost_s
+                    <<",\"validation_reserve_s\":"<<budget.validation_reserve_s<<",\"exit_reserve_s\":"<<budget.exit_reserve_s
+                    <<",\"cost_source\":\"observed_complete_pass_wall_time\",\"reason\":\""<<(!changed?"no_measured_effort_room_for_residual_correction":budget.reason)
+                    <<"\",\"proposal_reasons\":";gain_json_warnings(plan,proposal.reasons);plan<<",\"constraint_reasons\":";gain_json_warnings(plan,bounded.reasons);
+                plan<<",\"kp\":";machine_json_joint_vector(plan,adjusted.kp);plan<<",\"kd\":";machine_json_joint_vector(plan,adjusted.kd);plan<<'}';gain_candidate_records_.push_back(plan.str());
+                if(changed && budget.fits) {
+                    gain_require_trial(budget.return_cost_s+budget.comparison_cost_s+budget.validation_reserve_s);
                     const auto incumbent_gains=gains;
                     // Return with unchanged incumbent gains, then compare in
                     // the SAME path direction/rate/feedforward/window
                     (void)gain_trajectory_trial(incumbent_gains,profile,false,false,label+"-correction-return","trajectory_return");
-                    const auto adjusted=gain_protocol_gains({correction.kp,correction.kd});
                     auto checked=gain_trajectory_trial(adjusted,profile,false,false,label+"-correction-frozen","trajectory_frozen");
-                    const bool kept=trajectory_trial_preferred(correction,checked.trajectory_assessments,{incumbent_gains.kp,incumbent_gains.kd},verified.trajectory_assessments,{seed.kp,seed.kd},gain_requirements_);
+                    const bool kept=trajectory_trial_preferred({adjusted.kp,adjusted.kd},checked.trajectory_assessments,{incumbent_gains.kp,incumbent_gains.kd},verified.trajectory_assessments,{seed.kp,seed.kd},gain_requirements_);
                     std::ostringstream note;note<<std::setprecision(17)<<"{\"kind\":\"full_path_local_correction\",\"record_path\":\""<<checked.record_path<<"\",\"incumbent_record_path\":\""<<verified.record_path<<"\",\"kept\":"<<(kept?"true":"false")<<",\"reason\":\""<<(kept?"same_direction_complete_measured_set_improved":"no_same_direction_all_axis_improvement")<<"\",\"reverse\":"<<(checked.reverse?"true":"false")<<",\"playback_rate\":"<<checked.playback_rate<<",\"kp\":";machine_json_joint_vector(note,adjusted.kp);note<<",\"kd\":";machine_json_joint_vector(note,adjusted.kd);note<<'}';gain_candidate_records_.push_back(note.str());
                     model_calibration_adaptation_revisions_.fetch_add(1);
                     if(kept){gains=adjusted;verified=std::move(checked);}
-                }
+                } else gain_add_warning(label+":"+(!changed?std::string("residual_correction_constrained_by_measured_effort"):budget.reason));
             }
             return verified;
         };
@@ -4946,7 +4982,28 @@ private:
             if(want("rigid") || want("servo_tracking")) {
                 model_calibration_gain_stage_.store(2);
                 native=train(best,JointGainProfile::SERVO_TRACKING,cfg_.safety.limits.max_kp,cfg_.safety.limits.max_kd,gain_schedule_.native_search_passes,"native");
-                native_models=gain_response_models_;native_disturbance=gain_short_trial(best,true,"native-disturbance");
+                native_models=gain_response_models_;
+                const auto endpoint_center=gain_fresh_short_center();
+                const ServoTrial* prior=nullptr;
+                for(auto it=measured_native_disturbances.rbegin();it!=measured_native_disturbances.rend();++it)
+                    if(it->first.kp==best.kp && it->first.kd==best.kd && it->second.completed){prior=&it->second;break;}
+                if(prior && prior->center==endpoint_center) {
+                    native_disturbance=*prior;
+                    std::ostringstream reused;reused<<"{\"kind\":\"shared_disturbance_evidence\",\"record_path\":\""<<prior->record_path
+                        <<"\",\"reason\":\"same_complete_gains_center_reference_input_feedforward_and_load\",\"validated\":"<<(prior->passed?"true":"false")<<'}';
+                    gain_candidate_records_.push_back(reused.str());
+                } else {
+                    JointVector input_prior;
+                    if(prior) {
+                        input_prior=prior->disturbance_torque_amplitude;
+                        for(std::size_t i=0;i<n;++i)input_prior[i]=std::min({input_prior[i],.05*cfg_.safety.limits.max_effort[i],gain_model_limits_[i].effort_budget});
+                        std::ostringstream reused;reused<<"{\"kind\":\"disturbance_input_prior\",\"source_record_path\":\""<<prior->record_path
+                            <<"\",\"scope\":\"amplitude_prior_only_new_posture_measurement_required\",\"torque_amplitude_nm\":";
+                        machine_json_joint_vector(reused,input_prior);reused<<'}';gain_candidate_records_.push_back(reused.str());
+                    }
+                    native_disturbance=gain_short_trial(best,true,"native-disturbance",nullptr,false,false,&endpoint_center,"fresh_native_endpoint_center",
+                        input_prior.empty()?nullptr:&input_prior,verification_reserve());
+                }
                 if(want("servo_tracking") && !gain_admittance_required_) {
                     auto& stage=stage_for("servo_tracking");stage.gains=best;stage.native=native;stage.disturbance=native_disturbance;stage.identification_models=native_models;
                     stage.validated=native.passed && native_disturbance.passed;stage.available=native.available && native_disturbance.available;
@@ -5043,12 +5100,29 @@ private:
             if(machine_robot_state()==RobotState::ACTIVE)(void)set_tuning_impedance_mode(JointImpedanceMode::RIGID_HOLD);
         }
         for(auto& stage:stages) {
+            // Availability describes the parameters actually measured in the
+            // contexts this purpose applies. Missing independent disturbance
+            // evidence prevents qualification; it does not erase a completed
+            // tracking/hold candidate after a later stage is interrupted.
+            if(stage.category=="compliant_drag") {
+                stage.available=stage.drag && stage.drag->available;
+                stage.qualification_complete=stage.available;
+            } else {
+                const bool holding=stage.category=="rigid_tracking" || stage.category=="compliant_tracking";
+                const bool trimmed=stage.compensation && stage.compensation->enabled;
+                const bool hold_available=trimmed?(stage.compensated_hold && stage.compensated_hold->available):stage.hold.available;
+                stage.available=stage.native.available && (!holding || hold_available) &&
+                    (stage.category!="servo_tracking" || !gain_admittance_required_ || stage.admittance.available);
+                stage.qualification_complete=stage.available && stage.disturbance.available && (!holding || stage.hold_disturbance.available);
+            }
+            stage.validated=stage.validated && stage.qualification_complete;
             if(stage.available && !stage.validated) {
                 if(stage.category=="compliant_drag")stage.warnings.push_back("drag_reference_not_met");
                 else {
                     if(!stage.native.passed)stage.warnings.push_back("tracking_reference_not_met");
-                    if(!stage.disturbance.passed)stage.warnings.push_back("disturbance_stiffness_or_recovery_not_met");
-                    if((stage.category=="rigid_tracking" || stage.category=="compliant_tracking") && !stage.hold_disturbance.passed)stage.warnings.push_back("hold_disturbance_not_met");
+                    if(!stage.disturbance.passed)stage.warnings.push_back(stage.disturbance.available?"disturbance_stiffness_or_recovery_not_met":"disturbance_measurement_incomplete");
+                    if((stage.category=="rigid_tracking" || stage.category=="compliant_tracking") && !stage.hold_disturbance.passed)
+                        stage.warnings.push_back(stage.hold_disturbance.available?"hold_disturbance_not_met":"hold_disturbance_measurement_incomplete");
                     if((stage.category=="rigid_tracking" || stage.category=="compliant_tracking") && !stage.hold.validated)stage.warnings.push_back(stage.hold.reason);
                     if(stage.compensated_hold && !stage.compensated_hold->validated)stage.warnings.push_back("hold_compensation:"+stage.compensated_hold->reason);
                     if(stage.category=="servo_tracking" && gain_admittance_required_ && !stage.admittance.passed)stage.warnings.push_back("admittance_reference_not_met");
@@ -5060,13 +5134,14 @@ private:
         }
         const bool any_available=std::any_of(stages.begin(),stages.end(),[](const auto& stage){return stage.available;});
         const bool all_available=!stages.empty() && std::all_of(stages.begin(),stages.end(),[](const auto& stage){return stage.available;});
+        const bool all_qualification_complete=!stages.empty() && std::all_of(stages.begin(),stages.end(),[](const auto& stage){return stage.qualification_complete;});
         {std::lock_guard<std::mutex> lock(model_calibration_mutex_);gain_available_=any_available;}
         const bool approved=!interrupted && !stages.empty() && std::all_of(stages.begin(),stages.end(),[](const auto& s){return s.validated;});
         {
             std::lock_guard<std::mutex> lock(model_calibration_mutex_);
             gain_termination_kind_=model_calibration_fault_interrupted_.load()?"execution_fault":
                 model_calibration_cancel_.load()?"cancelled":gain_budget_exhausted_.load()?"budget_exhausted":
-                interrupted?"execution_fault":approved?"qualified":all_available?"measured_not_qualified":"insufficient_measurement";
+                interrupted?"execution_fault":approved?"qualified":all_qualification_complete?"measured_not_qualified":"insufficient_measurement";
             if(gain_termination_kind_=="cancelled")gain_termination_reason_="stop_requested";
             else if(interrupted) {
                 try{std::rethrow_exception(interrupted);}catch(const std::exception& error){gain_termination_reason_=error.what();}catch(...){gain_termination_reason_="unknown_execution_error";}
@@ -5095,6 +5170,7 @@ private:
         const auto write_stage=[&](const Stage& stage) {
             if(all)out<<"\"validated\":"<<(stage.validated?"true":"false")<<',';
             if(all){out<<"\"available\":"<<(stage.available?"true":"false")<<",\"warnings\":";gain_json_warnings(out,stage.warnings);out<<',';}
+            out<<"\"qualification_complete\":"<<(stage.qualification_complete?"true":"false")<<',';
             if(!stage.error.empty())out<<"\"error\":\""<<machine_json_escape(stage.error)<<"\",";
             out<<"\"kp\":";machine_json_joint_vector(out,stage.gains.kp);out<<",\"kd\":";machine_json_joint_vector(out,stage.gains.kd);
             out<<",\"qualification_scope\":{\"trajectory\":\"demonstration_trajectory\",\"external_tip\":\"pending\",\"disturbance_release\":\"independent_joint_torque_short_test\",\"contact\":\"not_tested\"}";
@@ -5154,6 +5230,7 @@ private:
         out<<",\"seed_source\":\""<<machine_json_escape(gain_seed_source_)<<"\",\"seed_kp\":";machine_json_joint_vector(out,gain_seed_.kp);
         out<<",\"seed_kd\":";machine_json_joint_vector(out,gain_seed_.kd);
         out<<",\"available\":"<<(any_available?"true":"false")<<",\"partial\":"<<(!all_available?"true":"false")<<",\"outcome\":\""<<termination_kind<<"\",\"warnings\":";gain_json_warnings(out,gain_warnings_);
+        if(all)out<<",\"qualification_complete\":"<<(all_qualification_complete?"true":"false");
         out<<",\"gain_tuning_mode\":\""<<gain_tuning_mode_<<"\",\"target_budget_s\":"<<12*gain_budget_source_.duration_s<<",\"actual_elapsed_s\":"<<(gain_deadline_?gain_time_budget_s()-std::chrono::duration<double>(*gain_deadline_-Robot::Clock::now()).count():0)<<",\"gain_protocol\":\"taught_trajectory\",\"time_budget_s\":"<<gain_time_budget_s()
             <<",\"budget_source_duration_s\":"<<gain_budget_source_.duration_s<<",\"budget_source\":\""<<machine_json_escape(gain_budget_source_.source)
             <<"\",\"budget_source_task_id\":\""<<machine_json_escape(gain_budget_source_.task_id)<<"\",\"budget_multiplier\":"<<(gain_tuning_mode_=="fine"?24:15)
@@ -5693,7 +5770,9 @@ private:
         return false;
     }
     static bool gain_target_available(const YAML::Node& data,const YAML::Node& node,const std::string& target,std::size_t count) {
-        if(!node || !node.IsMap() || (node["available"] && !node["available"].as<bool>()))return false;
+        if(!node || !node.IsMap())return false;
+        if(node["available"] && !node["available"].as<bool>() &&
+           data["validation_scope"].as<std::string>("")!="independent_demonstration_trajectory")return false;
         if(node["error"].as<std::string>("")=="not_started" || node["error"].as<std::string>("")=="measurement_in_progress")return false;
         if(!node["available"] && data["validation_scope"].as<std::string>("")!="independent_demonstration_trajectory") {
             if(!node["validated"].as<bool>(false))return false;

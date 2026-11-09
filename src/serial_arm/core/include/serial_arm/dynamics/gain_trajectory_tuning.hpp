@@ -233,8 +233,10 @@ inline Gains trajectory_candidate(const Gains& current,const std::vector<double>
         // more actuator stiffness. Low linear correlation alone is not used
         if(!a.responsive && !ring)continue;
         if(ring) {
-            next.kp[i]=std::clamp(.9*current.kp[i],0.0,kp_max[i]);
-            next.kd[i]=std::clamp(1.1*current.kd[i],0.0,kd_max[i]);
+            next.kp[i]=std::clamp((m.oscillating?.8:.9)*current.kp[i],0.0,kp_max[i]);
+            // Sustained oscillation without a reliable delay/pole fit cannot
+            // justify strengthening D. A single overshoot remains distinct.
+            next.kd[i]=std::clamp((m.oscillating?.8:1.1)*current.kd[i],0.0,kd_max[i]);
             continue;
         }
         const auto& t=a.tuning;if(!trajectory_tuning_evidence_valid(t))continue;
@@ -260,6 +262,23 @@ inline Gains trajectory_candidate(const Gains& current,const std::vector<double>
     }
     return next;
 }
+struct TrajectoryCandidateReport {Gains gains;std::vector<std::string> reasons;bool changed{false};};
+inline TrajectoryCandidateReport trajectory_candidate_report(const Gains& current,const std::vector<double>& kp_max,
+    const std::vector<double>& kd_max,const std::vector<TrajectoryAssessment>& assessments,const Requirements& req) {
+    TrajectoryCandidateReport out;out.gains=trajectory_candidate(current,kp_max,kd_max,assessments,req);out.reasons.resize(current.kp.size());
+    for(std::size_t i=0;i<current.kp.size();++i) {
+        const auto& a=assessments[i];const bool changed=out.gains.kp[i]!=current.kp[i] || out.gains.kd[i]!=current.kd[i];out.changed=out.changed || changed;
+        if(changed && a.metrics.oscillating)out.reasons[i]="measured_position_oscillation_reduce_feedback_not_inferred_mechanical_resonance";
+        else if(changed && a.dynamic_overshoot_rad>req.overshoot_rad)out.reasons[i]="measured_dynamic_overshoot_reduce_stiffness";
+        else if(changed && a.tuning.velocity_error_rms_rad>a.tuning.amplitude_error_rms_rad+a.tuning.position_floor_rad)
+            out.reasons[i]="measured_velocity_related_tracking_residual_bounded_stiffness_comparison_not_a_delay_identification";
+        else if(changed)out.reasons[i]="measured_amplitude_deficit_bounded_stiffness_comparison";
+        else if(a.passed)out.reasons[i]="full_cycle_tracking_goal_already_met";
+        else if(!trajectory_tuning_measurement(a) || !a.reference_coverage)out.reasons[i]="insufficient_complete_path_measurement";
+        else out.reasons[i]="no_supported_local_gain_direction_from_measured_path";
+    }
+    return out;
+}
 
 inline bool trajectory_trial_preferred(const Gains& candidate,const std::vector<TrajectoryAssessment>& measured,
                                         const Gains& incumbent,const std::vector<TrajectoryAssessment>& incumbent_measured,
@@ -269,6 +288,7 @@ inline bool trajectory_trial_preferred(const Gains& candidate,const std::vector<
        incumbent.kp.size()!=n || incumbent.kd.size()!=n || measured.size()!=n || incumbent_measured.size()!=n)
         throw std::invalid_argument("trajectory gain comparison dimension mismatch");
     double candidate_square=0,incumbent_square=0,noise_square=0,candidate_cost=0,incumbent_cost=0;
+    double candidate_peak_square=0,incumbent_peak_square=0;
     std::size_t candidate_rings=0,incumbent_rings=0;
     for(std::size_t i=0;i<n;++i) {
         for(const double value:{seed.kp[i],seed.kd[i],candidate.kp[i],candidate.kd[i],incumbent.kp[i],incumbent.kd[i]})
@@ -287,19 +307,42 @@ inline bool trajectory_trial_preferred(const Gains& candidate,const std::vector<
         // This selects an entire measured gain set, never an unmeasured mix
         if(at.centered_rms_rad>bt.centered_rms_rad+margin ||
            a.metrics.rms_error>b.metrics.rms_error+std::max(resolution,.05*b.metrics.rms_error) ||
+           a.metrics.peak_error>b.metrics.peak_error+std::max(resolution,.03*b.metrics.peak_error) ||
            a.dynamic_overshoot_rad>b.dynamic_overshoot_rad+resolution)return false;
         candidate_square+=at.centered_rms_rad*at.centered_rms_rad;
         incumbent_square+=bt.centered_rms_rad*bt.centered_rms_rad;noise_square+=resolution*resolution;
+        candidate_peak_square+=a.metrics.peak_error*a.metrics.peak_error;incumbent_peak_square+=b.metrics.peak_error*b.metrics.peak_error;
         candidate_cost+=candidate.kp[i]/std::max(1e-9,seed.kp[i])+candidate.kd[i]/std::max(1e-9,seed.kd[i]);
         incumbent_cost+=incumbent.kp[i]/std::max(1e-9,seed.kp[i])+incumbent.kd[i]/std::max(1e-9,seed.kd[i]);
     }
     if(candidate_rings<incumbent_rings)return true;
+    const double old_peak=std::sqrt(incumbent_peak_square/n),new_peak=std::sqrt(candidate_peak_square/n);
+    if(new_peak<old_peak-std::max(std::sqrt(noise_square/n),.03*old_peak))return true;
     const double previous=std::sqrt(incumbent_square/n),current=std::sqrt(candidate_square/n);
     const double margin=std::max(std::sqrt(noise_square/n),.05*previous);
     if(current<previous-margin)return true;
     // Indistinguishable tracking quality favors the less aggressive measured
     // choice, normalized to the authored seed rather than the Safety ceiling
     return std::abs(current-previous)<=margin && candidate_cost<incumbent_cost-1e-9;
+}
+
+struct ResidualCorrectionBudget {
+    bool fits{false};double remaining_s{0},return_cost_s{0},comparison_cost_s{0},validation_reserve_s{0},exit_reserve_s{0},required_s{0},deficit_s{0};
+    std::string reason;
+};
+// The caller supplies only validation still genuinely required. Reusing an
+// existing experiment never extends the original deadline or grants a pass.
+inline ResidualCorrectionBudget plan_residual_correction_budget(double remaining_s,double return_cost_s,double comparison_cost_s,
+    double remaining_validation_reserve_s,double exit_reserve_s=2) {
+    for(double value:{remaining_s,return_cost_s,comparison_cost_s,remaining_validation_reserve_s,exit_reserve_s})
+        if(!std::isfinite(value) || value<0)throw std::invalid_argument("invalid residual correction cost");
+    ResidualCorrectionBudget out;out.remaining_s=remaining_s;out.return_cost_s=return_cost_s;out.comparison_cost_s=comparison_cost_s;
+    out.validation_reserve_s=remaining_validation_reserve_s;out.exit_reserve_s=exit_reserve_s;
+    out.required_s=return_cost_s+comparison_cost_s+remaining_validation_reserve_s+exit_reserve_s;
+    out.deficit_s=std::max(0.0,out.required_s-remaining_s);out.fits=out.deficit_s==0;
+    out.reason=out.fits?"comparable_residual_correction_and_remaining_validation_fit_original_budget":
+        "insufficient_remaining_budget_for_comparable_residual_correction";
+    return out;
 }
 
 struct TrajectorySchedule {
