@@ -171,7 +171,6 @@ class ProfileLibrary:
         model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path')}
         model_hash = self._digest(source, model_chain)
         startup_hash = self._digest(model_hash, hardware_hash, calibration,
-                                    safety.get('max_kp_override'), safety.get('max_kd_override'),
                                     controller.get('rigid_hold'))
         mapping_hash = self._digest(source, hardware_hash, calibration)
         geometry_hash = self._digest(source, calibration)
@@ -191,13 +190,11 @@ class ProfileLibrary:
             'startup_hold': startup_hash,
         }
         scopes['modes'] = {name: self._digest(model_hash, mapping_hash,
-            safety.get('max_kp_override'), safety.get('max_kd_override'),
             (controller.get('servo_tracking', controller.get('identification_tracking', controller.get('rigid_tracking')))
              if name == 'SERVO_TRACKING' else controller.get(self._MODE_KEYS[name]))) for name in self._MODES}
         scopes['gain_purposes'] = {purpose: self._digest(model_hash, mapping_hash, gravity_hash,
             {key: runtime.get(key) for key in ('model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha')},
             self._gain_interaction_context(core, purpose),
-            safety.get('max_kp_override'), safety.get('max_kd_override'),
             safety.get('max_effort_override'),
             {name: controller.get(name) for name in gain_keys},
             (core.get('control') or {}).get('hold_compensation', {'enabled': False}) if purpose == 'RIGID' else None)
@@ -493,6 +490,7 @@ class ProfileLibrary:
         calibration_ready = profile_setup and all(item['ready'] for item in prerequisites)
         return {'state': state, 'verification_state': verification_state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'reason': reason,
+                'gain_initialization': meta.get('gain_initialization'),
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
                 'connection_readiness': {'structurally_valid': profile_setup, 'read_only_connectable': offline_ready,
@@ -703,7 +701,7 @@ class ProfileLibrary:
         if candidate.get('joint_names') != core['model']['joint_names']:
             raise ValueError('增益候选的关节顺序与当前配置不一致')
         context_files = self._gain_binding(folder, info, core, hardware, selected)
-        targets, _ = gain_candidate_targets(candidate, core, core['model']['joint_names'], selection)
+        targets, _ = gain_candidate_targets(candidate, core, core['model']['joint_names'], selection, hardware)
         def same(actual, expected):
             if isinstance(expected, dict): return isinstance(actual, dict) and set(actual) == set(expected) and all(same(actual[k], v) for k, v in expected.items())
             if isinstance(expected, bool): return isinstance(actual, bool) and actual is expected
@@ -1038,19 +1036,19 @@ class ProfileLibrary:
                     if float(low) > float(high): raise ValueError(f'{name} URDF 关节限位上下界错误')
                     park[name] = max(float(low), min(float(high), 0.0))
                 else: park[name] = 0.0
-            kp_rigid=self._joint_map(joints,20.0); kd_rigid=self._joint_map(joints,0.5); kp_soft=self._joint_map(joints,3.0); kd_soft=self._joint_map(joints,0.1)
+            # Zero placeholders are replaced by model-derived per-axis suggestions below
+            kp_rigid=zeros.copy(); kd_rigid=zeros.copy(); kp_soft=zeros.copy(); kd_soft=zeros.copy()
             core={
               'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
               'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
               'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','tracking_impedance_mode':'COMPLIANT_TRACKING','tracking_gain_profile':'COMPLIANT'},'controller':{'allow_full_cmd':False,'rigid_hold':{'kp':kp_rigid,'kd':kd_rigid},'rigid_tracking':{'kp':kp_rigid,'kd':kd_rigid},'compliant_hold':{'kp':kp_soft,'kd':kd_soft},'compliant_drag':{'kp':zeros,'kd':zeros.copy()},'compliant_tracking':{'kp':kp_soft,'kd':kd_soft},'servo_tracking':{'kp':kp_rigid.copy(),'kd':kd_rigid.copy()}}},
-              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_kp_override':self._joint_map(joints,50.0),'max_kd_override':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
+              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
               'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
               'capability':{'admittance':{'enabled':False,'reference_behavior':'NATIVE_IMPEDANCE','joint_enabled':{j:True for j in joints},'observer':{'mode':'MOMENTUM','momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
             }
             # If the Description already supplies a robot-specific Core config,
-            # use it as the authoritative profile configuration. In particular,
-            # do not silently replace validated joint-specific gains by the generic
-            # 20/0.5 (rigid) and 3/0.1 (compliant) creation defaults
+            # preserve its gains; new automatic calibration independently derives
+            # its model seed and never treats those gains as measured baseline
             authored_config = copied / 'config' / 'core' / f'{profile}.yaml'
             if authored_config.is_file():
                 authored_core = read_yaml(authored_config)
@@ -1086,12 +1084,25 @@ class ProfileLibrary:
                 bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
                 hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
             _atomic_yaml(config_dir/'hardware.yaml',hardware)
+            initialization = None
+            if not authored_config.is_file():
+                from gain_initialization import initialize_profile_gains
+                initialization = initialize_profile_gains(self.inspector, config_dir/'core.yaml', core,
+                    copied/analysis['urdf_relative'], hardware, hardware_plugin)
+                _atomic_yaml(config_dir/'core.yaml',four_mode_core(core))
+            else:
+                from gain_initialization import initialize_profile_gains
+                initialization = initialize_profile_gains(self.inspector, authored_config,
+                    canonical_core(read_yaml(authored_config)), copied/analysis['urdf_relative'], hardware, hardware_plugin)
+                initialization['existing_configuration_preserved'] = True
+            if initialization:
+                (config_dir/'gain-initialization.json').write_text(json.dumps(initialization,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
             entry={'core':{'package':analysis['package_name'],'config':core_config_relative},'hardware':{'plugin':hardware_plugin,'config_package':analysis['package_name'],'config':'config/serialarm/hardware.yaml'},'description':{'package':analysis['package_name'],'urdf':analysis['urdf_relative'].replace('\\','/')}}
             if analysis['ros2_control_xacro']:
                 entry['description']['ros2_control_xacro']=str(Path(analysis['ros2_control_xacro']).relative_to(analysis['package_root'])).replace('\\','/')
             profile_file=package_dir/'robot_profiles.yaml'; _atomic_yaml(profile_file,{'profiles':{profile:entry}})
-            readiness=self._readiness_path(profile_file, profile); _atomic_yaml(readiness,{'profile':profile,'managed_by_launcher':True,'source_urdf_fingerprint':analysis['fingerprint'],'stages':{}})
-            return {'package':str(package_dir),'profile_file':str(profile_file),'profile':profile,'resource_paths':str(package_dir),'hardware_complete':complete,'config':{'profile':profile,'profile_file':str(profile_file),'resource_paths':str(package_dir),'serial_port':'','baudrate':'','bus':''}}
+            readiness=self._readiness_path(profile_file, profile); _atomic_yaml(readiness,{'profile':profile,'managed_by_launcher':True,'source_urdf_fingerprint':analysis['fingerprint'],'stages':{},'gain_initialization':initialization})
+            return {'package':str(package_dir),'profile_file':str(profile_file),'profile':profile,'resource_paths':str(package_dir),'hardware_complete':complete,'gain_initialization':initialization,'config':{'profile':profile,'profile_file':str(profile_file),'resource_paths':str(package_dir),'serial_port':'','baudrate':'','bus':''}}
         except Exception:
             if package_dir.exists(): shutil.rmtree(package_dir)
             raise
@@ -1348,7 +1359,7 @@ class ProfileLibrary:
             current, name = parent
             chain.append(name)
         chain.reverse()
-        if current != model['base_frame'] or [name for name in chain if name in names] != names:
+        if current != model['base_frame'] or {name for name in chain if name in names} != set(names):
             raise ValueError('model.base_frame 或 model.tool_frame 与受控关节链不一致')
         gravity = model['gravity']
         if not isinstance(gravity, list) or len(gravity) != 3:
@@ -1411,7 +1422,7 @@ class ProfileLibrary:
             scalar('safety_policy.'+key, 0 if key=='position_margin' else 1e-7)
         for key in ('cmd_vel_scale','state_vel_scale'):
             scalar('safety_policy.'+key,1e-7,1)
-        for field in ('max_acc','max_effort_override','max_kp_override','max_kd_override'):
+        for field in ('max_acc','max_effort_override'):
             if field in safety: joint_map('safety_policy.'+field,0)
         recovery = section('safety_policy.fault_recovery')
         if recovery['default_mode'] != 'rigid_hold':
@@ -1420,13 +1431,14 @@ class ProfileLibrary:
         for field in ('kp','kd','max_vel'):
             joint_map('safety_policy.fault_recovery.compliant_recovery.'+field,0)
         scalar('safety_policy.fault_recovery.compliant_recovery.effort_scale',0,1)
+        from gain_initialization import protocol_gain_limits
+        protocol = protocol_gain_limits(core, hardware, ((entry.get('hardware') or {}).get('plugin') or ''))
         for name in names:
-            for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','servo_tracking'):
-                for axis in ('kp','kd'):
-                    if mode not in controller: continue
-                    limit = safety.get('max_'+axis+'_override',{}).get(name)
-                    if limit is not None and controller[mode][axis][name] > limit:
-                        raise ValueError(f'control.controller.{mode}.{axis}.{name} 超出 safety_policy.max_{axis}_override')
+            if name in protocol:
+                for mode in ('rigid_hold','rigid_tracking','compliant_hold','compliant_drag','compliant_tracking','servo_tracking'):
+                    for term in ('kp', 'kd'):
+                        if mode in controller and controller[mode][term][name] > protocol[name][term + '_max']:
+                            raise ValueError(f'control.controller.{mode}.{term}.{name} 超出映射后的硬件协议范围')
             if hold is not None:
                 effort = safety.get('max_effort_override', {}).get(name)
                 if effort is not None and hold['max_torque'][name] > effort:
@@ -1563,10 +1575,37 @@ class ProfileLibrary:
         self._same_structure(original_entry,entry,'profile')
         if entry.get('core') != original_entry.get('core') or entry.get('description') != original_entry.get('description'):
             raise ValueError('profile.core 和 profile.description 关联不允许在参数编辑中切换，请重新导入 Profile')
+        readiness_path = self._readiness_path(info['profile_file'], info['profile'])
+        readiness_meta = read_yaml(readiness_path) if readiness_path.is_file() else {}
+        pending_model = readiness_meta.get('gain_initialization') or {}
+        generated_roles = ('rigid_hold','rigid_tracking','compliant_hold','compliant_tracking','servo_tracking')
+        empty_generated_gains = all(value == 0 for role in generated_roles for term in ('kp','kd')
+            for value in core['control']['controller'].get(role, {}).get(term, {}).values())
+        model_axes = pending_model.get('axes') or []
+        model_gains = {term:{axis.get('joint'):axis.get(term) for axis in model_axes} for term in ('kp','kd')}
+        unchanged_model_gains = bool(model_axes) and all(
+            core['control']['controller'].get(role, {}).get(term) == model_gains[term]
+            for role in generated_roles for term in ('kp','kd'))
+        model_context_changed = (hardware != before_hw or entry.get('hardware') != original_entry.get('hardware') or
+            any(core.get(section) != before_core.get(section) for section in ('model','calibration','safety_policy')) or
+            core['control']['runtime'] != before_core['control']['runtime'])
+        initialization = None
+        if (not pending_model.get('existing_configuration_preserved') and
+            (pending_model.get('configuration_applied') is False and empty_generated_gains or
+             pending_model.get('configuration_applied') is True and unchanged_model_gains and model_context_changed) and
+            (entry.get('hardware') or {}).get('plugin') == 'serial_arm_hardware_damiao'):
+            from gain_initialization import initialize_profile_gains
+            initialization = initialize_profile_gains(self.inspector, core_path, core,
+                (core_path.parent / core['model']['urdf_path']).resolve(), hardware,
+                entry['hardware']['plugin'])
         self._validate_core_profile(core,hardware,entry,core_path,before_core,allow_hardware_draft=True)
         # New saves use four purposes; a schema-only save rewrites just the
         # controller block and preserves the surrounding authored YAML
         desired = {}
+        if initialization:
+            desired[readiness_path] = yaml.safe_dump({**readiness_meta,'gain_initialization':initialization},allow_unicode=True,sort_keys=False)
+            receipt = core_path.parent.parent / 'serialarm' / 'gain-initialization.json' if core_path.parent.name == 'core' else core_path.parent / 'gain-initialization.json'
+            desired[receipt] = json.dumps(initialization,ensure_ascii=False,indent=2)+'\n'
         if core != before_core:
             desired[core_path] = yaml.safe_dump(four_mode_core(core), allow_unicode=True, sort_keys=False)
         else:

@@ -777,7 +777,7 @@ def load_model_calibration_summary(directory):
              'accepted_static.csv': (folder/'accepted_static.csv').is_file(),
              'trajectory.csv': complete_path.is_file(),
              'trajectory.checkpoint.csv': checkpoint_path.is_file(), 'result.json': result_path.is_file()}
-    for pattern in ('gain-trajectory-*.csv', 'servo-probe-*.csv', 'drag-decay-*.csv'):
+    for pattern in ('gain-trajectory-*.csv', 'servo-probe-*.csv', 'drag-decay-*.csv', 'gain-hold-*.csv'):
         for path in folder.glob(pattern):
             if path.is_file() and not path.is_symlink():
                 files[path.name] = True

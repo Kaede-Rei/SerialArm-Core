@@ -212,7 +212,7 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg);
  */
 tl::expected<void, ConfigErrInfo> validate_robot_cfg(const RobotCfg& cfg);
 
-/** @brief 连接后重新解析硬件限制，保留策略与显式修改的安全上限 */
+/** @brief 连接后重新解析硬件限制；位置、速度、力矩保留策略收窄，PD 边界及分辨率仅由硬件生成 */
 tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
     const RobotCfg& requested, const HardwareCapabilities& capabilities);
 

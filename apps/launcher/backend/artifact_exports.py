@@ -62,13 +62,13 @@ def _replace_core(text, targets, *, hold_compensation=None):
     return four_mode_control_text(result)
 
 
-def _gain_map(joints,values,limits=None):
+def _gain_map(joints,values,limits=None,limit_label='能力范围'):
     if len(joints)!=len(values):raise ValueError('关节增益数量与 Core 关节数量不一致')
     for i,value in enumerate(values):
         if isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<0:
             raise ValueError(f'{joints[i]} 增益无效')
         if limits is not None and value>float(limits[joints[i]])+1e-9:
-            raise ValueError(f'{joints[i]} 增益超过 Core 安全限制')
+            raise ValueError(f'{joints[i]} 增益超过{limit_label}')
     return '{'+', '.join(f'{j}: {float(v):.12g}' for j,v in zip(joints,values))+'}'
 
 
@@ -99,19 +99,23 @@ def _bundle_model(snapshot, metadata, dest, name='robot.urdf'):
     return out
 
 
-def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
+def gain_candidate_targets(gain, cfg, joints, gain_purposes=None, hardware=None):
     """Validate a candidate and return its exact deployment leaves"""
     category = gain.get('category')
     policy = cfg.get('safety_policy') or {}
+    from gain_initialization import protocol_gain_limits
+    protocol = protocol_gain_limits(cfg, hardware)
+    gain_limits = {term: {joint: protocol[joint][term + '_max'] for joint in joints}
+                   for term in ('kp', 'kd')} if protocol else {}
     groups = deployment_gain_groups(gain, gain_purposes)
     targets = {}
     hold_compensation = None
     for item, fields in groups.items():
-        for term, limit_field in [('kp', 'max_kp_override'), ('kd', 'max_kd_override')]:
+        for term in ('kp', 'kd'):
             values = fields.get(term)
             if not isinstance(values, list):
                 raise ValueError('增益候选参数不完整')
-            gain_map = _gain_map(joints, values, policy.get(limit_field))
+            gain_map = _gain_map(joints, values, gain_limits.get(term), '映射后的硬件协议范围')
             for destination in GAIN_DESTINATIONS[item]:
                 targets[('control', 'controller', destination, term)] = gain_map
         if item in ('rigid_tracking', 'compliant_tracking'):
@@ -127,7 +131,7 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None):
                     values = hold.get(term)
                     if not isinstance(values, list): raise ValueError('保持验收缺少对应增益')
                     targets[('control', 'controller', item.replace('_tracking', '_hold'), term)] = _gain_map(
-                        joints, values, policy.get('max_' + term + '_override'))
+                        joints, values, gain_limits.get(term), '映射后的硬件协议范围')
             compensation = fields.get('hold_compensation')
             if item == 'rigid_tracking':
                 # Older baseline candidates were also tested with compensation
@@ -185,7 +189,13 @@ def _gain_export(record, dest, gain_purposes=None):
     if category not in GAIN_FIELDS:
         raise ValueError('未知增益标定目标')
     joints = metadata['joint_names']
-    targets, hold_compensation = gain_candidate_targets(gain, cfg, joints, gain_purposes)
+    hardware = None
+    for filename in ('hardware-effective.yaml', 'hardware.yaml'):
+        snapshot = folder / 'source' / filename
+        if snapshot.is_file():
+            hardware = yaml.safe_load(snapshot.read_text(encoding='utf-8'))
+            break
+    targets, hold_compensation = gain_candidate_targets(gain, cfg, joints, gain_purposes, hardware)
     result = _replace_core(source_text, targets, hold_compensation=hold_compensation)
     # Keep model.urdf_path unchanged because this artifact intentionally contains
     # only core.yaml; changing to a missing relative URDF would break deployment
@@ -193,7 +203,8 @@ def _gain_export(record, dest, gain_purposes=None):
     evidence = dest / 'evidence'; evidence.mkdir(exist_ok=True)
     for source in [folder / 'metadata.json', folder / 'gain-candidate.json',
                    *sorted(folder.glob('servo-probe-*.csv')), *sorted(folder.glob('gain-trajectory-*.csv')),
-                   *sorted(folder.glob('drag-decay-*.csv'))]:
+                   *sorted(folder.glob('drag-decay-*.csv')), *sorted(folder.glob('gain-hold-*.csv')),
+                   folder / 'frames.csv', folder / 'result.json']:
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, evidence / source.name)
     snapshots = evidence / 'source'; snapshots.mkdir(exist_ok=True)
     for name in ('core.yaml', 'model.urdf', 'hardware.yaml', 'hardware-effective.yaml', 'gravity-correction.yaml'):

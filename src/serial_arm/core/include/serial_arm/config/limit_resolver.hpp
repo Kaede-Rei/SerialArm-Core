@@ -23,8 +23,8 @@ struct SafetyPolicyCfg {
     double state_vel_scale{ 1.0 };              ///< 状态速度检查比例
     JointVector max_acc;                        ///< Joint 侧最大加速度
     JointVector max_effort_override;            ///< Joint 侧力矩收窄值
-    JointVector max_kp_override;                ///< Joint 侧 kp 收窄值
-    JointVector max_kd_override;                ///< Joint 侧 kd 收窄值
+    JointVector max_kp_override;                ///< 废弃兼容字段，完全忽略
+    JointVector max_kd_override;                ///< 废弃兼容字段，完全忽略
     double max_dt_s{ 0.0 };                     ///< 允许的最大控制周期
     double state_timeout_s{ 0.0 };              ///< 状态超时时间
     double cmd_timeout_s{ 0.0 };                ///< 命令超时时间
@@ -50,6 +50,8 @@ struct ResolvedJointLimitCfg {
     double max_effort{ 0.0 };               ///< Joint 侧力矩上限
     double max_kp{ 0.0 };                   ///< Joint 侧 kp 上限
     double max_kd{ 0.0 };                   ///< Joint 侧 kd 上限
+    double kp_resolution{ 0.0 };            ///< Joint 侧协议 kp 步进
+    double kd_resolution{ 0.0 };            ///< Joint 侧协议 kd 步进
 };
 
 /**

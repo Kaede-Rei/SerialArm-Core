@@ -76,6 +76,7 @@ enum class RobotErr {
     FAULT_RECOVERY_NOT_ALLOWED, ///< 当前故障不允许柔性恢复或清故障
     REFERENCE_GOVERNOR_FAILED,
     MOTION_SOURCE_BUSY,
+    CALIBRATION_RESPONSE_UNSTABLE, ///< 标定监督器确认参考未要求的持续位置往复
 };
 
 /**
@@ -108,11 +109,15 @@ struct RobotCycleOutput {
     bool joint_acc_valid{ false };
     double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
+    std::uint64_t command_written_ns{0}; ///< Successful bus write completion, host steady clock
 
     JointGainProfile gain_profile{JointGainProfile::RIGID};
     GainSource gain_source{GainSource::CONFIGURED};
     JointVector effective_kp,effective_kd,hold_target_pos,hold_integral_torque;
+    JointVector requested_kp,requested_kd; ///< 协议量化前的本周期增益；joint_cmd 为可编码增益
     bool hold_integrator_frozen{true};
+    std::vector<std::string> hold_integrator_freeze_reasons;
+    JointVector calibration_disturbance;
     ReferenceBehavior reference_behavior{ ReferenceBehavior::NATIVE_IMPEDANCE };
     double parameter_update_progress{ 1.0 };
     bool observer_valid{ false };
@@ -223,6 +228,10 @@ public:
     void clear_calibration_reference_behavior();
     tl::expected<void,RobotFault> set_calibration_model_feedforward_mode(ModelFeedforwardMode mode);
     void clear_calibration_model_feedforward_mode();
+    // Short calibration-only additive torque, before the normal governor and
+    // Safety checks; expires unless refreshed and never bypasses total effort
+    tl::expected<void,RobotFault> set_calibration_disturbance(const JointVector& torque, TimePoint now=Clock::now());
+    void clear_calibration_disturbance() noexcept;
     const JointVector& get_hold_target() const noexcept;
     // FAULT permits validated configuration restoration only, without execution
     tl::expected<void,RobotFault> set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
@@ -243,6 +252,9 @@ public:
     // Explicit temporary runtime gains; only accepted while motors are INACTIVE
     bool set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains);
     void clear_calibration_tracking_gains() noexcept;
+    // Reject an observed unstable calibration response through the existing
+    // latched STOP_HOLD reaction; never retain the rejected candidate gains.
+    tl::expected<void, RobotFault> stop_calibration_response();
     /** Shutdown-only compliant-to-rigid Kp/Kd handover. The current reference
      * is reset to measured q by set_impedance_mode before calling this.
      * Ordinary tracking and calibration gains are not changed
@@ -573,6 +585,9 @@ private:
     JointVector nominal_hold_target_;
     JointVector hold_integral_torque_;
     bool hold_integrator_frozen_{true};
+    std::vector<std::string> hold_integrator_freeze_reasons_;
+    JointVector calibration_disturbance_;
+    TimePoint calibration_disturbance_at_{};
     std::optional<ReferenceBehavior> calibration_reference_behavior_;
     std::optional<ModelFeedforwardMode> calibration_feedforward_mode_;
     std::optional<JointGainProfile> execution_gain_profile_;

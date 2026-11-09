@@ -66,7 +66,12 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
             (mapper.direction[i] != 1 && mapper.direction[i] != -1) ||
             !std::isfinite(mapper.joint_zero_offset[i]) || !std::isfinite(mapper.actuator_zero_offset[i]) ||
             !std::isfinite(capability.min_pos) || !std::isfinite(capability.max_pos) ||
-            capability.min_pos >= capability.max_pos || !std::isfinite(capability.max_vel) || capability.max_vel <= 0.0)
+            capability.min_pos >= capability.max_pos || !std::isfinite(capability.max_vel) || capability.max_vel <= 0.0 ||
+            !std::isfinite(capability.max_effort) || capability.max_effort <= 0.0 ||
+            !std::isfinite(capability.max_kp) || capability.max_kp < 0.0 ||
+            !std::isfinite(capability.max_kd) || capability.max_kd < 0.0 ||
+            !std::isfinite(capability.kp_resolution) || capability.kp_resolution < 0.0 ||
+            !std::isfinite(capability.kd_resolution) || capability.kd_resolution < 0.0)
             return tl::make_unexpected(LimitResolverErr::INVALID_INPUT);
         const double gain_ratio = mapper.pos_ratio[i] * mapper.tor_ratio[i];
         const double hardware_effort = capability.max_effort * mapper.tor_ratio[i];
@@ -90,16 +95,12 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
         resolved.max_effort = std::min(joint.max_effort, hardware_effort);
         resolved.max_kp = hardware_kp;
         resolved.max_kd = hardware_kd;
+        resolved.kp_resolution = capability.kp_resolution * gain_ratio;
+        resolved.kd_resolution = capability.kd_resolution * gain_ratio;
 
         const auto effort = narrowed(resolved.max_effort, policy.max_effort_override, i);
-        const auto kp = narrowed(resolved.max_kp, policy.max_kp_override, i);
-        const auto kd = narrowed(resolved.max_kd, policy.max_kd_override, i);
         if(!effort) return tl::make_unexpected(effort.error());
-        if(!kp) return tl::make_unexpected(kp.error());
-        if(!kd) return tl::make_unexpected(kd.error());
         resolved.max_effort = *effort;
-        resolved.max_kp = *kp;
-        resolved.max_kd = *kd;
 
         if((resolved.has_position_limit && resolved.cmd_min_pos >= resolved.cmd_max_pos) ||
             resolved.max_cmd_vel <= 0.0 || resolved.max_state_vel <= 0.0 || resolved.max_acc <= 0.0 ||
@@ -146,6 +147,8 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
     cfg.limits.max_kp.reserve(resolved.joints.size());
     cfg.limits.max_kd.reserve(resolved.joints.size());
     cfg.limits.pos_margin.reserve(resolved.joints.size());
+    cfg.limits.kp_resolution.reserve(resolved.joints.size());
+    cfg.limits.kd_resolution.reserve(resolved.joints.size());
     for(const auto& joint : resolved.joints) {
         cfg.limits.has_position_limit.push_back(joint.has_position_limit ? 1 : 0);
         cfg.limits.min_pos.push_back(joint.hard_min_pos);
@@ -155,6 +158,8 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
         cfg.limits.max_effort.push_back(joint.max_effort);
         cfg.limits.max_kp.push_back(joint.max_kp);
         cfg.limits.max_kd.push_back(joint.max_kd);
+        cfg.limits.kp_resolution.push_back(joint.kp_resolution);
+        cfg.limits.kd_resolution.push_back(joint.kd_resolution);
         cfg.limits.pos_margin.push_back(joint.cmd_min_pos - joint.hard_min_pos);
         cfg.fault_recovery.compliant_recovery.max_vel.push_back(joint.max_cmd_vel);
     }
@@ -188,6 +193,8 @@ ResolvedSafetyCfg resolve_from_safety_cfg(const std::vector<std::string>& joint_
         joint.max_effort = cfg.limits.max_effort[i];
         joint.max_kp = cfg.limits.max_kp[i];
         joint.max_kd = cfg.limits.max_kd[i];
+        joint.kp_resolution = cfg.limits.kp_resolution.empty() ? 0.0 : cfg.limits.kp_resolution[i];
+        joint.kd_resolution = cfg.limits.kd_resolution.empty() ? 0.0 : cfg.limits.kd_resolution[i];
         resolved.joints.push_back(std::move(joint));
     }
     return resolved;

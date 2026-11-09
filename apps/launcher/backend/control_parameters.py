@@ -81,6 +81,12 @@ def four_mode_core(core):
 
 def canonical_core(core):
     result = deepcopy(core)
+    # Historical user PD ceilings are readable but no longer participate in
+    # admission, editing, provenance hashes or new-format serialization.
+    policy = result.get('safety_policy')
+    if isinstance(policy, dict):
+        policy.pop('max_kp_override', None)
+        policy.pop('max_kd_override', None)
     names = (result.get('model') or {}).get('joint_names') or []
     if names and 'admittance' not in (result.get('capability') or {}):
         zeros = {name: 0.0 for name in names}
@@ -414,8 +420,45 @@ def _expand_yaml_aliases(text):
     return text
 
 
+def remove_deprecated_pd_limits_text(text):
+    """Remove only retired policy entries, preserving surrounding source text."""
+    original = yaml.safe_load(text)
+    policy = (original or {}).get('safety_policy')
+    retired = {'max_kp_override', 'max_kd_override'}
+    if not isinstance(policy, dict) or not retired.intersection(policy):
+        return text
+    node = _node_at(yaml.compose(text), ('safety_policy',))
+    expected = deepcopy(original)
+    for key in retired: expected['safety_policy'].pop(key, None)
+    tokens = list(yaml.scan(text))
+    entries = [(key, value) for key, value in node.value if key.value in retired]
+    if any(isinstance(token, (AnchorToken, AliasToken)) and any(
+            key.start_mark.index <= token.start_mark.index < value.end_mark.index
+            for key, value in entries) for token in tokens):
+        return remove_deprecated_pd_limits_text(_expand_yaml_aliases(text))
+    if node.flow_style:
+        encoded = yaml.safe_dump(expected['safety_policy'], allow_unicode=True,
+                                 default_flow_style=True, sort_keys=False, width=1000000).strip()
+        result = text[:node.start_mark.index] + encoded + text[node.end_mark.index:]
+    else:
+        removals = []
+        for key, value in entries:
+            start = text.rfind('\n', 0, key.start_mark.index) + 1
+            content = [token.end_mark.index for token in tokens
+                       if key.start_mark.index <= token.start_mark.index < value.end_mark.index
+                       and not isinstance(token, (BlockEndToken, DocumentEndToken, StreamEndToken))]
+            end = text.find('\n', max(content, default=value.end_mark.index))
+            removals.append((start, len(text) if end < 0 else end + 1))
+        result = text
+        for start, end in reversed(removals): result = result[:start] + result[end:]
+    if yaml.safe_load(result) != expected:
+        raise ValueError('无法保留旧 PD 上限之外的 YAML 内容，请展开共享映射后保存')
+    return result
+
+
 def canonical_control_text(text, servo=None):
     """Expand the four-purpose layout into the internal paths used by patchers"""
+    text = remove_deprecated_pd_limits_text(text)
     original = yaml.safe_load(text)
     controller = ((original or {}).get('control') or {}).get('controller')
     normalized = _canonical_controller(controller)
@@ -426,6 +469,7 @@ def canonical_control_text(text, servo=None):
 
 def four_mode_control_text(text):
     """Write only the controller block as four purposes; keep other text intact"""
+    text = remove_deprecated_pd_limits_text(text)
     original = yaml.safe_load(text)
     controller = four_mode_core(original)['control']['controller']
     return _controller_text(text, controller)

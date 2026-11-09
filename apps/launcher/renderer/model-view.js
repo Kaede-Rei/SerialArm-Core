@@ -644,12 +644,12 @@ export class SerialArmModelView {
     const en = this.language === 'en';
     const buttons = [
       ['fit', en ? 'Fit' : '适应', en ? 'Fit model to view' : '自动适应模型'],
-      ['front', en ? 'Front' : '前', en ? 'View along +Y' : '前视 · 沿 +Y 方向'],
-      ['back', en ? 'Back' : '后', en ? 'View along -Y' : '后视 · 沿 -Y 方向'],
-      ['left', en ? 'Left' : '左', en ? 'View along +X' : '左视 · 沿 +X 方向'],
-      ['right', en ? 'Right' : '右', en ? 'View along -X' : '右视 · 沿 -X 方向'],
-      ['top', en ? 'Top' : '顶', en ? 'View along -Z' : '顶视 · 沿 -Z 方向'],
-      ['bottom', en ? 'Bottom' : '底', en ? 'View along +Z' : '底视 · 沿 +Z 方向'],
+      ['front', en ? 'Front' : '前', en ? 'View along +Y' : '前视　沿 +Y 方向'],
+      ['back', en ? 'Back' : '后', en ? 'View along -Y' : '后视　沿 -Y 方向'],
+      ['left', en ? 'Left' : '左', en ? 'View along +X' : '左视　沿 +X 方向'],
+      ['right', en ? 'Right' : '右', en ? 'View along -X' : '右视　沿 -X 方向'],
+      ['top', en ? 'Top' : '顶', en ? 'View along -Z' : '顶视　沿 -Z 方向'],
+      ['bottom', en ? 'Bottom' : '底', en ? 'View along +Z' : '底视　沿 +Z 方向'],
     ];
     this.cameraTools = document.createElement('div');
     this.cameraTools.className = 'model-camera-tools';
@@ -672,8 +672,8 @@ export class SerialArmModelView {
     const hint = document.createElement('div');
     hint.className = 'model-camera-hint';
     hint.textContent = en
-      ? 'Left: orbit · Right / Shift: pan · Wheel: zoom'
-      : '左键旋转 · 右键 / Shift 平移 · 滚轮缩放';
+      ? 'Left: orbit　Right / Shift: pan　Wheel: zoom'
+      : '左键旋转　右键 / Shift 平移　滚轮缩放';
     this.cameraHint = hint;
     this.container.appendChild(hint);
   }

@@ -161,6 +161,20 @@ ROS2 工作区构建见 [安装](install.md#直接在-ros2-工作区构建)；GU
 # GUI 资源、图形运行库与 IPC 路由静态检查，需先安装 GUI 依赖
 node apps/launcher/scripts/verify.cjs
 
+# 真实 Electron 的 Profile／动作草稿／关闭与图形重启状态检查
+DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
+  apps/launcher/scripts/verify-session-lifecycle.cjs
+
+# 可选：真实 Electron 渲染离线增益页，读取只读候选记录
+node apps/launcher/scripts/gain-ui-fixture.cjs \
+  --out /tmp/serialarm-gain-ui --record /path/to/task/gain-candidate.json
+DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
+  apps/launcher/scripts/render-gain-ui.cjs --fixture /tmp/serialarm-gain-ui
+
+# 完整生产页面的离线渲染，默认覆盖 18 页、明暗主题及两种宽度
+DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
+  apps/launcher/scripts/render-studio-ui.cjs
+
 # Python 数组、快照类型和 NumPy 内存布局，需已安装 Python Binding
 ./.install/run python tools/check_python_binding.py
 
@@ -168,11 +182,83 @@ node apps/launcher/scripts/verify.cjs
 ./.install/run serial_arm_terminal --help
 ./.install/run serial_arm_model_probe --help
 ./.install/run serial_arm_model_calibrator --help
+
+# 增益历史证据审计器自测，无原生依赖
+python3 tools/audit_gain_calibration.py --self-test
+
+# 模型、辨识、候选、预算与内存 Robot 的行为检查
+python3 tools/check_adaptive_gain_core.py
+
+# 旧 PD 上限忽略、硬件能力刷新、映射和协议量化，需先重编 Core
+python3 tools/check_config_pd_limits.py
+
+# 真实原生 IPC 的 Mock 集成检查，使用本次构建的程序
+./.install/run .install/gui-venv/bin/python tools/check_adaptive_gain_flow.py \
+  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal \
+  --full-probes
+
+# 用 FIFO 阻塞实际 CSV 写入，检查评估阶段已退出 TRACKING
+./.install/run .install/gui-venv/bin/python tools/check_gain_assessment_hold.py \
+  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
 ```
 
 GUI 改动还需启动 `./launch.sh` 检查受影响页面、语言与主题；三维改动需验证模型实际绘制与交互，静态资源检查不能代替渲染验证
 
+离线增益页 fixture 提取实际 renderer 函数与事件处理，不加载后端设备接口；`DISPLAY` 使用当前已有图形会话的显示值，结果写入 `/tmp/serialarm-gain-ui/screenshots/report.json`；截图按实际滚动视口分段保存，不拼接或用超大 GPU 裁剪替代；已有阴影裁切审计脚本时，可为渲染命令追加 `--clip-audit /path/to/clip-audit.js` 检查默认、悬停和展开状态
+
 控制逻辑改动先检查配置、离线记录与数值结果，再按实际改动验证实机行为；贡献说明应区分离线验证与实机验证，记录使用的硬件、配置和未覆盖的路径
+
+`check_adaptive_gain_flow.py` 仅在临时目录生成离线 Core、示教和候选，强制 `write_enabled=false` 且不传硬件插件；覆盖两模式预算、原始 T 在重定时与再次导入后的来源、工作线程停止及单用途候选应用／恢复；`--full-probes` 额外完成两组旧增益下的实际短测工作线程，比较模型初值并检查不响应独立力矩的 Mock 保留证据不足；其中的合成候选仅用于记录兼容与应用范围检查，不提供机械臂验收结论
+
+Mock 的理想位置跟随不能验证执行器起动能力；编码器分辨率、静摩擦、MIT 量化、重力负载与模型耦合需由对应离线动态试验和真实机械臂测量分别覆盖；历史记录可用审计器区分“有新反馈但位置不响应”与“反馈缺失”，但离线重新解释原记录不会生成修复后的真机验收
+
+本地安装刷新后仍通过 `./launch.sh` 启动现有桌面入口；检查使用本次构建的程序，源码检查或旧安装程序的通过不能代替当前构建与界面结果
+
+取消用户 PD 上限后的专用检查 `check_config_pd_limits.py` 已通过：分区与平铺旧配置中的缺失、畸形 PD 上限字段均不影响加载，直接策略里的旧覆盖值不生效；连接能力刷新重建协议边界与步进，非 1 映射正确保留协议码，位置、速度与力矩收窄仍然有效；实际达妙编码函数对 Kp/Kd 共 8192 个码中心完成幂等检查，内存 Robot 周期保留投影前请求并发送可编码增益，超过协议上限的请求仍被拒绝
+
+同一最终检查还验证初次故障刚性保持、持续保持、柔性恢复及回到刚性保持的协议网格；半码附近的阻尼请求在编码后会提高实际 PD 命令，以 1 Nm 上限构造的反例中，原浮点总力矩低于上限，而编码后为约 1.000022 Nm，初次保持没有写入超预算命令并走停止路径，持续保持同样拒绝写入并失能；错误类型沿用 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`
+
+此前执行 `./launch.sh --doctor --profile dm_arm_gray` 时，环境、资源与模型检查正常；因未连接设备，`/dev/ttyACM0` 不存在，整体退出码为 1，设备检查未通过；本轮状态与模型修改未重新执行该设备检查
+
+前一轮起动回归的已执行离线证据：审计器 20 项自测通过；六轴静摩擦／滑动仿真调用当时原生工作线程相同的 `motion_establishment_step`，按历史任务 T=28.22 秒的预算，在 8 次完整短测、累计 68.8945 秒仿真测量成本后建立全部六轴响应，并保留 153 秒用途验证预算；当时未改变位置、力矩与 Kp/Kd 安全上限；静摩擦 12 Nm 高于执行器 10 Nm 能力的对照未被标成建立成功，并在约束／预算内结束
+
+同一六轴静摩擦／滑动回归的独立扰动部分经过 3 次完整测量后，腕轴获得可观测响应，joint3 在原有 1.4 Nm 扰动上限下仍缺少所需运动响应；其静态／恢复记录保留，刚度测量不标为通过
+
+内存 Robot 回归另将两轴实测位置相对旧保持目标分别偏移 `-0.011446 rad`、`-0.022507 rad`，确认起动中心采用新鲜实测反馈，并拒绝过期反馈；这些结果支持离线起动与调用行为，真实机械臂上的运动建立、保持和四用途验收仍需操作者另行发起
+
+本轮实际 Electron 状态检查 `verify-session-lifecycle.cjs` 通过 91 项断言：生产 renderer 函数与按钮处理、真实 preload IPC 和 BrowserWindow 共同验证 Profile 的运行／停止／启动锁、旧异步回包丢弃、目标草稿与原动作终结分离，以及原生关闭、标题栏、应用退出、图形重启的取消／放弃顺序；原生对话框使用预先指定的回答，会话桥接替换为无设备对象，未启动硬件后端；临时导纳草稿仍沿用原导航语义，关闭确认范围为现有 Profile 参数草稿
+
+此前 `check_gain_assessment_hold.py` 在实际原生工作线程中用 FIFO 阻塞 CSV 写入约 0.35 秒，期间连续 22 次观测到 HOLD，最终排出 3,036,238 字节并正常取消；对应内存 Robot 检查同时确认 HOLD 超过 100 ms 不触发命令超时，而普通 TRACKING 命令断流仍触发 `CMD_TIMEOUT`；根因修复针对运动结束后的评估／写盘路径，未提高超时常数
+
+模型检查区分物理先验、设计目标和执行约束：人工速度／加速度／力矩修改不改变 `unconstrained_kp/kd`，收窄力矩可改变约束后候选；完整质量矩阵的修正只调整相关模态参与轴，独立质量块不被一起缩小；真实 URDF 与历史路径的 7 类检查及新 Profile 创建／保存的 8 项检查通过，离线初始化凭据保留三层建议与原因，既有运行／恢复基线保持原值；恢复设计和不同示教路径产生不同建议，均不作为实机起动或四用途验收结论
+
+上一版原生／Python 构建与本地安装刷新通过，使用当时安装 probe 的 Python 8 项检查、NumPy Binding 检查、后端 `--check`、PD 兼容／8192 码中心／故障保持力矩检查均通过；当时 `--full-probes` 12 项真实原生 Mock IPC 检查通过，含不同旧增益下同模型 seed、参考与独立扰动短测、预算与重复导入、停止及单用途应用兼容；T=0.2 秒合成源对应 3 秒硬预算，实际 0.515261 秒结束，`available=false`、`validated=false`
+
+最终全应用离线界面检查加载完整生产 HTML、JS 与 CSS，以只读接口替代后端；18 页在 1280／375 宽度、明暗主题下共 72 次渲染通过，11 项交互检查和 160 次默认／悬停／展开裁切审计通过，无页面横向溢出或控制台错误；数字去尾零与真实初始化凭据另作定向检查；共享按钮沿用橙色白字，参数表按关节并列 Kp／Kd，未编辑保存保留原始数值精度
+
+字体使用应用内独立 family 与精确本地正体名称，避免本机通用字体别名将界面替换成斜体等宽字；实际渲染字体通过浏览器字体信息核对为正体 Noto Sans CJK SC，未修改系统字体设置或新增字体依赖；界面 fixture 不启动设备或原生控制会话，三维模型与终端执行仍由各自检查覆盖
+
+本次增益修正将未执行的整轨性能需求与实际 bootstrap 分开，使用恢复设计起动并逐步补充响应证据；逐周期位置监督触发后锁存 `CALIBRATION_RESPONSE_UNSTABLE`，在写盘前进入既有故障退出，失败试验保存部分周期数据；不提高命令超时，不自动清故障后重试
+
+现有审计器新增实际增益、接收时序、成功周期总命令重建与位置反转证据，30 项自测通过；原始故障任务回归确认整轨入口仅有 188 周期、0.956740 秒，joint4 已出现约 50 Hz 的位置往复，而周期最大间隔仅 11.040 ms，故障为 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`；这与此前评估写盘后的 `CMD_TIMEOUT` 分开处理；最新任务 22 个文件和原参考 ZIP 读取前后 SHA256 均一致，审计不生成新硬件验收结论
+
+本次界面针对性离线检查通过 6 组组合、36 张截图、36 次裁切检查和 232 项断言；真实机械臂的 bootstrap、在线位置监督退出及四用途效果仍由操作者另行发起验证
+
+本次最终原生／Python 构建与本地安装通过；`--full-probes` 12 项实际原生 Mock 检查、Python Binding、后端 `--check` 与安装环境检查通过；T=0.2 秒、硬预算 3 秒的合成任务在 0.543378 秒退出，保持 `available=false/validated=false`；内存 Robot 验证了异常响应锁存、可行故障保持、不可行保持时原 `MotorBus::stop` 回退及原有 `CMD_TIMEOUT` 语义
+
+离线六轴运动建立回归经 15 趟、114 秒测量完成并保留原验证预留；原始位置记录重放中，监督器在整轨入口后 0.905995 秒触发，早于原记录末帧 0.956740 秒，四份原短测记录没有误触发；这些是离线重放／内存控制检查，没有重新运行原始真机试验
+
+同一最终版本的实际原生工作线程 FIFO 检查通过：阻塞写盘期间保持 HOLD 0.428643 秒、连续 21 次观测，正常排出 2,977,861 字节后取消退出；`CMD_TIMEOUT` 仍为 0.1 秒；Mock 证据不足时实际局部比较数为 0，未盲目试参；生产比较循环另按快速每组最多 1 次、精细每组最多 3 次和实际剩余预算共同约束
+
+本次输入／行程平台修正的审计器 36 项自测与原 15 份 CSV 的 12 组只读回归通过，27 个原文件读取前后哈希不变；正式窗口重算保留末趟 `ratio=0.204693`，不将其误判为低于 0.2，也不将任务外的后续 fault 归入这份 `fault_interrupted=false` 记录
+
+定向控制检查重放原始前 10 趟测量时，在 joint3 当前 Kp=`241.39194` 首次拒绝没有可分辨输入增长的继续升参，保留整组增益并转向较慢测量；原后 5 份 CSV 只保留为旧输入条件的回归，未用于假充新慢测结果；后续慢测成功／受阻由独立仿真验证，六轴 15 趟、114 秒的既有预算回归继续通过；本次原生构建通过，未执行新的真机试验
+
+本轮实际原生 Mock `--full-probes` 12 项通过，新增记录断言核对 `current_kp/current_kd` 与 CSV／参数元数据一致，`blocked_axes/input_response_progress` 可解析；T=0.2 秒、硬预算 3 秒的任务在 0.506322 秒结束，`available=false/validated=false`；Launcher 检查与 31 项界面检查、4 张截图通过，两种尺寸的裁切检查均为零
+
+本次多频平台与取消分类修正后，审计器 44 项自测、三份原任务的 12／9／8 组只读回归及旧 ZIP 兼容检查通过，66 个原始文件读取前后哈希一致；回归分别保留旧 15 趟升参平台、同组增益慢测 12 趟及取消后的部分第二趟，不把历史 CSV 视为新单频条件的实测结果；核心离线检查覆盖同组单频运动补证成功与仍不足两种情况，六轴运动建立经 14 趟、106.4 秒完成，原异常位置记录的监督触发仍为 0.905995 秒；真实机械臂效果尚待操作者主动发起验证
+
+本次原生构建、本地安装、后端 `--check` 与安装环境检查通过；实际原生 Mock `--full-probes` 12 项及终止字段断言通过，主动停止的状态与候选共同记录 `cancelled/stop_requested/fault_interrupted=false`；T=0.2 秒、硬预算 3 秒的合成任务在 0.502098 秒结束，两处共同记录 `budget_exhausted`，`available=false/validated=false`；两份历史终态的界面检查共 218 项通过，1555／1280／375 宽度与明暗主题共 12 张终态截图、12 次零裁切检查，另核对关闭后主页面；原增益页 25 项交互与 2 次定向渲染、Launcher 及语法检查通过
 
 ## 构建发行包
 

@@ -1,6 +1,30 @@
 /* Shared visual language of AT-System-Integration's current Robot Studio GUI.
    Keep domain-specific layouts in styles.css; application chrome lives here */
+@font-face {
+  font-family: "SerialArm UI";
+  src: local("NotoSansCJKsc-Regular"), local("Noto Sans CJK SC Regular");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SerialArm UI";
+  src: local("NotoSansCJKsc-Medium"), local("Noto Sans CJK SC Medium");
+  font-weight: 500 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "SerialArm UI Mono";
+  src: local("NotoSansMono-Regular"), local("Noto Sans Mono Regular");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+}
 :root {
+  --studio-ui-font: "SerialArm UI", Inter, "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+  --studio-mono-font: "SerialArm UI Mono", "SerialArm UI", "JetBrains Mono", monospace;
+  font-family: var(--studio-ui-font);
   --input: var(--subtle);
   --soft: var(--subtle);
   --accent-bg: var(--tint);
@@ -32,7 +56,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .titlebar { height: 44px; }
 .brand-mini { font-size: 12px; font-weight: 500; }
 .brand-mini strong { font-weight: 550; }
-.brand-mini strong, .home-brand-title h1 { font-family: Inter, Arial, sans-serif; font-style: normal; }
+.brand-mini strong, .home-brand-title h1 { font-family: var(--studio-ui-font); font-style: normal; }
 .brand-mini > .association-icon { width: 25px; height: 25px; }
 .association-mark { display: block; width: 30px; height: 30px; object-fit: contain; flex: none; }
 .brand-mini > .association-mark { width: 32px; height: 32px; }
@@ -104,14 +128,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .card-head h3 { font-size: 14px; font-weight: 600; }
 .field { min-width: 0; line-height: 1.5; }
 input, select, textarea { font-size: 12px; border-radius: 5px; line-height: 1.5; }
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden]),textarea) { min-width: 0; padding: 6px 10px; border: .5px solid var(--line); border-radius: 5px; background: var(--input); color: var(--text); font-family: inherit; font-size: 12px; line-height: 1.5; }
+:where(input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden])) { height: 34px; }
 .field input, .field select, .profile-edit-table input { height: 32px; border-radius: 5px; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent); }
 textarea { font-family: inherit; }
 .button { min-height: 30px; padding: 5px 10px; border-radius: 6px; font-size: 12px; font-weight: 450; }
-.button.primary { font-weight: 650; }
+.button.primary,.light .button.primary { color: #fff; background: var(--accent); border-color: var(--accent); font-weight: 650; }
 .button.icon { padding: 5px; }
 .segmented button { font-size: 12px; }
-.segmented button.active { background: var(--card); color: var(--accent); box-shadow: var(--shadow); }
+.segmented button.active { background: var(--card); color: var(--accent); box-shadow: inset 0 0 0 .5px var(--line); }
 .callout { border-color: color-mix(in srgb,var(--accent) 17%,transparent); }
 .mode-card, .lifecycle-step, .library-card { border-radius: 8px; }
 .mode-card h3 { font-weight: 550; }
@@ -347,7 +373,7 @@ select.studio-native-select { position: absolute; width: 1px !important; height:
 .workbench-task > .workspace-operation-panel { padding: 18px 18px 0; }
 .workbench-task > .workspace-operation-panel + .workspace-panel { padding-top: 16px; }
 .studio-page-body > .workspace-operation-panel { background: var(--bg); }
-.robot-operation-bar { margin: 0; padding: 14px 16px; box-shadow: var(--shadow); }
+.robot-operation-bar { margin: 0; padding: 14px 16px; box-shadow: none; }
 .control-settings { padding: 0; }
 .control-settings > summary { cursor: pointer; padding: 18px; font-size: 15px; font-weight: 600; line-height: 1.5; }
 .control-settings[open] > summary { border-bottom: 1px solid var(--line); }
@@ -494,3 +520,263 @@ details.graphics-diagnostic-section[open] > summary { margin-bottom: 14px; }
 .graphics-diagnostics-row .workspace-actions { margin: 0; }
 .graphics-failure .graphics-mode-options { grid-template-columns: minmax(0, 1fr); margin-top: 18px; }
 @media(max-width:900px) { .graphics-mode-options { grid-template-columns: minmax(0, 1fr); } }
+
+/* Gain calibration keeps one surface: settings, task control, live state, results. */
+.gain-calibration-page { padding: 24px; border: .5px solid var(--line); box-shadow: none; }
+.gain-page-heading,.gain-results-head { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.gain-page-heading { margin-bottom: 24px; }
+.gain-page-heading h3 { margin: 0; font-size: 16px; font-weight: 600; text-wrap: balance; }
+.gain-page-heading .result-badge { font-size: 12px; }
+.gain-settings { display: grid; gap: 20px; }
+.gain-setting-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(240px,100%),1fr)); gap: 16px; }
+.gain-settings label { display: grid; gap: 8px; min-width: 0; font-size: 12px; line-height: 1.6; color: var(--muted); }
+.gain-settings select,.gain-settings input { min-width: 0; width: 100%; height: 36px; padding: 0 12px; border: .5px solid var(--line); border-radius: 6px; background: var(--subtle); color: var(--text); font-size: 12px; }
+.gain-input-unit { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 12px; max-width: 280px; }
+.gain-input-unit > span { color: var(--text); min-width: 16px; }
+.gain-acceptance-primary > .hint { margin: 8px 0 0; max-width: 60ch; }
+.gain-time-summary,.gain-live-times,.gain-purpose-checks { display: flex; flex-wrap: wrap; gap: 20px 32px; margin: 0; }
+.gain-time-summary > div,.gain-live-times > div,.gain-purpose-checks > div { min-width: 104px; }
+.gain-time-summary dt,.gain-live-times dt,.gain-purpose-checks dt,.gain-section-label { font-size: 12px; color: var(--muted); line-height: 1.6; }
+.gain-time-summary dd,.gain-live-times dd,.gain-purpose-checks dd { margin: 4px 0 0; color: var(--text); font-size: 14px; font-variant-numeric: tabular-nums; }
+.gain-details { margin-top: 20px; border-top: .5px solid var(--line); padding-top: 16px; }
+.gain-settings > .gain-details { margin-top: 0; }
+.gain-details > summary,.gain-purpose-details > summary,.gain-experiment-detail > summary { width: fit-content; cursor: pointer; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.gain-details[open] > summary,.gain-purpose-details[open] > summary,.gain-experiment-detail[open] > summary { margin-bottom: 16px; color: var(--text); }
+.gain-task-actions { margin-top: 24px; padding-bottom: 24px; gap: 12px; }
+.gain-calibration-page .button { font-size: 12px; min-height: 36px; }
+.gain-calibration-page .hint { font-size: 12px; line-height: 1.6; word-break: normal; overflow-wrap: anywhere; }
+.gain-calibration-page .gain-probe-status { padding: 20px 0; margin: 0 0 24px; border: 0; border-top: .5px solid var(--line); border-bottom: .5px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
+.gain-live-heading { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
+.gain-live-heading > div { display: grid; gap: 4px; }
+.gain-live-heading strong { font-size: 14px; font-weight: 500; color: var(--text); }
+.gain-live-heading [id$="-use"] { font-size: 12px; color: var(--muted); }
+.gain-live-times dd { font-size: 14px; }
+.gain-probe-status .gain-details { margin-top: 16px; }
+.gain-probe-status .gain-probe-metrics { grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); }
+.gain-probe-status .gain-probe-metrics > div { border: 0; padding: 0; background: none; }
+.gain-probe-status dt,.gain-probe-status .hint,.gain-probe-window span { font-size: 12px; }
+.gain-results { margin-top: 8px; }
+.gain-results h4,.gain-results-empty h4 { margin: 0; font-size: 14px; font-weight: 500; }
+.gain-results-head > span { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.gain-result-outcome { margin: 20px 0 8px; padding: 0; color: var(--text); }
+.gain-result-outcome strong { font-size: 14px; font-weight: 500; }
+.gain-result-outcome p { margin: 8px 0 0; max-width: 60ch; color: var(--muted); }
+.gain-results-empty { margin: 8px 0 24px; padding: 24px 0; border-top: .5px solid var(--line); }
+.gain-results-empty p { margin: 20px 0 8px; color: var(--text); }
+.gain-results-empty > span { font-size: 12px; color: var(--muted); }
+.gain-purpose-result { padding: 20px 0; border-bottom: .5px solid var(--line); }
+.gain-purpose-summary { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+.gain-purpose-name { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; min-width: 0; }
+.gain-purpose-name h5 { margin: 0; font-size: 14px; font-weight: 500; }
+.gain-purpose-name input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); }
+.gain-result-state { font-size: 12px; color: var(--muted); }
+.gain-result-state.is-pass::before { content: '✓'; margin-inline-end: 6px; color: var(--green); }
+.gain-result-state.is-warning::before { content: '!'; margin-inline-end: 6px; color: var(--accent); }
+.gain-purpose-metric { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 12px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.gain-purpose-metric > span,.gain-purpose-metric small { color: var(--muted); font-size: 12px; }
+.gain-purpose-metric strong { font-size: 14px; font-weight: 500; }
+.gain-purpose-reason { margin: 12px 0 0; color: var(--muted); max-width: 60ch; line-height: 1.6; }
+.gain-purpose-details { margin-top: 12px; }
+.gain-purpose-details h4,.gain-purpose-details h5 { margin: 20px 0 12px; font-size: 12px; font-weight: 500; }
+.gain-purpose-details .gain-purpose-checks { margin-top: 20px; }
+.gain-purpose-details .workspace-table { margin-top: 12px; }
+.gain-purpose-checks dd { font-size: 12px; }
+.gain-export-actions,.gain-result-actions { margin-top: 20px; }
+.gain-experiment-detail { padding: 12px 0; border-bottom: .5px solid var(--line); }
+.gain-experiment-detail .calibration-step { padding: 0; margin: 0; border: 0; border-radius: 0; background: none; }
+.gain-record-json { max-height: 320px; overflow: auto; padding: 12px; background: var(--subtle); border: .5px solid var(--line); font: 12px/1.6 ui-monospace,monospace; }
+.gain-diagnostic-warnings { padding-inline-start: 20px; font-size: 12px; color: var(--muted); line-height: 1.7; }
+.gain-task-path { display: block; font-size: 12px; overflow-wrap: anywhere; }
+:root:not(.light) .gain-page-heading h3 { font-weight: 500; }
+:root:not(.light) .gain-results h4,:root:not(.light) .gain-purpose-name h5 { font-weight: 400; }
+@media(max-width:600px) { .gain-calibration-page { padding: 16px; } .gain-live-times,.gain-time-summary { gap: 16px 24px; } .gain-purpose-summary { align-items: flex-start; } .gain-purpose-metric { width: 100%; } .gain-task-actions > .button { max-width: 100%; white-space: normal; } }
+
+/* Shared page hierarchy: one surface per section, spacing within that surface */
+.card { border-width: .5px; box-shadow: none; }
+.card-head { gap: 12px; border-bottom-width: .5px; }
+.card-head h3,.workspace-section-head h3 { font-size: 14px; line-height: 1.5; font-weight: 550; }
+.card-head p,.page-head p,.studio-page > .page-head p { font-size: 12px; line-height: 1.65; }
+.card-body { min-width: 0; }
+.card-body > :first-child { margin-top: 0; }
+.card-body > :last-child { margin-bottom: 0; }
+.button { min-height: 32px; padding: 6px 12px; }
+.workspace-actions,.parameter-top-actions,.actions { gap: 8px; }
+.empty-state,.parameter-empty { padding: 32px 20px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.empty-state strong,.parameter-empty strong { display: block; margin-bottom: 8px; color: var(--text); font-size: 14px; font-weight: 550; }
+.readiness-chip,.result-badge,.workspace-status,.workspace-status span,
+.runtime-card,.app.atil-shell .runtime-card small,.robot-row-description small,.robot-switch-label,
+.sidebar-robot-actions > button,.robot-manager-footer > span,.robot-switch-note,
+.field label,.hint,.callout,.parameter-top-actions .hint { font-size: 12px; line-height: 1.6; }
+.workspace-table,.profile-joint-table,.profile-limit-table,.diag-row { font-size: 12px; font-variant-numeric: tabular-nums; }
+.workspace-table th,.profile-joint-table th,.profile-limit-table th { font-weight: 500; color: var(--muted); }
+.workspace-table td,.workspace-table th,.profile-joint-table td,.profile-joint-table th { border-bottom-width: .5px; }
+.parameter-layout { gap: 24px; }
+.parameter-groups { gap: 4px; }
+.parameter-group { border: 0; background: transparent; padding: 10px 12px; border-radius: 6px; }
+.parameter-group.active { border: 0; background: var(--tint); }
+.parameter-group small { font-size: 12px; line-height: 1.5; margin-top: 4px; }
+.parameter-card .card-body { gap: 24px; padding: 20px; }
+.parameter-guidance { padding: 0; background: none; border-radius: 0; line-height: 1.7; }
+.parameter-fields { gap: 20px 16px; }
+.parameter-field { font-size: 12px; gap: 8px; }
+.parameter-field > span:first-child { font-weight: 500; }
+.parameter-field > input,.parameter-field > select { height: 36px; border-width: .5px; border-radius: 5px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.parameter-field > small,.parameter-field em { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.parameter-field em[data-field-error],.parameter-field.invalid em { color: var(--red); }
+.parameter-switch { border-width: .5px; border-radius: 5px; height: 36px; }
+.parameter-subgroup,.parameter-subgroup.hardware-subgroup,.parameter-subgroup .parameter-subgroup { padding: 0; border: 0; border-radius: 0; background: none; }
+.parameter-subgroup + .parameter-subgroup { margin-top: 8px; }
+.parameter-subgroup > summary,.parameter-subgroup > legend { padding: 0; font-size: 14px; line-height: 1.5; font-weight: 550; }
+.parameter-subgroup > summary small { margin-left: 8px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.parameter-subgroup > .parameter-fields { margin-top: 16px; }
+.parameter-subgroup .parameter-subgroup { padding-top: 16px; border-top: .5px solid var(--line); }
+.parameter-subgroup .parameter-subgroup > summary,.parameter-subgroup .parameter-subgroup > legend { font-size: 12px; font-weight: 500; }
+.profile-motion-control { gap: 28px; }
+.profile-motion-control > .calibration-step { padding: 0; border: 0; border-radius: 0; background: none; }
+.profile-motion-control > .calibration-step + .calibration-step { padding-top: 24px; border-top: .5px solid var(--line); }
+.profile-gain-purpose-grid { gap: 16px 24px; margin: 20px 0; }
+.profile-gain-purpose { padding: 16px 0 0; border-width: .5px 0 0; border-radius: 0; background: none; }
+.profile-gain-purpose > summary { font-size: 14px; font-weight: 500; }
+.profile-gain-purpose > .hint,.profile-gain-task > b,.profile-gain-task .parameter-field > small { font-size: 12px; }
+.profile-gain-task { margin-top: 20px; padding-top: 0; border: 0; }
+.profile-gain-task > b { font-weight: 500; margin-bottom: 12px; color: var(--muted); }
+.profile-gain-task .parameter-subgroup { padding: 0; margin: 0; }
+.profile-gain-table { width: 100%; table-layout: fixed; }
+.profile-gain-table th:first-child { width: 30%; }
+.profile-gain-table td { padding: 6px 0 6px 12px; }
+.profile-gain-table .parameter-field > span { display: none; }
+.profile-gain-table .parameter-field { gap: 0; }
+.profile-gain-task > .parameter-fields { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.motion-control-chain { font-size: 12px; border: 0; padding: 12px 0 0; background: none; border-radius: 0; }
+.profile-joint-table .parameter-field { gap: 0; }
+.profile-joint-table td { vertical-align: top; }
+.parameter-source { margin-top: 8px; }
+.parameter-card .workspace-section,.parameter-card .interaction-goal-editor { padding: 20px 0 0; border-width: .5px 0 0; border-radius: 0; background: none; }
+.parameter-card .calibration-locks { margin: 0; padding: 16px 0; border-width: .5px 0 0; border-radius: 0; background: none; }
+.parameter-card .calibration-locks[open] > summary { margin-bottom: 16px; }
+.parameter-card .calibration-locks .calibration-locks { padding-bottom: 0; }
+.profile-setup-guide { border-width: .5px; box-shadow: none; }
+.profile-guide-head h3 { font-size: 16px; font-weight: 550; line-height: 1.5; }
+.profile-guide-count,.profile-guide-status,.profile-guide-step p,.profile-guide-link,.profile-guide-number { font-size: 12px; line-height: 1.6; }
+.profile-guide-step,.profile-setup-guide .readiness-connection > div { padding: 8px 0; border: 0; border-radius: 0; background: none; }
+.profile-setup-guide .readiness-connection { gap: 20px; }
+.profile-guide-head { margin-bottom: 20px; }
+.control-settings > summary,.readiness-fold-title { font-size: 14px; }
+.graphics-diagnostic-summary > div > span,.graphics-diagnostic-summary p,.graphics-diagnostic-summary small,
+.graphics-diagnostic-status,.graphics-diagnostic-table,.graphics-dialog .graphics-diagnostic-empty,
+.graphics-dialog .graphics-diagnostic-note,.graphics-diagnostic-kv,.graphics-mode-description { font-size: 12px; }
+.graphics-diagnostic-summary strong,.graphics-diagnostic-section h4,details.graphics-diagnostic-section > summary { font-size: 14px; }
+.diagnostic-settings { padding: 20px 0; border-width: .5px 0; border-radius: 0; background: none; }
+.diagnostic-settings > summary { font-size: 14px; font-weight: 500; }
+.diagnostic-settings .card { border: 0; background: transparent; }
+.diagnostic-settings .card-head { padding-inline: 0; border: 0; }
+.diagnostic-settings .card-body { padding-inline: 0; }
+.diag-row { gap: 12px; padding-block: 14px; }
+.diag-row .name { font-weight: 500; }
+.diag-row .detail { line-height: 1.65; overflow-wrap: anywhere; }
+.workbench-model:has(#workbench-viewport > .empty-state) { height: 160px; }
+.workbench-model:has(#workbench-viewport > .empty-state) .workbench-model-note { position: absolute; left: 20px; bottom: 16px; background: none; padding: 0; color: var(--muted); font-size: 12px; line-height: 1.6; font-family: inherit; letter-spacing: 0; }
+.model-toolbar label,.model-toolbar .model-offline,.model-legend,.tree-section > b,
+.tree-item,.tree-item small,.model-empty p,.joint-preview-head,.joint-preview-row label,
+.model-inspector .kv,.mono-block,.path-chip,.launch-command,.workbench-model-note,
+.workspace-provenance,.workspace-provenance span,.workspace-meta,.status-strip,
+.calibration-locks > summary,.calibration-step > b,.geometry-step > b { font-size: 12px; line-height: 1.6; }
+.joint-number { font-size: 12px !important; }
+.card-head h3,.page-head h2,.workspace-section-head h3 { text-wrap: balance; }
+#page p,#page small,#page code,#page .hint,#page dt,#page dd,
+#page .eyebrow,#page .summary-caption,#page .switch-value,#page .parameter-required,
+#page .tree-action,#page .mode-type,#page .diag-row .state,#page .model-legend > span,
+#page .teach-ghost-legend,#page #control-task-state,#page .secondary-target-actions .button,
+#page .geometry-stats small,#page .target-joint-row label,.nav-caption { font-size: 12px; line-height: 1.6; }
+#page h3,#page h4,#page .calibration-entry-title,#page .capability-behavior .calibration-entry-title { font-size: 14px; line-height: 1.5; }
+#page .summary-name,#page .geometry-stats strong,.robot-manager-heading h2 { font-size: 16px; line-height: 1.5; }
+#page .geometry-note { border: .5px solid var(--line); padding: 12px; background: var(--subtle); border-radius: 6px; }
+code,pre,.mono-block,.path-chip,.launch-command,.joint-number,.summary-name,
+.gain-task-path,.gain-record-json,.task-directory,.model-calibration-summary b { font-family: var(--studio-mono-font); }
+#page .workspace-provenance b,#page .state { font-size: 12px; line-height: 1.6; }
+:root:not(.light) .card-head h3,:root:not(.light) .workspace-section-head h3,
+:root:not(.light) .parameter-subgroup > summary,:root:not(.light) .parameter-subgroup > legend { font-weight: 450; }
+@media(max-width:600px) {
+  .parameter-layout { gap: 20px; }
+  .parameter-groups { gap: 6px; }
+  .parameter-card .card-body { padding: 16px; }
+  .profile-gain-purpose-grid,.profile-gain-task > .parameter-fields { grid-template-columns: minmax(0,1fr); }
+  .diagnostic-settings { padding-block: 16px; }
+  .diag-row { display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 8px; }
+  .diag-row .detail { grid-column: 2 / -1; grid-row: 2; }
+}
+
+/* Calibration evidence scrolls inside the task window; safety actions stay out */
+.model-calibration-task-window,.model-calibration-task-window.is-preview-task {
+  width: min(1440px,calc(100vw - 48px));
+  min-width: 0;
+  max-height: calc(100dvh - 48px);
+  grid-template-columns: minmax(0,1fr);
+  grid-template-areas: "head" "conclusion" "preview" "content" "actions" "error";
+  grid-template-rows: auto auto auto minmax(0,1fr) auto auto;
+  border-width: .5px;
+  box-shadow: 0 4px 16px rgba(15,23,42,.20);
+}
+.model-calibration-task-window .task-window-head { grid-area: head; }
+.model-calibration-task-window .task-window-conclusion { grid-area: conclusion; margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.model-calibration-task-window.is-ended .task-window-head .operation-spinner { display: none; }
+.model-calibration-task-window.is-ended #gain-task-probe-message { display: none; }
+.model-calibration-task-window .task-preview-slot { grid-area: preview; }
+.model-calibration-task-window .task-window-content { grid-area: content; }
+.model-calibration-task-window .task-window-actions { grid-area: actions; }
+.model-calibration-task-window #model-calibration-task-error { grid-area: error; }
+.model-calibration-task-window .task-window-content,
+.model-calibration-task-window.is-preview-task .task-window-content {
+  display: grid;
+  grid-template-columns: minmax(0,1fr);
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.model-calibration-task-window .task-window-head > div,
+.model-calibration-task-window .task-window-content > *,
+.model-calibration-task-window .gain-probe-status > *,
+.model-calibration-task-window .gain-probe-evidence > *,
+.model-calibration-task-window .calibration-step,
+.model-calibration-task-window [id$="-diagnostic"] { min-width: 0; max-width: 100%; }
+.model-calibration-task-window .gain-probe-metrics {
+  grid-template-columns: repeat(auto-fit,minmax(min(100%,160px),1fr));
+}
+.model-calibration-task-window .table-scroll { min-width: 0; width: 100%; max-width: 100%; overflow: auto; overscroll-behavior-x: contain; }
+.model-calibration-task-window .table-scroll > table { min-width: max-content; }
+.model-calibration-task-window [id$="-diagnostic"] .table-scroll th:last-child,
+.model-calibration-task-window [id$="-diagnostic"] .table-scroll td:last-child { min-width: 16ch; max-width: 24ch; white-space: normal; overflow-wrap: anywhere; }
+.model-calibration-task-window .task-window-actions { min-width: 0; padding-top: 4px; }
+.model-calibration-task-window .task-window-actions .button { max-width: 100%; white-space: normal; }
+.model-calibration-task-window .task-live-grid span,
+.model-calibration-task-window .operation-kicker,
+.model-calibration-task-window .gain-probe-evidence > summary,
+.model-calibration-task-window .gain-probe-evidence-grid dt,
+.model-calibration-task-window .gain-probe-evidence-grid dd { font-size: 12px; line-height: 1.6; }
+.model-calibration-task-window .task-live-grid span { font-family: var(--studio-mono-font); }
+.model-calibration-task-window .operation-message { font-size: 14px; }
+.model-calibration-task-window #model-calibration-task-error:empty { display: none; }
+@media(min-width:960px) {
+  .model-calibration-task-window .table-scroll > table { width: 100%; min-width: 0; table-layout: fixed; }
+  .model-calibration-task-window .table-scroll th,
+  .model-calibration-task-window .table-scroll td { min-width: 0; padding: 8px 6px; white-space: normal; overflow-wrap: anywhere; }
+  .model-calibration-task-window [id$="-diagnostic"] .table-scroll th:last-child,
+  .model-calibration-task-window [id$="-diagnostic"] .table-scroll td:last-child { min-width: 0; max-width: none; width: 24%; }
+  .model-calibration-task-window .gain-motion-establishment th:first-child,
+  .model-calibration-task-window .gain-motion-establishment td:first-child { width: 7%; }
+}
+@media(max-width:600px) {
+  .model-calibration-overlay { padding: 12px; }
+  .model-calibration-task-window,.model-calibration-task-window.is-preview-task {
+    width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    padding: 14px;
+    gap: 12px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.20);
+  }
+  .model-calibration-task-window .gain-probe-evidence-grid { grid-template-columns: minmax(0,1fr); }
+  .model-calibration-task-window .task-preview-slot { height: clamp(100px,18dvh,150px); }
+}

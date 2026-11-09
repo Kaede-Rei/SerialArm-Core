@@ -39,7 +39,16 @@ struct ModelCalibrationFrame {
     // Observed controller commands; logged for gain-dependence diagnosis
     JointVector command_kp;
     JointVector command_kd;
+    JointVector requested_kp,requested_kd;
+    // Protocol codes reconstructed from accepted gains and declared resolution;
+    // -1 means the backend did not declare a discrete gain encoding.
+    JointVector command_kp_code,command_kd_code;
     JointVector model_feedforward;
+    JointVector nominal_position,nominal_velocity,virtual_position,virtual_velocity,accepted_position,accepted_velocity;
+    JointVector command_torque,hold_integral_torque,calibration_disturbance;
+    std::vector<std::uint8_t> reference_limited,torque_limited;
+    std::vector<std::string> hold_integrator_freeze_reasons;
+    std::string gain_stage;
     std::string acceleration_source;
     std::string impedance_mode;
     double feedback_age_ms{ std::numeric_limits<double>::quiet_NaN() };

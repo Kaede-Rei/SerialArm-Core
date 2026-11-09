@@ -96,6 +96,8 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 准备页面分别显示连接前配置、运行检查、基础标定、专项标定与检查记录；控制权限由当前配置、反馈和 Core 安全检查决定
 
+自动增益标定不需要用户配置 PD 上限；历史 PD 上限字段兼容接受但忽略，实际增益受硬件协议能力和分辨率约束，位置、速度、加速度与力矩等 Safety 限制继续生效
+
 ![新机械臂接入工作流程](docs/images/workflow.svg)
 
 ## 快速开始
@@ -153,7 +155,7 @@ cd SerialArm-Core
 | [使用指南](docs/guide.md) | 模型导入、首次连接、控制、示教、标定与导出 |
 | [开发说明](docs/development.md) | 系统架构、源码目录、构建、驱动扩展与发布入口 |
 | [API 参考](docs/reference/api.md) | C++、Python、控制接口与扩展契约 |
-| [标定参考](docs/reference/calibration.md) | 重力与完整动力学辨识的数据、算法、验证和命令 |
+| [标定参考](docs/reference/calibration.md) | 自动增益、重力与完整动力学辨识的数据、算法、验证和命令 |
 
 ## 参与贡献
 

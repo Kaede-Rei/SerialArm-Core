@@ -81,9 +81,11 @@ struct JointLimitCfg {
     JointVector max_vel;       ///< 最大速度，rad/s
     JointVector max_acc;       ///< 最大加速度，rad/s^2
     JointVector max_effort;    ///< 最大关节前馈力矩，N·m
-    JointVector max_kp;        ///< 最大 Joint 侧 kp
-    JointVector max_kd;        ///< 最大 Joint 侧 kd
+    JointVector max_kp;        ///< 硬件协议映射到 Joint 侧的最大 kp，非用户策略上限
+    JointVector max_kd;        ///< 硬件协议映射到 Joint 侧的最大 kd，非用户策略上限
     JointVector pos_margin;    ///< 命令位置距离硬限位的安全边距，rad
+    JointVector kp_resolution; ///< Joint 侧协议 kp 步进，空或 0 表示连续或未声明
+    JointVector kd_resolution; ///< Joint 侧协议 kd 步进，空或 0 表示连续或未声明
 };
 
 /**

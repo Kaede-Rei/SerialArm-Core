@@ -204,6 +204,8 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const DamiaoBusCfg& cf
         capability.max_effort = static_cast<double>(limit.tau_max);
         capability.max_kp = 500.0;
         capability.max_kd = 5.0;
+        capability.kp_resolution = 500.0 / 4095.0;
+        capability.kd_resolution = 5.0 / 4095.0;
         capabilities_.push_back(std::move(capability));
     }
     configured_ = true;

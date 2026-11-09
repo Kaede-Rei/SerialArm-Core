@@ -1,6 +1,7 @@
 #include "serial_arm/robot.hpp"
 #include "serial_arm/core/park_policy.hpp"
 #include "serial_arm/core/reference_governor.hpp"
+#include "serial_arm/core/gain_quantization.hpp"
 #include "serial_arm/runtime/control_runtime.hpp"
 
 #include <algorithm>
@@ -30,6 +31,24 @@ bool finite_vector(const JointVector& values) {
     return std::all_of(values.begin(), values.end(), [](double value) {
         return std::isfinite(value);
         });
+}
+
+tl::expected<void,SafetyFault> project_command_gains(JointCtrlCmd& cmd,const JointLimitCfg& limits) {
+    const auto n=limits.max_kp.size();
+    if(cmd.kp.size()!=n || cmd.kd.size()!=n) {
+        SafetyFault fault;fault.code=SafetyErr::INVALID_CMD_SIZE;return tl::make_unexpected(fault);
+    }
+    for(std::size_t i=0;i<n;++i) {
+        const auto kp=project_protocol_gain(cmd.kp[i],limits.max_kp[i],limits.kp_resolution.empty()?0:limits.kp_resolution[i]);
+        const auto kd=project_protocol_gain(cmd.kd[i],limits.max_kd[i],limits.kd_resolution.empty()?0:limits.kd_resolution[i]);
+        if(!kp || !kd) {
+            SafetyFault fault;fault.code=!kp?SafetyErr::CMD_KP_LIMIT:SafetyErr::CMD_KD_LIMIT;fault.index=i;
+            fault.value=!kp?cmd.kp[i]:cmd.kd[i];fault.limit=!kp?limits.max_kp[i]:limits.max_kd[i];
+            return tl::make_unexpected(fault);
+        }
+        cmd.kp[i]=*kp;cmd.kd[i]=*kd;
+    }
+    return {};
 }
 
 // Unknown timestamps leave legacy backend safety checks unchanged; callers
@@ -113,7 +132,7 @@ Robot::~Robot() {
  * @return 配置成功返回空 expected，失败返回 RobotFault
  */
 tl::expected<void, RobotFault> Robot::configure(
-    const RobotCfg& cfg,
+    const RobotCfg& requested_cfg,
     std::unique_ptr<MotorBus> motor_bus,
     ModelFeedforwardFn model_feedforward,
     InteractionModelStateFn interaction_model_state) {
@@ -123,6 +142,11 @@ tl::expected<void, RobotFault> Robot::configure(
     if(!motor_bus) {
         return tl::make_unexpected(make_fault(RobotErr::NULL_MOTOR_BUS));
     }
+
+    RobotCfg cfg=requested_cfg;
+    const auto hardware_safety=resolve_connected_safety_cfg(cfg,motor_bus->capabilities());
+    if(!hardware_safety)return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    cfg.safety=*hardware_safety;
 
     const auto valid_cfg = validate_robot_core_cfg(cfg);
     if(!valid_cfg) {
@@ -424,6 +448,12 @@ void Robot::clear_calibration_hold_gains() noexcept {
     calibration_hold_source_.reset();
 }
 
+tl::expected<void, RobotFault> Robot::stop_calibration_response() {
+    if(state_!=RobotState::ACTIVE)return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
+    enter_fault(make_fault(RobotErr::CALIBRATION_RESPONSE_UNSTABLE),SafetyAction::STOP_HOLD);
+    return {};
+}
+
 bool Robot::set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode) {
     if(mode!=JointImpedanceMode::COMPLIANT_DRAG && mode!=JointImpedanceMode::RIGID_TRACKING && mode!=JointImpedanceMode::COMPLIANT_TRACKING &&
        mode!=JointImpedanceMode::RIGID_HOLD && mode!=JointImpedanceMode::COMPLIANT_HOLD)return false;
@@ -511,6 +541,7 @@ bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
 }
 
 tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode, TimePoint now, HoldTargetPolicy target_policy) {
+    clear_calibration_disturbance();
     if(state_ == RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
     if(state_ != RobotState::ACTIVE || !has_state_) return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
     if(now < last_cycle_time_ || (has_external_cmd_ && now < last_cmd_time_)) {
@@ -685,6 +716,16 @@ void Robot::clear_calibration_model_feedforward_mode() {
     if(state_==RobotState::ACTIVE) {handover_source_cmd_=last_joint_cmd_;handover_source_gains_=JointImpedanceGains{last_joint_cmd_.kp,last_joint_cmd_.kd};handover_started_=Clock::now();}
 }
 
+tl::expected<void,RobotFault> Robot::set_calibration_disturbance(const JointVector& torque,TimePoint now) {
+    if(state_!=RobotState::ACTIVE || torque.size()!=cfg_.joint_names.size())
+        return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    for(std::size_t i=0;i<torque.size();++i)
+        if(!std::isfinite(torque[i]) || std::abs(torque[i])>.05*cfg_.safety.limits.max_effort[i])
+            return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    calibration_disturbance_=torque;calibration_disturbance_at_=now;return {};
+}
+void Robot::clear_calibration_disturbance() noexcept { calibration_disturbance_.clear(); }
+
 void Robot::clear_calibration_reference_behavior() {
     calibration_reference_behavior_.reset();
     (void)interaction_controller_.reconfigure(make_interaction_cfg(cfg_.capability.admittance,cfg_.joint_names.size(),cfg_.hold_compensation.enabled));
@@ -803,6 +844,12 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
 
     JointCtrlCmd joint_cmd = ctrl_output->cmd;
     apply_gain_overrides(joint_cmd,now);
+    const JointVector requested_kp=joint_cmd.kp,requested_kd=joint_cmd.kd;
+    const auto projected=project_command_gains(joint_cmd,cfg_.safety.limits);
+    if(!projected) {
+        const auto fault=make_safety_fault(projected.error());enter_fault(fault,SafetyAction::STOP_HOLD);
+        return tl::make_unexpected(fault);
+    }
 
     const auto count=cfg_.joint_names.size();
     const bool interaction_enabled=cfg_.capability.admittance.enabled || cfg_.hold_compensation.enabled || calibration_reference_behavior_.has_value();
@@ -1003,18 +1050,26 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(model_feedforward.error());
     }
     for(std::size_t i=0;i<count;++i) joint_cmd.tor[i]+=model_feedforward.value()[i];
+    JointVector applied_disturbance(count,0.0);
+    if(calibration_disturbance_.size()==count && now>=calibration_disturbance_at_ &&
+       seconds_between(now,calibration_disturbance_at_)<=.1) {
+        applied_disturbance=calibration_disturbance_;
+        for(std::size_t i=0;i<count;++i)joint_cmd.tor[i]+=applied_disturbance[i];
+    }
     if(hold_integral_torque_.size()!=count) hold_integral_torque_.assign(count,0.0);
     hold_integrator_frozen_=true;
+    hold_integrator_freeze_reasons_.assign(count,"disabled_or_mode");
     const auto& hold_cfg=cfg_.hold_compensation;
     const bool rigid_positioning_hold=current_mode==JointImpedanceMode::RIGID_HOLD && get_gain_profile()==JointGainProfile::RIGID;
     if(hold_cfg.enabled && rigid_positioning_hold && !admittance_active && !admittance_suspended_ && !full_command_active_) {
-        bool quiet=interaction_telemetry.state.valid && interaction_telemetry.tau_ext_hat.size()==count;
-        for(std::size_t i=0;i<count && quiet;++i)
-            quiet=std::abs(joint_state->vel[i])<=hold_cfg.velocity_threshold && std::abs(joint_cmd.vel[i])<=hold_cfg.velocity_threshold &&
-                std::abs(nominal_hold_target_[i]-joint_state->pos[i])<=hold_cfg.error_threshold &&
-                std::abs(interaction_telemetry.tau_ext_hat[i])<=hold_cfg.contact_threshold[i];
-        hold_integrator_frozen_=!quiet;
+        hold_integrator_frozen_=false;
         for(std::size_t i=0;i<count;++i) {
+            auto& reason=hold_integrator_freeze_reasons_[i];reason="integrating";
+            if(!interaction_telemetry.state.valid || interaction_telemetry.tau_ext_hat.size()!=count)reason="observer_invalid";
+            else if(std::abs(joint_state->vel[i])>hold_cfg.velocity_threshold || std::abs(joint_cmd.vel[i])>hold_cfg.velocity_threshold)reason="moving";
+            else if(std::abs(nominal_hold_target_[i]-joint_state->pos[i])>hold_cfg.error_threshold)reason="outside_error_window";
+            else if(std::abs(interaction_telemetry.tau_ext_hat[i])>hold_cfg.contact_threshold[i])reason="contact";
+            const bool quiet=reason=="integrating";hold_integrator_frozen_=hold_integrator_frozen_ || !quiet;
             const double pd=joint_cmd.kp[i]*(joint_cmd.pos[i]-joint_state->pos[i])+joint_cmd.kd[i]*(joint_cmd.vel[i]-joint_state->vel[i]);
             double candidate=hold_integral_torque_[i];
             if(quiet) candidate+=std::clamp(hold_cfg.integral_gain[i]*(nominal_hold_target_[i]-joint_state->pos[i])*controller_dt,
@@ -1022,7 +1077,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             const double lower=std::max({-hold_cfg.max_torque[i],-cfg_.safety.limits.max_effort[i]-joint_cmd.tor[i],-cfg_.safety.limits.max_effort[i]-joint_cmd.tor[i]-pd});
             const double upper=std::min({hold_cfg.max_torque[i],cfg_.safety.limits.max_effort[i]-joint_cmd.tor[i],cfg_.safety.limits.max_effort[i]-joint_cmd.tor[i]-pd});
             if(lower<=upper)hold_integral_torque_[i]=std::clamp(candidate,lower,upper);
-            else {hold_integral_torque_[i]=0;hold_integrator_frozen_=true;}
+            else {hold_integral_torque_[i]=0;hold_integrator_frozen_=true;reason="effort_budget";}
+            if(lower<=upper && std::abs(candidate-hold_integral_torque_[i])>1e-12)reason="torque_or_rate_limit";
             joint_cmd.tor[i]+=hold_integral_torque_[i];
         }
     } else hold_integral_torque_.assign(count,0.0);
@@ -1115,6 +1171,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     }
 
     const auto write_result = motor_bus_->write(actuator_cmd.value());
+    const auto command_written_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
     if(!write_result) {
         const RobotFault fault = make_bus_fault(RobotErr::MOTOR_BUS_WRITE_FAILED, write_result.error());
         enter_fault(fault, SafetyAction::DISABLE);
@@ -1142,6 +1199,7 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     output.joint_ref_acc = joint_ref_acc_;
     output.model_feedforward = model_feedforward_cache_;
     output.joint_cmd = safe_cmd.value();
+    output.requested_kp=requested_kp;output.requested_kd=requested_kd;
     output.actuator_cmd = actuator_cmd.value();
     output.joint_acc_valid = joint_acc_valid;
     const auto& received = actuator_state_.feedback_received_ns;
@@ -1156,6 +1214,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
     output.gain_profile=get_gain_profile();output.gain_source=gain_source_;
     output.effective_kp=joint_cmd.kp;output.effective_kd=joint_cmd.kd;output.hold_target_pos=nominal_hold_target_;
     output.hold_integral_torque=hold_integral_torque_;output.hold_integrator_frozen=hold_integrator_frozen_;
+    output.hold_integrator_freeze_reasons=hold_integrator_freeze_reasons_;output.calibration_disturbance=applied_disturbance;
+    output.command_written_ns=command_written_ns;
     output.reference_behavior=get_reference_behavior();
     output.parameter_update_progress=interaction_controller_.parameter_update_progress();
     output.observer_valid=interaction_telemetry.state.valid;
@@ -1638,6 +1698,7 @@ RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noe
  * @brief 进入 FAULT 状态并执行对应安全动作
  */
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
+    clear_calibration_disturbance();
     park_rigid_ramp_started_.reset();
     fault_hold_active_ = false;
     admittance_suspended_ = false;
@@ -1821,6 +1882,16 @@ tl::expected<JointCtrlCmd, RobotFault> Robot::build_fault_joint_cmd(const JointS
             for(double& value : cmd.tor) value *= cfg_.safety.fault_recovery.compliant_recovery.effort_scale;
         }
     }
+    const auto projected=project_command_gains(cmd,cfg_.safety.limits);
+    if(!projected)return tl::make_unexpected(make_safety_fault(projected.error()));
+    for(std::size_t i=0;i<cmd.pos.size();++i) {
+        const double total=cmd.tor[i]+cmd.kp[i]*(cmd.pos[i]-state.pos[i])+cmd.kd[i]*(cmd.vel[i]-state.vel[i]);
+        if(!std::isfinite(total) || std::abs(total)>cfg_.safety.limits.max_effort[i]+cfg_.safety.numeric_tolerance) {
+            auto fault=make_fault(RobotErr::REFERENCE_GOVERNOR_FAILED);
+            fault.reference_governor_err=ReferenceGovernorErr::INFEASIBLE;
+            return tl::make_unexpected(fault);
+        }
+    }
     return cmd;
 }
 
@@ -1850,6 +1921,7 @@ bool Robot::is_compliant_recovery_fault_allowed() const noexcept {
  * @brief 清除外部命令并把参考重置为实测位置
  */
 tl::expected<void, RobotFault> Robot::reset_reference_to_measured(const JointState& state) {
+    clear_calibration_disturbance();
     nominal_hold_target_=state.pos;hold_integral_torque_.assign(cfg_.joint_names.size(),0.0);
     execution_gain_profile_.reset();calibration_reference_behavior_.reset();calibration_feedforward_mode_.reset();handover_source_gains_.reset();full_command_active_=false;
 accepted_nominal_cmd_.pos=state.pos;accepted_nominal_cmd_.vel.assign(cfg_.joint_names.size(),0.0);
@@ -1965,6 +2037,7 @@ void Robot::apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now) {
 }
 
 void Robot::clear_runtime_state() noexcept {
+    clear_calibration_disturbance();
     handover_source_gains_.reset();execution_gain_profile_.reset();calibration_reference_behavior_.reset();calibration_feedforward_mode_.reset();full_command_active_=false;
     nominal_hold_target_.clear();hold_integral_torque_.clear();handover_source_cmd_={};
     park_rigid_ramp_started_.reset();

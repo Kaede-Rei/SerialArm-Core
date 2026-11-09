@@ -225,6 +225,12 @@ GUI 的 °／mm 显示不改变配置与 API 的 SI 单位；Backend 须先转�
 
 `RobotCfg` 包含 `runtime`、`shutdown`、`dynamics`、`ctrller`、`mapper`、`safety`、`capability` 与 `hold_compensation`；手工组装后仍需校验，不以成功解析 YAML 代替完整配置检查
 
+PD 配置不提供用户上限；旧 `safety_policy.max_kp_override`、`max_kd_override` 与平铺格式 `limits.max_kp`、`max_kd` 接受但完全忽略，包括字段值与维度校验；运行时 `safety.limits.max_kp/max_kd` 仍保留，表示硬件协议能力经映射后的边界，加载、配置及连接能力刷新都从当前硬件重新生成
+
+`ActuatorCapability.kp_resolution/kd_resolution` 表示协议增益步进，0 表示连续或未声明；Joint 侧 `JointLimitCfg` 的同名数组按 `pos_ratio × tor_ratio` 映射；达妙 MIT 的执行器侧上限为 `500/5`，步进为 `500/4095`、`5/4095`；位置、速度、加速度、力矩与故障检查继续使用既有 Safety 规则
+
+普通周期与故障保持共用增益投影；故障保持在投影后检查实际 PD 与前馈总力矩，超出既有力矩边界时返回 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`，经现有停止／失能路径处理
+
 ### 四用途与任务
 
 公开增益用途为 `JointGainProfile::{RIGID, COMPLIANT, DRAG, SERVO_TRACKING}`；刚性和柔性各保存保持、跟踪两组增益，拖拽与伺服跟踪各保存一组
@@ -321,6 +327,12 @@ if(!held) return 1;
 
 标定使用 `set_calibration_reference_behavior()`、`set_calibration_model_feedforward_mode()` 及临时保持／跟踪增益覆盖；这些试验上下文不改持久配置，调用方需在成功、取消与异常路径清除覆盖并恢复原会话
 
+`set_calibration_disturbance(torque, now)` 为独立扰动短测提供有界关节力矩入口，`clear_calibration_disturbance()` 清除该输入；扰动仍经过原有力矩、参考与 Safety 约束，调用方需按周期刷新并在所有退出路径清除；周期输出的 `calibration_disturbance` 记录本周期实际叠加的扰动，不以请求值代替执行值
+
+自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
+
+机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据
+
 ### 周期输出与读取
 
 `get_joint_state()`、`get_actuator_state()`、`get_joint_acc()`、`get_joint_ref_acc()`、`get_model_feedforward()`、`get_interaction_state()` 读取最近周期缓存；引用会随后续周期更新，跨线程读取应使用适配层快照
@@ -330,7 +342,8 @@ if(!held) return 1;
 | `joint_state` / `actuator_state` | 本周期关节与执行器测量 |
 | `dt` / `feedback_age_ms` / `feedback_skew_ms` | 周期和反馈时序 |
 | `joint_acc_valid` / `new_measurement` / `measurement_dt` | 判断测量、微分与观测数据是否可用 |
-| `gain_profile` / `gain_source` / `effective_kp` / `effective_kd` | 实际执行用途、来源与增益 |
+| `gain_profile` / `gain_source` / `effective_kp` / `effective_kd` | 实际执行用途、来源与协议可编码增益 |
+| `requested_kp` / `requested_kd` | 当前周期投影到协议网格前的请求增益；`joint_cmd`、`actuator_cmd` 保留实际可编码值 |
 | `hold_target_pos` / `hold_integral_torque` / `hold_integrator_frozen` | 保持目标和积分补偿状态 |
 | `reference_behavior` / `parameter_update_progress` | 当前参考策略与参数交接进度 |
 | `nominal_ref_*` / `virtual_ref_*` / `accepted_ref_*` | 名义、导纳虚拟与最终接受的参考 |
@@ -443,6 +456,8 @@ print(dynamics.tool_pose)
 `SafetyFault` 包含 `code`、`index`、`value` 和 `limit`；无对应轴时 `index` 为 `std::numeric_limits<std::size_t>::max()`，不能直接作为数组下标
 
 `SafetyAction::STOP_HOLD` 用于状态可信时拒绝错误命令并尝试保持，`DISABLE` 用于状态或硬件不可信时失能；限幅不能代替对反复触限原因的处理
+
+自动标定逐周期监督器发现参考未要求的持续位置往复时，调用 `Robot::stop_calibration_response()` 锁存 `RobotErr::CALIBRATION_RESPONSE_UNSTABLE` 并执行既有 `STOP_HOLD`；故障保持改用原恢复参数并继续检查实际可编码增益与 PD 加前馈总力矩，不继续刷新本趟不稳增益；不会自动清故障、恢复旧运动或重试标定
 
 ### 故障恢复
 

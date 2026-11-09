@@ -405,6 +405,7 @@ void bind_enums(py::module_& module) {
         .value("INTERACTION_FAILED", RobotErr::INTERACTION_FAILED)
         .value("REFERENCE_GOVERNOR_FAILED",RobotErr::REFERENCE_GOVERNOR_FAILED)
         .value("MOTION_SOURCE_BUSY",RobotErr::MOTION_SOURCE_BUSY)
+        .value("CALIBRATION_RESPONSE_UNSTABLE",RobotErr::CALIBRATION_RESPONSE_UNSTABLE)
         .value("FAULT_RECOVERY_NOT_ALLOWED", RobotErr::FAULT_RECOVERY_NOT_ALLOWED);
 
     py::enum_<RobotState>(module, "RobotState")
@@ -594,6 +595,8 @@ void bind_config(py::module_& module) {
         .def_readwrite("max_effort", &JointLimitCfg::max_effort)
         .def_readwrite("max_kp", &JointLimitCfg::max_kp)
         .def_readwrite("max_kd", &JointLimitCfg::max_kd)
+        .def_readonly("kp_resolution", &JointLimitCfg::kp_resolution)
+        .def_readonly("kd_resolution", &JointLimitCfg::kd_resolution)
         .def_readwrite("pos_margin", &JointLimitCfg::pos_margin);
 
     py::class_<FaultCompliantRecoveryCfg>(module, "FaultCompliantRecoveryCfg")
@@ -901,8 +904,13 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("feedback_age_ms", &RobotCycleOutput::feedback_age_ms)
         .def_readonly("gain_profile",&RobotCycleOutput::gain_profile).def_readonly("gain_source",&RobotCycleOutput::gain_source)
         .def_readonly("effective_kp",&RobotCycleOutput::effective_kp).def_readonly("effective_kd",&RobotCycleOutput::effective_kd)
+        .def_property_readonly("requested_kp",[](const RobotCycleOutput& value){return vector_to_numpy(value.requested_kp);})
+        .def_property_readonly("requested_kd",[](const RobotCycleOutput& value){return vector_to_numpy(value.requested_kd);})
         .def_readonly("hold_target_pos",&RobotCycleOutput::hold_target_pos).def_readonly("hold_integral_torque",&RobotCycleOutput::hold_integral_torque)
         .def_readonly("hold_integrator_frozen",&RobotCycleOutput::hold_integrator_frozen)
+        .def_readonly("hold_integrator_freeze_reasons",&RobotCycleOutput::hold_integrator_freeze_reasons)
+        .def_property_readonly("calibration_disturbance",[](const RobotCycleOutput& value){return vector_to_numpy(value.calibration_disturbance);})
+        .def_readonly("command_written_ns",&RobotCycleOutput::command_written_ns)
         .def_readonly("dt", &RobotCycleOutput::dt)
         .def_property_readonly("nominal_ref_pos",[](const RobotCycleOutput& value){return vector_to_numpy(value.nominal_ref_pos);})
         .def_property_readonly("nominal_ref_vel",[](const RobotCycleOutput& value){return vector_to_numpy(value.nominal_ref_vel);})
@@ -942,7 +950,9 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("max_vel", &RobotSessionActuatorInfo::max_vel)
         .def_readonly("max_effort", &RobotSessionActuatorInfo::max_effort)
         .def_readonly("max_kp", &RobotSessionActuatorInfo::max_kp)
-        .def_readonly("max_kd", &RobotSessionActuatorInfo::max_kd);
+        .def_readonly("max_kd", &RobotSessionActuatorInfo::max_kd)
+        .def_readonly("kp_resolution", &RobotSessionActuatorInfo::kp_resolution)
+        .def_readonly("kd_resolution", &RobotSessionActuatorInfo::kd_resolution);
 
     py::class_<JointMotionStatus>(module,"JointMotionStatus")
         .def_readonly("id",&JointMotionStatus::id)

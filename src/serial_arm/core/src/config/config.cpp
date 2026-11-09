@@ -498,7 +498,6 @@ void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::stri
  * @return 配置加载结果，成功时包含 RobotCfg，失败时包含 ConfigErrInfo
  */
 tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& path, const HardwareCapabilities& capabilities) {
-    (void)capabilities;
     try {
         const YAML::Node root = YAML::LoadFile(path);
         if(!root || !root.IsMap()) {
@@ -553,8 +552,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.safety.limits.max_vel = require_as<JointVector>(limits, "max_vel", "limits");
         cfg.safety.limits.max_acc = require_as<JointVector>(limits, "max_acc", "limits");
         cfg.safety.limits.max_effort = require_as<JointVector>(limits, "max_effort", "limits");
-        cfg.safety.limits.max_kp = require_as<JointVector>(limits, "max_kp", "limits");
-        cfg.safety.limits.max_kd = require_as<JointVector>(limits, "max_kd", "limits");
+        // Legacy limits.max_kp/max_kd are accepted but never parsed or used.
         cfg.safety.limits.pos_margin = require_as<JointVector>(limits, "pos_margin", "limits");
         cfg.safety.limits.has_position_limit.assign(cfg.joint_names.size(), 1);
 
@@ -564,6 +562,16 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.mapper.direction = require_as<std::vector<int>>(mapping, "direction", "mapping");
         cfg.mapper.joint_zero_offset = require_as<JointVector>(mapping, "joint_zero_offset", "mapping");
         cfg.mapper.actuator_zero_offset = require_as<ActuatorVector>(mapping, "actuator_zero_offset", "mapping");
+        if(capabilities.size()!=cfg.joint_names.size() || cfg.mapper.pos_ratio.size()!=capabilities.size() ||
+           cfg.mapper.tor_ratio.size()!=capabilities.size())
+            throw ConfigLoadException(ConfigErr::INVALID_SIZE,"hardware/mapping joint count does not match Core");
+        for(std::size_t i=0;i<capabilities.size();++i) {
+            const double ratio=cfg.mapper.pos_ratio[i]*cfg.mapper.tor_ratio[i];
+            cfg.safety.limits.max_kp.push_back(capabilities[i].max_kp*ratio);
+            cfg.safety.limits.max_kd.push_back(capabilities[i].max_kd*ratio);
+            cfg.safety.limits.kp_resolution.push_back(capabilities[i].kp_resolution*ratio);
+            cfg.safety.limits.kd_resolution.push_back(capabilities[i].kd_resolution*ratio);
+        }
 
         load_hold_compensation(root["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(root, "controller", "root");
@@ -721,8 +729,8 @@ tl::expected<RobotCfg, ConfigErrInfo> load_robot_cfg(const std::string& path, co
             limits.max_vel[i] = std::min(limits.max_vel[i], cap.max_vel / std::abs(ratio));
             limits.max_effort[i] = std::min(limits.max_effort[i], cap.max_effort * cfg.mapper.tor_ratio[i]);
             const double gain_ratio = cfg.mapper.pos_ratio[i] * cfg.mapper.tor_ratio[i];
-            limits.max_kp[i] = std::min(limits.max_kp[i], cap.max_kp * gain_ratio);
-            limits.max_kd[i] = std::min(limits.max_kd[i], cap.max_kd * gain_ratio);
+            limits.max_kp[i] = cap.max_kp * gain_ratio;
+            limits.max_kd[i] = cap.max_kd * gain_ratio;
         }
         if(const auto valid = validate_robot_cfg(cfg); !valid) return tl::make_unexpected(valid.error());
         return loaded;
@@ -804,8 +812,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         policy.state_vel_scale = require_as<double>(safety_node, "state_vel_scale", "safety");
         policy.max_acc = load_named_joint_vector(require_map(safety_node, "max_acc", "safety"), cfg.joint_names, "safety.max_acc");
         if(safety_node["max_effort_override"]) policy.max_effort_override = load_named_joint_vector(safety_node["max_effort_override"], cfg.joint_names, "safety.max_effort_override");
-        if(safety_node["max_kp_override"]) policy.max_kp_override = load_named_joint_vector(safety_node["max_kp_override"], cfg.joint_names, "safety.max_kp_override");
-        if(safety_node["max_kd_override"]) policy.max_kd_override = load_named_joint_vector(safety_node["max_kd_override"], cfg.joint_names, "safety.max_kd_override");
+        // Deprecated PD overrides are intentionally not decoded or validated.
         policy.max_dt_s = require_as<double>(safety_node, "max_dt_s", "safety");
         policy.state_timeout_s = require_as<double>(safety_node, "state_timeout_s", "safety");
         policy.cmd_timeout_s = require_as<double>(safety_node, "cmd_timeout_s", "safety");
@@ -865,6 +872,11 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         return values.size() == n;
         };
     const auto& limits = cfg.safety.limits;
+    for(const auto* resolution:{&limits.kp_resolution,&limits.kd_resolution}) {
+        if(!resolution->empty() && (!size_is_n(*resolution) || !finite_vector(*resolution) ||
+           std::any_of(resolution->begin(),resolution->end(),[](double value){return value<0;})))
+            return fail(ConfigErr::INVALID_VALUE,"invalid hardware gain resolution");
+    }
     if(!size_is_n(cfg.shutdown.park_pos)) {
         return fail(ConfigErr::INVALID_SIZE, "shutdown.park_pos must have length " + std::to_string(n));
     }
@@ -1149,10 +1161,21 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
         return tl::make_unexpected(make_err(ConfigErr::INVALID_VALUE,
             "connected hardware capabilities conflict with requested safety limits"));
     };
-    if(!validate_robot_core_cfg(requested)) return invalid();
     const auto ordered = capabilities_for_joint_order(capabilities, requested.joint_names);
     if(!ordered) return invalid();
-    SafetyCfg result = requested.safety;
+    RobotCfg normalized=requested;
+    const auto n=requested.joint_names.size();
+    if(requested.mapper.pos_ratio.size()!=n || requested.mapper.tor_ratio.size()!=n)return invalid();
+    auto& hardware_limits=normalized.safety.limits;
+    hardware_limits.max_kp.resize(n);hardware_limits.max_kd.resize(n);
+    hardware_limits.kp_resolution.resize(n);hardware_limits.kd_resolution.resize(n);
+    for(std::size_t i=0;i<n;++i) {
+        const auto& cap=(*ordered)[i];const double ratio=requested.mapper.pos_ratio[i]*requested.mapper.tor_ratio[i];
+        hardware_limits.max_kp[i]=cap.max_kp*ratio;hardware_limits.max_kd[i]=cap.max_kd*ratio;
+        hardware_limits.kp_resolution[i]=cap.kp_resolution*ratio;hardware_limits.kd_resolution[i]=cap.kd_resolution*ratio;
+    }
+    if(!validate_robot_core_cfg(normalized))return invalid();
+    SafetyCfg result = normalized.safety;
     if(requested.safety_limit_source) {
         const auto& source = *requested.safety_limit_source;
         const auto resolved = LimitResolver{}.resolve(source.model, requested.mapper, *ordered, source.policy);
@@ -1176,14 +1199,14 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
         if(!preserve_edits(&JointLimitCfg::has_position_limit) ||
            !preserve_edits(&JointLimitCfg::min_pos) || !preserve_edits(&JointLimitCfg::max_pos) ||
            !preserve_edits(&JointLimitCfg::max_vel) || !preserve_edits(&JointLimitCfg::max_acc) ||
-           !preserve_edits(&JointLimitCfg::max_effort) || !preserve_edits(&JointLimitCfg::max_kp) ||
-           !preserve_edits(&JointLimitCfg::max_kd) || !preserve_edits(&JointLimitCfg::pos_margin)) return invalid();
+           !preserve_edits(&JointLimitCfg::max_effort) || !preserve_edits(&JointLimitCfg::pos_margin)) return invalid();
     }
     for(std::size_t i=0;i<ordered->size();++i) {
         const auto& cap=(*ordered)[i];
         if(!std::isfinite(cap.min_pos)||!std::isfinite(cap.max_pos)||cap.min_pos>=cap.max_pos ||
            !std::isfinite(cap.max_vel)||cap.max_vel<=0 || !std::isfinite(cap.max_effort)||cap.max_effort<=0 ||
-           !std::isfinite(cap.max_kp)||cap.max_kp<0 || !std::isfinite(cap.max_kd)||cap.max_kd<0) return invalid();
+           !std::isfinite(cap.max_kp)||cap.max_kp<0 || !std::isfinite(cap.max_kd)||cap.max_kd<0 ||
+           !std::isfinite(cap.kp_resolution)||cap.kp_resolution<0 || !std::isfinite(cap.kd_resolution)||cap.kd_resolution<0) return invalid();
         const auto& map=requested.mapper;
         const double signed_ratio=map.direction[i]*map.pos_ratio[i];
         const double a=map.joint_zero_offset[i]+(cap.min_pos-map.actuator_zero_offset[i])/signed_ratio;
@@ -1195,8 +1218,10 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
         result.limits.max_vel[i]=std::min(result.limits.max_vel[i],cap.max_vel/map.pos_ratio[i]);
         result.limits.max_effort[i]=std::min(result.limits.max_effort[i],cap.max_effort*map.tor_ratio[i]);
         const double gains=map.pos_ratio[i]*map.tor_ratio[i];
-        result.limits.max_kp[i]=std::min(result.limits.max_kp[i],cap.max_kp*gains);
-        result.limits.max_kd[i]=std::min(result.limits.max_kd[i],cap.max_kd*gains);
+        result.limits.max_kp[i]=cap.max_kp*gains;
+        result.limits.max_kd[i]=cap.max_kd*gains;
+        result.limits.kp_resolution[i]=cap.kp_resolution*gains;
+        result.limits.kd_resolution[i]=cap.kd_resolution*gains;
         auto& recovery=result.fault_recovery.compliant_recovery;
         recovery.max_vel[i]=std::min(recovery.max_vel[i],result.limits.max_vel[i]);
     }

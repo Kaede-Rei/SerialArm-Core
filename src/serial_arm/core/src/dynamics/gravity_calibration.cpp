@@ -260,6 +260,9 @@ tl::expected<void, std::string> ModelCalibrationRecorder::start(
         accepted << "monotonic_ns,cycle,phase,direction,speed_tier,pose_group,validation,valid,feedback_age_ms,acceleration_source,impedance_mode";
         for(const char* prefix:{"q","dq","tau","acc","ref_q","ref_dq","cmd_kp","cmd_kd","model_ff","feedback_received_ns","feedback_timing_valid"})
             for(const auto& name:metadata_.joint_names) accepted << ',' << prefix << ':' << name;
+        for(const char* prefix:{"nominal_q","nominal_dq","virtual_q","virtual_dq","accepted_q","accepted_dq","cmd_tor","hold_integral","disturbance","ref_limited","tor_limited","integrator_freeze"})for(const auto& name:metadata_.joint_names)accepted<<','<<prefix<<':'<<name;
+        accepted<<",gain_stage";
+        for(const char* prefix:{"requested_kp","requested_kd","cmd_kp_code","cmd_kd_code"})for(const auto& name:metadata_.joint_names)accepted<<','<<prefix<<':'<<name;
         accepted << '\n';
         if(!accepted){running_.store(false);return tl::make_unexpected(std::string("failed to write accepted_static.csv header"));}
     }
@@ -395,7 +398,9 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
         out << "{\"actuator_name\":\"" << json_escape(cap.actuator_name)
             << "\",\"joint_name\":\"" << json_escape(cap.joint_name)
             << "\",\"min_pos\":" << cap.min_pos << ",\"max_pos\":" << cap.max_pos
-            << ",\"max_vel\":" << cap.max_vel << ",\"max_effort\":" << cap.max_effort << '}';
+            << ",\"max_vel\":" << cap.max_vel << ",\"max_effort\":" << cap.max_effort
+            << ",\"protocol_kp_max\":"<<cap.max_kp<<",\"protocol_kd_max\":"<<cap.max_kd
+            << ",\"kp_resolution\":"<<cap.kp_resolution<<",\"kd_resolution\":"<<cap.kd_resolution<<'}';
     }
     out << "]},\n";
     out << "  \"mapping\":{\"pos_ratio\":"; json_vector(out, metadata_.mapping_pos_ratio);
@@ -404,7 +409,7 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
     out << ",\"joint_zero_offset\":"; json_vector(out, metadata_.mapping_joint_zero_offset);
     out << ",\"actuator_zero_offset\":"; json_vector(out, metadata_.mapping_actuator_zero_offset); out << "},\n";
     out << "  \"original_gravity_scale\":"; json_vector(out, metadata_.original_gravity_scale); out << ",\n";
-    out << "  \"measurement_policy\":{\"type\":\"model_initialized_response_adaptive\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"static_source\":\"accepted_static.csv\",\"gain_values_recorded_in_frames\":true,\"feedback_age_source\":\"host_transport_steady_clock_receive_timestamp_not_device_sample_or_unknown\",\"acceleration_validity\":\"acceleration_source_column\",\"hold_kp\":";
+    out << "  \"measurement_policy\":{\"type\":\"model_initialized_response_adaptive\",\"torque_feedback\":\"motor_get_tau\",\"gain_independent_of_runtime_tuning\":true,\"static_source\":\"accepted_static.csv\",\"gain_values_recorded_in_frames\":true,\"gain_snapshot_role\":\"loaded_configuration_not_initialization_or_measured_trial\",\"feedback_age_source\":\"host_transport_steady_clock_receive_timestamp_not_device_sample_or_unknown\",\"acceleration_validity\":\"acceleration_source_column\",\"hold_kp\":";
     json_vector(out,metadata_.measurement_hold_kp);
     out << ",\"hold_kd\":"; json_vector(out,metadata_.measurement_hold_kd);
     out << ",\"tracking_kp\":";json_vector(out,metadata_.measurement_tracking_kp);
@@ -442,6 +447,17 @@ std::string ModelCalibrationRecorder::frame_line(const ModelCalibrationFrame& fr
         out << ',' << (frame.feedback_received_ns.size()==frame.position.size()?frame.feedback_received_ns[i]:0);
     for(std::size_t i=0;i<frame.position.size();++i)
         out << ',' << (frame.feedback_timing_valid.size()==frame.position.size()?static_cast<int>(frame.feedback_timing_valid[i]):0);
+    append_optional(frame.nominal_position);append_optional(frame.nominal_velocity);
+    append_optional(frame.virtual_position);append_optional(frame.virtual_velocity);
+    append_optional(frame.accepted_position);append_optional(frame.accepted_velocity);
+    append_optional(frame.command_torque);append_optional(frame.hold_integral_torque);append_optional(frame.calibration_disturbance);
+    for(const auto* flags:{&frame.reference_limited,&frame.torque_limited})
+        for(std::size_t i=0;i<frame.position.size();++i)out<<','<<(flags->size()==frame.position.size()?static_cast<int>((*flags)[i]):0);
+    for(std::size_t i=0;i<frame.position.size();++i)out<<','<<(frame.hold_integrator_freeze_reasons.size()==frame.position.size()?frame.hold_integrator_freeze_reasons[i]:"unavailable");
+    out<<','<<(frame.gain_stage.empty()?"none":frame.gain_stage);
+    append_optional(frame.requested_kp);append_optional(frame.requested_kd);
+    const auto append_codes=[&](const JointVector& codes){for(std::size_t i=0;i<frame.position.size();++i)out<<','<<(codes.size()==frame.position.size()?codes[i]:-1);};
+    append_codes(frame.command_kp_code);append_codes(frame.command_kd_code);
     return out.str();
 }
 
@@ -457,6 +473,9 @@ void ModelCalibrationRecorder::writer_loop() {
     }
     out << "monotonic_ns,cycle,phase,direction,speed_tier,pose_group,validation,valid,feedback_age_ms,acceleration_source,impedance_mode";
     for(const char* prefix : {"q","dq","tau","acc","ref_q","ref_dq","cmd_kp","cmd_kd","model_ff","feedback_received_ns","feedback_timing_valid"}) for(const auto& name : metadata_.joint_names) out << ',' << prefix << ':' << name;
+    for(const char* prefix:{"nominal_q","nominal_dq","virtual_q","virtual_dq","accepted_q","accepted_dq","cmd_tor","hold_integral","disturbance","ref_limited","tor_limited","integrator_freeze"})for(const auto& name:metadata_.joint_names)out<<','<<prefix<<':'<<name;
+    out<<",gain_stage";
+    for(const char* prefix:{"requested_kp","requested_kd","cmd_kp_code","cmd_kd_code"})for(const auto& name:metadata_.joint_names)out<<','<<prefix<<':'<<name;
     out << '\n';
     while(true) {
         ModelCalibrationFrame frame;
@@ -575,12 +594,14 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
     const std::size_t expected=11+6*joints_count;
     const std::size_t extended=11+9*joints_count;
     const std::size_t timed=11+11*joints_count;
+    const std::size_t evidence=timed+12*joints_count+1;
+    const std::size_t encoded=evidence+4*joints_count;
     std::size_t line_number=1;
     while(std::getline(in,line)) {
         ++line_number;
         if(line.empty()) continue;
         const auto values=split(line);
-        if(values.size()!=expected && values.size()!=extended && values.size()!=timed) return tl::make_unexpected("invalid frames.csv column count at line "+std::to_string(line_number));
+        if(values.size()!=expected && values.size()!=extended && values.size()!=timed && values.size()!=evidence && values.size()!=encoded) return tl::make_unexpected("invalid frames.csv column count at line "+std::to_string(line_number));
         ModelCalibrationFrame frame;
         try {
             frame.monotonic_ns=static_cast<std::uint64_t>(std::stoull(values[0]));
@@ -590,7 +611,7 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
             auto read_vector=[&](JointVector& target){target.resize(joints_count);for(std::size_t i=0;i<joints_count;++i)target[i]=std::stod(values[offset++]);};
             read_vector(frame.position);read_vector(frame.velocity);read_vector(frame.torque);read_vector(frame.acceleration);read_vector(frame.reference_position);read_vector(frame.reference_velocity);
             if(values.size()>=extended){read_vector(frame.command_kp);read_vector(frame.command_kd);read_vector(frame.model_feedforward);}
-            if(values.size()==timed) {
+            if(values.size()>=timed) {
                 frame.feedback_received_ns.resize(joints_count);
                 frame.feedback_timing_valid.resize(joints_count);
                 for(auto& stamp:frame.feedback_received_ns)stamp=std::stoull(values[offset++]);
@@ -600,6 +621,14 @@ tl::expected<std::vector<ModelCalibrationFrame>, std::string> load_model_calibra
                     flag=static_cast<std::uint8_t>(value);
                 }
             }
+            if(values.size()>=evidence) {
+                read_vector(frame.nominal_position);read_vector(frame.nominal_velocity);read_vector(frame.virtual_position);read_vector(frame.virtual_velocity);
+                read_vector(frame.accepted_position);read_vector(frame.accepted_velocity);read_vector(frame.command_torque);read_vector(frame.hold_integral_torque);read_vector(frame.calibration_disturbance);
+                for(auto* flags:{&frame.reference_limited,&frame.torque_limited}){flags->resize(joints_count);for(auto& flag:*flags)flag=static_cast<std::uint8_t>(std::stoi(values[offset++]));}
+                frame.hold_integrator_freeze_reasons.resize(joints_count);for(auto& reason:frame.hold_integrator_freeze_reasons)reason=values[offset++];
+                frame.gain_stage=values[offset++];
+            }
+            if(values.size()==encoded){read_vector(frame.requested_kp);read_vector(frame.requested_kd);read_vector(frame.command_kp_code);read_vector(frame.command_kd_code);}
         } catch(...) { return tl::make_unexpected("invalid numeric field in frames.csv at line "+std::to_string(line_number)); }
         if(!finite_vector(frame.position)||!finite_vector(frame.velocity)||!finite_vector(frame.torque)||!finite_vector(frame.acceleration)||!finite_vector(frame.reference_position)||!finite_vector(frame.reference_velocity)||!std::isfinite(frame.feedback_age_ms) || (values.size()>=extended && (!finite_vector(frame.command_kp)||!finite_vector(frame.command_kd)||!finite_vector(frame.model_feedforward)))) frame.valid=false;
         result.push_back(std::move(frame));

@@ -167,6 +167,9 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     const double required=std::max(floor,.2*std::min(out.reference_positive_travel_rad,out.reference_negative_travel_rad));
     out.motion.minimum_motion_span_rad=required;
     out.motion.bidirectional=out.motion.positive_travel_rad>=required && out.motion.negative_travel_rad>=required;
+    out.motion.quantization_boundary=!out.motion.bidirectional && out.motion.encoder_step_rad>0 &&
+        std::min(out.motion.positive_travel_rad,out.motion.negative_travel_rad)>0 &&
+        std::min(out.motion.positive_travel_rad,out.motion.negative_travel_rad)+out.motion.encoder_step_rad>=required && out.metrics.response_rms_ratio>=.2;
     out.responsive=out.reference_coverage && out.motion.bidirectional && out.metrics.response_rms_ratio>=.2;
     const auto& m=out.metrics;
     out.motion.qualified=out.responsive && m.measurement_samples>=100 && m.continuous && m.limited_samples==0;
@@ -175,7 +178,7 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     // rejection gate for a general path
     out.metrics.observable=out.responsive;
     out.passed=out.motion.qualified && m.samples>=100 && m.rms_error<=req.rms_error_rad &&
-        m.peak_error<=req.peak_error_rad && m.velocity_rms<=req.velocity_rms_rad_s &&
+        m.peak_error<req.peak_error_rad && m.velocity_rms<=req.velocity_rms_rad_s &&
         m.overshoot<=req.overshoot_rad && m.settled && m.settling_s<=req.settling_time_s && !m.oscillating;
     out.metrics.passed=out.passed;
     if(m.measurement_samples<100 || !m.continuous)out.reason="insufficient_measurements";
@@ -184,7 +187,8 @@ inline TrajectoryAssessment assess_trajectory(const std::vector<Sample>& rows,Re
     else if(std::max(out.motion.positive_travel_rad,out.motion.negative_travel_rad)<required)out.reason="no_motion";
     else if(!out.motion.bidirectional)out.reason="one_sided_response";
     else if(!out.responsive)out.reason="weak_response";
-    else if(m.oscillating || out.dynamic_overshoot_rad>req.overshoot_rad)out.reason="resonance";
+    else if(m.oscillating)out.reason="sustained_oscillation";
+    else if(out.dynamic_overshoot_rad>req.overshoot_rad)out.reason="dynamic_overshoot";
     else out.reason=out.passed?"qualified":"tracking_not_qualified";
     out.motion.reason=out.motion.qualified?"motion_established":out.reason;
     return out;
@@ -237,19 +241,21 @@ inline Gains trajectory_candidate(const Gains& current,const std::vector<double>
         if(t.in_phase_gain<1 && t.amplitude_error_rms_rad>t.position_floor_rad &&
            t.amplitude_error_rms_rad>t.velocity_error_rms_rad+t.position_floor_rad) {
             const double step=std::clamp(1-t.in_phase_gain,.02,.10);
-            const double damping_ratio=current.kd[i]>0?kd_max[i]/current.kd[i]:1e30;
-            const double allowed=std::min(1+step,damping_ratio*damping_ratio);
-            if(allowed<=1+1e-12)continue;
+            // A damping ceiling is a real constraint, not an implicit Kp
+            // ceiling. Try a smaller measured stiffness step if Kd is capped.
+            const double allowed=1+(current.kd[i]>=kd_max[i]-1e-12?.5:1.0)*step;
             next.kp[i]=std::min(current.kp[i]*allowed,kp_max[i]);
             const double ratio=current.kp[i]>0?next.kp[i]/current.kp[i]:1;
             next.kd[i]=std::min(current.kd[i]*std::sqrt(ratio),kd_max[i]);
         } else if(t.lag_s>0 && t.velocity_error_rms_rad>t.position_floor_rad &&
                   t.velocity_error_rms_rad>t.amplitude_error_rms_rad+t.position_floor_rad &&
                   a.dynamic_overshoot_rad<=t.position_floor_rad) {
-            // Velocity-correlated lag does not establish an amplitude deficit.
-            // Trial a small damping reduction, never during measured ringing;
-            // the next real traversal must justify retaining it
-            next.kd[i]=.95*current.kd[i];
+            // MIT already contains a reference-velocity term. Lag alone does
+            // not establish excessive physical damping. A small Kp trial can
+            // improve disturbance rejection and lag even when Kd is capped;
+            // only the next comparable real traversal can justify retention.
+            next.kp[i]=std::min(1.10*current.kp[i],kp_max[i]);
+            next.kd[i]=std::min(current.kd[i]*std::sqrt(current.kp[i]>0?next.kp[i]/current.kp[i]:1.0),kd_max[i]);
         }
     }
     return next;

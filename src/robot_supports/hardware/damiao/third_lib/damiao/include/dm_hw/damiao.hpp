@@ -25,6 +25,11 @@
 
 namespace damiao {
 
+// Gain code centres remain stable after the command's float conversion.
+inline uint16_t encode_mit_gain(float value,double maximum) {
+    return static_cast<uint16_t>(std::round(std::clamp(static_cast<double>(value),0.0,maximum)*4095.0/maximum));
+}
+
 // ! ========================= 接 口 变 量 / 结 构 体 / 枚 举 声 明 ========================= ! //
 
 #pragma pack(1)
@@ -445,8 +450,10 @@ public:
             throw std::runtime_error("MotorControl id not found");
         }
         auto& m = motors_by_slave_id_.at(id);
-        uint16_t kp_uint = float_to_uint(kp, 0, 500, 12);
-        uint16_t kd_uint = float_to_uint(kd, 0, 5, 12);
+        // Gains are projected to protocol code centres by Robot. Nearest
+        // encoding preserves those centres after the float conversion.
+        uint16_t kp_uint = encode_mit_gain(kp,500.0);
+        uint16_t kd_uint = encode_mit_gain(kd,5.0);
         LimitParam limit_param_cmd = m->get_limit_param();
         uint16_t q_uint = float_to_uint(q, -limit_param_cmd.q_max, limit_param_cmd.q_max, 16);
         uint16_t dq_uint = float_to_uint(dq, -limit_param_cmd.dq_max, limit_param_cmd.dq_max, 12);

@@ -33,6 +33,15 @@ contextBridge.exposeInMainWorld('serialArm', {
   },
   terminalMenu: options => ipcRenderer.invoke('launcher:terminal-menu', options),
   modelResource: file => ipcRenderer.invoke('launcher:model-resource', file),
+  onCloseRequest: callback => {
+    const listener = async (_, requestId) => {
+      try { ipcRenderer.send('launcher:close-draft', {requestId, ...await callback()}); }
+      catch (error) { ipcRenderer.send('launcher:close-draft', {requestId, error:String(error?.message || error)}); }
+    };
+    ipcRenderer.on('launcher:prepare-close', listener);
+    ipcRenderer.send('launcher:close-ready');
+    return () => ipcRenderer.removeListener('launcher:prepare-close', listener);
+  },
   onEvent: callback => {
     const listener = (_, data) => callback(data);
     ipcRenderer.on('launcher:event', listener);

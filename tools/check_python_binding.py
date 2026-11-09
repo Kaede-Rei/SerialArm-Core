@@ -28,6 +28,20 @@ def main():
     assert feedback.feedback_timing_valid==[1]
     cycle=RobotCycleOutput()
     assert hasattr(cycle,'joint_acc_valid') and hasattr(cycle,'feedback_age_ms')
+    assert cycle.command_written_ns == 0
+    assert cycle.hold_integrator_freeze_reasons == []
+    assert isinstance(cycle.calibration_disturbance, np.ndarray)
+    assert cycle.calibration_disturbance.size == 0
+    assert isinstance(cycle.requested_kp, np.ndarray) and cycle.requested_kp.size == 0
+    assert isinstance(cycle.requested_kd, np.ndarray) and cycle.requested_kd.size == 0
+    for name, value in [('command_written_ns', 123), ('hold_integrator_freeze_reasons', ['moving']),
+                        ('calibration_disturbance', [0.01]), ('requested_kp', [1.0]), ('requested_kd', [0.1])]:
+        try:
+            setattr(cycle, name, value)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f'{name} must be read-only telemetry')
     state = JointState()
     for field, begin in (('pos', 1), ('vel', 11), ('tor', 21)):
         check_vector(state, field, np.arange(begin, begin + 6, dtype=np.float64))

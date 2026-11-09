@@ -94,6 +94,8 @@ Applications, robot configuration and hardware drivers share one C++ control and
 
 The readiness page separates configuration, runtime checks, basic calibration, specialist calibration and inspection records; control admission depends on the current configuration, feedback and Core checks
 
+Automatic gain calibration requires no user PD ceilings. Legacy PD limit fields remain readable and are ignored; hardware protocol bounds and gain resolution apply alongside the existing position, velocity, acceleration and torque safety limits.
+
 ![Robot integration workflow](docs/images/workflow.svg)
 
 The architecture and workflow figures currently use Chinese labels
@@ -155,7 +157,7 @@ The detailed guides are currently maintained in Chinese
 | [User guide](docs/guide.md) | Model import, first connection, control, teaching, calibration and export |
 | [Development](docs/development.md) | Architecture, source layout, builds, driver integration and packaging |
 | [API reference](docs/reference/api.md) | C++, Python, control interfaces and extension contracts |
-| [Calibration reference](docs/reference/calibration.md) | Data, algorithms, validation and commands for gravity and full dynamics identification |
+| [Calibration reference](docs/reference/calibration.md) | Data, algorithms, validation and commands for automatic gains, gravity and full dynamics identification |
 
 ## Contributing
 

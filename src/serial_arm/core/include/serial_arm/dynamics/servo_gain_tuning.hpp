@@ -5,6 +5,8 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <cstdint>
+#include <deque>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -13,7 +15,7 @@
 namespace serial_arm::servo_tuning {
 constexpr double pi=3.14159265358979323846;
 struct Requirements {
-    double peak_error_rad{0.012},rms_error_rad{0.004},velocity_rms_rad_s{0.08};
+    double peak_error_rad{pi/1800},rms_error_rad{0.004},velocity_rms_rad_s{0.08};
     double overshoot_rad{0.004},settling_error_rad{0.003},settling_time_s{0.7};
     double hold_error_rad{0.004},hold_velocity_rad_s{0.025};
     double amplitude_rad{0.008},probe_duration_s{8.0},tail_s{1.5};
@@ -28,12 +30,22 @@ struct Sample {
     double time_s{0},reference{0},reference_velocity{0},actual{0},velocity{0};
     double residual{0};
     bool limited{false},new_measurement{false},residual_valid{false};
+    // reference/velocity are the accepted MIT setpoints. These fields describe
+    // the command actually issued, on the same monotonic clock as time_s.
+    double applied_feedforward_nm{std::numeric_limits<double>::quiet_NaN()};
+    double independent_disturbance_nm{0};
+    double command_time_s{std::numeric_limits<double>::quiet_NaN()};
+    double feedback_time_s{std::numeric_limits<double>::quiet_NaN()};
+    std::uint64_t feedback_sequence{0};
+    bool feedforward_known{false},independent_disturbance_known{false};
+    double actual_kp{0},actual_kd{0};bool actual_gains_known{false};
 };
 struct Metrics {
     std::size_t samples{0},measurement_samples{0},limited_samples{0},tail_samples{0};
     double rms_error{0},peak_error{0},velocity_rms{0},overshoot{0},settling_s{0};
     double residual_bias{0},residual_noise_rms{0},tail_drift{0},tail_peak_velocity{0},tail_error_rad{0};
     double reference_span{0},actual_span{0},response_rms_ratio{0};
+    double applied_input_peak_nm{0};
     std::size_t residual_samples{0},tail_reversals{0};
     bool continuous{true},settled{false},oscillating{false},observable{false},passed{false};
 };
@@ -41,6 +53,50 @@ struct NoiseEstimate {
     double rms_rad{0},encoder_step_rad{0},velocity_rms{0},velocity_peak{0},velocity_step{0};
     double span_rad{0},drift_rad{0};
     std::size_t samples{0};bool stationary{false};
+};
+struct MotionGuardResult {
+    bool triggered{false};std::string reason{"no_uncommanded_oscillation"};
+    std::size_t position_reversals{0},reference_reversals{0};
+    double actual_travel_rad{0},reference_travel_rad{0},residual_peak_to_peak_rad{0},window_s{0};
+};
+// Detect repeated position excursions which the accepted reference does not
+// request. This is an execution guard, not a mechanical-resonance identifier;
+// raw velocity codes and one dynamic overshoot cannot trigger it.
+class CommandConditionedMotionGuard {
+    Requirements req_;NoiseEstimate noise_;std::deque<Sample> rows_;std::uint64_t sequence_{0};
+public:
+    explicit CommandConditionedMotionGuard(const Requirements& req=Requirements{},const NoiseEstimate& noise=NoiseEstimate{}):req_(req),noise_(noise){}
+    MotionGuardResult observe(const Sample& row) {
+        MotionGuardResult out;
+        if(!row.new_measurement || (row.feedback_sequence && sequence_==row.feedback_sequence))return out;
+        if(!std::isfinite(row.time_s) || !std::isfinite(row.actual) || !std::isfinite(row.reference))return out;
+        if(!rows_.empty() && (row.time_s<=rows_.back().time_s || row.time_s-rows_.back().time_s>.06))rows_.clear();
+        sequence_=row.feedback_sequence;rows_.push_back(row);
+        while(!rows_.empty() && rows_.front().time_s<row.time_s-.25)rows_.pop_front();
+        if(rows_.size()<20 || rows_.back().time_s-rows_.front().time_s<.15)return out;
+        out.window_s=rows_.back().time_s-rows_.front().time_s;
+        const double hysteresis=std::max({3*noise_.encoder_step_rad,6*noise_.rms_rad,.25*req_.peak_error_rad,1e-5});
+        const auto excursions=[&](bool actual) {
+            double extreme=actual?rows_.front().actual:rows_.front().reference,anchor=extreme,travel=0;int direction=0;std::size_t reversals=0;
+            for(const auto& s:rows_) {
+                const double q=actual?s.actual:s.reference;
+                if(!direction){if(std::abs(q-anchor)>=hysteresis){direction=q>anchor?1:-1;extreme=q;}}
+                else if((q-extreme)*direction>=0)extreme=q;
+                else if((extreme-q)*direction>=hysteresis){travel+=std::abs(extreme-anchor);anchor=extreme;extreme=q;direction=-direction;++reversals;}
+            }
+            return std::pair<std::size_t,double>{reversals,travel+std::abs(extreme-anchor)};
+        };
+        const auto actual=excursions(true),reference=excursions(false);
+        out.position_reversals=actual.first;out.reference_reversals=reference.first;
+        out.actual_travel_rad=actual.second;out.reference_travel_rad=reference.second;
+        double low=std::numeric_limits<double>::infinity(),high=-low;
+        for(const auto& s:rows_){const double e=s.actual-s.reference;low=std::min(low,e);high=std::max(high,e);}
+        out.residual_peak_to_peak_rad=high-low;
+        out.triggered=actual.first>=4 && actual.first>=reference.first+3 &&
+            actual.second>2.5*reference.second+8*hysteresis && high-low>4*hysteresis;
+        if(out.triggered)out.reason="repeated_position_oscillation_not_requested_by_reference";
+        return out;
+    }
 };
 inline double observed_encoder_step(std::vector<double> positions) {
     std::sort(positions.begin(),positions.end());double step=std::numeric_limits<double>::infinity();
@@ -111,7 +167,7 @@ struct MotionObservation {
     double reference_positive{0},reference_negative{0},actual_positive{0},actual_negative{0};
     double response_rms_ratio{0},coherence{0},encoder_step_rad{0},noise_rms_rad{0},minimum_motion_span_rad{0};
     double initial_error_rad{0},positive_travel_rad{0},negative_travel_rad{0},alignment_delay_s{0};
-    bool bidirectional{false},qualified{false};std::string reason{"insufficient_measurements"};
+    bool bidirectional{false},qualified{false},quantization_boundary{false};std::string reason{"insufficient_measurements"};
 };
 inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,double excitation_end_s) {
     Metrics m;if(rows.empty())return m;
@@ -173,7 +229,7 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
             m.actual_span>=0.2*m.reference_span && m.response_rms_ratio>=0.2;
     }
     m.passed=m.observable && m.samples>=100 && m.measurement_samples>=100 && m.continuous && m.limited_samples==0 &&
-        m.rms_error<=req.rms_error_rad && m.peak_error<=req.peak_error_rad &&
+        m.rms_error<=req.rms_error_rad && m.peak_error<req.peak_error_rad &&
         m.velocity_rms<=req.velocity_rms_rad_s && m.overshoot<=req.overshoot_rad &&
         m.settled && m.settling_s<=req.settling_time_s && !m.oscillating;
     return m;
@@ -242,6 +298,9 @@ inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Re
         record_segment(first,last,direction);
     }
     out.bidirectional=required>0 && out.positive_travel_rad>=required && out.negative_travel_rad>=required;
+    out.quantization_boundary=!out.bidirectional && out.encoder_step_rad>0 &&
+        std::min(out.positive_travel_rad,out.negative_travel_rad)>0 &&
+        std::min(out.positive_travel_rad,out.negative_travel_rad)+out.encoder_step_rad>=required && out.response_rms_ratio>=.2;
     if(metrics.measurement_samples<100 || !metrics.continuous)out.reason="insufficient_measurements";
     else if(metrics.limited_samples)out.reason="limited";
     else if(std::max(out.positive_travel_rad,out.negative_travel_rad)<required)out.reason="no_motion";
@@ -259,6 +318,17 @@ struct ResponseModel {
     // A cutoff is reported only when measurements bracket it, never extrapolated
     double observed_cutoff_hz{std::numeric_limits<double>::quiet_NaN()};
     std::vector<FrequencyPoint> points;
+    bool tracking_valid{false},disturbance_valid{false},feedforward_known{false};
+    bool disturbance_goal_evaluated{false},disturbance_goal_met{false};
+    bool sustained_oscillation{false},dynamic_overshoot{false};
+    double inertia_estimate{0},effective_stiffness_nm_rad{0},viscous_damping_nm_s_rad{0};
+    double low_frequency_compliance_rad_nm{std::numeric_limits<double>::quiet_NaN()};
+    double reference_lag_s{0},direction_bias_rad{0},tracking_peak_error_rad{0};
+    double velocity_error_rad_per_rad_s{0};bool direction_evidence_valid{false};
+    std::size_t fresh_samples{0},duplicate_feedback{0};
+    std::string model_definition{"unidentified"},reason{"insufficient_measurements"};
+    std::vector<std::string> missing_evidence;
+    double physical_stiffness_nm_rad{0},nominal_physical_stiffness_nm_rad{0};
 };
 inline ResponseModel identify(const std::vector<Sample>& rows,const Requirements& req) {
     ResponseModel out;
@@ -285,37 +355,14 @@ inline ResponseModel identify(const std::vector<Sample>& rows,const Requirements
         if(std::abs(response[j])>=0.80 && std::abs(response[j])<=1.20 && std::abs(std::arg(response[j]))<0.45)
             out.tested_follow_frequency_hz=req.frequencies_hz[j];
     }
-    // Fit two frequencies, retain the third as an independent spectral check
-    struct Fit {double loss,wn,zeta,delay,held;};
-    std::vector<Fit> fits;fits.reserve(65*32*17);double best=1e30;
-    for(int ni=0;ni<65;++ni)for(int zi=0;zi<32;++zi)for(int di=0;di<17;++di) {
-        const double wn=1.0*std::pow(45.0,ni/64.0),zeta=0.15+2.85*zi/31.0,delay=0.005*di;
-        double fit=0,held=0;
-        for(std::size_t j=0;j<3;++j) {
-            const double w=2*pi*req.frequencies_hz[j];
-            const auto h=(wn*wn/std::complex<double>{wn*wn-w*w,2*zeta*wn*w})*std::exp(std::complex<double>{0,-w*delay});
-            const double e=std::norm(h-response[j])/std::max(0.01,std::norm(response[j]));
-            if(j<2)fit+=e/2;else held=e;
-        }
-        fits.push_back({fit,wn,zeta,delay,held});
-        if(fit<best){best=fit;out.natural_frequency_rad_s=wn;out.damping_ratio=zeta;out.effective_delay_s=delay;out.held_out_error=std::sqrt(held);}
-    }
-    out.relative_fit_error=std::sqrt(best);
-    double wn_low=1e30,wn_high=0,z_low=1e30,z_high=0,d_low=1e30,d_high=0;
-    for(const auto& fit:fits)if(fit.loss<=best+1e-4 && fit.held<.05*.05) {
-        wn_low=std::min(wn_low,fit.wn);wn_high=std::max(wn_high,fit.wn);
-        z_low=std::min(z_low,fit.zeta);z_high=std::max(z_high,fit.zeta);
-        d_low=std::min(d_low,fit.delay);d_high=std::max(d_high,fit.delay);
-    }
-    // Similar low-frequency responses can hide different poles and delays
-    // Keep the measured FRF but withhold pole parameters when the fit is ambiguous
-    out.identifiable=out.relative_fit_error<0.22 && out.held_out_error<0.05 && out.natural_frequency_rad_s<44 &&
-        wn_high>0 && wn_high/wn_low<=1.30 && z_high-z_low<=.35 && d_high-d_low<=.015;
-    for(std::size_t j=0;j<out.points.size();++j) {
-        out.resonance_observed=out.resonance_observed || out.points[j].gain>1.25;
-        if(j && out.points[j-1].gain>std::sqrt(.5) && out.points[j].gain<=std::sqrt(.5))
-            out.observed_cutoff_hz=out.points[j].hz;
-    }
+    // This compatibility entry point has no knowledge of the MIT velocity
+    // reference or executed feedforward. Its FRF is valid reference-tracking
+    // evidence; fitting a zero-free second-order plant would mislabel the MIT
+    // numerator zero as physical bandwidth/damping. Use identify_mit for poles.
+    out.tracking_valid=true;out.model_definition="reference_tracking_frf";
+    out.reason="mit_execution_parameters_required";
+    out.missing_evidence.push_back("mit_velocity_reference_and_applied_feedforward");
+
     return out;
 }
 struct Gains {std::vector<double> kp,kd;};

@@ -41,6 +41,8 @@ struct RobotSessionActuatorInfo {
     double max_effort{ 0.0 };      ///< 执行器最大力矩绝对值
     double max_kp{ 0.0 };          ///< 执行器最大比例增益
     double max_kd{ 0.0 };          ///< 执行器最大阻尼增益
+    double kp_resolution{ 0.0 };   ///< 执行器协议 kp 步进
+    double kd_resolution{ 0.0 };   ///< 执行器协议 kd 步进
 };
 
 /**

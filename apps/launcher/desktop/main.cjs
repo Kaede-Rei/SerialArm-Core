@@ -9,6 +9,7 @@ const { GraphicsRuntime, MODES: GRAPHICS_MODES } = require('./graphics.cjs');
 const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : path.resolve(__dirname, '../../..');
 const entry = path.resolve(__dirname, '../renderer/index.html');
 let win, bridge, closing = false, graphicsRestarting = false, runtimeTransitions = 0;
+let rendererCloseReady = false, closeRequestSerial = 0, closeDraftRequest = null;
 let allowedModelResources = new Set();
 app.setName('SerialArm Studio');
 app.setPath('userData', path.join(app.getPath('appData'), 'serial-arm'));
@@ -54,6 +55,26 @@ function waitForSessionExit() {
         bridge.on('event', done);
     });
 }
+function windowDraftState() {
+    // The renderer registers before creating an editor, so an unbooted window has no draft.
+    if (!rendererCloseReady) return Promise.resolve({dirty:false});
+    return new Promise((resolve, reject) => {
+        const requestId = ++closeRequestSerial;
+        const finish = (error, result) => {
+            clearTimeout(timer); closeDraftRequest = null;
+            if (error) reject(error); else resolve(result);
+        };
+        const timer = setTimeout(() => finish(new Error('无法读取未保存的参数，请返回窗口检查后重试 / Unable to read the parameter draft; check the window and retry')), 5000);
+        closeDraftRequest = {requestId, finish};
+        win.webContents.send('launcher:prepare-close', requestId);
+    });
+}
+function acceptCloseDraft(event, result) {
+    trusted(event);
+    if (!closeDraftRequest || result?.requestId !== closeDraftRequest.requestId) return;
+    if (typeof result.dirty !== 'boolean' || result.error) closeDraftRequest.finish(new Error(String(result.error || 'Invalid parameter draft state')));
+    else closeDraftRequest.finish(null, {dirty:result.dirty});
+}
 async function closeWindow(options = {}) {
     if (closing) {
         if (options.graphicsRestart) throw new Error('应用正在退出，请等待退出完成 / Application shutdown is already in progress');
@@ -63,12 +84,21 @@ async function closeWindow(options = {}) {
     closing = true;
     if (options.graphicsRestart) graphicsRestarting = true;
     try {
+        const draft = await windowDraftState();
+        if (draft.dirty) {
+            const choice = await dialog.showMessageBox(win, {
+                type:'question', buttons:[options.graphicsRestart ? '放弃修改并重启 / Discard and restart' : '放弃修改并退出 / Discard and exit', '取消 / Cancel'], defaultId:1, cancelId:1,
+                message:'参数有未保存的修改 / Unsaved parameter changes',
+                detail:'放弃修改后将丢失当前参数草稿 / Discarding loses the current parameter draft'
+            });
+            if (choice.response !== 0) return false;
+        }
         if (!options.graphicsRestart && ['running', 'stopping'].includes(bridge.session.state)) {
             const choice = await dialog.showMessageBox(win, {
                 type: 'question', buttons: ['停止并退出 / Stop and exit', '取消 / Cancel'], defaultId: 1, cancelId: 1,
                 message: '运行会话仍在执行 / A session is still running', detail: '关闭窗口前先停止运行进程 / Stop the session before closing'
             });
-            if (choice.response !== 0) return;
+            if (choice.response !== 0) return false;
             const stopMethod = bridge.session.mode === 'workbench' ? 'workbench_stop' : 'stop';
             let stopError;
             try { if (bridge.dead) throw new Error('后台已断开，无法确认机械臂状态 / Backend disconnected; robot state is unverified'); await bridge.request(stopMethod); }
@@ -81,7 +111,7 @@ async function closeWindow(options = {}) {
                     detail: '无法确认电机已失能，请先可靠支撑机械臂，必要时急停或断电；强制退出仅终止进程 / Motor disable is unverified; physically secure the robot before terminating the process' +
                         (stopError ? '\n\n' + String(stopError.message || stopError).slice(0, 1200) : '')
                 });
-                if (force.response !== 0) return;
+                if (force.response !== 0) return false;
                 if (!bridge.dead) {
                     try { await bridge.request(stopMethod, { force: true }); }
                     catch (error) { if (!bridge.dead) throw error; }
@@ -93,6 +123,7 @@ async function closeWindow(options = {}) {
         savePrefs({ bounds: win.getBounds() });
         if (bridge.dead) await bridge.forceClose();
         else await bridge.close();
+        if (options.beforeDestroy) options.beforeDestroy();
         if (options.graphicsRestart) app.relaunch({ args: process.argv.slice(1).filter(arg => !arg.startsWith('--graphics-mode') && arg !== '--enable-unsafe-swiftshader' && !arg.startsWith('--use-gl=') && !arg.startsWith('--use-angle=')) });
         win.destroy(); app.quit();
         return true;
@@ -117,18 +148,21 @@ async function selectGraphicsMode(mode, options = {}) {
             if (consent.response !== 0) return { ...graphics.status(), canceled: true };
         }
     }
-    const next = { ...readPrefs(), graphicsMode: mode };
-    if (mode === 'compatibility') next.graphicsUnsafeSoftware = true;
-    fs.mkdirSync(path.dirname(prefsPath()), { recursive: true });
-    fs.writeFileSync(prefsPath() + '.tmp', JSON.stringify(next, null, 2), { mode: 0o600 });
-    fs.renameSync(prefsPath() + '.tmp', prefsPath());
-    graphics.select(mode);
-    const result = graphics.status();
-    if (options.restart && result.requiresRestart) {
-        await closeWindow({ graphicsRestart: true });
-        return { ...result, restarting: true };
+    const commit = () => {
+        const next = { ...readPrefs(), graphicsMode: mode };
+        if (mode === 'compatibility') next.graphicsUnsafeSoftware = true;
+        fs.mkdirSync(path.dirname(prefsPath()), { recursive: true });
+        fs.writeFileSync(prefsPath() + '.tmp', JSON.stringify(next, null, 2), { mode: 0o600 });
+        fs.renameSync(prefsPath() + '.tmp', prefsPath());
+        graphics.select(mode);
+    };
+    const requiresRestart = mode !== 'rescue' && mode !== graphics.backendMode;
+    if (options.restart && requiresRestart) {
+        const restarted = await closeWindow({ graphicsRestart:true, beforeDestroy:commit });
+        return { ...graphics.status(), restarting:restarted, canceled:!restarted };
     }
-    return result;
+    commit();
+    return graphics.status();
 }
 function packagedBackend() {
     const native = path.join(root, 'native');
@@ -192,6 +226,8 @@ async function start() {
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
     win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });
+    ipcMain.on('launcher:close-ready', event => { trusted(event); rendererCloseReady = true; });
+    ipcMain.on('launcher:close-draft', acceptCloseDraft);
     win.once('ready-to-show', () => { if (!app.commandLine.hasSwitch('smoke-test')) win.show(); });
     const methods = new Set(['profile_hardware_inspect', 'profile_hardware_import', 'trajectory_preview', 'calibration_gain_validate_trajectory', 'calibration_tool_records_page', 'calibration_candidates', 'trajectory_select', 'geometry_fixed_preview_tcp', 'geometry_fixed_apply_tcp', 'status', 'profiles', 'profile_library', 'profile_source_inspect', 'profile_library_register', 'profile_library_remove', 'description_inspect', 'description_create_profile', 'readiness', 'readiness_mark', 'readiness_record', 'readiness_approve_mode', 'profile_editor_load', 'profile_editor_save', 'inspect', 'model', 'model_preview', 'workbench_start', 'workbench_request', 'workbench_stop', 'workbench_config_preview', 'workbench_config_save', 'workbench_export', 'model_calibration_load', 'model_calibration_model_alignment', 'model_calibration_records', 'model_calibration_preview_save', 'model_calibration_save', 'model_calibration_restore_config', 'model_calibration_export_friction', 'model_calibration_export_urdf', 'model_calibration_export_full_inertial', 'model_calibration_assess', 'model_calibration_advanced', 'model_calibration_recompute', 'model_calibration_idim', 'model_calibration_idim_audit', 'model_calibration_idim_export', 'calibration_tool_records', 'calibration_tool_load', 'calibration_tool_export', 'calibration_tool_export_record', 'geometry_fixed_state', 'geometry_fixed_begin', 'geometry_fixed_capture', 'geometry_fixed_solve', 'geometry_fixed_validate', 'geometry_fixed_discard', 'geometry_fixed_report', 'geometry_fixed_export_tcp', 'geometry_repeat_status', 'geometry_repeat_record_begin', 'geometry_repeat_record_stop', 'geometry_repeat_load', 'geometry_repeat_save', 'geometry_repeat_play', 'geometry_repeat_stop', 'trajectory_list', 'trajectory_save', 'trajectory_load', 'trajectory_rename', 'trajectory_remove', 'trajectory_export', 'trajectory_import', 'calibration_candidate_prepare', 'calibration_candidate_apply', 'calibration_candidate_restore', 'calibration_candidate_status', 'start', 'input', 'resize', 'stop']);
     ipcMain.handle('launcher:request', async (event, method, params = {}) => {
@@ -345,4 +381,9 @@ async function start() {
         app.quit();
     }
 }
+app.on('before-quit', event => {
+    if (!win || win.isDestroyed()) return;
+    event.preventDefault();
+    closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message));
+});
 app.on('window-all-closed', () => app.quit());

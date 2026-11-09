@@ -144,10 +144,6 @@ safety_policy:
   state_vel_scale: 1.0                              # 状态速度检查相对 URDF velocity 上限的缩放比例
   # 各关节最大允许加速度 rad/s^2
   max_acc: {joint1: 10.8, joint2: 10.8, joint3: 10.8, joint4: 10.8, joint5: 10.8, joint6: 10.8}
-  # kp 安全上限
-  max_kp_override: {joint1: 100.0, joint2: 220.0, joint3: 220.0, joint4: 70.0, joint5: 50.0, joint6: 30.0}
-  # kd 安全上限
-  max_kd_override: {joint1: 1.8, joint2: 4.2, joint3: 4.2, joint4: 1.2, joint5: 0.8, joint6: 0.4}
   max_dt_s: 0.02                                    # Safety 接受的最大控制周期 s
   state_timeout_s: 0.05                             # 两帧合法硬件状态之间允许的最大间隔 s
   cmd_timeout_s: 0.10                               # 跟踪模式收到外部命令后的最大命令超时时间 s
