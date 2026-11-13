@@ -17,7 +17,7 @@ function contrastSamples(){
  const blend=(front,back)=>front.slice(0,3).map((channel,index)=>channel*front[3]+back[index]*(1-front[3]));
  const luminance=rgb=>rgb.map(value=>{const channel=value/255;return channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4;}).reduce((value,channel,index)=>value+channel*[.2126,.7152,.0722][index],0);
  const result=[];
- for(const [label,selector] of [['main','.gain-page-heading h3'],['muted','.gain-time-summary dt'],['hint','.gain-acceptance-primary .hint'],['primary','.gain-task-actions .button.primary:not(:disabled)'],['start_primary','#model-calibration-replay-confirm:not(:disabled)'],['import_primary','#calibration-tool-import:not(:disabled)']]){
+ for(const [label,selector] of [['main','.gain-page-heading h3'],['muted','.gain-time-summary dt'],['hint','.gain-reference-notice'],['primary','.gain-task-actions .button.primary:not(:disabled)'],['start_primary','#model-calibration-replay-confirm:not(:disabled)'],['import_primary','#calibration-tool-import:not(:disabled)']]){
   const node=document.querySelector(selector);if(!node||!node.getClientRects().length)continue;
   let background=[255,255,255];const ancestors=[];for(let parent=node;parent;parent=parent.parentElement)ancestors.push(parent);
   for(const parent of ancestors.reverse())background=blend(parse(getComputedStyle(parent).backgroundColor),background);
@@ -49,8 +49,8 @@ app.whenReady().then(async()=>{
    return {documentSize:{width:dimensions.width,height:dimensions.height},captures};
  };
  await win.loadFile(path.join(fixture,'index.html'));win.showInactive();await settle();
- report.checks=args.includes('--render-only')?{ok:true,checks:[]}:await win.webContents.executeJavaScript('window.gainFixture.runDomTests()');
- if(!report.checks?.ok)throw Error('DOM behavior checks did not pass');
+ report.checks=args.includes('--render-only')?{ok:true,checks:[]}:await win.webContents.executeJavaScript('(()=>{try{return window.gainFixture.runDomTests()}catch(error){return {ok:false,error:error.stack}}})()');
+ if(!report.checks?.ok)throw Error('DOM behavior checks did not pass: '+report.checks?.error);
  for(const width of [1280,375])for(const scene of scenes)for(const theme of themes){
    await win.loadFile(path.join(fixture,'index.html'),{query:{state:scene,theme}});win.setContentSize(width,1000);await settle();
    const dom=await win.webContents.executeJavaScript(`(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,labels:[...document.querySelectorAll('.gain-page-heading h3')].map(n=>n.textContent),unmeasured:[...document.querySelectorAll('.gain-result-state')].map(n=>n.textContent),controls:[...document.querySelectorAll('[data-gain-candidate-purpose]')].map(n=>({purpose:n.dataset.gainCandidatePurpose,checked:n.checked,disabled:n.disabled})),title:document.querySelector('#gain-calibration-phase')?.textContent}))()`);

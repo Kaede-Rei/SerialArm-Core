@@ -23,6 +23,72 @@ struct Plan {
     double joint_path_length_rad{0.0};
 };
 
+// Uniform-knot, shape-preserving Hermite slope. A stationary plateau or local
+// extremum has zero slope; same-direction adjacent secants use their harmonic
+// mean. This keeps each cubic inside its two measured endpoint values while
+// retaining a continuous, real derivative rather than clipping positions.
+inline double node_tangent(const std::vector<std::vector<double>>& positions,std::size_t knot,std::size_t joint) {
+    if(knot==0 || knot+1==positions.size())return 0.0;
+    const double left=positions[knot][joint]-positions[knot-1][joint];
+    const double right=positions[knot+1][joint]-positions[knot][joint];
+    if(left==0 || right==0 || (left>0)!=(right>0))return 0.0;
+    return std::abs(left)<=std::abs(right)?left/(.5+.5*left/right):right/(.5+.5*right/left);
+}
+
+// Locate ordered stops on their first local approach, not the closest pose
+// anywhere in the remaining path. An out-and-back demonstration can revisit
+// exactly the same pose later with a smaller floating-point residual; choosing
+// that later visit consumes subsequent stops and reverses their intended order.
+inline std::vector<std::size_t> ordered_stop_indices(
+    const std::vector<std::vector<double>>& positions,
+    const std::vector<std::vector<double>>& stops,
+    double maximum_distance_rad,
+    bool interior_only = true) {
+    if(stops.empty()) return {};
+    if(positions.size() < (interior_only ? 3U : 1U) || positions.front().empty() ||
+       !std::isfinite(maximum_distance_rad) || maximum_distance_rad < 0.0)
+        throw std::invalid_argument("invalid calibration stop mapping");
+    const auto joints = positions.front().size();
+    for(const auto& q : positions) {
+        if(q.size() != joints) throw std::invalid_argument("invalid calibration stop path dimension");
+        for(double value : q) if(!std::isfinite(value))
+            throw std::invalid_argument("non-finite calibration stop path");
+    }
+    const std::size_t end = positions.size() - (interior_only ? 1U : 0U);
+    std::size_t cursor = interior_only ? 1U : 0U;
+    std::vector<std::size_t> result;
+    result.reserve(stops.size());
+    for(const auto& stop : stops) {
+        if(stop.size() != joints) throw std::invalid_argument("invalid calibration stop dimension");
+        for(double value : stop) if(!std::isfinite(value))
+            throw std::invalid_argument("non-finite calibration stop");
+        std::size_t best = end;
+        double best_distance = std::numeric_limits<double>::infinity();
+        for(std::size_t k = cursor; k < end; ++k) {
+            double distance = 0.0;
+            for(std::size_t j = 0; j < joints; ++j)
+                distance = std::max(distance, std::abs(stop[j] - positions[k][j]));
+            if(best == end) {
+                if(distance <= maximum_distance_rad) { best = k; best_distance = distance; }
+            } else if(distance < best_distance) {
+                best = k; best_distance = distance;
+            } else if(distance > best_distance + 1e-12) {
+                // Numerical plateau noise may still belong to this visit;
+                // a genuine departure ends it before any later revisit.
+                break;
+            }
+        }
+        if(best == end) throw std::runtime_error("unable to preserve calibration stop on retimed path");
+        result.push_back(best);
+        // Retiming may merge distinct nearby source poses into one geometric
+        // knot. Ordered targets may share that knot when each independently
+        // satisfies the original tolerance; requiring a fresh knot for every
+        // target would push the last nearby stop onto a later return visit.
+        cursor = best;
+    }
+    return result;
+}
+
 inline Plan plan(const std::vector<std::vector<double>>& input,
                  const std::vector<double>& max_vel,
                  const std::vector<double>& max_acc,
@@ -103,16 +169,15 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     // manually demonstrated geometry (per joint 0.01 rad max)
     const auto unsmoothed = geometry;
     for(std::size_t k=1;k+1<count;++k) for(std::size_t j=0;j<joints;++j) {
-        geometry[k][j] = 0.12*unsmoothed[k-1][j] + 0.76*unsmoothed[k][j] + 0.12*unsmoothed[k+1][j];
+        geometry[k][j] = unsmoothed[k-1][j]==unsmoothed[k][j] && unsmoothed[k][j]==unsmoothed[k+1][j] ? unsmoothed[k][j] :
+            0.12*unsmoothed[k-1][j] + 0.76*unsmoothed[k][j] + 0.12*unsmoothed[k+1][j];
         if(std::abs(geometry[k][j]-unsmoothed[k][j])>0.01)
             throw std::runtime_error("demonstrated path has a corner too sharp to safely smooth");
     }
     std::vector<std::vector<double>> tangent(count,std::vector<double>(joints,0.0));
     std::vector<std::vector<double>> curvature(count,std::vector<double>(joints,0.0));
     for(std::size_t k=0;k<count;++k) for(std::size_t j=0;j<joints;++j){
-        const std::size_t left = k==0 ? 0 : k-1;
-        const std::size_t right = k+1==count ? count-1 : k+1;
-        tangent[k][j] = (geometry[right][j]-geometry[left][j]) / (static_cast<double>(right-left)*ds);
+        tangent[k][j] = node_tangent(geometry,k,j)/ds;
     }
     for(std::size_t k=1;k+1<count;++k) for(std::size_t j=0;j<joints;++j)
         curvature[k][j] = (tangent[k+1][j]-tangent[k-1][j])/(2.0*ds);
@@ -142,20 +207,14 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         accel[k]=std::min(accel[k],0.80*max_acc[j]/std::max(max_d1,1e-8));
         accel[k+1]=std::min(accel[k+1],0.80*max_acc[j]/std::max(max_d1,1e-8));
     }
+    // Preserve the geometric speed allowance before forcing collection stops.
+    // Two nearby legal stops may occupy adjacent knots; their intervening
+    // finite distance needs an accelerate/brake profile, not a zero divisor.
+    const auto geometric_speed_limit = speed;
     // Plan static collection points as genuine zero-speed boundary conditions.
     // Zero speed at a curve knot is handled by the same forward/backward braking
     // passes as path endpoints; the reverse traversal inherits these stops
-    for(const auto& stop : static_stops) {
-        if(stop.size() != joints) throw std::invalid_argument("invalid calibration stop dimension");
-        std::size_t best_index = 0;
-        double best_distance = std::numeric_limits<double>::infinity();
-        for(std::size_t k=0;k<count;++k) {
-            double distance = 0.0;
-            for(std::size_t j=0;j<joints;++j) distance = std::max(distance, std::abs(geometry[k][j]-stop[j]));
-            if(distance < best_distance) { best_distance = distance; best_index = k; }
-        }
-        if(best_distance > 0.03)
-            throw std::invalid_argument("calibration stop is outside the demonstrated path");
+    for(const auto best_index : ordered_stop_indices(geometry, static_stops, 0.03, false)) {
         // The beginning and end are already zero-speed boundary conditions
         if(best_index > 0 && best_index + 1 < count) speed[best_index] = 0.0;
     }
@@ -165,11 +224,21 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         speed[k]=std::min(speed[k],std::sqrt(speed[k-1]*speed[k-1]+2.0*ds*std::min(accel[k-1],accel[k])));
     for(std::size_t k=count-1;k>0;--k)
         speed[k-1]=std::min(speed[k-1],std::sqrt(speed[k]*speed[k]+2.0*ds*std::min(accel[k-1],accel[k])));
-    std::vector<double> time(count,0.0);
+    std::vector<double> time(count,0.0),rest_peak_speed(count,0.0),rest_acceleration(count,0.0);
     for(std::size_t k=1;k<count;++k) {
         const double denominator = speed[k-1]+speed[k];
-        if(!(denominator>1.0e-8)) throw std::runtime_error("cannot calculate continuous calibration retiming");
-        time[k]=time[k-1]+2.0*ds/denominator;
+        if(denominator>0.0) {
+            time[k]=time[k-1]+2.0*ds/denominator;
+        } else {
+            const double acceleration=std::min(accel[k-1],accel[k]);
+            const double peak=std::min({std::sqrt(acceleration*ds),geometric_speed_limit[k-1],geometric_speed_limit[k]});
+            if(!std::isfinite(acceleration) || acceleration<=0 || !std::isfinite(peak) || peak<=0)
+                throw std::runtime_error("cannot calculate continuous calibration retiming");
+            rest_peak_speed[k]=peak;rest_acceleration[k]=acceleration;
+            const double ramp=peak/acceleration;
+            const double cruise=std::max(0.0,ds-peak*ramp)/peak;
+            time[k]=time[k-1]+2*ramp+cruise;
+        }
     }
     const double total=time.back();
     if(!std::isfinite(total) || total<=0.0 || total>36000.0)
@@ -187,9 +256,18 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
         const double tau=std::clamp(t-time[seg],0.0,time[seg+1]-time[seg]);
         const double dt=time[seg+1]-time[seg];
         const double accel_s=(speed[seg+1]-speed[seg])/dt;
-        const double along=std::clamp((speed[seg]*tau + 0.5*accel_s*tau*tau)/ds,0.0,1.0);
+        double distance=speed[seg]*tau + 0.5*accel_s*tau*tau;
+        if(rest_peak_speed[seg+1]>0) {
+            const double peak=rest_peak_speed[seg+1],acceleration=rest_acceleration[seg+1];
+            const double ramp=peak/acceleration;
+            if(tau<ramp)distance=.5*acceleration*tau*tau;
+            else if(tau<=dt-ramp)distance=.5*peak*ramp+peak*(tau-ramp);
+            else distance=ds-.5*acceleration*(dt-tau)*(dt-tau);
+        }
+        const double along=std::clamp(distance/ds,0.0,1.0);
         std::vector<double> q(joints,0.0);
         for(std::size_t j=0;j<joints;++j) {
+            if(geometry[seg][j]==geometry[seg+1][j]){q[j]=geometry[seg][j];continue;}
             const double u=along, u2=u*u, u3=u2*u;
             const double m0=tangent[seg][j]*ds, m1=tangent[seg+1][j]*ds;
             q[j]=(2*u3-3*u2+1)*geometry[seg][j]+(u3-2*u2+u)*m0
@@ -203,8 +281,8 @@ inline Plan plan(const std::vector<std::vector<double>>& input,
     double slowdown=1.0;
     for(std::size_t k=1;k<samples;++k) for(std::size_t j=0;j<joints;++j) {
         const double p0=result.positions[k-1][j], p1=result.positions[k][j];
-        const double m0=k==1?0.0:0.5*(p1-result.positions[k-2][j]);
-        const double m1=k+1==samples?0.0:0.5*(result.positions[k+1][j]-p0);
+        const double m0=node_tangent(result.positions,k-1,j);
+        const double m1=node_tangent(result.positions,k,j);
         const double d=p1-p0;
         const double d1=std::max({std::abs(m0),std::abs(3*d-m0-m1),std::abs(m1)});
         const double d2=std::max(std::abs(6*d-4*m0-2*m1),std::abs(-6*d+2*m0+4*m1));
@@ -224,7 +302,8 @@ struct Sample {
 
 inline Sample interpolate(const std::vector<std::vector<double>>& positions,
                           double progress, double sample_dt, double playback_rate) {
-    if(positions.size()<2 || !(sample_dt>0.0) || !(playback_rate>0.0))
+    if(positions.size()<2 || !std::isfinite(sample_dt) || !(sample_dt>0.0) ||
+       !std::isfinite(progress) || !std::isfinite(playback_rate) || playback_rate<0.0)
         throw std::invalid_argument("invalid calibration playback state");
     const auto n=positions.size();
     const double clipped=std::clamp(progress,0.0,static_cast<double>(n-1));
@@ -235,8 +314,9 @@ inline Sample interpolate(const std::vector<std::vector<double>>& positions,
     result.velocity.resize(positions[lower].size());
     for(std::size_t j=0;j<result.position.size();++j){
         const double p0=positions[lower][j], p1=positions[lower+1][j];
-        const double m0=lower==0 ? 0.0 : 0.5*(p1-positions[lower-1][j]);
-        const double m1=lower+2==n ? 0.0 : 0.5*(positions[lower+2][j]-p0);
+        if(p0==p1){result.position[j]=p0;result.velocity[j]=0.0;continue;}
+        const double m0=node_tangent(positions,lower,j);
+        const double m1=node_tangent(positions,lower+1,j);
         const double u2=u*u, u3=u2*u;
         result.position[j]=(2*u3-3*u2+1)*p0+(u3-2*u2+u)*m0+(-2*u3+3*u2)*p1+(u3-u2)*m1;
         result.velocity[j]=((6*u2-6*u)*p0+(3*u2-4*u+1)*m0+(-6*u2+6*u)*p1+(3*u2-2*u)*m1)*playback_rate/sample_dt;

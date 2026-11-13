@@ -1086,10 +1086,11 @@ class ProfileLibrary:
             _atomic_yaml(config_dir/'hardware.yaml',hardware)
             initialization = None
             if not authored_config.is_file():
-                from gain_initialization import initialize_profile_gains
+                from gain_initialization import initialize_profile_gains, MODEL_GAIN_REFERENCE_COMMENT
                 initialization = initialize_profile_gains(self.inspector, config_dir/'core.yaml', core,
-                    copied/analysis['urdf_relative'], hardware, hardware_plugin)
-                _atomic_yaml(config_dir/'core.yaml',four_mode_core(core))
+                    copied/analysis['urdf_relative'], hardware, hardware_plugin, apply_generated=True)
+                _atomic_yaml_text(config_dir/'core.yaml', MODEL_GAIN_REFERENCE_COMMENT +
+                    yaml.safe_dump(four_mode_core(core), allow_unicode=True, sort_keys=False))
             else:
                 from gain_initialization import initialize_profile_gains
                 initialization = initialize_profile_gains(self.inspector, authored_config,
@@ -1583,9 +1584,11 @@ class ProfileLibrary:
             for value in core['control']['controller'].get(role, {}).get(term, {}).values())
         model_axes = pending_model.get('axes') or []
         model_gains = {term:{axis.get('joint'):axis.get(term) for axis in model_axes} for term in ('kp','kd')}
-        unchanged_model_gains = bool(model_axes) and all(
-            core['control']['controller'].get(role, {}).get(term) == model_gains[term]
-            for role in generated_roles for term in ('kp','kd'))
+        generated_controller = pending_model.get('generated_controller') or {}
+        unchanged_model_gains = (all(core['control']['controller'].get(role, {}).get(term) == pair.get(term)
+            for role,pair in generated_controller.items() for term in ('kp','kd')) if generated_controller else
+            bool(model_axes) and all(core['control']['controller'].get(role, {}).get(term) == model_gains[term]
+                for role in generated_roles for term in ('kp','kd')))
         model_context_changed = (hardware != before_hw or entry.get('hardware') != original_entry.get('hardware') or
             any(core.get(section) != before_core.get(section) for section in ('model','calibration','safety_policy')) or
             core['control']['runtime'] != before_core['control']['runtime'])
@@ -1597,7 +1600,7 @@ class ProfileLibrary:
             from gain_initialization import initialize_profile_gains
             initialization = initialize_profile_gains(self.inspector, core_path, core,
                 (core_path.parent / core['model']['urdf_path']).resolve(), hardware,
-                entry['hardware']['plugin'])
+                entry['hardware']['plugin'], apply_generated=True)
         self._validate_core_profile(core,hardware,entry,core_path,before_core,allow_hardware_draft=True)
         # New saves use four purposes; a schema-only save rewrites just the
         # controller block and preserves the surrounding authored YAML
@@ -1608,6 +1611,9 @@ class ProfileLibrary:
             desired[receipt] = json.dumps(initialization,ensure_ascii=False,indent=2)+'\n'
         if core != before_core:
             desired[core_path] = yaml.safe_dump(four_mode_core(core), allow_unicode=True, sort_keys=False)
+            if initialization and initialization.get('reference_only'):
+                from gain_initialization import MODEL_GAIN_REFERENCE_COMMENT
+                desired[core_path] = MODEL_GAIN_REFERENCE_COMMENT + desired[core_path]
         else:
             original_text = core_path.read_text(encoding='utf-8')
             modern_text = four_mode_control_text(original_text)

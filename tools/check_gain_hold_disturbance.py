@@ -123,6 +123,8 @@ def run(terminal):
             assert parameters['center_source'] == 'preserved_nominal_hold_target', parameters
             center = parameters['center_rad']
             assert len(center) == len(names), parameters
+            eligible = parameters['disturbance_axis_eligible']
+            assert len(eligible) == len(names) and any(eligible), parameters
             measured = {}
             for axis, joint in enumerate(names):
                 rows = [row for row in complete_rows if row['joint'] == joint]
@@ -132,13 +134,14 @@ def run(terminal):
                 assert all(math.isfinite(float(value)) for row in rows for key, value in row.items() if key != 'joint'), joint
                 assert max(abs(float(row['reference'])-center[axis]) for row in rows) < 1e-9, joint
                 assert max(abs(float(row['reference_velocity'])) for row in rows) < 1e-9, joint
-                assert max(abs(float(row['independent_disturbance_nm'])) for row in rows) > 0, joint
+                input_peak = max(abs(float(row['independent_disturbance_nm'])) for row in rows)
+                assert (input_peak > 0 if eligible[axis] else input_peak == 0), (joint, eligible[axis], input_peak)
                 assert not any(int(row['limited']) for row in rows), joint
                 measured[joint] = {'samples':len(rows), 'fresh_samples':sum(int(row['new_measurement']) for row in rows),
                     'reference_rad':center[axis],
                     'actual_span_rad':max(float(row['actual']) for row in rows)-min(float(row['actual']) for row in rows),
-                    'independent_input_peak_nm':max(abs(float(row['independent_disturbance_nm'])) for row in rows)}
-            checks.append('recorded_fixed_hold_target_zero_reference_velocity_and_nonzero_independent_torque')
+                    'independent_input_peak_nm':input_peak, 'disturbance_axis_eligible':eligible[axis]}
+            checks.append('recorded_fixed_hold_target_zero_reference_velocity_and_independent_torque_only_for_eligible_axes')
 
             frame_count = 0
             input_peak = 0
@@ -162,7 +165,7 @@ def run(terminal):
             assert not candidate['validated'], candidate['validated']
             rigid = candidate.get('targets', {}).get('rigid_tracking', candidate)
             assert rigid['native_validation']['available'] and rigid['hold_verification']['available'], rigid
-            assert rigid['available'] and candidate['available'], rigid
+            assert rigid['available'] and not candidate['available'] and not candidate['review_ready'], rigid
             assert rigid['qualification_complete'] is False and not rigid['validated'], rigid
             assert candidate['budget_source_duration_s'] == 25 and candidate['time_budget_s'] == 600, candidate
             checks.append('torque_insensitive_mock_does_not_pass_physical_disturbance_or_purpose_qualification')

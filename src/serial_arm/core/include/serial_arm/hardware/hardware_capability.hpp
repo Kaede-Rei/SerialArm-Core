@@ -23,6 +23,7 @@ struct ActuatorCapability {
     std::string joint_name;    ///< 具名关节身份，用于命令、反馈与能力的双向对齐
     double kp_resolution{ 0.0 }; ///< 执行器协议 kp 步进，0 表示连续或未声明
     double kd_resolution{ 0.0 }; ///< 执行器协议 kd 步进，0 表示连续或未声明
+    double effort_resolution{ 0.0 }; ///< 执行器协议力矩步进，0 表示连续或未声明
 };
 
 using HardwareCapabilities = std::vector<ActuatorCapability>;

@@ -20,6 +20,8 @@ struct ModelAxisLimits {
     double position_margin_rad{0},max_velocity{0},max_acceleration{0};
     double effort_budget{0},kp_max{0},kd_max{0};
     GainCommandGrid grid;
+    double reference_min_offset_rad{-std::numeric_limits<double>::infinity()};
+    double reference_max_offset_rad{std::numeric_limits<double>::infinity()};
 };
 inline std::uint64_t gain_grid_code(double value,double step,double ceiling) {
     if(step<=0)return 0;
@@ -121,10 +123,85 @@ inline ConstrainedMeasuredGainStep constrain_measured_gain_step(const Gains& cur
     }
     return out;
 }
+struct NominalDampingGainStep {
+    Gains gains;
+    std::vector<std::string> reasons;
+    std::vector<double> requested_kd,nominal_damping_ratio,predicted_effort_nm;
+    bool changed{false},measured{false};
+};
+// This is a model-based CANDIDATE, never an identified damping measurement.
+// Nominal zeta is useful diagnostic context, but it is not permission to
+// increase unmeasured D as P grows. A delayed/quantized actuator can become
+// less stable when D grows despite a higher continuous-time damping ratio.
+// E and V must describe the actual experiment, including observed noise;
+// neither the old Profile gains nor a user PD ceiling supplies this prior.
+inline NominalDampingGainStep nominal_damping_gain_step(const Gains& current,
+    const std::vector<double>& proposed_kp,const std::vector<double>& inertia,
+    const std::vector<ModelAxisLimits>& limits,const std::vector<double>& error_bound_rad,
+    const std::vector<double>& velocity_error_bound_rad,const std::vector<double>& damping_ratio_prior={}) {
+    const auto n=limits.size();
+    if(!n || current.kp.size()!=n || current.kd.size()!=n || proposed_kp.size()!=n || inertia.size()!=n ||
+       error_bound_rad.size()!=n || velocity_error_bound_rad.size()!=n || (!damping_ratio_prior.empty() && damping_ratio_prior.size()!=n))
+        throw std::invalid_argument("nominal damping candidate mapping mismatch");
+    NominalDampingGainStep out;out.gains=current;out.reasons.resize(n);out.requested_kd=current.kd;
+    out.nominal_damping_ratio.resize(n);out.predicted_effort_nm.resize(n);
+    for(std::size_t i=0;i<n;++i) {
+        const auto& x=limits[i];const double E=error_bound_rad[i],V=velocity_error_bound_rad[i];
+        (void)gain_working_domain(x,E,V);
+        for(double value:{x.effort_budget,x.kp_max,x.kd_max,inertia[i]})
+            if(!std::isfinite(value) || value<=0)throw std::invalid_argument("invalid nominal damping candidate capability or inertia");
+        for(double value:{current.kp[i],current.kd[i],proposed_kp[i]})
+            if(!std::isfinite(value) || value<0)throw std::invalid_argument("invalid nominal damping candidate gain");
+        if(current.kp[i]>x.kp_max || current.kd[i]>x.kd_max)throw std::invalid_argument("nominal damping source outside protocol capability");
+        const double current_zeta=current.kp[i]>0?current.kd[i]/(2*std::sqrt(inertia[i]*current.kp[i])):0;
+        const double prior=damping_ratio_prior.empty()?current_zeta:damping_ratio_prior[i];
+        if(!std::isfinite(prior) || prior<0)throw std::invalid_argument("invalid nominal damping design prior");
+        const double zeta=std::max(current_zeta,prior);
+        out.nominal_damping_ratio[i]=zeta;
+        const double requested_p=proposed_kp[i]>=current.kp[i]?
+            std::min(proposed_kp[i],std::max(1.25*current.kp[i],current.kp[i]+x.grid.kp_step)):proposed_kp[i];
+        double kp=quantize_gain(std::min(requested_p,x.kp_max),x.grid.kp_step,x.kp_max);
+        auto& reason=out.reasons[i];reason="nominal_damping_diagnostic_only_stiffness_step_requires_complete_set_measurement";
+        if(proposed_kp[i]>=current.kp[i]) {
+            kp=std::max(current.kp[i],kp);
+            if(current.kp[i]==0 && damping_ratio_prior.empty()) {
+                kp=0;reason="zero_stiffness_requires_explicit_nominal_damping_prior";
+            } else {
+                out.requested_kd[i]=std::max(current.kd[i],2*zeta*std::sqrt(inertia[i]*kp));
+                // D's protocol ceiling changes attainable zeta; it does not
+                // impose a synthetic P ceiling through the square-root curve.
+                if(out.requested_kd[i]>x.kd_max)reason+=";kd_protocol_ceiling";
+                const auto effort=[&](double p){return p*E+current.kd[i]*V;};
+                if(effort(current.kp[i])>x.effort_budget) {
+                    kp=current.kp[i];reason+=";nominal_damping_increase_has_no_joint_effort_room";
+                } else {
+                    if(effort(kp)>x.effort_budget) {
+                        double low=current.kp[i],high=kp;
+                        for(unsigned step=0;step<60;++step){const double mid=.5*(low+high);if(effort(mid)<=x.effort_budget)low=mid;else high=mid;}
+                        kp=std::max(current.kp[i],quantize_gain(low,x.grid.kp_step,x.kp_max));
+                        reason+=";joint_effort_and_observed_velocity_envelope";
+                    }
+                }
+            }
+        } else reason="stiffness_reduction_preserves_existing_damping_candidate_requires_measurement";
+        out.gains.kp[i]=kp;out.gains.kd[i]=current.kd[i];
+        if(proposed_kp[i]>x.kp_max)reason+=";kp_protocol_ceiling";
+    }
+    // Preserve the existing measured-set admission semantics; no radial
+    // projection may turn an increase request into an untested large P/D cut.
+    const auto bounded=constrain_measured_gain_step(current,out.gains,limits,error_bound_rad,velocity_error_bound_rad);
+    out.gains=bounded.gains;out.predicted_effort_nm=bounded.predicted_effort_nm;out.changed=bounded.changed;
+    for(std::size_t i=0;i<n;++i)if(bounded.reasons[i]=="measured_error_envelope_has_no_effort_room_for_increase")
+        out.reasons[i]+=";"+bounded.reasons[i];
+    return out;
+}
 struct ModelResponseDemand {
     std::vector<double> frequency_hz,velocity_peak,acceleration_peak,coupled_acceleration_torque,error_velocity_bound;
     std::vector<std::vector<std::vector<double>>> mass_matrix_samples;
     double peak_error_rad{pi/1800},damping_ratio{.7},settling_time_s{.7},designed_amplitude_rad{.008};
+    // Observed outer execution timing only; never an assertion about the
+    // actuator's unreported internal MIT feedback update frequency.
+    double observation_interval_s{0},feedback_age_s{0};
 };
 // A no-demonstration preview is a DESIGN TARGET, never an estimate of motor
 // capability. Artificial URDF/policy v/a/effort limits do not enter this demand.
@@ -159,6 +236,8 @@ struct ModelInitialization {
     std::vector<double> inertia_min,inertia_max,frequency_hz;
     std::vector<double> task_frequency_hz,working_kp_max,working_kd_max,reference_error_bound_rad,velocity_error_bound_rad;
     std::vector<double> nominal_mode_frequency_hz,nominal_mode_damping_ratio;
+    std::vector<double> bootstrap_damping_inertia_min;
+    double bootstrap_observation_interval_s{0},bootstrap_feedback_age_s{0},modeled_fastest_damping_rate_s_inv{0};
     std::vector<double> unconstrained_kp,unconstrained_kd,pre_modal_kp,pre_modal_kd;
     std::vector<std::string> modal_adjustments;
     std::vector<std::vector<std::string>> constraints;
@@ -168,6 +247,9 @@ struct ModelInitialization {
 inline void validate_model_limits(const ModelAxisLimits& x) {
     for(double v:{x.position_margin_rad,x.max_velocity,x.max_acceleration,x.effort_budget,x.kp_max,x.kd_max})
         if(!std::isfinite(v) || v<=0)throw std::invalid_argument("gain initialization requires finite positive mapped position, motion, effort and gain limits");
+    if(std::isnan(x.reference_min_offset_rad) || std::isnan(x.reference_max_offset_rad) ||
+       x.reference_min_offset_rad>0 || x.reference_max_offset_rad<0 || x.reference_min_offset_rad>=x.reference_max_offset_rad)
+        throw std::invalid_argument("reference experiment domain must contain its fresh measured origin and a nonzero observed interval");
 }
 // Initial gains follow the requested damping curve, rather than radially
 // scaling Kp/Kd (which changes zeta by sqrt(scale)). This only selects a safe
@@ -322,6 +404,8 @@ inline ModelInitialization model_initialization(const std::vector<std::vector<do
     return out;
 }
 
+// Legacy recovery initializer retained for old records/offline comparisons;
+// new Profile import and live calibration use nominal_urdf_gain_design.
 // Path acceleration/error describes a later performance demand, not evidence
 // that a high-bandwidth controller is already stable. Establish the first
 // motion from the explicit recovery target and physical inertia instead.
@@ -329,8 +413,76 @@ inline ModelInitialization bootstrap_model_initialization(const std::vector<std:
     const std::vector<double>& gravity_gradient,const std::vector<ModelAxisLimits>& limits,
     const ModelResponseDemand& task_demand=ModelResponseDemand{}) {
     auto demand=recovery_response_demand(limits.size(),task_demand.peak_error_rad,task_demand.settling_time_s,task_demand.designed_amplitude_rad);
-    demand.damping_ratio=task_demand.damping_ratio;demand.mass_matrix_samples=task_demand.mass_matrix_samples;
+    demand.damping_ratio=task_demand.damping_ratio;
+    // A minimum modal damping target is a performance design, not evidence
+    // that increasing unmeasured D is stable. Build the first-response P from
+    // the recovery demand without the performance allocator's D escalation.
     auto out=model_initialization(inertia_samples,gravity_gradient,limits,demand);
+    const auto n=limits.size();std::vector<Eigen::MatrixXd> matrices;
+    std::vector<double> damping_inertia=out.inertia_min;
+    for(const auto& sample:task_demand.mass_matrix_samples) {
+        if(sample.size()!=n)throw std::invalid_argument("bootstrap coupled inertia mapping mismatch");
+        Eigen::MatrixXd M(n,n);
+        for(std::size_t i=0;i<n;++i) {
+            if(sample[i].size()!=n)throw std::invalid_argument("bootstrap coupled inertia mapping mismatch");
+            for(std::size_t j=0;j<n;++j)M(i,j)=sample[i][j];
+        }
+        Eigen::LLT<Eigen::MatrixXd> decomposition(M);
+        if(!M.allFinite() || !M.isApprox(M.transpose(),1e-8) || decomposition.info()!=Eigen::Success)
+            throw std::invalid_argument("invalid bootstrap positive-definite coupled inertia");
+        const Eigen::MatrixXd inverse=decomposition.solve(Eigen::MatrixXd::Identity(n,n));
+        for(std::size_t i=0;i<n;++i)damping_inertia[i]=std::min(damping_inertia[i],1/inverse(i,i));
+        matrices.push_back(std::move(M));
+    }
+    for(std::size_t i=0;i<n;++i) {
+        const double requested=2*demand.damping_ratio*std::sqrt(damping_inertia[i]*out.gains.kp[i]);
+        out.gains.kd[i]=std::min(out.gains.kd[i],quantize_gain(requested,limits[i].grid.kd_step,limits[i].kd_max));
+        if(!matrices.empty())out.constraints[i].push_back("bootstrap_damping_uses_free_coupled_inertia_not_minimum_modal_zeta_allocation");
+    }
+    out.bootstrap_damping_inertia_min=damping_inertia;
+    out.bootstrap_observation_interval_s=task_demand.observation_interval_s;out.bootstrap_feedback_age_s=task_demand.feedback_age_s;
+    for(double value:{task_demand.observation_interval_s,task_demand.feedback_age_s})
+        if(!std::isfinite(value) || value<0)throw std::invalid_argument("invalid bootstrap execution timing");
+    // A conservative first experiment keeps the fastest modeled damping mode
+    // slow compared with the observed command/feedback timing. This is a
+    // design restriction, not an identified actuator or stability guarantee.
+    const double timing=task_demand.observation_interval_s+task_demand.feedback_age_s;
+    const auto fastest_mode=[&]() {
+        double fastest=0;Eigen::VectorXd participation=Eigen::VectorXd::Zero(n);
+        if(matrices.empty())for(std::size_t i=0;i<n;++i)if(out.gains.kd[i]/damping_inertia[i]>fastest) {
+            fastest=out.gains.kd[i]/damping_inertia[i];participation.setZero();participation[i]=1/std::sqrt(damping_inertia[i]);
+        }
+        for(const auto& M:matrices) {
+            Eigen::VectorXd d(n);for(std::size_t i=0;i<n;++i)d[i]=out.gains.kd[i];
+            Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> modes(d.asDiagonal().toDenseMatrix(),M);
+            if(modes.info()!=Eigen::Success)throw std::invalid_argument("bootstrap damping-mode evaluation failed");
+            if(modes.eigenvalues().maxCoeff()>fastest){fastest=modes.eigenvalues().maxCoeff();participation=modes.eigenvectors().col(n-1);}
+        }
+        return std::make_pair(fastest,participation);
+    };
+    if(timing>0)for(std::size_t attempt=0;attempt<32*n;++attempt) {
+        const double rate_limit=.5/timing;const auto mode=fastest_mode();
+        if(mode.first<=rate_limit*(1+1e-10))break;
+        double largest=0;for(std::size_t i=0;i<n;++i)largest=std::max(largest,out.gains.kd[i]*mode.second[i]*mode.second[i]);
+        if(largest<=0)break;
+        for(std::size_t i=0;i<n;++i)if(out.gains.kd[i]*mode.second[i]*mode.second[i]>=.001*largest) {
+            const auto& bounds=limits[i];out.gains.kd[i]=quantize_gain(out.gains.kd[i]*rate_limit/mode.first,bounds.grid.kd_step,bounds.kd_max);
+            const std::string reason="bootstrap_fast_damping_mode_bounded_by_observed_outer_execution_timing_unmeasured";
+            if(std::find(out.constraints[i].begin(),out.constraints[i].end(),reason)==out.constraints[i].end())out.constraints[i].push_back(reason);
+        }
+    }
+    out.modeled_fastest_damping_rate_s_inv=fastest_mode().first;
+    out.pre_modal_kp=out.gains.kp;out.pre_modal_kd=out.gains.kd;
+    for(const auto& M:matrices) {
+        Eigen::VectorXd p(n),d(n);for(std::size_t i=0;i<n;++i){p[i]=out.gains.kp[i];d[i]=out.gains.kd[i];}
+        Eigen::GeneralizedSelfAdjointEigenSolver<Eigen::MatrixXd> modes(p.asDiagonal().toDenseMatrix(),M);
+        if(modes.info()!=Eigen::Success)throw std::invalid_argument("bootstrap nominal-mode evaluation failed");
+        for(std::size_t k=0;k<n;++k) {
+            const double w=std::sqrt(modes.eigenvalues()[k]);const Eigen::VectorXd v=modes.eigenvectors().col(k);
+            out.nominal_mode_frequency_hz.push_back(w/(2*pi));out.nominal_mode_damping_ratio.push_back(v.dot(d.asDiagonal()*v)/(2*w));
+        }
+    }
+    out.modal_adjustments.push_back("bootstrap_nominal_modes_are_diagnostic_not_a_required_minimum_damping_acceptance");
     out.source="urdf_inertia_and_unmeasured_recovery_bootstrap";
     return out;
 }
@@ -339,6 +491,42 @@ struct ShortProbePlan {
     Requirements requirements;bool valid{false};std::string reason{"insufficient_budget"};double torque_amplitude_nm{0};
     GainWorkingDomain working_domain;double planned_input_peak_nm{0};
 };
+struct BoundedReferenceExcitation {
+    double amplitude_rad{0},bias_rad{0},position_bound_rad{0},velocity_bound_rad_s{0},acceleration_bound_rad_s2{0},effort_bound_nm{0};
+};
+// A demonstrated interval is observed position evidence, not an actuator
+// capability. Keep the fresh actual position as origin and shift only the
+// faded excitation interior. The entire transition is a convex combination
+// of that origin and an interior point, so it also stays inside the interval.
+inline BoundedReferenceExcitation bound_reference_excitation(const ModelAxisLimits& bounds,double kp,double kd,
+    double requested_amplitude_rad,double high_w) {
+    validate_model_limits(bounds);
+    if(!std::isfinite(kp) || kp<0 || !std::isfinite(kd) || kd<0 ||
+       !std::isfinite(requested_amplitude_rad) || requested_amplitude_rad<=0 || !std::isfinite(high_w) || high_w<=0)
+        throw std::invalid_argument("invalid bounded reference excitation request");
+    double cap=std::min(requested_amplitude_rad,.7*bounds.position_margin_rad);
+    if(std::isfinite(bounds.reference_min_offset_rad) && std::isfinite(bounds.reference_max_offset_rad))
+        cap=std::min(cap,.5*(bounds.reference_max_offset_rad-bounds.reference_min_offset_rad));
+    const auto at=[&](double amplitude) {
+        BoundedReferenceExcitation p;p.amplitude_rad=amplitude;
+        p.bias_rad=std::clamp(0.0,bounds.reference_min_offset_rad+amplitude,bounds.reference_max_offset_rad-amplitude);
+        p.position_bound_rad=amplitude+std::abs(p.bias_rad);
+        // The .7 s smoothstep has |e'|<3 and |e''|<13. These bounds include
+        // the bias transition and retain the original factor-two headroom.
+        p.velocity_bound_rad_s=amplitude*high_w+3*p.position_bound_rad;
+        p.acceleration_bound_rad_s2=amplitude*high_w*high_w+6*amplitude*high_w+13*p.position_bound_rad;
+        p.effort_bound_nm=kp*p.position_bound_rad+kd*p.velocity_bound_rad_s;
+        return p;
+    };
+    const auto fits=[&](const BoundedReferenceExcitation& p) {
+        return 2*p.velocity_bound_rad_s<=bounds.max_velocity && 2*p.acceleration_bound_rad_s2<=bounds.max_acceleration &&
+            2*p.effort_bound_nm<=bounds.effort_budget;
+    };
+    auto chosen=at(cap);if(fits(chosen))return chosen;
+    double low=0,high=cap;
+    for(unsigned iteration=0;iteration<60;++iteration){const double mid=.5*(low+high);if(fits(at(mid)))low=mid;else high=mid;}
+    return at(low);
+}
 inline double applied_pd_input_peak(const std::vector<Sample>& rows,double kp,double kd) {
     double peak=0;for(const auto& row:rows) {
         const double executed_kp=row.actual_gains_known?row.actual_kp:kp,executed_kd=row.actual_gains_known?row.actual_kd:kd;
@@ -360,21 +548,17 @@ inline ShortProbePlan short_probe_plan(Requirements req,const ModelAxisLimits& b
     const double minimum_duration=fine?8.0:5.5;
     if(!std::isfinite(remaining_s) || remaining_s<minimum_duration+req.tail_s+.4)return out;
     for(unsigned attempt=0;attempt<5;++attempt) {
-        const double duration=std::max(minimum_duration,1.25/frequency+1.4);
+        const double duration=std::max(minimum_duration,1.6/frequency+1.4);
         if(duration+req.tail_s+.4>remaining_s){out.reason="insufficient_budget_for_observable_low_frequency_cycles";return out;}
         const double high_w=2*pi*frequency*1.2/.35;
-        const double amplitude=std::min({requested_amplitude_rad,.7*bounds.position_margin_rad,
-            bounds.max_velocity/(2*(high_w+3)),bounds.max_acceleration/(2*(high_w*high_w+6*high_w+13)),
-            // Half of the calibration effort allowance covers nominal PD;
-            // the other half remains for response deviations. The full command
-            // still passes the unchanged normal total-effort Safety checks.
-            bounds.effort_budget/(2*(kp+kd*(high_w+3)))});
+        const auto bounded=bound_reference_excitation(bounds,kp,kd,requested_amplitude_rad,high_w);
+        const double amplitude=bounded.amplitude_rad;
         if(amplitude>=floor) {
-            req.amplitude_rad=amplitude;req.frequencies_hz={frequency,2*frequency,frequency*1.2/.35};
+            req.amplitude_rad=amplitude;req.reference_bias_rad=bounded.bias_rad;req.frequencies_hz={frequency,2*frequency,frequency*1.2/.35};
             req.probe_duration_s=duration;req.noise_rms_rad=noise.rms_rad;req.encoder_step_rad=noise.encoder_step_rad;
             out.requirements=req;out.torque_amplitude_nm=std::min(.1*bounds.effort_budget,kp*amplitude*.5);
-            out.working_domain=gain_working_domain(bounds,2*amplitude,2*amplitude*(high_w+3));
-            out.planned_input_peak_nm=amplitude*(kp+kd*(high_w+3));
+            out.working_domain=gain_working_domain(bounds,2*bounded.position_bound_rad,2*bounded.velocity_bound_rad_s);
+            out.planned_input_peak_nm=bounded.effort_bound_nm;
             out.valid=true;out.reason="bounded_model_probe";return out;
         }
         frequency*=.7;
@@ -385,23 +569,24 @@ inline ShortProbePlan short_probe_plan(Requirements req,const ModelAxisLimits& b
 // symmetric single-tone drive, and two full cycles outside the .7 s edges.
 // It is not a three-frequency response/physical-identification experiment.
 inline ShortProbePlan symmetric_motion_probe_plan(Requirements req,const ModelAxisLimits& bounds,double kp,double kd,
-    const NoiseEstimate& noise,double remaining_s,const Requirements& previous) {
+    const NoiseEstimate& noise,double remaining_s,const Requirements& previous,
+    double requested_amplitude_rad=0,double requested_frequency_hz=0) {
     validate_model_limits(bounds);ShortProbePlan out;
-    const double frequency=std::min(previous.frequencies_hz.front(),1/(6*req.settling_time_s));
+    const double frequency=requested_frequency_hz>0?requested_frequency_hz:std::min(previous.frequencies_hz.front(),1/(6*req.settling_time_s));
     if(!std::isfinite(frequency) || frequency<=0 || kp<=0 || kd<0 || kp>bounds.kp_max || kd>bounds.kd_max)return out;
     const double duration=2/frequency+1.4,w=2*pi*frequency;
     if(duration+req.tail_s+.6>remaining_s){out.reason="insufficient_budget_for_two_symmetric_motion_cycles";return out;}
-    const double requested=std::max(1.25*previous.amplitude_rad,12*noise.encoder_step_rad);
-    const double amplitude=std::min({requested,.7*bounds.position_margin_rad,bounds.max_velocity/(2*(w+3)),
-        bounds.max_acceleration/(2*(w*w+6*w+13)),bounds.effort_budget/(2*(kp+kd*(w+3)))});
+    const double requested=requested_amplitude_rad>0?requested_amplitude_rad:std::max(1.25*previous.amplitude_rad,12*noise.encoder_step_rad);
+    const auto bounded=bound_reference_excitation(bounds,kp,kd,requested,w);
+    const double amplitude=bounded.amplitude_rad;
     if(amplitude<std::max({12*noise.encoder_step_rad,8*noise.rms_rad,.25*req.peak_error_rad,1e-5})) {
         out.reason="symmetric_motion_probe_below_encoder_or_noise_floor";return out;
     }
-    req.motion_probe=true;req.amplitude_rad=amplitude;req.probe_duration_s=duration;
+    req.motion_probe=true;req.amplitude_rad=amplitude;req.reference_bias_rad=bounded.bias_rad;req.probe_duration_s=duration;
     req.frequencies_hz={frequency,2*frequency,frequency*1.2/.35};req.noise_rms_rad=noise.rms_rad;req.encoder_step_rad=noise.encoder_step_rad;
     out.requirements=req;out.valid=true;out.reason="symmetric_motion_establishment_only_not_frequency_response";
-    out.working_domain=gain_working_domain(bounds,2*amplitude,2*amplitude*(w+3));
-    out.planned_input_peak_nm=amplitude*(kp+kd*(w+3));
+    out.working_domain=gain_working_domain(bounds,2*bounded.position_bound_rad,2*bounded.velocity_bound_rad_s);
+    out.planned_input_peak_nm=bounded.effort_bound_nm;
     return out;
 }
 
@@ -466,6 +651,9 @@ struct EstablishmentProgress {
     double observed_input_nm{0},observed_span_rad{0},observed_minimum_travel_rad{0};
     double planned_input_nm{0},proposed_input_nm{0},confirmation_kp{0},confirmation_frequency_hz{0};
     bool response_plateau_pending{false},input_budget_plateau{false},blocked{false};
+    // A shared slow window is not evidence that every axis exhausted its
+    // input allowance. Only an axis's own plateau makes this a final test.
+    bool plateau_motion_confirmation{false};
     std::string reason;
 };
 struct MotionEstablishmentState {
@@ -484,12 +672,14 @@ inline MotionEstablishmentDecision motion_establishment_step(const Gains& curren
     const std::vector<ModelAxisLimits>& limits,const std::vector<NoiseEstimate>& noise,
     const std::vector<ResponseModel>& models,const std::vector<Metrics>& metrics,
     const std::vector<MotionObservation>& motion,const std::vector<Requirements>& previous,
-    const Requirements& req,bool fine,double remaining_for_measurement_s,MotionEstablishmentState* state=nullptr) {
+    const Requirements& req,bool fine,double remaining_for_measurement_s,MotionEstablishmentState* state=nullptr,
+    const std::vector<double>& damping_ratio_prior={}) {
     const auto n=current.kp.size();
     if(!n || current.kd.size()!=n || inertia.size()!=n || limits.size()!=n || noise.size()!=n || models.size()!=n ||
-       metrics.size()!=n || motion.size()!=n || previous.size()!=n)throw std::invalid_argument("motion establishment joint mapping mismatch");
+       metrics.size()!=n || motion.size()!=n || previous.size()!=n || (!damping_ratio_prior.empty() && damping_ratio_prior.size()!=n))
+        throw std::invalid_argument("motion establishment joint mapping mismatch");
+    (void)fine;
     MotionEstablishmentDecision out;out.gains=current;out.plans=previous;out.reasons.assign(n,"response_established");out.established=true;out.motion_established=true;
-    std::vector<bool> confirmation_axes(n,false);bool slow_confirmation=false;
     if(state) {
         if(state->boundary_retests.size()!=n){state->boundary_retests.assign(n,0);state->established_axes.assign(n,false);}
         if(state->excitation_retests.size()!=n)state->excitation_retests.assign(n,0);
@@ -504,7 +694,8 @@ inline MotionEstablishmentDecision motion_establishment_step(const Gains& curren
             }
             const bool same=state->context_gains.kp.size()==n && state->context_gains.kd.size()==n && state->context_plans.size()==n &&
                 state->context_gains.kp[i]==current.kp[i] && state->context_gains.kd[i]==current.kd[i] &&
-                state->context_plans[i].amplitude_rad==previous[i].amplitude_rad && state->context_plans[i].frequencies_hz==previous[i].frequencies_hz;
+                state->context_plans[i].amplitude_rad==previous[i].amplitude_rad && state->context_plans[i].reference_bias_rad==previous[i].reference_bias_rad &&
+                state->context_plans[i].frequencies_hz==previous[i].frequencies_hz;
             if(!same){state->boundary_retests[i]=0;state->established_axes[i]=false;}
             if((models[i].tracking_valid || previous[i].motion_probe) && models[i].reason!="changing_feedback_gains" && motion[i].qualified && !models[i].sustained_oscillation && !metrics[i].oscillating) {
                 state->established_axes[i]=true;state->progress[i].blocked=false;state->progress[i].reason.clear();
@@ -530,138 +721,113 @@ inline MotionEstablishmentDecision motion_establishment_step(const Gains& curren
     out.spectral_confirmation_required=out.motion_established && std::any_of(previous.begin(),previous.end(),[](const Requirements& p){return p.motion_probe;});
     if(out.feedback_fault){out.motion_established=false;return out;}
     if(out.established || out.motion_established)return out;
+    // Excitation-amplitude calibration is separate from response qualification.
+    // Small encoder travel, or a flat response at one tested drive level, does
+    // not prove that a larger legal drive is unavailable. In particular, a
+    // single-tone window is never a permanent failure latch.
+    const bool any_ringing=std::any_of(models.begin(),models.end(),[](const ResponseModel& m){return m.sustained_oscillation;}) ||
+        std::any_of(metrics.begin(),metrics.end(),[](const Metrics& m){return m.oscillating;});
     for(std::size_t i=0;i<n;++i) {
-        if((models[i].tracking_valid || previous[i].motion_probe) && models[i].reason!="changing_feedback_gains" && motion[i].qualified && !models[i].sustained_oscillation && !metrics[i].oscillating) {
-            if(state){state->progress[i].blocked=false;state->progress[i].reason.clear();}continue;
-        }
         auto* progress=state?&state->progress[i]:nullptr;
-        if(progress && progress->blocked){out.blocked_axes.push_back(i);out.reasons[i]=progress->reason;continue;}
+        if(progress) {
+            progress->blocked=false;progress->reason.clear();progress->response_plateau_pending=false;
+            progress->plateau_motion_confirmation=false;progress->input_budget_plateau=false;
+            progress->observed_input_nm=metrics[i].applied_input_peak_nm;
+            progress->observed_span_rad=metrics[i].actual_span;
+            progress->observed_minimum_travel_rad=std::min(motion[i].positive_travel_rad,motion[i].negative_travel_rad);
+        }
+        if((models[i].tracking_valid || previous[i].motion_probe) && models[i].reason!="changing_feedback_gains" && motion[i].qualified && !models[i].sustained_oscillation && !metrics[i].oscillating)continue;
         if(models[i].reason=="changing_feedback_gains") {
             out.reasons[i]="gain_transition_requires_stable_complete_set_remeasurement";out.retry=true;continue;
-        }
-        if(previous[i].motion_probe && !models[i].sustained_oscillation && !metrics[i].oscillating) {
-            out.reasons[i]="symmetric_motion_probe_insufficient_at_tested_input_not_hardware_capability";
-            if(progress){progress->blocked=true;progress->reason=out.reasons[i];}out.blocked_axes.push_back(i);continue;
         }
         validate_model_limits(limits[i]);
         if(!std::isfinite(inertia[i]) || inertia[i]<=0)throw std::invalid_argument("motion establishment requires valid model inertia");
         auto observed_noise=noise[i];observed_noise.encoder_step_rad=std::max(observed_noise.encoder_step_rad,motion[i].encoder_step_rad);
         const double resolution=std::max({observed_noise.encoder_step_rad,2*observed_noise.rms_rad,1e-6});
-        const double minimum_travel=std::min(motion[i].positive_travel_rad,motion[i].negative_travel_rad);
-        bool measured_plateau=false,force_symmetric_motion=false;
-        if(progress) {
-            progress->observed_input_nm=metrics[i].applied_input_peak_nm;progress->observed_span_rad=metrics[i].actual_span;
-            progress->observed_minimum_travel_rad=minimum_travel;
-            const bool improved=metrics[i].actual_span>progress->anchor_span_rad+resolution ||
-                minimum_travel>progress->anchor_minimum_travel_rad+resolution;
-            const bool appreciable_motion=metrics[i].actual_span>=4*resolution;
-            if(progress->response_plateau_pending) {
-                if(improved){progress->response_plateau_pending=false;}
-                else if(current.kp[i]==progress->confirmation_kp && previous[i].frequencies_hz.front()<=progress->confirmation_frequency_hz) {
-                    force_symmetric_motion=true;progress->response_plateau_pending=false;
-                }
-            }
-            if(appreciable_motion && (progress->anchor_input_nm<=0 || improved)) {
-                progress->anchor_input_nm=metrics[i].applied_input_peak_nm;progress->anchor_span_rad=metrics[i].actual_span;
-                progress->anchor_minimum_travel_rad=minimum_travel;
-            } else if(progress->anchor_input_nm>0 && metrics[i].applied_input_peak_nm>=1.5*progress->anchor_input_nm)
-                measured_plateau=true;
+        const double previous_input=prescribed_pd_input_peak(previous[i],current.kp[i],current.kd[i]);
+        if(progress)progress->planned_input_nm=previous_input;
+        const bool ringing=models[i].sustained_oscillation || metrics[i].oscillating;
+        if(any_ringing && !ringing) {
+            out.reasons[i]="excitation_calibration_deferred_for_oscillation_feedback_reduction";continue;
         }
-        measured_plateau=measured_plateau || force_symmetric_motion;
-        if(state && motion[i].quantization_boundary && state->boundary_retests[i]<2) {
+        if(state && motion[i].quantization_boundary && state->boundary_retests[i]<2 && !ringing) {
             ++state->boundary_retests[i];out.retry=true;
-            out.reasons[i]="encoder_boundary_requires_same_complete_gain_set_remeasurement";
-            continue;
+            out.reasons[i]="encoder_boundary_requires_same_complete_gain_set_remeasurement";continue;
         }
         double kp=current.kp[i],kd=current.kd[i];
-        double requested_amplitude=previous[i].amplitude_rad,frequency=previous[i].frequencies_hz.front();
-        const bool ringing=models[i].sustained_oscillation || metrics[i].oscillating;
+        const double frequency=std::min(previous[i].frequencies_hz.front(),1/(6*req.settling_time_s));
+        const auto plan_at=[&](double p,double d,double amplitude,double hz,bool single) {
+            return single?symmetric_motion_probe_plan(req,limits[i],p,d,observed_noise,remaining_for_measurement_s,previous[i],amplitude,hz):
+                short_probe_plan(req,limits[i],p,d,observed_noise,fine,remaining_for_measurement_s,amplitude,hz);
+        };
+        ShortProbePlan selected;
         if(ringing) {
-            // Increasing D cannot be justified by ringing when delay and pole
-            // estimates are unknown: it may increase the unstable loop gain.
-            kp*=.8;kd*=.8;requested_amplitude*=.8;frequency=std::max(.20,.85*frequency);
-            out.reasons[i]="uncommanded_oscillation_reduce_feedback_and_excitation";
+            kp=quantize_gain(.8*kp,limits[i].grid.kp_step,limits[i].kp_max,true);
+            selected=plan_at(kp,kd,.8*previous[i].amplitude_rad,frequency,previous[i].motion_probe);
+            out.reasons[i]="uncommanded_oscillation_reduce_stiffness_and_excitation_preserve_damping";
         } else {
-            const double floor=std::max({4*observed_noise.encoder_step_rad,6*observed_noise.rms_rad,1e-6});
-            const bool insufficient_motion=metrics[i].actual_span<=floor || motion[i].response_rms_ratio<.2 ||
-                (!motion[i].bidirectional && metrics[i].actual_span<2*motion[i].minimum_motion_span_rad);
-            const unsigned retests=state?state->excitation_retests[i]:0;
-            if(!insufficient_motion || (state && retests==0)) {
-                // A poor spectral fit with appreciable motion may be friction,
-                // unmodelled dynamics or noise. It is not evidence for more K.
-                if(state)++state->excitation_retests[i];
-                requested_amplitude=std::min(.7*limits[i].position_margin_rad,std::max(1.25*requested_amplitude,12*observed_noise.encoder_step_rad));
-                frequency=std::max(.20,.85*frequency);
-                out.reasons[i]="weak_response_requires_excitation_evidence_before_gain_increase:"+models[i].reason;
+            // Grow reference amplitude before controller stiffness. The drive
+            // is computed from the real MIT reference position AND velocity;
+            // measured D*velocity noise is not a breakaway-torque estimate.
+            const double requested=std::max(1.4*previous[i].amplitude_rad,
+                previous[i].amplitude_rad+std::max(2*resolution,limits[i].grid.kp_step>0?resolution:1e-6));
+            auto amplitude_plan=plan_at(kp,kd,requested,previous[i].frequencies_hz.front(),previous[i].motion_probe);
+            // Resolve at least two measured position codes/noise widths at the
+            // current stiffness; a tiny numerical change at an effort plateau
+            // cannot justify a larger controller. This is not a fixed percent.
+            const double eps=std::max(1e-9,2*resolution*current.kp[i]);
+            const auto grows=[&](const ShortProbePlan& candidate,double p,double d) {
+                return candidate.valid && prescribed_pd_input_peak(candidate.requirements,p,d)>previous_input+eps;
+            };
+            const bool amplitude_resolvable=amplitude_plan.valid &&
+                amplitude_plan.requirements.amplitude_rad>=previous[i].amplitude_rad+resolution;
+            if(amplitude_resolvable && grows(amplitude_plan,kp,kd)) {
+                selected=amplitude_plan;out.reasons[i]="excitation_amplitude_calibration_increase_reference_drive_at_fixed_gains";
             } else {
-                // A bounded relative Kp step addresses demonstrated sticking.
-                // Actual PD peak includes D*velocity noise and must never be
-                // divided by reference amplitude to infer a breakaway Kp.
-                kp=std::min(limits[i].kp_max,std::max(kp+limits[i].grid.kp_step,1.4*kp));
-                out.reasons[i]="measured_insufficient_motion_bounded_stiffness_step_no_damping_inference";
-            }
-        }
-        kp=quantize_gain(kp,limits[i].grid.kp_step,limits[i].kp_max,kp>0);
-        kd=quantize_gain(kd,limits[i].grid.kd_step,limits[i].kd_max);
-        auto plan=short_probe_plan(req,limits[i],kp,kd,observed_noise,fine,remaining_for_measurement_s,requested_amplitude,frequency);
-        if(!plan.valid){out.reasons[i]+=";"+plan.reason;continue;}
-        const double previous_input=prescribed_pd_input_peak(previous[i],current.kp[i],current.kd[i]);
-        const double proposed_input=prescribed_pd_input_peak(plan.requirements,kp,kd);
-        const double distinguishable_increment=std::max(.1*previous_input,2*resolution*current.kp[i]);
-        const bool input_plateau=kp>current.kp[i] && proposed_input<previous_input+distinguishable_increment;
-        if(progress){progress->planned_input_nm=previous_input;progress->proposed_input_nm=proposed_input;progress->input_budget_plateau=input_plateau;}
-        if(input_plateau || measured_plateau) {
-            // More K with inverse amplitude scaling cannot break stiction.
-            // Keep this whole gain set and spend remaining measurement time on
-            // slower, larger legal excitation before declaring its limitation.
-            kp=current.kp[i];kd=current.kd[i];
-            frequency=std::max(.20,.7*previous[i].frequencies_hz.front());
-            requested_amplitude=std::min(.7*limits[i].position_margin_rad,1.25*previous[i].amplitude_rad);
-            plan=short_probe_plan(req,limits[i],kp,kd,observed_noise,fine,remaining_for_measurement_s,requested_amplitude,frequency);
-            const bool changed=plan.valid && (plan.requirements.amplitude_rad>previous[i].amplitude_rad+1e-10 ||
-                plan.requirements.frequencies_hz.front()<previous[i].frequencies_hz.front()-1e-10);
-            out.reasons[i]=measured_plateau?"response_effort_plateau_requires_slower_complete_gain_set_confirmation":"gain_increase_rejected_without_distinguishable_excitation_input_growth";
-            if(!changed || force_symmetric_motion) {
-                const auto symmetric=symmetric_motion_probe_plan(req,limits[i],kp,kd,observed_noise,remaining_for_measurement_s,previous[i]);
-                if(!symmetric.valid) {
-                    out.reasons[i]="symmetric_motion_establishment_unavailable:"+symmetric.reason;
-                    if(progress){progress->blocked=true;progress->reason=out.reasons[i];}out.blocked_axes.push_back(i);continue;
+                const bool weak=metrics[i].actual_span<=std::max({4*observed_noise.encoder_step_rad,6*observed_noise.rms_rad,1e-6}) ||
+                    motion[i].response_rms_ratio<.2 || !motion[i].bidirectional;
+                if(weak) {
+                    const double next=quantize_gain(std::min(limits[i].kp_max,std::max(kp+limits[i].grid.kp_step,1.4*kp)),
+                        limits[i].grid.kp_step,limits[i].kp_max,true);
+                    const double position_bound=previous[i].amplitude_rad+std::abs(previous[i].reference_bias_rad);
+                    const double high_w=2*pi*(previous[i].motion_probe?previous[i].frequencies_hz.front():previous[i].frequencies_hz.back());
+                    const double E=std::max(2*position_bound,metrics[i].peak_error+3*observed_noise.rms_rad+observed_noise.encoder_step_rad);
+                    const double V=2*(previous[i].amplitude_rad*high_w+3*position_bound)+
+                        2*observed_noise.velocity_peak+6*observed_noise.velocity_rms;
+                    const auto paired=nominal_damping_gain_step({{kp},{kd}},{next},{inertia[i]},{limits[i]},{E},{V},
+                        damping_ratio_prior.empty()?std::vector<double>{}:std::vector<double>{damping_ratio_prior[i]});
+                    const double next_p=paired.gains.kp[0],next_d=paired.gains.kd[0];
+                    auto gain_plan=plan_at(next_p,next_d,requested,previous[i].frequencies_hz.front(),previous[i].motion_probe);
+                    if((next_p>kp || next_d>kd) && grows(gain_plan,next_p,next_d)) {
+                        kp=next_p;kd=next_d;selected=gain_plan;
+                        out.reasons[i]="excitation_amplitude_calibration_bounded_pd_step_for_unresolved_motion;"+paired.reasons[0];
+                    }
                 }
-                plan=symmetric;out.reasons[i]=force_symmetric_motion?"confirmed_response_plateau_requires_symmetric_motion_probe_at_same_complete_gains":
-                    "spectral_excitation_boundary_requires_symmetric_motion_probe_at_same_complete_gains";
+                if(!selected.valid) {
+                    // A slower legal signal can release acceleration/velocity
+                    // headroom. It is useful only if its known drive increases,
+                    // or if a new single-tone experiment has not yet been made.
+                    auto slower=plan_at(kp,kd,requested,.7*frequency,true);
+                    if(grows(slower,kp,kd) || (slower.valid && !previous[i].motion_probe)) {
+                        selected=slower;out.reasons[i]="excitation_amplitude_calibration_slower_single_tone_measurement";
+                    } else {
+                        const bool budget=(!amplitude_plan.valid && amplitude_plan.reason.find("budget")!=std::string::npos) ||
+                            (!slower.valid && slower.reason.find("budget")!=std::string::npos);
+                        out.reasons[i]=budget?"excitation_amplitude_calibration_insufficient_reserved_budget":
+                            "excitation_amplitude_calibration_no_legal_input_growth_in_observed_domain";
+                        if(progress){progress->blocked=true;progress->input_budget_plateau=!budget;progress->reason=out.reasons[i];}
+                        out.blocked_axes.push_back(i);continue;
+                    }
+                }
             }
-            slow_confirmation=true;confirmation_axes[i]=true;
-            if(measured_plateau && progress && !plan.requirements.motion_probe){progress->response_plateau_pending=true;progress->confirmation_kp=kp;progress->confirmation_frequency_hz=frequency;}
         }
-        out.gains.kp[i]=kp;out.gains.kd[i]=kd;
-        out.plans[i]=plan.requirements;
+        if(!selected.valid){out.reasons[i]+=";"+selected.reason;out.blocked_axes.push_back(i);continue;}
+        if(state)++state->excitation_retests[i];
+        out.gains.kp[i]=kp;out.gains.kd[i]=kd;out.plans[i]=selected.requirements;
+        if(progress){progress->proposed_input_nm=prescribed_pd_input_peak(selected.requirements,kp,kd);progress->reason=out.reasons[i];}
         out.retry=out.retry || kp!=current.kp[i] || kd!=current.kd[i] ||
-            plan.requirements.amplitude_rad!=previous[i].amplitude_rad || plan.requirements.frequencies_hz!=previous[i].frequencies_hz ||
-            plan.requirements.motion_probe!=previous[i].motion_probe;
-    }
-    const bool any_ringing=std::any_of(models.begin(),models.end(),[](const ResponseModel& m){return m.sustained_oscillation;}) ||
-        std::any_of(metrics.begin(),metrics.end(),[](const Metrics& m){return m.oscillating;});
-    if(any_ringing) {
-        // A measured unstable axis takes priority over a same-group comparison.
-        // No other axis is strengthened while feedback is being reduced.
-        for(std::size_t i=0;i<n;++i) {
-            if(state) {
-                auto& p=state->progress[i];p.response_plateau_pending=false;
-                p.anchor_input_nm=0;p.anchor_span_rad=0;p.anchor_minimum_travel_rad=0;
-            }
-            if(models[i].sustained_oscillation || metrics[i].oscillating)continue;
-            out.gains.kp[i]=current.kp[i];out.gains.kd[i]=current.kd[i];out.plans[i]=previous[i];
-            if(confirmation_axes[i])out.reasons[i]="slow_confirmation_deferred_for_oscillation_feedback_reduction";
-        }
-    } else if(slow_confirmation) {
-        // The comparison is of a complete measured controller, not an axis
-        // spliced together while unrelated gains change in the same trial.
-        out.gains=current;
-        for(std::size_t i=0;i<n;++i)if(!confirmation_axes[i]) {
-            out.plans[i]=previous[i];
-            if(out.reasons[i]!="response_established" && std::find(out.blocked_axes.begin(),out.blocked_axes.end(),i)==out.blocked_axes.end())
-                out.reasons[i]="gain_change_deferred_during_same_complete_gain_set_confirmation";
-        }
+            selected.requirements.amplitude_rad!=previous[i].amplitude_rad || selected.requirements.reference_bias_rad!=previous[i].reference_bias_rad ||
+            selected.requirements.frequencies_hz!=previous[i].frequencies_hz || selected.requirements.motion_probe!=previous[i].motion_probe;
     }
     double duration=0;for(const auto& plan:out.plans)duration=std::max(duration,plan.probe_duration_s);
     for(auto& plan:out.plans)plan.probe_duration_s=duration;
@@ -705,9 +871,16 @@ inline DisturbanceInputRevision revise_disturbance_input(const std::vector<doubl
     if(!n || ceiling.size()!=n || models.size()!=n || metrics.size()!=n)throw std::invalid_argument("independent disturbance mapping mismatch");
     DisturbanceInputRevision out;out.amplitudes=current;out.reasons.assign(n,"independent_response_measured");
     for(std::size_t i=0;i<n;++i) {
-        if(!std::isfinite(current[i]) || current[i]<=0 || !std::isfinite(ceiling[i]) || ceiling[i]<=0 || current[i]>ceiling[i]*(1+1e-9))
+        if(!std::isfinite(current[i]) || current[i]<0 || !std::isfinite(ceiling[i]) || ceiling[i]<0 ||
+           ((current[i]==0 || ceiling[i]==0) && !(current[i]==0 && ceiling[i]==0)) || current[i]>ceiling[i]*(1+1e-9))
             throw std::invalid_argument("independent disturbance exceeds calibrated effort/Safety allowance");
         const auto& model=models[i];const auto& m=metrics[i];
+        if(current[i]==0 && ceiling[i]==0) {
+            if(!m.continuous || m.measurement_samples<100 || m.limited_samples) {
+                out.feedback_fault=true;out.reasons[i]="invalid_or_limited_disturbance_measurement:"+model.reason;
+            } else out.reasons[i]="independent_disturbance_not_requested_without_bidirectional_demonstrated_room";
+            continue;
+        }
         const bool revisable=model.reason=="response_below_encoder_noise_floor" || model.reason=="low_spectral_fit_quality" ||
             model.reason=="insufficient_excitation_at_required_frequencies" || model.reason=="changing_feedback_gains";
         if(!m.continuous || m.measurement_samples<100 || m.limited_samples || (!model.disturbance_valid && !revisable)) {
@@ -988,26 +1161,33 @@ inline CandidateProposal adaptive_candidate(const Gains& current,const std::vect
         validate_model_limits(limits[i]);const auto& m=models[i];double kp=current.kp[i],kd=current.kd[i];
         if(!std::isfinite(kp) || kp<0 || kp>limits[i].kp_max || !std::isfinite(kd) || kd<0 || kd>limits[i].kd_max)
             throw std::invalid_argument("adaptive candidate outside gain protocol limits");
-        if(m.sustained_oscillation) {kp*=.8;kd*=.8;out.reasons[i]="uncommanded_oscillation_reduce_feedback_without_unproven_damping_increase";}
-        else if(m.dynamic_overshoot) {kp*=.9;kd*=1.1;out.reasons[i]="dynamic_overshoot_reduce_stiffness_raise_damping";}
+        if(m.sustained_oscillation) {kp*=.92;out.reasons[i]="uncommanded_oscillation_small_stiffness_reduction_no_unmeasured_damping_increase";}
+        else if(m.dynamic_overshoot) {
+            if(m.identifiable && m.damping_ratio>0 && m.damping_ratio<.65 && m.natural_frequency_rad_s>0 &&
+               m.effective_delay_s*m.natural_frequency_rad_s<.15) {
+                kd*=1.08;out.reasons[i]="dynamic_overshoot_identified_low_delay_underdamping_small_damping_only_comparison";
+            } else {kp*=.92;out.reasons[i]="dynamic_overshoot_small_stiffness_only_comparison_delay_or_damping_unresolved";}
+        }
         else if(m.tracking_valid || m.disturbance_valid) {
             const bool deficit=m.tracking_peak_error_rad>req.peak_error_rad || m.reference_lag_s>.015;
             const bool soft=m.disturbance_valid && ((m.disturbance_goal_evaluated && !m.disturbance_goal_met) ||
                 (std::isfinite(m.low_frequency_compliance_rad_nm) && current.kp[i]>0 && m.low_frequency_compliance_rad_nm*current.kp[i]>1.15));
             if(deficit && !m.identifiable && !soft)out.reasons[i]="tracking_deficit_without_identifiable_feedback_dynamics_requires_measurement";
+            else if(deficit && !soft && m.identifiable && m.damping_ratio>0 && m.damping_ratio<.8 &&
+                    m.natural_frequency_rad_s>0 && m.effective_delay_s*m.natural_frequency_rad_s<.3 &&
+                    kd<limits[i].kd_max-std::max(1e-9,limits[i].grid.kd_step)) {
+                kd*=1.08;out.reasons[i]="measured_low_delay_underdamped_tracking_small_damping_only_comparison";
+            }
             else if(deficit || soft) {
-                kp*=m.identifiable && m.effective_delay_s*m.natural_frequency_rad_s>.4?1.05:1.18;
-                if(m.identifiable && m.inertia_estimate>0) {
-                    const double physical=2*.9*std::sqrt(m.inertia_estimate*kp)-m.viscous_damping_nm_s_rad;
-                    kd=std::max(kd,physical);
-                }
+                kp*=m.identifiable && m.effective_delay_s*m.natural_frequency_rad_s>.4?1.04:1.08;
                 out.reasons[i]=soft?"measured_disturbance_compliance_increase_stiffness":"measured_tracking_deficit_increase_stiffness";
             } else if(m.identifiable && m.damping_ratio>1.4 && m.effective_delay_s*m.natural_frequency_rad_s<.2) {
-                kd*=.9;out.reasons[i]="measured_excess_damping_reduce_damping";
+                kd*=.92;out.reasons[i]="measured_excess_damping_small_damping_only_comparison";
             } else out.reasons[i]="measured_response_needs_validation";
         }
         const double high_w=2*pi*req.frequencies_hz.back();
-        const auto bounded=constrain_candidate(kp,kd,limits[i],2*req.amplitude_rad,2*req.amplitude_rad*(high_w+3));
+        const double position=req.amplitude_rad+std::abs(req.reference_bias_rad);
+        const auto bounded=constrain_candidate(kp,kd,limits[i],2*position,2*(req.amplitude_rad*high_w+3*position));
         out.gains.kp[i]=bounded.first;out.gains.kd[i]=bounded.second;
         if(kd>limits[i].kd_max)out.reasons[i]+=";kd_protocol_ceiling";
         if(kp>limits[i].kp_max)out.reasons[i]+=";kp_protocol_ceiling";

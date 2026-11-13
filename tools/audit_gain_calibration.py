@@ -8,6 +8,7 @@ record.  It never recomputes a legacy ``validated`` flag or writes a Profile.
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_right
 from collections import Counter
 import csv
 import io
@@ -18,6 +19,7 @@ import statistics
 import sys
 import tempfile
 from typing import Any
+import xml.etree.ElementTree as ET
 import zipfile
 
 
@@ -174,6 +176,104 @@ def trajectory(source: Evidence, name: str, peak_target_rad: float,
             'peak_scope': 'all_recorded_rows_without_plot_decimation', 'axes': axes}
 
 
+def tracking_kinematics(rows: list[dict[str, float]]) -> dict[str, Any]:
+    """Diagnose the executed record; timing comparisons never change acceptance."""
+    if len(rows) < 3 or any(b['time_s'] <= a['time_s'] for a, b in zip(rows, rows[1:])):
+        return {'status':'insufficient_or_nonmonotonic_record'}
+    stamps = [row['time_s'] for row in rows]
+    def reference_at(stamp):
+        upper = min(max(1, bisect_right(stamps, stamp)), len(rows)-1)
+        a, b = rows[upper-1], rows[upper]
+        weight = min(1.0, max(0.0, (stamp-a['time_s'])/(b['time_s']-a['time_s'])))
+        return a['reference']+(b['reference']-a['reference'])*weight
+    intervals = []
+    for a, b in zip(rows, rows[1:]):
+        source_known = a.get('reference_sample_time_known') and b.get('reference_sample_time_known')
+        basis = 'reference_sample_time_s' if source_known else 'time_s'
+        dt = b[basis]-a[basis]
+        predicted = .5*(a['reference_velocity']+b['reference_velocity'])*dt
+        intervals.append({'start_s':a['time_s'], 'duration_s':dt,
+            'reference_interval_time_basis':basis,
+            'reference_delta_rad':b['reference']-a['reference'],
+            'velocity_integral_rad':predicted,
+            'position_velocity_mismatch_rad':b['reference']-a['reference']-predicted})
+    worst = max(intervals, key=lambda row:abs(row['position_velocity_mismatch_rad']))
+    ages = [row['time_s']-row['feedback_time_s'] for row in rows if 'feedback_time_s' in row]
+    receive_errors = [row['actual']-reference_at(row['feedback_time_s']) for row in rows
+                      if 'feedback_time_s' in row and stamps[0] <= row['feedback_time_s'] <= stamps[-1]]
+    direction_errors = [[row['reference']-row['actual'] for row in rows
+                        if direction*row['reference_velocity'] > .05] for direction in (1, -1)]
+    # A finite 40 ms difference avoids treating one encoder code as a velocity
+    # spike. It tests sign/scale, not a motor velocity observer or delay model.
+    velocities = []
+    for index, row in enumerate(rows):
+        old = bisect_right(stamps, row['time_s']-.04)-1
+        if old < 0:
+            continue
+        elapsed = row['time_s']-rows[old]['time_s']
+        measured = (row['actual']-rows[old]['actual'])/elapsed
+        reported = statistics.mean(item['velocity'] for item in rows[old:index+1])
+        velocities.append((reported, measured))
+    energy = sum(v*v for v, _ in velocities)
+    slope = sum(v*dq for v, dq in velocities)/energy if energy > 1e-12 else None
+    plateau_start = 0
+    plateaus = []
+    for index, row in enumerate(rows[1:], 1):
+        if row['actual'] == rows[index-1]['actual']:
+            continue
+        segment = rows[plateau_start:index]
+        elapsed = segment[-1]['time_s']-segment[0]['time_s']
+        median_velocity = statistics.median(item['reference_velocity'] for item in segment)
+        if elapsed >= .03 and abs(median_velocity) > .05:
+            plateaus.append({'start_s':segment[0]['time_s'], 'duration_s':elapsed,
+                'reference_travel_rad':segment[-1]['reference']-segment[0]['reference'],
+                'median_reference_velocity_rad_s':median_velocity})
+        plateau_start = index
+    return {'status':'recorded_kinematics',
+        'scope':'diagnostic_only_original_full_cycle_error_and_acceptance_unchanged',
+        'known_reference_sample_times':sum(bool(row.get('reference_sample_time_known')) for row in rows),
+        'nonincreasing_known_reference_intervals':sum(row['duration_s']<=0 and row['reference_interval_time_basis']=='reference_sample_time_s' for row in intervals),
+        'peak_position_velocity_mismatch_rad':abs(worst['position_velocity_mismatch_rad']),
+        'worst_reference_interval':worst,
+        'reference_duplicate_intervals_with_nonzero_velocity':sum(
+            row['reference_delta_rad']==0 and abs(row['velocity_integral_rad'])>1e-6 for row in intervals),
+        'feedback_receive_age_s':{'median':statistics.median(ages), 'max':max(ages)} if ages else None,
+        'receive_aligned_error_rad':{'rms':math.sqrt(statistics.mean(e*e for e in receive_errors)),
+                                    'peak':max(abs(e) for e in receive_errors)} if receive_errors else None,
+        'receive_alignment_scope':'host_receive_timestamp_diagnostic_not_known_device_sampling_or_motor_delay',
+        'reported_velocity_to_40ms_position_difference_scale':slope,
+        'direction_mean_error_rad':dict(zip(('positive','negative'),
+            (statistics.mean(errors) if errors else None for errors in direction_errors))),
+        'moving_reference_position_plateaus':len(plateaus),
+        'longest_moving_reference_position_plateau':max(plateaus,key=lambda row:row['duration_s']) if plateaus else None,
+        'plateau_scope':'recorded_position_plateaus_can_include_friction_quantization_or_feedback_effects_not_a_motor_fault_diagnosis'}
+
+
+def full_path_execution_diagnostics(source: Evidence, records: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = {}
+    for name, record in records.items():
+        if record['status'] != 'measured' or name == 'gain-trajectory-noise.csv':
+            continue
+        axes: dict[str, list[dict[str, float]]] = {}
+        with source.binary(name) as stream:
+            reader = csv.DictReader(io.TextIOWrapper(stream))
+            required = ('time_s','reference','reference_velocity','actual','velocity')
+            if not set(required).issubset(reader.fieldnames or []):
+                diagnostics[name] = {'status':'velocity_columns_not_recorded'}
+                continue
+            for row in reader:
+                values = {key:float(row[key]) for key in required}
+                if 'feedback_time_s' in row:
+                    values['feedback_time_s'] = float(row['feedback_time_s'])
+                if row.get('reference_sample_time_known') == '1':
+                    values['reference_sample_time_s'] = float(row['reference_sample_time_s'])
+                    values['reference_sample_time_known'] = True
+                if all(math.isfinite(value) for value in values.values()):
+                    axes.setdefault(row['joint'],[]).append(values)
+        diagnostics[name] = {joint:tracking_kinematics(rows) for joint, rows in axes.items()}
+    return diagnostics
+
+
 def short_probe_diagnostics(source: Evidence, candidate: dict[str, Any], peak_target_deg: float) -> dict[str, Any]:
     """Describe observed motion and timing without inventing identification."""
     experiments = candidate.get('experiments') or []
@@ -208,6 +308,13 @@ def short_probe_diagnostics(source: Evidence, candidate: dict[str, Any], peak_ta
             axis_plan = plans[index] if 0 <= index < len(plans) else {}
             motion_only = axis_plan.get('motion_probe', record['experiment_kind'] == 'motion_establishment_probe')
             axis['planned_motion_probe'] = motion_only
+            axis['planned_reference_bias_rad'] = axis_plan.get('reference_bias_rad')
+            axis['position_domain_source'] = planned.get('position_domain_source')
+            domain = planned.get('working_domain', [])
+            domain = domain[index] if 0 <= index < len(domain) else {}
+            axis['planned_reference_domain_rad'] = [domain.get('reference_lower_rad'),domain.get('reference_upper_rad')]
+            eligible = planned.get('disturbance_axis_eligible', [])
+            axis['planned_disturbance_axis_eligible'] = eligible[index] if 0 <= index < len(eligible) else None
             axis['evidence_scope'] = ('symmetric_single_frequency_motion_only_not_FRF' if motion_only
                                       else 'recorded_experiment')
             center = planned.get('center_rad', [])
@@ -255,6 +362,82 @@ def short_probe_diagnostics(source: Evidence, candidate: dict[str, Any], peak_ta
     return records
 
 
+def measurement_center_diagnostics(source: Evidence, candidate: dict[str, Any], peak_target_deg: float) -> dict[str, Any]:
+    """Keep positioning evidence separate from identification and purpose passes."""
+    records = {}
+    names = candidate.get('joint_names', [])
+    for item in candidate.get('experiments', []):
+        name = item.get('record_path')
+        if item.get('kind') != 'demonstrated_measurement_center_entry' or name not in source.names:
+            continue
+        record = trajectory(source, name, math.radians(peak_target_deg))
+        record['archived_experiment'] = item
+        record['evidence_scope'] = 'positioning_only_no_identification_or_purpose_qualification'
+        record['lead_comparison_scope'] = 'recorded_final_lead_vector_not_recomputed_Safety_or_dynamic_gain_history'
+        previous = {}
+        with source.binary(name) as stream:
+            for line, row in enumerate(csv.DictReader(io.TextIOWrapper(stream)), 2):
+                joint = row['joint']
+                if joint not in names or not int(row.get('new_measurement', 0)):
+                    continue
+                axis = record['axes'][joint]
+                index = names.index(joint)
+                point = {'line':line, 'time_s':float(row['time_s']), 'reference_rad':float(row['reference']),
+                         'actual_rad':float(row['actual']), 'kp':float(row['actual_kp']), 'kd':float(row['actual_kd']),
+                         'feedforward_nm':float(row['feedforward_nm'])}
+                point['reference_minus_actual_rad'] = point['reference_rad']-point['actual_rad']
+                lead = item.get('feedback_lead_rad', [])
+                uncertainty = item.get('position_uncertainty_rad', [])
+                axis['recorded_feedback_lead_rad'] = lead[index] if index < len(lead) else None
+                axis['recorded_position_uncertainty_rad'] = uncertainty[index] if index < len(uncertainty) else None
+                before = previous.get(joint)
+                if before:
+                    transition = {'before':before, 'after':point,
+                                  'actual_delta_rad':point['actual_rad']-before['actual_rad'],
+                                  'reference_delta_rad':point['reference_rad']-before['reference_rad']}
+                    axis['last_fresh_transition'] = transition
+                    if transition['actual_delta_rad'] and 'first_nonzero_fresh_position_step' not in axis:
+                        axis['first_nonzero_fresh_position_step'] = transition
+                if axis['recorded_feedback_lead_rad'] is not None and abs(point['reference_minus_actual_rad']) > axis['recorded_feedback_lead_rad']+1e-12:
+                    axis['recorded_hard_lead_exceeded_rows'] = axis.get('recorded_hard_lead_exceeded_rows', 0)+1
+                    axis.setdefault('first_recorded_hard_lead_exceeded', point)
+                axis['last_fresh_sample'] = point
+                previous[joint] = point
+        records[name] = record
+    return records
+
+
+def endpoint_transition_diagnostics(source: Evidence, candidate: dict[str, Any], peak_target_deg: float) -> dict[str, Any]:
+    """Separate generated endpoint references from physical arrival and full paths."""
+    records={}
+    names=candidate.get('joint_names', [])
+    for item in candidate.get('experiments', []):
+        name=item.get('record_path')
+        if item.get('kind')!='feedback_bounded_endpoint_transition' or name not in source.names:
+            continue
+        record=trajectory(source,name,math.radians(peak_target_deg))
+        record['archived_experiment']=item
+        record['evidence_scope']='endpoint_positioning_not_full_path_tracking_or_purpose_qualification'
+        record['exact_reference_arrival_scope']='historical_1e-8_rad_1e-6_rad_per_s_command_thresholds_not_actual_arrival_acceptance'
+        with source.binary(name) as stream:
+            for line,row in enumerate(csv.DictReader(io.TextIOWrapper(stream)),2):
+                joint=row['joint']
+                if joint not in names:
+                    continue
+                index=names.index(joint);target=item['target_rad'][index]
+                axis=record['axes'][joint]
+                reference,actual,velocity=(float(row[key]) for key in ('reference','actual','reference_velocity'))
+                axis.update(last_line=line,last_actual_rad=actual,last_reference_velocity_rad_s=velocity,
+                            archived_target_rad=target,last_reference_minus_target_rad=reference-target,
+                            last_actual_minus_target_rad=actual-target)
+                cap=item.get('reference_error_cap_rad',[])
+                axis['archived_reference_error_cap_rad']=cap[index] if index<len(cap) else None
+                if abs(reference-target)<1e-8 and abs(velocity)<1e-6:
+                    axis.setdefault('first_exact_stopped_reference_time_s',float(row['time_s']))
+        records[name]=record
+    return records
+
+
 def establishment_progression(candidate: dict[str, Any], probes: dict[str, Any]) -> dict[str, Any]:
     """Expose the executed staircase and input changes; never infer breakaway friction."""
     decisions = [item for item in candidate.get('candidate_comparisons', [])
@@ -285,6 +468,9 @@ def establishment_progression(candidate: dict[str, Any], probes: dict[str, Any])
                 'actual_gains_known_samples':measured.get('actual_gains_known_samples', 0),
                 'amplitude_rad':planned.get('amplitude_rad'), 'frequencies_hz':executed_frequencies,
                 'plan_frequency_array':frequencies, 'motion_probe':motion_only, 'duration_s':duration,
+                'reference_bias_rad':planned.get('reference_bias_rad'),
+                'reference_lower_rad':domain.get('reference_lower_rad'),
+                'reference_upper_rad':domain.get('reference_upper_rad'),
                 'planned_measurement_window_cycles':[frequency*(duration-1.4) for frequency in executed_frequencies]
                 if executed_frequencies and isinstance(duration,(int,float)) and duration>1.4 else None,
                 'feedback_effort_budget_nm':domain.get('feedback_effort_budget_nm'),
@@ -448,13 +634,22 @@ def frame_phases(source: Evidence) -> dict[str, Any]:
             previous_stamp = stamp
             item = phases.setdefault(phase, {
                 'samples': 0, 'first_ns': stamp, 'last_ns': stamp,
-                '_directions': Counter(), '_gains': Counter(),
+                '_directions': Counter(), '_gains': Counter(), 'position_ranges':{},
             })
             item['samples'] += 1
             item['last_ns'] = stamp
             item['_directions'][row.get('direction', 'unknown')] += 1
             item['_gains'][(tuple(row[c] for c in kp_columns),
                             tuple(row[c] for c in kd_columns))] += 1
+            if row.get('valid', '1') == '1':
+                for joint in joints:
+                    positions = item['position_ranges'].setdefault(joint, {})
+                    for layer in ('q','nominal_q','accepted_q'):
+                        if layer+':'+joint not in row:
+                            continue
+                        value = float(row[layer+':'+joint])
+                        bounds = positions.setdefault(layer, {'min':value,'max':value})
+                        bounds.update(min=min(bounds['min'],value),max=max(bounds['max'],value))
             stage = row.get('gain_stage', '')
             key = (phase, stage)
             if not segments or (segments[-1]['phase'], segments[-1]['gain_stage']) != key:
@@ -609,6 +804,69 @@ def nested_parameter_measurement_complete(candidate: dict[str, Any], purpose: st
     return complete(target.get(hold_key), 'hold')
 
 
+def saved_reference_envelope(source: Evidence, name: str = 'trajectory.csv') -> dict[str, Any]:
+    if name not in source.names:
+        return {'status':'not_in_artifact'}
+    with source.binary(name) as stream:
+        rows = csv.reader(io.TextIOWrapper(stream))
+        first, header = next(rows, []), next(rows, [])
+        if len(first)!=2 or first[0]!='sample_dt' or not header or header[0]!='index':
+            return {'status':'unsupported_saved_path_format'}
+        axes = {joint:{'min':math.inf,'max':-math.inf} for joint in header[1:]}
+        count = 0
+        for row in rows:
+            if len(row)!=len(header):
+                raise ValueError('Saved path dimensions changed in '+name)
+            for joint, text in zip(header[1:],row[1:]):
+                value = float(text)
+                if not math.isfinite(value):
+                    raise ValueError('Nonfinite saved path in '+name)
+                axes[joint]['min'] = min(axes[joint]['min'],value)
+                axes[joint]['max'] = max(axes[joint]['max'],value)
+            count += 1
+    return {'status':'recorded' if count else 'no_samples', 'samples':count,
+            'duration_s':float(first[1])*max(0,count-1), 'axes':axes if count else {},
+            'scope':'saved_demonstration_reference_not_a_measured_hardware_limit'}
+
+
+def position_envelope_evidence(source: Evidence, candidate: dict[str, Any], probes: dict[str, Any], cycle: dict[str, Any]) -> dict[str, Any]:
+    saved = saved_reference_envelope(source)
+    limits = {}
+    if 'source/model.urdf' in source.names:
+        with source.binary('source/model.urdf') as stream:
+            model = ET.parse(stream).getroot()
+        for joint in model.findall('joint'):
+            limit = joint.find('limit')
+            if joint.get('name') not in candidate.get('joint_names',[]) or limit is None:
+                continue
+            if 'lower' in limit.attrib and 'upper' in limit.attrib:
+                limits[joint.get('name')] = {'lower_rad':float(limit.get('lower')),'upper_rad':float(limit.get('upper'))}
+    trials = {}
+    for name, record in probes.items():
+        parameters = record.get('actual_trial_parameters') or {}
+        axes = {}
+        for joint, measured in record.get('axes',{}).items():
+            path = saved.get('axes',{}).get(joint)
+            declared = limits.get(joint)
+            axis = {}
+            for label, lower, upper in (('reference',measured['reference_min_rad'],measured['reference_max_rad']),
+                                        ('actual',measured['actual_min_rad'],measured['actual_max_rad'])):
+                axis[label+'_range_rad'] = [lower,upper]
+                if path:
+                    axis[label+'_margin_to_saved_path_rad'] = [lower-path['min'],path['max']-upper]
+                if declared:
+                    axis[label+'_margin_to_urdf_rad'] = [lower-declared['lower_rad'],declared['upper_rad']-upper]
+            axes[joint] = axis
+        trials[name] = {'axes':axes, 'position_domain_source':parameters.get('position_domain_source'),
+            'demonstrated_path_lower_rad':parameters.get('demonstrated_path_lower_rad'),
+            'demonstrated_path_upper_rad':parameters.get('demonstrated_path_upper_rad'),
+            'disturbance_axis_eligible':parameters.get('disturbance_axis_eligible')}
+    teaching = cycle.get('phases',{}).get('teaching',{}).get('position_ranges',{})
+    return {'saved_reference':saved, 'urdf_declared_joint_limits':limits,
+            'recorded_teaching_position_ranges':teaching or None, 'short_probe_ranges':trials,
+            'interpretation':'Negative margin means outside that recorded envelope; URDF declarations and demonstrated positions are distinct evidence, neither infers an unmeasured physical stop'}
+
+
 def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
     candidate = source.json('gain-candidate.json')
     if not candidate:
@@ -652,6 +910,7 @@ def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
                if name.startswith('gain-trajectory-') and name.endswith('.csv')}
     duration = candidate.get('budget_source_duration_s', result.get('gain_budget_source_duration_s'))
     probes = short_probe_diagnostics(source, candidate, peak_target_deg)
+    cycle = frame_phases(source)
     return {
         'task_id': candidate.get('task_id'),
         'policy': 'read_only_no_archived_status_promotion',
@@ -661,11 +920,20 @@ def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
         'model_initialization': candidate.get('model_initialization'),
         'task_model_demand': candidate.get('task_model_demand'),
         'response_guard_events': candidate.get('response_guard_events', []),
+        'unrun_disturbance_experiments':[item for item in candidate.get('experiments', [])
+                                       if item.get('kind') == 'independent_disturbance_not_run'],
         'execution_context': {key: metadata.get(key) for key in (
             'joint_names', 'mapping', 'actuator_capabilities', 'runtime_provenance',
             'core_fingerprint', 'urdf_fingerprint', 'hardware_effective_fingerprint')},
         'experiments': candidate.get('experiments'),
         'candidate_comparisons': candidate.get('candidate_comparisons'),
+        'continuation_review':{
+            'archived_review_required':candidate.get('review_required'),
+            'archived_nonfatal_stage_warnings':candidate.get('nonfatal_stage_warnings'),
+            'archived_execution_policy':candidate.get('execution_policy'),
+            'recorded_measurement_warnings':[item for item in candidate.get('experiments',[])
+                                             if item.get('kind')=='measurement_warning'],
+            'scope':'archived_policy_and_stage_evidence_not_automatic_result_promotion'},
         'gain_tuning_mode': candidate.get('gain_tuning_mode', 'not_recorded'),
         'execution_summary': execution_summary(candidate, result, targets, probes),
         'budget': {'recorded_source_duration_s': duration,
@@ -679,8 +947,16 @@ def audit(source: Evidence, peak_target_deg: float) -> dict[str, Any]:
                    'requested_fine_hard_limit_s': duration * 24 if duration else None},
         'audit_peak_target_deg': peak_target_deg,
         'targets': targets, 'trajectory_records': records, 'short_probe_records': probes,
+        'full_path_execution_diagnostics':full_path_execution_diagnostics(source,records),
+        'measurement_center_records':measurement_center_diagnostics(source,candidate,peak_target_deg),
+        'endpoint_transition_records':endpoint_transition_diagnostics(source,candidate,peak_target_deg),
+        'trajectory_record_counts':{
+            'records_with_position_samples':sum(record['status']=='measured' for record in records.values()),
+            'header_only_records':[name for name,record in records.items() if record['status']=='no_valid_samples'],
+            'scope':'raw_full_path_file_coverage_not_archived_started_pass_count_or_acceptance'},
         'establishment_progression':establishment_progression(candidate, probes),
-        'candidate_path_comparisons': direction_comparisons(records), 'cycle_record': frame_phases(source),
+        'candidate_path_comparisons': direction_comparisons(records), 'cycle_record':cycle,
+        'position_envelope_evidence':position_envelope_evidence(source,candidate,probes,cycle),
         'missing_files': [n for n in ('result.json', 'frames.csv') if n not in source.names],
     }
 
@@ -713,6 +989,8 @@ def compact_summary(report: dict[str, Any]) -> dict[str, Any]:
             'reference_envelope_contains_initial_actual', 'recorded_center_source', 'recorded_center_rad',
             'first_reference_minus_recorded_center_rad', 'independent_disturbance_input_peak_nm',
             'archived_identification_reason', 'archived_model_definition', 'planned_motion_probe', 'evidence_scope',
+            'planned_reference_bias_rad',
+            'position_domain_source', 'planned_reference_domain_rad', 'planned_disturbance_axis_eligible',
             'response_window', 'archived_disturbance_valid', 'archived_disturbance_goal_met',
             'archived_static_measurement_complete', 'archived_motion_observed',
             'archived_disturbance_encoder_step_rad', 'archived_disturbance_motion_floor_rad',
@@ -728,6 +1006,13 @@ def compact_summary(report: dict[str, Any]) -> dict[str, Any]:
                                       for name,target in report['targets'].items()}
     result['full_path_correction_plans'] = [item for item in report.get('candidate_comparisons') or []
                                             if item.get('kind') == 'full_path_correction_plan']
+    result['full_path_execution_diagnostics'] = report['full_path_execution_diagnostics']
+    result['position_envelope_evidence'] = report['position_envelope_evidence']
+    result['unrun_disturbance_experiments'] = report['unrun_disturbance_experiments']
+    result['measurement_center_records'] = report['measurement_center_records']
+    result['endpoint_transition_records'] = report['endpoint_transition_records']
+    result['trajectory_record_counts'] = report['trajectory_record_counts']
+    result['continuation_review'] = report['continuation_review']
     result['establishment_progression'] = {joint:{
         'actual_kp_steps':[row['kp'] for row in axis['rounds']],
         'actual_kd_steps':[row['kd'] for row in axis['rounds']],
@@ -792,6 +1077,18 @@ def check_establishment_regression(report: dict[str, Any]) -> dict[str, Any]:
         return check_fifteen_probe_regression(report)
     if task == 'model-calibration-1794241207035':
         return check_hold_entry_regression(report)
+    if task == 'model-calibration-1794267281603':
+        return check_demonstrated_boundary_regression(report)
+    if task in ('model-calibration-1794278968578','model-calibration-1794278779311'):
+        return check_low_input_plateau_regression(report)
+    if task in ('model-calibration-1794284413104','model-calibration-1794284166755'):
+        return check_fixed_endpoint_domain_regression(report)
+    if task == 'model-calibration-1794288727413':
+        return check_entry_quantization_regression(report)
+    if task == 'model-calibration-1794291242687':
+        return check_endpoint_timeout_regression(report)
+    if task == 'model-calibration-1794295009141':
+        return check_current_accuracy_regression(report)
     if task not in ('model-calibration-1794238166406', 'model-calibration-1794238336638'):
         raise ValueError('No establishment regression for task '+str(task))
     checks = []
@@ -898,7 +1195,377 @@ def check_hold_entry_regression(report: dict[str, Any]) -> dict[str, Any]:
             'scope':'original_read_only_path_hold_and_rejected_entry_not_new_hardware_execution'}
 
 
+def check_demonstrated_boundary_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep the original 12 measured probes separate from the unexecuted proposal."""
+    checks = []
+    def check(label, condition):
+        if not condition:
+            raise ValueError('Demonstrated-boundary reference regression failed: '+label)
+        checks.append(label)
+    summary = report['execution_summary']
+    probes = report['short_probe_records']
+    progression = report['establishment_progression']
+    rows = progression['axes']['joint3']['rounds']
+    check('twelve_actual_probes_without_inventing_a_thirteenth', len(probes)==len(rows)==12
+          and 'servo-probe-native-establish-13.csv' not in probes
+          and all(not row['motion_probe'] for row in rows))
+    check('insufficient_input_plan_not_a_robot_fault_or_budget_expiry', summary['outcome']=='insufficient_measurement'
+          and summary['warnings'][0]=='identification_insufficient:independent disturbance plan exceeds current calibration effort/Safety allowance'
+          and summary['archived_fault_interrupted'] is False and not summary['budget_exhausted']
+          and not summary['error'] and not report['response_guard_events'] and summary['termination_objects_match'])
+    check('trusted_source_and_original_elapsed', report['budget']['recorded_source_duration_s']==23
+          and summary['hard_budget_s']==345 and math.isclose(summary['actual_elapsed_s'],95.817887322,abs_tol=1e-9)
+          and summary['full_path_passes']==0 and summary['all_requested_purposes_unstarted'])
+    check('unlimited_continuous_feedback_with_recorded_actual_gains', all(
+        axis['samples']==axis['fresh_samples']==axis.get('actual_gains_known_samples')
+        and axis['limited_samples']==0 and axis['maximum_fresh_feedback_gap_s']<.03
+        for probe in probes.values() for axis in probe['axes'].values())
+        and report['cycle_record']['maximum_cycle_gap_s']<.011)
+    check('joint3_slowed_at_same_gains_with_an_actual_longer_window', all(
+        math.isclose(row['kp'],241.39194139194137,abs_tol=1e-9) and row['kd']==5 for row in rows[-3:])
+        and [row['frequencies_hz'][0] for row in rows[-3:]]==[.3825,.26775,.2]
+        and rows[-1]['duration_s']==7.65 and rows[-1]['response_window']['planned_window_complete'])
+    last=rows[-1]
+    check('last_measured_joint3_response_shortfall_and_only_proposed_single_tone',
+          math.isclose(last['response_window']['response_rms_ratio'],.153587125034818,abs_tol=1e-9)
+          and last['positive_travel_rad']==.002288818359375 and last['negative_travel_rad']==.0019073486328125
+          and math.isclose(last['required_travel_rad'],.002858624397879064,abs_tol=1e-12)
+          and last['decision_reason']=='spectral_excitation_boundary_requires_symmetric_motion_probe_at_same_complete_gains'
+          and math.isclose(last['pd_command']['peak_abs'],2.566106153554522,abs_tol=1e-9))
+    envelope=report['position_envelope_evidence']
+    final=envelope['short_probe_ranges'][last['record_path']]['axes']
+    check('joint2_and_joint3_reference_outside_saved_path_but_inside_declared_URDF', all(
+        final[joint]['reference_margin_to_saved_path_rad'][0]<-.006
+        and final[joint]['reference_margin_to_urdf_rad'][0]>.08 for joint in ('joint2','joint3')))
+    check('other_axes_frozen_while_joint3_alone_slowed', all(
+        progression['axes'][joint]['rounds'][-1]['frequencies_hz']==[.3825,.765,1.3114285714285714]
+        and len({row['kp'] for row in progression['axes'][joint]['rounds'][-3:]})==1
+        for joint in ('joint1','joint2','joint4','joint5','joint6')))
+    check('wrist_weak_motion_far_from_the_saved_path_boundary', all(
+        final[joint]['actual_margin_to_saved_path_rad'][0]>.1
+        and final[joint]['actual_margin_to_saved_path_rad'][1]>.1
+        and progression['axes'][joint]['rounds'][-1]['actual_span_rad']<=.000762939453125
+        for joint in ('joint5','joint6')))
+    check('new_bias_and_mask_evidence_not_fabricated_for_original_record', all(
+        axis['planned_reference_bias_rad'] is None and axis['planned_disturbance_axis_eligible'] is None
+        for probe in probes.values() for axis in probe['axes'].values())
+        and not report['unrun_disturbance_experiments'] and report['archived_validated'] is False)
+    return {'status':'passed','checks':checks,
+            'scope':'original_read_only_twelve_CSVs_not_reexecution_or_a_measured_physical_stop'}
+
+
+def check_low_input_plateau_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Preserve a fully sampled, low-input plateau exit without asserting capacity."""
+    checks=[]
+    def check(label,condition):
+        if not condition:
+            raise ValueError('Low-input plateau reference regression failed: '+label)
+        checks.append(label)
+    latest=report['task_id']=='model-calibration-1794278968578'
+    summary=report['execution_summary'];probes=report['short_probe_records']
+    series=report['establishment_progression']['axes']
+    decisions=[x for x in report['candidate_comparisons'] if x.get('kind')=='motion_establishment']
+    last=decisions[-1];blocked='joint5' if latest else 'joint3';index=4 if latest else 2
+    check('complete_insufficient_measurement_not_fault_or_budget_expiry',
+          summary['archived_phase']=='complete' and summary['outcome']=='insufficient_measurement'
+          and summary['archived_fault_interrupted'] is False and not summary['error']
+          and not summary['budget_exhausted'] and not report['response_guard_events']
+          and summary['termination_objects_match'] and summary['recorded_remaining_s']>200)
+    check('all_actual_probes_complete_with_fresh_stable_gain_and_no_limiting',len(probes)==(11 if latest else 12)
+          and sum(axis['samples']-axis['fresh_samples'] for record in probes.values() for axis in record['axes'].values())==(0 if latest else 2)
+          and all(axis['samples']==axis['actual_gains_known_samples'] and axis['fresh_samples']>0
+                  and axis['limited_samples']==0 and axis['response_window']['planned_window_complete']
+                  and axis['maximum_fresh_feedback_gap_s']<.014
+                  and axis['recorded_actual_kp']['min']==axis['recorded_actual_kp']['max']
+                  and axis['recorded_actual_kd']['min']==axis['recorded_actual_kd']['max']
+                  for record in probes.values() for axis in record['axes'].values()))
+    check('every_recorded_reference_stays_in_its_recorded_working_domain',all(
+        axis['planned_reference_domain_rad'][0]-1e-12<=axis['reference_min_rad']
+        and axis['reference_max_rad']<=axis['planned_reference_domain_rad'][1]+1e-12
+        for record in probes.values() for axis in record['axes'].values()))
+    check('no_full_path_or_purpose_measurement_is_promoted',summary['full_path_passes']==0
+          and summary['all_requested_purposes_unstarted'] and report['archived_available'] is False
+          and report['archived_validated'] is False)
+    tail=series[blocked]['rounds'][-1]
+    check('single_tone_blocked_at_tested_input_with_original_reason',last['blocked_axes']==[index]
+          and tail['motion_probe'] and tail['blocked'] and tail['archived_tracking_valid'] is False
+          and tail['decision_reason']=='symmetric_motion_probe_insufficient_at_tested_input_not_hardware_capability'
+          and tail['input_response_progress']['plateau_motion_confirmation'])
+    check('blocked_axis_is_below_recorded_gain_and_effort_bounds',tail['kp']<tail['protocol_kp_max']
+          and tail['pd_command']['peak_abs']<tail['feedback_effort_budget_nm']
+          and tail['recorded_current_kp']==tail['kp'] and tail['recorded_current_kd']==tail['kd'])
+    if latest:
+        rows=series['joint5']['rounds']
+        expected=[.3663003663003663]*4+[.6105006105006104,.8547008547008547,1.2210012210012209,
+            1.7094017094017093,2.4420024420024418,2.4420024420024418,2.4420024420024418]
+        check('actual_joint5_gain_staircase_and_unchanged_damping',
+              [row['kp'] for row in rows]==expected and all(row['kd']==.1111111111111111 for row in rows))
+        check('slower_multitone_then_single_tone_are_real_complete_trials',
+              rows[-3]['motion_probe'] and not rows[-2]['motion_probe'] and rows[-1]['motion_probe']
+              and rows[-2]['frequencies_hz'][0]==rows[-1]['frequencies_hz'][0]==.2
+              and rows[-1]['duration_s']==11.4
+              and rows[-1]['response_window']['fresh_samples']==1969)
+        check('low_response_does_not_get_hidden_by_the_full_record_span',
+              tail['positive_travel_rad']==.0003814697265625 and tail['negative_travel_rad']==.000762939453125
+              and math.isclose(tail['required_travel_rad'],.01119997767141106,abs_tol=1e-12)
+              and math.isclose(tail['response_window']['response_rms_ratio'],.008128583072283167,abs_tol=1e-10)
+              and math.isclose(tail['pd_command']['peak_abs'],.0783786748736684,abs_tol=1e-10))
+        check('early_small_direction_span_anchor_and_later_response_plateau_are_preserved',
+              rows[6]['input_response_progress']['anchor_span_rad']==.0030517578125
+              and rows[6]['input_response_progress']['anchor_minimum_travel_rad']==.0003814697265625
+              and rows[8]['decision_reason']=='response_effort_plateau_requires_slower_complete_gain_set_confirmation'
+              and rows[9]['decision_reason']=='confirmed_response_plateau_requires_symmetric_motion_probe_at_same_complete_gains')
+        check('joint5_is_far_from_demonstration_edges_with_working_gain_headroom',
+              min(report['position_envelope_evidence']['short_probe_ranges'][tail['record_path']]['axes']['joint5']['reference_margin_to_saved_path_rad'])>.65
+              and probes[tail['record_path']]['actual_trial_parameters']['working_domain'][4]['working_kp_max']>44)
+        check('other_axes_motion_and_unexecuted_next_steps_remain_distinct',
+              last['established_axes']==[True,True,True,False,False,False]
+              and last['next_kp'][3]>last['current_kp'][3] and last['next_kp'][5]>last['current_kp'][5]
+              and math.isclose(summary['actual_elapsed_s'],126.999660274,abs_tol=1e-9))
+    else:
+        check('comparison_task_blocked_joint3_while_wrist_steps_remained_proposed',
+              last['established_axes']==[True,True,False,True,False,False]
+              and last['next_kp'][4]>last['current_kp'][4] and last['next_kp'][5]>last['current_kp'][5]
+              and series['joint5']['rounds'][-1]['kp']==4.8840048840048835
+              and math.isclose(summary['actual_elapsed_s'],111.36628776,abs_tol=1e-9))
+    return {'status':'passed','checks':checks,
+            'scope':'original_read_only_completed_CSVs_not_new_conditions_or_a_friction_capacity_measurement'}
+
+
+def check_fixed_endpoint_domain_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Distinguish a fixed endpoint working-domain exit from a bus-write fault."""
+    checks=[]
+    def check(label,condition):
+        if not condition:
+            raise ValueError('Fixed-endpoint reference regression failed: '+label)
+        checks.append(label)
+    latest=report['task_id']=='model-calibration-1794284413104'
+    summary=report['execution_summary'];probes=report['short_probe_records']
+    rows=report['establishment_progression']['axes']['joint3']['rounds']
+    centers=[record['actual_trial_parameters']['center_rad'][2] for record in probes.values()]
+    center=.01125335693359375 if latest else .01049041748046875
+    check('trusted_recording_budget_not_retimed_duration',report['budget']['recorded_source_duration_s']==28.14
+          and summary['hard_budget_s']==422.1 and not summary['budget_exhausted'])
+    check('all_probes_keep_initial_fresh_endpoint_without_recentering',len(probes)==(16 if latest else 12)
+          and all(value==center for value in centers)
+          and all(record['actual_trial_parameters']['center_source']=='fresh_measured_establishment_center' for record in probes.values()))
+    check('endpoint_is_below_checked_demonstration_not_a_declared_hardware_stop',
+          math.isclose(report['position_envelope_evidence']['saved_reference']['axes']['joint3']['min'],.016593933105468743,abs_tol=1e-12)
+          and all(axis['planned_reference_domain_rad'][0]==center for record in probes.values() for joint,axis in record['axes'].items() if joint=='joint3')
+          and report['position_envelope_evidence']['saved_reference']['axes']['joint3']['max']>1.5)
+    check('recorded_commands_retain_known_gains_and_no_limiting',all(
+        axis['actual_gains_known_samples']==axis['samples'] and axis['limited_samples']==0 and axis['fresh_samples']>=100
+        and axis['maximum_fresh_feedback_gap_s']<.06 for record in probes.values() for axis in record['axes'].values()))
+    check('no_full_path_or_purpose_validation_is_invented',summary['full_path_passes']==0
+          and summary['all_requested_purposes_unstarted'] and report['archived_available'] is False and report['archived_validated'] is False)
+    check('motion_was_measured_before_the_final_exit',all(row['archived_motion_qualified'] for row in rows[8:11])
+          and all(row['motion_probe'] and math.isclose(row['frequencies_hz'][0],1/6,abs_tol=1e-12) for row in rows[8:11])
+          and rows[8]['kp']==172.4053724053724)
+    if latest:
+        final=rows[-1]
+        check('all_sixteen_actual_windows_are_complete',len(rows)==16 and all(
+            axis['response_window']['planned_window_complete'] for record in probes.values() for axis in record['axes'].values())
+            and probes[final['record_path']]['axes']['joint3']['samples']==2931)
+        check('final_current_motion_miss_is_not_promoted_by_historical_axis_flags',
+              final['archived_motion_qualified'] is False and final['blocked'] and not final['retry']
+              and report['candidate_comparisons'][-1]['established_axes']==[True]*6
+              and final['positive_travel_rad']==.003814697265625 and final['negative_travel_rad']==.002288818359375
+              and math.isclose(final['required_travel_rad'],.0038411660187035335,abs_tol=1e-12))
+        check('local_known_input_is_saturated_without_protocol_gain_or_robot_fault',
+              final['decision_reason']=='excitation_amplitude_calibration_no_legal_input_growth_in_observed_domain'
+              and final['kp']<final['protocol_kp_max'] and final['input_response_progress']['input_budget_plateau']
+              and math.isclose(final['input_response_progress']['planned_input_nm'],3.3114276526031996,abs_tol=1e-9)
+              and summary['archived_fault_interrupted'] is False and not report['response_guard_events'])
+        check('original_insufficient_exit_and_remaining_time',summary['outcome']=='insufficient_measurement'
+              and math.isclose(summary['actual_elapsed_s'],210.283872595,abs_tol=1e-9)
+              and math.isclose(summary['recorded_remaining_s'],211.816127405,abs_tol=1e-9))
+    else:
+        partial=probes['servo-probe-native-establish-12.csv']['axes']['joint3']
+        check('bus_write_fault_retains_partial_twelfth_window_without_a_decision',len(rows)==11
+              and partial['samples']==1978 and partial['response_window']['planned_window_complete'] is False
+              and math.isclose(partial['last_time_s'],10.087969692,abs_tol=1e-9)
+              and summary['outcome']=='execution_fault' and summary['archived_fault_interrupted'] is True
+              and 'MOTOR_BUS_WRITE_FAILED / WRITE_FAILED' in summary['error'])
+        check('comparison_has_different_cause_and_elapsed_not_a_motion_block',
+              not rows[-1]['blocked'] and rows[-1]['archived_motion_qualified']
+              and math.isclose(summary['actual_elapsed_s'],136.422213997,abs_tol=1e-9))
+    return {'status':'passed','checks':checks,
+            'scope':'original_read_only_endpoint_motion_and_fault_evidence_not_relocation_or_physical_stop_identification'}
+
+
+def check_entry_quantization_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Reproduce the archived unknown-step lead rejection, without replaying it."""
+    checks=[]
+    def check(label,condition):
+        if not condition:
+            raise ValueError('Measurement-entry quantization regression failed: '+label)
+        checks.append(label)
+    summary=report['execution_summary']
+    record=report['measurement_center_records']['gain-transition-native-measurement-entry.csv']
+    entry=record['archived_experiment'];axis=record['axes']['joint3']
+    tail=axis['last_fresh_transition'];last=axis['last_fresh_sample']
+    check('entry_ended_before_identification_and_every_purpose',entry['completed'] is False
+          and entry['current_segment']==15 and entry['segment_count']==63
+          and not report['short_probe_records'] and summary['full_path_passes']==0
+          and summary['all_requested_purposes_unstarted'])
+    check('archived_insufficient_exit_is_not_a_fault_or_budget_expiry',summary['outcome']=='insufficient_measurement'
+          and summary['archived_fault_interrupted'] is False and not summary['budget_exhausted']
+          and summary['termination_objects_match'] is True
+          and summary['archived_status_termination']['reason']=='identification_insufficient:measurement_center_entry:path_reference_outside_feedback_lead'
+          and math.isclose(summary['actual_elapsed_s'],17.527012053,abs_tol=1e-9)
+          and math.isclose(summary['recorded_remaining_s'],404.572987947,abs_tol=1e-9))
+    check('actual_partial_entry_cycles_retain_known_gains_and_record_the_single_repeat',all(
+        a['samples']==a['actual_gains_known_samples']==3026
+        and a['fresh_samples']==(3025 if joint=='joint6' else 3026)
+        and a['limited_samples']==0 and a['maximum_fresh_feedback_gap_s']<.06
+        and not a['nonmonotonic_fresh_feedback'] and not a['repeated_fresh_feedback_sequence']
+        for joint,a in record['axes'].items()))
+    noise=next(item for item in report['experiments'] if item.get('stage')=='trajectory_noise')['axes']
+    check('initial_static_zero_step_is_not_the_step_observed_during_entry',noise[2]['encoder_step_rad']==0
+          and noise[2]['noise_rms_rad']==0 and axis['recorded_position_uncertainty_rad']==1e-6
+          and axis['minimum_observed_position_step_rad']==.0003814697265625
+          and math.isclose(axis['first_nonzero_fresh_position_step']['after']['time_s'],10.622906473,abs_tol=1e-9))
+    check('last_fresh_position_reverses_one_code_while_reference_advances',
+          tail['actual_delta_rad']==-.0003814697265625
+          and math.isclose(tail['reference_delta_rad'],2.275642993690152e-6,abs_tol=1e-12)
+          and tail['before']['actual_rad']==.01239776611328125 and last['actual_rad']==.01201629638671875
+          and math.isclose(last['reference_rad'],.02201757202971244,abs_tol=1e-12))
+    check('only_joint3_last_row_exceeds_original_unchanged_hard_lead',axis['recorded_feedback_lead_rad']==.01
+          and axis['recorded_hard_lead_exceeded_rows']==1
+          and math.isclose(last['reference_minus_actual_rad']-.01,1.27564299369e-6,abs_tol=1e-12)
+          and all(not a.get('recorded_hard_lead_exceeded_rows') for joint,a in record['axes'].items() if joint!='joint3')
+          and entry['feedback_lead_rad']==[.01]*6)
+    check('bounded_gain_steps_change_P_without_D_or_hard_lead_tightening',
+          len(entry['gain_steps'])==17 and entry['kd']==entry['initial_kd']
+          and all(step['kd']==entry['initial_kd'] for step in entry['gain_steps'])
+          and math.isclose(axis['recorded_actual_kp']['last'],62.14896214896215,abs_tol=1e-10)
+          and axis['recorded_actual_kd']['min']==axis['recorded_actual_kd']['max']
+          and math.isclose(axis['reconstructed_pd_nm']['peak_abs'],.6446705585515932,abs_tol=1e-10))
+    check('archived_parameters_do_not_become_available_or_validated',report['archived_available'] is False
+          and report['archived_validated'] is False and not report['response_guard_events'])
+    return {'status':'passed','checks':checks,
+            'scope':'original_raw_entry_quantization_and_lead_rejection_not_new_transfer_success_or_physical_friction_identification'}
+
+
+def check_endpoint_timeout_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Preserve the completed local evidence and premature endpoint timeout."""
+    checks=[]
+    def check(label,condition):
+        if not condition:
+            raise ValueError('Endpoint timeout reference regression failed: '+label)
+        checks.append(label)
+    summary=report['execution_summary'];trans=report['endpoint_transition_records']['gain-transition-native-frozen.csv']
+    metadata=trans['archived_experiment'];axes=trans['axes']
+    records=report['measurement_center_records'];entry=records['gain-transition-native-measurement-entry.csv']['archived_experiment']
+    returning=records['gain-transition-native-measurement-return.csv']['archived_experiment']
+    check('current_entry_and_return_completed_without_reusing_old_center_passes',entry['completed'] and returning['completed']
+          and entry['direction']=='toward_measurement_region' and returning['direction']=='return_to_demonstrated_endpoint'
+          and entry['actual_rad'][2]>.118 and entry['observed_position_step_rad'][2]==.0003814697265625)
+    check('current_complete_group_motion_and_real_spectral_confirmation_exist',
+          report['establishment_progression']['recorded_decisions']==15
+          and report['candidate_comparisons'][14]['motion_established'] is True
+          and all(axis['qualified'] for axis in report['candidate_comparisons'][14]['axes'])
+          and 'servo-probe-native-spectral-confirmation.csv' in report['short_probe_records'])
+    check('local_transition_timeout_not_total_budget_or_safety_fault',summary['outcome']=='insufficient_measurement'
+          and summary['archived_fault_interrupted'] is False and not summary['budget_exhausted']
+          and summary['archived_status_termination']['reason']=='identification_insufficient:gain_endpoint_transition_insufficient_response'
+          and math.isclose(summary['actual_elapsed_s'],244.009482464,abs_tol=1e-9)
+          and math.isclose(summary['recorded_remaining_s'],178.090517536,abs_tol=1e-9)
+          and metadata['completed'] is False and math.isclose(metadata['elapsed_s'],.857375203,abs_tol=1e-9))
+    legacy_cost=max(.8,max(abs(a-b)/v+v/acc+.5 for a,b,v,acc in zip(
+        metadata['initial_reference_rad'],metadata['target_rad'],metadata['max_velocity_rad_s'],metadata['max_acceleration_rad_s2'])))
+    check('old_geometric_timeout_can_be_recomputed_from_recorded_parameters',math.isclose(legacy_cost,.8568115234375,abs_tol=1e-12)
+          and metadata['elapsed_s']>legacy_cost)
+    check('actual_transition_has_known_unlimited_partial_cycles_within_original_error_caps',all(
+        axis['samples']==axis['fresh_samples']==axis['actual_gains_known_samples']==169
+        and axis['limited_samples']==0 and axis['peak_error_rad']<axis['archived_reference_error_cap_rad']
+        for axis in axes.values()))
+    wrist=axes['joint4']
+    check('one_reference_is_subcode_close_but_not_exactly_stopped',
+          'first_exact_stopped_reference_time_s' not in wrist
+          and math.isclose(wrist['last_reference_minus_target_rad'],1.4126385845679781e-5,abs_tol=1e-12)
+          and math.isclose(wrist['last_reference_velocity_rad_s'],.00020534020414798062,abs_tol=1e-12)
+          and wrist['minimum_observed_position_step_rad']==.0003814697265625)
+    check('another_axis_arrives_too_late_for_old_150ms_ready_window',
+          math.isclose(axes['joint2']['first_exact_stopped_reference_time_s'],.82666382,abs_tol=1e-9)
+          and axes['joint2']['first_exact_stopped_reference_time_s']+.15>legacy_cost)
+    check('started_pass_counter_is_not_an_actual_full_path_measurement',summary['full_path_passes']==1
+          and report['trajectory_record_counts']['records_with_position_samples']==0
+          and report['trajectory_record_counts']['header_only_records']==['gain-trajectory-native-frozen.csv']
+          and summary['all_requested_purposes_unstarted'] and report['archived_available'] is False and report['archived_validated'] is False)
+    return {'status':'passed','checks':checks,
+            'scope':'original_endpoint_reference_timeout_and_raw_coverage_not_new_trajectory_success_or_hardware_acceptance'}
+
+
+def check_current_accuracy_regression(report: dict[str, Any]) -> dict[str, Any]:
+    """Reproduce the current poor tracking without attributing it to a motor."""
+    checks = []
+    def check(label, condition):
+        if not condition:
+            raise ValueError('Current accuracy reference regression failed: '+label)
+        checks.append(label)
+    summary = report['execution_summary']
+    name = 'gain-trajectory-native-frozen.csv'
+    axes = report['trajectory_records'][name]['axes']
+    motion = report['full_path_execution_diagnostics'][name]
+    check('no_archived_safety_fault_limiting_or_budget_expiry',
+          summary['archived_fault_interrupted'] is False and not summary['budget_exhausted']
+          and not report['response_guard_events'] and all(not axis['limited_samples'] for axis in axes.values()))
+    check('one_real_native_path_and_unrun_compliant_path_are_distinct',
+          report['trajectory_record_counts']['records_with_position_samples']==1
+          and report['trajectory_record_counts']['header_only_records']==['gain-trajectory-compliant-frozen.csv']
+          and summary['full_path_passes']==1 and axes['joint1']['samples']==9166)
+    check('all_axes_have_real_peak_error_above_original_point_one_degree',
+          all(axis['peak_error_deg']>.9 and not axis['peak_target_met'] for axis in axes.values())
+          and math.isclose(axes['joint6']['peak_error_deg'],2.3635198893295706,abs_tol=1e-9))
+    check('receive_timestamp_alignment_does_not_remove_poor_tracking',
+          motion['joint6']['receive_aligned_error_rad']['peak']>.03
+          and motion['joint1']['receive_aligned_error_rad']['rms']>.006)
+    check('reference_position_and_velocity_show_real_staircase_intervals',
+          motion['joint5']['peak_position_velocity_mismatch_rad']>.01
+          and motion['joint6']['peak_position_velocity_mismatch_rad']>.01
+          and motion['joint3']['reference_duplicate_intervals_with_nonzero_velocity']>0)
+    check('feedback_velocity_has_consistent_sign_and_scale',all(
+          .90 < axis['reported_velocity_to_40ms_position_difference_scale'] < 1.1 for axis in motion.values()))
+    progress = report['establishment_progression']['axes']['joint6']['rounds']
+    check('wrist_P_rises_without_paired_D_during_thirteen_startup_windows',
+          len(progress)==13 and progress[-1]['kp']>100*progress[0]['kp']
+          and all(row['kd']==progress[0]['kd'] for row in progress)
+          and axes['joint6']['recorded_actual_kd']['min']==axes['joint6']['recorded_actual_kd']['max'])
+    check('moving_reference_has_position_plateaus_and_direction_error',
+          motion['joint5']['moving_reference_position_plateaus']>20
+          and motion['joint6']['longest_moving_reference_position_plateau']['duration_s']>.1
+          and motion['joint6']['direction_mean_error_rad']['positive']>.01
+          and motion['joint6']['direction_mean_error_rad']['negative']<-.01)
+    return {'status':'passed','checks':checks,
+            'scope':'original_full_cycle_reference_timing_gains_and_feedback_not_motor_fault_identification_or_new_hardware_validation'}
+
+
 def self_test():
+    linear = [{'time_s':i*.01,'reference':i*.002,'reference_velocity':.2,
+               'actual':i*.002-.001,'velocity':.2,'feedback_time_s':i*.01-.005} for i in range(100)]
+    kinematic = tracking_kinematics(linear)
+    assert kinematic['peak_position_velocity_mismatch_rad'] < 1e-15
+    assert kinematic['receive_aligned_error_rad']['peak'] < 1e-15
+    assert math.isclose(kinematic['reported_velocity_to_40ms_position_difference_scale'],1,abs_tol=1e-12)
+    timed = [dict(row, time_s=row['time_s']+.001*(index%3),
+                  reference_sample_time_s=row['time_s'],reference_sample_time_known=True)
+             for index,row in enumerate(linear)]
+    sampled = tracking_kinematics(timed)
+    assert sampled['known_reference_sample_times']==100
+    assert sampled['worst_reference_interval']['reference_interval_time_basis']=='reference_sample_time_s'
+    assert sampled['peak_position_velocity_mismatch_rad'] < 1e-15
+    staircase = [dict(row) for row in linear]
+    staircase[30]['reference'] = staircase[29]['reference']
+    inconsistent = tracking_kinematics(staircase)
+    assert inconsistent['peak_position_velocity_mismatch_rad'] > .0019
+    assert inconsistent['reference_duplicate_intervals_with_nonzero_velocity'] == 1
+    assert inconsistent['scope'] == 'diagnostic_only_original_full_cycle_error_and_acceptance_unchanged'
+    stationary = [dict(row,actual=0,velocity=0) for row in linear[:20]]
+    stationary.append(dict(linear[20],actual=.001,velocity=0))
+    plateau = tracking_kinematics(stationary)
+    assert plateau['longest_moving_reference_position_plateau']['duration_s'] == .19
+    assert tracking_kinematics([linear[1],linear[0],linear[2]])['status']=='insufficient_or_nonmonotonic_record'
     with tempfile.TemporaryDirectory(prefix='serial-arm-gain-audit-') as directory:
         folder = Path(directory) / 'task'
         folder.mkdir()
@@ -1072,7 +1739,93 @@ def self_test():
         assert nested_parameter_measurement_complete(modern,'servo_tracking',incomplete) is False
         assert nested_parameter_measurement_complete({'joint_names':['j1']},'rigid_tracking',measured) is None
         assert compact_summary(report)['measurement_coverage']['rigid_tracking']['archived_validated'] is False
-    return {'self_test': 'passed', 'checks': 50}
+        name='servo-probe-native-establish-2.csv'
+        parameter=next(item for item in candidate['experiments']
+                       if item.get('kind')=='short_experiment_parameters' and item.get('record_path')==name)
+        parameter.update(position_domain_source='checked_demonstration_and_fresh_feedback_intersect_explicit_safety',
+            demonstrated_path_lower_rad=[0],demonstrated_path_upper_rad=[.02],disturbance_axis_eligible=[False],
+            working_domain=[{'reference_lower_rad':0,'reference_upper_rad':.02}])
+        parameter['plans'][0]['reference_bias_rad']=.01
+        candidate['experiments'].append({'kind':'independent_disturbance_not_run','completed':False,
+            'reason':'independent_disturbance_not_requested_without_bidirectional_demonstrated_room',
+            'planned_kp':[140],'planned_kd':[2]})
+        (folder/'gain-candidate.json').write_text(json.dumps(candidate))
+        (folder/'trajectory.csv').write_text('sample_dt,.1\nindex,j1\n0,0\n1,.02\n')
+        (folder/'source').mkdir()
+        (folder/'source/model.urdf').write_text('<robot name="audit"><joint name="j1" type="revolute"><limit lower="-.1" upper=".1"/></joint></robot>')
+        source=Evidence(folder)
+        report=audit(source,.1)
+        axis=report['short_probe_records'][name]['axes']['j1']
+        assert axis['planned_reference_bias_rad']==.01 and axis['planned_reference_domain_rad']==[0,.02]
+        assert axis['planned_disturbance_axis_eligible'] is False
+        assert report['establishment_progression']['axes']['j1']['rounds'][-1]['reference_lower_rad']==0
+        envelope=report['position_envelope_evidence']
+        assert envelope['saved_reference']['axes']['j1']=={'min':0,'max':.02}
+        assert envelope['short_probe_ranges'][name]['axes']['j1']['reference_margin_to_saved_path_rad']==[-.01,.01]
+        assert envelope['short_probe_ranges'][name]['axes']['j1']['reference_margin_to_urdf_rad']==[.09000000000000001,.09000000000000001]
+        unrun=compact_summary(report)['unrun_disturbance_experiments']
+        assert len(unrun)==1 and unrun[0]['completed'] is False and 'record_path' not in unrun[0]
+        assert report['cycle_record']['phases']['gain_adaptation']['position_ranges']['j1']['q']=={'min':0.0,'max':.007}
+        source.close()
+        entry_name='gain-transition-native-measurement-entry.csv'
+        candidate['experiments'].append({'kind':'demonstrated_measurement_center_entry','record_path':entry_name,
+            'completed':False,'feedback_lead_rad':[.01],'position_uncertainty_rad':[1e-6]})
+        (folder/'gain-candidate.json').write_text(json.dumps(candidate))
+        with (folder/entry_name).open('w') as stream:
+            writer=csv.writer(stream,lineterminator='\n')
+            writer.writerow(['time_s','joint','reference','reference_velocity','actual','velocity','new_measurement',
+                             'limited','feedforward_nm','actual_kp','actual_kd','actual_gains_known'])
+            for time,reference,actual in ((.01,.02201529638671875,.01201629638671875),
+                                         (.02,.02201529638671875,.01239776611328125),
+                                         (.03,.02201757202971244,.01201629638671875)):
+                writer.writerow([time,'j1',reference,0,actual,0,1,0,6.897,62.14896214896215,2.78998778998779,1])
+        source=Evidence(folder)
+        report=audit(source,.1)
+        entry=report['measurement_center_records'][entry_name]
+        axis=entry['axes']['j1'];tail=axis['last_fresh_transition']
+        assert entry['evidence_scope']=='positioning_only_no_identification_or_purpose_qualification'
+        assert axis['minimum_observed_position_step_rad']==.0003814697265625
+        assert axis['first_nonzero_fresh_position_step']['after']['time_s']==.02
+        assert tail['actual_delta_rad']==-.0003814697265625 and tail['reference_delta_rad']>0
+        assert axis['recorded_hard_lead_exceeded_rows']==1 and axis['first_recorded_hard_lead_exceeded']['line']==4
+        assert compact_summary(report)['measurement_center_records'][entry_name]['axes']['j1']['recorded_position_uncertainty_rad']==1e-6
+        source.close()
+        endpoint_name='gain-transition-synthetic-frozen.csv'
+        candidate['experiments'].append({'kind':'feedback_bounded_endpoint_transition','record_path':endpoint_name,
+            'completed':False,'initial_reference_rad':[0],'target_rad':[.005],'reference_error_cap_rad':[.01]})
+        (folder/'gain-candidate.json').write_text(json.dumps(candidate))
+        with (folder/endpoint_name).open('w') as stream:
+            writer=csv.writer(stream,lineterminator='\n')
+            writer.writerow(['time_s','joint','reference','reference_velocity','actual','velocity','new_measurement',
+                             'limited','feedforward_nm','actual_kp','actual_kd','actual_gains_known'])
+            for time,reference,velocity in ((0,0,0),(.4,.004,0.001),(.8,.00501,.0002)):
+                writer.writerow([time,'j1',reference,velocity,0,0,1,0,0,10,1,1])
+        (folder/'gain-trajectory-synthetic-frozen.csv').write_text('time_s,joint,reference,actual,new_measurement,limited\n')
+        source=Evidence(folder);report=audit(source,.1)
+        endpoint=report['endpoint_transition_records'][endpoint_name];axis=endpoint['axes']['j1']
+        assert endpoint['evidence_scope']=='endpoint_positioning_not_full_path_tracking_or_purpose_qualification'
+        assert math.isclose(axis['last_reference_minus_target_rad'],1e-5,abs_tol=1e-12)
+        assert axis['last_actual_minus_target_rad']==-.005
+        assert axis['last_reference_velocity_rad_s']==.0002 and 'first_exact_stopped_reference_time_s' not in axis
+        assert report['trajectory_record_counts']['header_only_records']==['gain-trajectory-synthetic-frozen.csv']
+        assert endpoint_name in compact_summary(report)['endpoint_transition_records']
+        source.close()
+        assert report['continuation_review']['archived_review_required'] is None
+        candidate.update(review_required=True,nonfatal_stage_warnings=1,
+                         execution_policy='continue_available_measurements_until_stop_fault_or_original_budget')
+        warning={'kind':'measurement_warning','phase':'native-training','reason':'synthetic_insufficient_response',
+                 'continued':True,'completed':False,'validated':False,'exit_reference':'fresh_measured_position_hold',
+                 'kp':[10],'kd':[1],'blocked_joint_names':['j1']}
+        candidate['experiments'].append(warning)
+        (folder/'gain-candidate.json').write_text(json.dumps(candidate))
+        source=Evidence(folder);report=audit(source,.1);review=report['continuation_review']
+        assert review['archived_review_required'] is True
+        assert review['archived_nonfatal_stage_warnings']==1
+        assert review['archived_execution_policy']==candidate['execution_policy']
+        assert review['recorded_measurement_warnings']==[warning]
+        assert compact_summary(report)['continuation_review']==review
+        source.close()
+    return {'self_test': 'passed', 'checks': 87}
 
 
 def main() -> int:

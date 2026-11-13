@@ -95,6 +95,13 @@ async function rendererChecks(win) {
         fillReplayEndpointDraft();check('replay endpoint only edits draft',state.pendingMotionId===7&&state.pendingTarget[0]===.7&&state.workbenchTargets[0]===.3);
         check('another move blocked until terminal event',!workbenchTargetMayMove());
         updateMotionCompletion({motion:{id:6,state:'completed'}});check('foreign completion ignored',state.pendingMotionId===7);
+        updateMotionCompletion({motion:{id:7,state:'running',reference_complete:true}});
+        check('completed reference waits for actual settling without claiming ongoing reference motion',state.commandState==='settling'&&state.pendingMotionId===7);
+        updateMotionCompletion({motion:{id:7,state:'completed',target_reached:false,reason:'settled_with_position_offset'}});
+        check('settled offset ends request without false target arrival',state.commandState==='complete_offset'&&state.pendingMotionId===null&&state.pendingTarget===null);
+        state.pendingMotionId=7;state.pendingTarget=[.7,.8];state.commandState='running';
+        updateMotionCompletion({motion:{id:7,state:'completed',target_reached:true,reason:'target_reached'}});
+        check('measured target arrival remains distinct from a position offset',state.commandState==='complete'&&state.pendingMotionId===null);
         for(const [terminal,expected] of [['completed','complete'],['failed','failed'],['interrupted','interrupted']]){
             state.pendingMotionId=7;state.pendingTarget=[.7,.8];state.commandState='running';editWorkbenchTarget(0,'1.6');
             updateMotionCompletion({motion:{id:7,state:terminal}});

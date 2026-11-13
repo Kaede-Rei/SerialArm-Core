@@ -2,6 +2,7 @@
 #include "serial_arm/dynamics/dynamics.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/dynamics/adaptive_gain_tuning.hpp"
+#include "serial_arm/dynamics/urdf_nominal_gain_design.hpp"
 #include <yaml-cpp/yaml.h>
 
 #include <Eigen/Geometry>
@@ -49,6 +50,40 @@ void print_vector(std::ostream& out, const serial_arm::JointVector& values) {
         out << std::setprecision(17) << values[i];
     }
     out << ']';
+}
+
+void print_nominal_modes(std::ostream& out,
+    const serial_arm::servo_tuning::UrdfNominalModalDiagnostics& modes) {
+    const auto finite_vector=[&](const std::vector<double>& values) {
+        out<<'[';
+        for(std::size_t i=0;i<values.size();++i){if(i)out<<',';
+            if(std::isfinite(values[i]))out<<values[i];else out<<"null";}
+        out<<']';
+    };
+    out<<"{\"computed\":true,\"measured\":false,\"gain_basis\":\"unconstrained_nominal_before_protocol_encoding\""
+       <<",\"model_definition\":\"M(q0)*qdd+diag(kd)*qd+diag(kp)*q=0\""
+       <<",\"frequency_definition\":\"undamped_generalized_eigenfrequencies_of_K_and_M_not_measured_bandwidth\""
+       <<",\"damping_definition\":\"phi_transpose_D_phi_over_2omega_phi_transpose_M_phi\""
+       <<",\"damping_projection_is_exact\":"<<(modes.damping_projection_is_exact?"true":"false")
+       <<",\"nonproportional_damping_interpretation\":\"modal_projection_only_not_independent_damped_modes\""
+       <<",\"zero_stiffness_damping_ratio\":\"undefined_null\",\"nominal_mode_frequency_hz\":";
+    finite_vector(modes.nominal_mode_frequency_hz);
+    out<<",\"nominal_mode_damping_ratio\":";finite_vector(modes.nominal_mode_damping_ratio);
+    out<<",\"scope\":\"ideal_local_rigid_body_model_excludes_actuator_delay_filtering_friction_and_flexible_modes\"}";
+}
+
+void print_nominal_damping_design(std::ostream& out,
+    const serial_arm::servo_tuning::UrdfNominalGainDesign& design) {
+    out<<",\"damping_design_method\":";print_string(out,design.damping_design_method);
+    out<<",\"damping_interface_projection\":";print_string(out,design.damping_interface_projection);
+    out<<",\"damping_design_reference\":\"https://www.robotic.dlr.de/fileadmin/robotic/ott/papers/icra2004_II.pdf\""
+       <<",\"damping_design_equation\":\"K*Phi=M*Phi*Omega^2;Phi^T*M*Phi=I;D_full=M*Phi*(2*zeta*Omega)*Phi^T*M;MIT_D=diag(D_full)\""
+       <<",\"full_damping_matrix_role\":\"diagnostic_nominal_design_not_executed_cross_axis_velocity_terms\""
+       <<",\"full_damping_modal_ratio_target\":"<<design.damping_ratio
+       <<",\"damping_stiffness_basis\":";print_vector(out,design.unconstrained_kp);
+    out<<",\"full_damping_matrix\":[";
+    for(std::size_t i=0;i<design.full_damping_matrix.size();++i){if(i)out<<',';print_vector(out,design.full_damping_matrix[i]);}
+    out<<']';
 }
 
 void print_vec3(std::ostream& out, const Eigen::Vector3d& values) {
@@ -228,9 +263,56 @@ std::string gain_initialization_json(const serial_arm::DynamicsCfg& cfg,
     out<<"}";return out.str();
 }
 
+std::string nominal_gain_design_json(const serial_arm::DynamicsCfg& cfg,serial_arm::Dynamics& dynamics) {
+    const auto n=cfg.joint_names.size();
+    serial_arm::JointState zero;zero.pos.assign(n,0);zero.vel.assign(n,0);zero.tor.assign(n,0);
+    if(!dynamics.update(zero,zero.vel,zero.vel))throw std::runtime_error("URDF nominal design dynamics update failed");
+    const auto& M=dynamics.get_state().mass_matrix;
+    std::vector<std::vector<double>> matrix(n,std::vector<double>(n));
+    for(std::size_t i=0;i<n;++i)for(std::size_t j=0;j<n;++j)matrix[i][j]=M(i,j);
+    const auto design=serial_arm::servo_tuning::nominal_urdf_gain_design(matrix);
+    std::ostringstream out;out<<std::setprecision(17)<<"{\"valid\":true,\"measured\":false,\"source\":";
+    print_string(out,design.source);
+    out<<",\"design_frequency_hz\":"<<design.design_frequency_hz<<",\"damping_ratio\":"<<design.damping_ratio;
+    out<<",\"design_parameters\":{\"frequency_hz\":"<<design.design_frequency_hz<<",\"damping_ratio\":"<<design.damping_ratio
+       <<",\"frequency_role\":\"lower_bound_on_undamped_ideal_model_modes_before_protocol_encoding\""
+       <<",\"source\":\"explicit_engineering_parameters_not_urdf_measurements\"}";
+    out<<",\"design_target_source\":\"explicit_generic_response_design_not_urdf_measurement\",\"basis_pose\":\"urdf_joint_zero_no_motion\",\"joint_names\":[";
+    for(std::size_t i=0;i<n;++i){if(i)out<<',';print_string(out,cfg.joint_names[i]);}
+    out<<"],\"positions\":";print_vector(out,zero.pos);
+    out<<",\"mass_matrix_basis\":";print_matrix(out,M);
+    out<<",\"inertia_basis\":";print_vector(out,design.inertia_basis);
+    out<<",\"unconstrained_kp\":";print_vector(out,design.unconstrained_kp);
+    out<<",\"unconstrained_kd\":";print_vector(out,design.unconstrained_kd);
+    print_nominal_damping_design(out,design);
+    out<<",\"modal_diagnostics\":";print_nominal_modes(out,design.modal_diagnostics);
+    const auto soft=serial_arm::servo_tuning::nominal_urdf_gain_design(matrix,1,.7);
+    out<<",\"purpose_nominal_gain_designs\":{";
+    bool first=true;
+    for(const auto& role:std::vector<std::string>{"rigid_hold","rigid_tracking","compliant_hold","compliant_tracking","servo_tracking","compliant_drag"}) {
+        if(!first)out<<',';
+        first=false;print_string(out,role);out<<':';
+        const auto& purpose=role=="compliant_hold" || role=="compliant_tracking"?soft:design;
+        const bool drag=role=="compliant_drag";
+        out<<"{\"measured\":false,\"validated\":false,\"design_frequency_hz\":"<<purpose.design_frequency_hz
+           <<",\"damping_ratio\":"<<purpose.damping_ratio<<",\"design_frequency_role\":\""
+           <<(drag?"damping_design_coefficient_only_zero_stiffness_has_no_restoring_frequency":
+               "lower_bound_on_undamped_ideal_model_modes_before_protocol_encoding")<<"\",\"unconstrained_kp\":";
+        print_vector(out,drag?zero.pos:purpose.unconstrained_kp);
+        out<<",\"unconstrained_kd\":";print_vector(out,purpose.unconstrained_kd);
+        print_nominal_damping_design(out,purpose);
+        out<<",\"modal_diagnostics\":";print_nominal_modes(out,drag?
+            serial_arm::servo_tuning::ideal_urdf_modal_diagnostics(matrix,zero.pos,purpose.unconstrained_kd):purpose.modal_diagnostics);
+        out<<",\"scope\":\""<<(drag?"zero_stiffness_unmeasured_damping_candidate":"unmeasured_nominal_response_design_not_use_validation")<<"\"}";
+    }
+    out<<'}';
+    out<<'}';return out.str();
+}
+
 void emit_payload(const serial_arm::DynamicsCfg& cfg,
                   serial_arm::Dynamics& dynamics,
-                  serial_arm::JointVector positions, const std::string& limits_json = {},const std::string& path_csv={}) {
+                  serial_arm::JointVector positions,const std::string& nominal_design,
+                  const std::string& limits_json = {},const std::string& path_csv={}) {
     const auto initialization=gain_initialization_json(cfg,dynamics,positions,limits_json,path_csv);
     if(positions.empty()) positions.assign(cfg.joint_names.size(), 0.0);
     if(positions.size() != cfg.joint_names.size()) {
@@ -304,6 +386,7 @@ void emit_payload(const serial_arm::DynamicsCfg& cfg,
     }
     std::cout << "]}";
     if(!initialization.empty())std::cout<<",\"gain_initialization\":"<<initialization;
+    std::cout<<",\"nominal_gain_design\":"<<nominal_design;
     std::cout<<"}\n"<<std::flush;
 }
 
@@ -345,8 +428,10 @@ int main(int argc, char** argv) {
                 std::to_string(static_cast<int>(configured.error())));
         }
 
+        // Immutable model: viewer poses never change the neutral URDF basis.
+        const auto nominal_design=nominal_gain_design_json(cfg,dynamics);
         if(!server_mode) {
-            emit_payload(cfg, dynamics, parse_positions(positions_text),gain_limits_json,gain_path_csv);
+            emit_payload(cfg, dynamics, parse_positions(positions_text),nominal_design,gain_limits_json,gain_path_csv);
             return 0;
         }
 
@@ -354,7 +439,7 @@ int main(int argc, char** argv) {
         while(std::getline(std::cin, line)) {
             if(line == "quit") break;
             try {
-                emit_payload(cfg, dynamics, parse_positions(line));
+                emit_payload(cfg, dynamics, parse_positions(line),nominal_design);
             }
             catch(const std::exception& error) {
                 print_error(error.what());

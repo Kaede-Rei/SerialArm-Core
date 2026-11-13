@@ -206,6 +206,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const DamiaoBusCfg& cf
         capability.max_kd = 5.0;
         capability.kp_resolution = 500.0 / 4095.0;
         capability.kd_resolution = 5.0 / 4095.0;
+        capability.effort_resolution = 2.0 * static_cast<double>(limit.tau_max) / 4095.0;
         capabilities_.push_back(std::move(capability));
     }
     configured_ = true;
@@ -280,6 +281,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::connect() {
             next_capabilities[i].max_pos = limit.q_max;
             next_capabilities[i].max_vel = limit.dq_max;
             next_capabilities[i].max_effort = limit.tau_max;
+            next_capabilities[i].effort_resolution = 2.0 * static_cast<double>(limit.tau_max) / 4095.0;
         }
 
         const std::size_t n = next_motors.size();
@@ -328,10 +330,11 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read_impl(bool refresh)
         if(refresh) {
             for(std::size_t i = 0; i < motors_.size(); ++i) motor_ctrl_->refresh_motor_status(*motors_[i]);
         }
-        else {
-            for(std::size_t i = 0; i < motors_.size(); ++i) motor_ctrl_->receive();
-        }
-
+        // Runtime feedback is collected by the independent transport receiver.
+        // Waiting for one receive slice per axis here makes command publication
+        // depend on when the last reply arrives, compressing the next interval.
+        // Poll the queued frames once; an empty queue retains the actual old
+        // timestamps and is still subject to the normal freshness checks.
         motor_ctrl_->drain_feedback();
         update_feedback_state();
         if(!finite_vector(last_state_.pos) || !finite_vector(last_state_.vel) || !finite_vector(last_state_.tor)) {

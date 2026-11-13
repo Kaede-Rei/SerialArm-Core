@@ -6,8 +6,10 @@ const { nativeEnvironment, developmentBackend } = require('./native-runtime.cjs'
 const { Bridge } = require('./bridge.cjs');
 const { synchronizeResources } = require('./resources.cjs');
 const { GraphicsRuntime, MODES: GRAPHICS_MODES } = require('./graphics.cjs');
+const { GainLiveWindow } = require('./gain-live-window.cjs');
 const root = app.isPackaged ? path.join(process.resourcesPath, 'serial-arm') : path.resolve(__dirname, '../../..');
 const entry = path.resolve(__dirname, '../renderer/index.html');
+let gainLiveWindow;
 let win, bridge, closing = false, graphicsRestarting = false, runtimeTransitions = 0;
 let rendererCloseReady = false, closeRequestSerial = 0, closeDraftRequest = null;
 let allowedModelResources = new Set();
@@ -223,6 +225,7 @@ async function start() {
     });
     bridge.on('event', event => { if (win && !win.isDestroyed()) win.webContents.send('launcher:event', event); });
     graphics.attach(win.webContents);
+    gainLiveWindow = new GainLiveWindow({BrowserWindow, ipcMain, owner:win, trusted, directory:__dirname});
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     win.webContents.on('will-navigate', event => event.preventDefault());
     win.on('close', event => { event.preventDefault(); closeWindow().catch(error => dialog.showErrorBox('SerialArm Launcher', error.message)); });

@@ -2,7 +2,7 @@
 """Hardware-free installed Python binding check"""
 
 import numpy as np
-from serial_arm import ActuatorState, DynamicsState, JointCtrlCmd, JointState, RobotCycleOutput
+from serial_arm import ActuatorInfo, ActuatorState, DynamicsState, JointCtrlCmd, JointState, RobotCycleOutput, RobotSessionSnapshot
 
 
 def check_vector(owner, field, values):
@@ -21,6 +21,24 @@ def check_vector(owner, field, values):
 
 
 def main():
+    motion=RobotSessionSnapshot().motion
+    assert motion.target_reached is False and len(motion.position_error)==0
+    assert motion.reference_complete is False and motion.state=='idle'
+    for field, value in [('target_reached', True), ('position_error', [1.0])]:
+        try:
+            setattr(motion, field, value)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f'motion.{field} must remain read-only measured status')
+    capability=ActuatorInfo()
+    assert capability.effort_resolution == 0.0
+    try:
+        capability.effort_resolution = 0.1
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError('effort_resolution must be read-only hardware capability')
     feedback=ActuatorState()
     feedback.feedback_received_ns=[12345678901234567]
     feedback.feedback_timing_valid=[1]
@@ -62,7 +80,7 @@ def main():
     assert pose.strides == (32, 8), pose.strides
     np.testing.assert_array_equal(pose, np.eye(4))
 
-    print('PASS: SerialArm Python/NumPy binding arrays and tool pose')
+    print('PASS: SerialArm Python/NumPy binding arrays, tool pose and torque resolution capability')
 
 
 if __name__ == '__main__':

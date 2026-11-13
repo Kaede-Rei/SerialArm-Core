@@ -43,6 +43,7 @@ struct RobotSessionActuatorInfo {
     double max_kd{ 0.0 };          ///< 执行器最大阻尼增益
     double kp_resolution{ 0.0 };   ///< 执行器协议 kp 步进
     double kd_resolution{ 0.0 };   ///< 执行器协议 kd 步进
+    double effort_resolution{ 0.0 }; ///< 执行器协议力矩步进，0 表示连续或未声明
 };
 
 /**

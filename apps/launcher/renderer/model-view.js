@@ -1,6 +1,5 @@
 import * as THREE from './vendor/three/build/three.module.js';
 import {OrbitControls} from './vendor/three/jsm/controls/OrbitControls.js';
-import {STLLoader} from './vendor/three/jsm/loaders/STLLoader.js';
 import {GLTFLoader} from './vendor/three/jsm/loaders/GLTFLoader.js';
 import {SmoothModelZoom} from './model-camera-zoom.mjs';
 import {ModelCameraTransition} from './model-camera-transition.mjs';
@@ -79,7 +78,7 @@ function material(rgba, collision=false) {
   });
 }
 
-function disposeObject(object, {geometry = true, textures = true} = {}) {
+function disposeObject(object, {geometry = true, textures = true, materials:disposeMaterials = true} = {}) {
   const geometries = new Set(), materials = new Set(), images = new Set();
   object?.traverse(node => {
     if (geometry && node.geometry) geometries.add(node.geometry);
@@ -91,7 +90,7 @@ function disposeObject(object, {geometry = true, textures = true} = {}) {
     if (textures && node.userData?.texture) images.add(node.userData.texture);
   });
   for (const value of geometries) value.dispose();
-  for (const value of materials) value.dispose();
+  if(disposeMaterials)for (const value of materials) value.dispose();
   for (const value of images) value.dispose();
 }
 
@@ -118,6 +117,8 @@ export class SerialArmModelView {
     this.modelGeneration = 0; this.drawCount = 0; this.modelLoaded = false;
     this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null;
     this.ghostLinkGroups = new Map();
+    this.meshGeometryCache = new Map(); this.ghostEdges = new Map();
+    this.geometryJobs = new Map(); this.geometryJobSerial = 0;
     this.status = 'initializing'; this.error = null; this.suspended = false;
     this.diagnostics = {threeRevision: THREE.REVISION, mode: this.mode, creationErrors: []};
     this.scene = new THREE.Scene();
@@ -276,6 +277,105 @@ export class SerialArmModelView {
     this.labels.push(sprite); return sprite;
   }
 
+  geometryJob(data, transfer=[]) {
+    if(!this.geometryWorker) {
+      const worker=new Worker(new URL('./model-geometry-worker.mjs',import.meta.url),{type:'module'});
+      this.geometryWorker=worker;
+      worker.onmessage=({data:result})=>{
+        const job=this.geometryJobs.get(result.id);if(!job)return;
+        this.geometryJobs.delete(result.id);
+        result.error?job.reject(new Error(result.error)):job.resolve(result);
+      };
+      worker.onerror=event=>{
+        const error=new Error(event.message||'Model geometry preparation failed');
+        for(const job of this.geometryJobs.values())job.reject(error);
+        this.geometryJobs.clear();worker.terminate();
+        if(this.geometryWorker===worker)this.geometryWorker=null;
+      };
+    }
+    return new Promise((resolve,reject)=>{
+      const id=++this.geometryJobSerial;this.geometryJobs.set(id,{resolve,reject});
+      try{this.geometryWorker.postMessage({...data,id},transfer);}
+      catch(error){this.geometryJobs.delete(id);reject(error);}
+    });
+  }
+
+  async meshResource(file,generation) {
+    if(!this.meshGeometryCache.has(file)) {
+      const pending=(async()=>{
+        const resource=await this.resourceReader(file);
+        if(this.disposed || generation!==this.modelGeneration || resource.extension!=='.stl')return {resource};
+        const prepared=await this.geometryJob({kind:'stl',resource:resource.data});
+        if(this.disposed || generation!==this.modelGeneration)return {resource};
+        const geometry=new THREE.BufferGeometry();
+        for(const [name,attribute] of Object.entries(prepared.geometry.attributes))
+          geometry.setAttribute(name,new THREE.BufferAttribute(attribute.array,attribute.itemSize,attribute.normalized));
+        if(prepared.geometry.index)geometry.setIndex(new THREE.BufferAttribute(prepared.geometry.index.array,1));
+        const edges=new THREE.BufferGeometry();edges.setAttribute('position',new THREE.BufferAttribute(prepared.edges,3));
+        this.ghostEdges.set(geometry,edges);
+        return {resource:{extension:resource.extension},geometry};
+      })();
+      this.meshGeometryCache.set(file,pending);
+    }
+    return this.meshGeometryCache.get(file);
+  }
+
+  async prepareGhostEdges(object,generation) {
+    const geometries=new Set();object.traverse(node=>{if(node.isMesh && node.geometry)geometries.add(node.geometry);});
+    for(const geometry of geometries) {
+      if(this.ghostEdges.has(geometry))continue;
+      // Transfer copies: the measured model retains its full original buffers.
+      const position=geometry.getAttribute('position'),index=geometry.index;
+      const vertices=new Float32Array(position.count*3);
+      for(let i=0;i<position.count;++i){vertices[3*i]=position.getX(i);vertices[3*i+1]=position.getY(i);vertices[3*i+2]=position.getZ(i);}
+      const data={attributes:{position:{array:vertices,itemSize:3,normalized:false}},index:index?{array:index.array.slice()}:null};
+      const transfer=[data.attributes.position.array.buffer];if(data.index)transfer.push(data.index.array.buffer);
+      const prepared=await this.geometryJob({kind:'edges',geometry:data},transfer);
+      if(this.disposed || generation!==this.modelGeneration)return;
+      const edges=new THREE.BufferGeometry();edges.setAttribute('position',new THREE.BufferAttribute(prepared.edges,3));
+      this.ghostEdges.set(geometry,edges);
+    }
+  }
+
+  ghostLinkGroup(name,original) {
+    this.ghostMaterials ||= {
+      fill:new THREE.MeshBasicMaterial({color:0x16b8b0,transparent:true,opacity:0.2,depthTest:false,depthWrite:false,side:THREE.DoubleSide}),
+      line:new THREE.LineBasicMaterial({color:0x079e98,transparent:true,opacity:0.9,depthTest:false,depthWrite:false})};
+    const group=new THREE.Group();group.name=name;group.matrixAutoUpdate=false;
+    for(const holder of original.children) {
+      if(holder.userData?.layer!=='visual')continue;
+      const copy=holder.clone(true),outlines=[];
+      copy.traverse(child=>{
+        if(!child.isMesh || !child.geometry)return;
+        const edges=this.ghostEdges.get(child.geometry);if(!edges)throw new Error('Reference outline geometry is not prepared');
+        child.material=this.ghostMaterials.fill;child.renderOrder=24;
+        const outline=new THREE.LineSegments(edges,this.ghostMaterials.line);
+        outline.renderOrder=25;outline.raycast=()=>{};outlines.push([child,outline]);
+      });
+      for(const [mesh,outline] of outlines)mesh.add(outline);
+      group.add(copy);
+    }
+    this.ghostLinkGroups.set(name,group);this.ghostRoot.add(group);return group;
+  }
+
+  async prepareGhostPose(generation) {
+    this.ghostRoot=new THREE.Group();this.ghostRoot.name='reference-start-ghost';this.ghostRoot.visible=false;
+    this.scene.add(this.ghostRoot);
+    for(const [name,original] of this.linkGroups)this.ghostLinkGroup(name,original);
+    // Hidden geometry has no target pose yet. Compile its unchanged overlay
+    // materials ahead of the first user preview, without drawing a fake pose.
+    await this.renderer.compileAsync(this.ghostRoot,this.camera,this.scene);
+    return !this.disposed && generation===this.modelGeneration;
+  }
+
+  disposeGeometryPreparation() {
+    this.geometryWorker?.terminate();this.geometryWorker=null;
+    for(const job of this.geometryJobs.values())job.reject(new Error('Model geometry preparation was cancelled'));
+    this.geometryJobs.clear();this.meshGeometryCache.clear();
+    for(const edges of this.ghostEdges.values())edges.dispose();this.ghostEdges.clear();
+    if(this.ghostMaterials){this.ghostMaterials.fill.dispose();this.ghostMaterials.line.dispose();this.ghostMaterials=null;}
+  }
+
   async setModel(payload) {
     if (this.disposed || !this.running) return false;
     this.disposeRoot();
@@ -310,6 +410,7 @@ export class SerialArmModelView {
     this.updateCenterOfMass(payload.native);
     this.setLayers(this.layers); this.refreshVisibility();
     this.resetView({immediate: !this.hasFramedModel}); this.hasFramedModel = true;
+    if(this.modelErrors.length===0 && !await this.prepareGhostPose(generation))return false;
     this.modelLoaded = this.modelErrors.length === 0;
     this.modelStatus = this.modelLoaded ? 'ready' : 'failed';
     if (!this.modelLoaded) this.modelError = {category: 'model', code: 'MODEL_RESOURCE_LOAD_FAILED',
@@ -331,12 +432,12 @@ export class SerialArmModelView {
       else if (g.type === 'cylinder') object = new THREE.Mesh(new THREE.CylinderGeometry(g.radius, g.radius, g.length, 32), material(item.rgba, collision));
       else if (g.type === 'sphere') object = new THREE.Mesh(new THREE.SphereGeometry(g.radius, 32, 18), material(item.rgba, collision));
       else if (g.type === 'mesh') {
-        const resource = await this.resourceReader(g.path);
+        const loaded=await this.meshResource(g.path,generation),resource=loaded.resource;
         if (!current()) return;
-        const data = decode(resource.data);
         if (resource.extension === '.stl') {
-          const geometry = new STLLoader().parse(data); object = new THREE.Mesh(geometry, material(item.rgba, collision));
+          object = new THREE.Mesh(loaded.geometry, material(item.rgba, collision));
         } else if (resource.extension === '.glb') {
+          const data = decode(resource.data);
           const gltf = await new Promise((resolve,reject)=>new GLTFLoader().parse(data, '', resolve, reject)); object = gltf.scene;
           if (!current()) { disposeObject(object); return; }
           // The URDF material owns the display appearance; release the imported
@@ -350,6 +451,8 @@ export class SerialArmModelView {
       let renderable = false;
       object.traverse(node => { if (node.isMesh && node.geometry?.getAttribute('position')?.count >= 3) renderable = true; });
       if (!renderable) throw new Error('Model resource contains no renderable geometry');
+      if(!collision)await this.prepareGhostEdges(object,generation);
+      if(!current()){disposeObject(object);return;}
       const layer=collision?'collision':'visual'; holder.userData.ownerKind='links'; holder.userData.ownerName=group.name; object.traverse(node=>{if(node.isMesh){node.userData.layer=layer;node.userData.ownerKind='links';node.userData.ownerName=group.name;}}); object.userData.layer=layer; holder.add(object); group.add(holder);
     } catch (error) {
       disposeObject(object);
@@ -454,10 +557,9 @@ export class SerialArmModelView {
     this.ghostLinkGroups.clear();
     if(!this.ghostRoot)return;
     this.scene.remove(this.ghostRoot);
-    this.ghostRoot.traverse(node => {if(node.userData?.ghostOwnedGeometry)node.geometry?.dispose();});
-    // Ghosts share the measured model's geometries and textures, but own their
-    // cloned materials. Never release the shared model buffers here
-    disposeObject(this.ghostRoot, {geometry:false, textures:false});
+    // Immutable buffers and both overlay materials belong to the loaded model,
+    // so clearing a target never rebuilds outlines or destroys shared resources.
+    disposeObject(this.ghostRoot, {geometry:false, textures:false, materials:false});
     this.ghostRoot=null;
     this.requestRender();
   }
@@ -465,6 +567,7 @@ export class SerialArmModelView {
   setGhostPose(native) {
     if (this.disposed || !this.running) return;
     const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
+    if(!this.modelLoaded && frames.size)throw new Error('Reference preview model is still loading');
     if(!this.ghostRoot && !frames.size)return;
     if(!this.ghostRoot){
       this.ghostRoot=new THREE.Group();this.ghostRoot.name='reference-start-ghost';
@@ -474,26 +577,7 @@ export class SerialArmModelView {
     for(const [name,original] of this.linkGroups){
       const frame=frames.get(name);
       let group=this.ghostLinkGroups.get(name);
-      if(!group && frame){
-        group=new THREE.Group();group.name=name;group.matrixAutoUpdate=false;
-        for(const holder of original.children){
-          if(holder.userData?.layer!=='visual')continue;
-          const copy=holder.clone(true);
-          const outlines=[];
-          copy.traverse(child=>{if(!child.isMesh||!child.geometry)return;
-            // A reference may exactly overlap the measured model. Draw it as
-            // an unlit overlay, independent of the source textures and depth
-            child.material=new THREE.MeshBasicMaterial({color:0x16b8b0,transparent:true,opacity:0.2,depthTest:false,depthWrite:false,side:THREE.DoubleSide});
-            child.renderOrder=24;
-            const outline=new THREE.LineSegments(new THREE.EdgesGeometry(child.geometry,25),new THREE.LineBasicMaterial({color:0x079e98,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
-            outline.userData.ghostOwnedGeometry=true;outline.renderOrder=25;
-            outline.raycast=()=>{};outlines.push([child,outline]);
-          });
-          for(const [mesh,outline] of outlines)mesh.add(outline);
-          group.add(copy);
-        }
-        this.ghostLinkGroups.set(name,group);this.ghostRoot.add(group);
-      }
+      if(!group && frame)group=this.ghostLinkGroup(name,original);
       if(!group)continue;
       group.visible=!!frame;
       if(frame){group.matrix.copy(frameMatrix(frame));visible++;}
@@ -807,6 +891,7 @@ export class SerialArmModelView {
   disposeRoot() {
     this.modelGeneration++;
     this.clearGhostPose();
+    this.disposeGeometryPreparation();
     disposeObject(this.root);
     this.scene.remove(this.root); this.root=new THREE.Group(); this.scene.add(this.root); this.linkGroups.clear(); this.frameHelpers.clear(); this.jointAxes=[]; this.effectiveGroups=[]; this.labels=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()}; this.comGroup=new THREE.Group(); this.root.add(this.comGroup);
   }
@@ -820,7 +905,7 @@ export class SerialArmModelView {
     this.controls?.dispose(); this.cameraTools?.remove(); this.cameraHint?.remove();
     this.canvas?.removeEventListener('webglcontextcreationerror', this.onCreationError);
     this.canvas?.removeEventListener('webglcontextlost', this.onContextLost);
-    this.clearGhostPose(); disposeObject(this.scene); this.scene?.clear();
+    this.clearGhostPose(); this.disposeGeometryPreparation(); disposeObject(this.scene); this.scene?.clear();
     this.root?.clear(); this.linkGroups?.clear(); this.frameHelpers?.clear();
     this.jointAxes = []; this.effectiveGroups = []; this.labels = []; this.comparisonGroups = [];
     this.modelLoaded = false; this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null; this.payload = null;

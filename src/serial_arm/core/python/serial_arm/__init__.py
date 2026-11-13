@@ -222,7 +222,7 @@ class RobotSession:
         )
 
     def move_to(self, pos: np.ndarray, speed_scale: float = 0.3) -> int:
-        """提交绝对位置目标并返回运动 ID；通过 snapshot.motion 查询到位或中断状态"""
+        """提交绝对位置目标并返回运动 ID；通过 snapshot.motion 查询动作完成、实际到位或中断状态"""
         return self._session.move_to(
             np.ascontiguousarray(pos, dtype=np.float64), float(speed_scale)
         )

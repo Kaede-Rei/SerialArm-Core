@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Eigen/Dense>
+#include <serial_arm/dynamics/gain_measurement_center.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -24,21 +25,30 @@ struct Requirements {
     bool stationary_probe{false},motion_probe{false};
     std::array<double,3> frequencies_hz{0.35,0.70,1.20};
     std::size_t max_candidates{3};
+    // Offset of the excitation's interior center from its fresh measured
+    // origin. It shares the waveform's fade, so no position/velocity step is
+    // introduced when a bounded experiment must stay on the observed side.
+    double reference_bias_rad{0};
 };
 inline constexpr std::size_t motion_attempt_limit=5;
 struct Sample {
     double time_s{0},reference{0},reference_velocity{0},actual{0},velocity{0};
     double residual{0};
+    double measured_torque_nm{std::numeric_limits<double>::quiet_NaN()};
     bool limited{false},new_measurement{false},residual_valid{false};
     // reference/velocity are the accepted MIT setpoints. These fields describe
     // the command actually issued, on the same monotonic clock as time_s.
     double applied_feedforward_nm{std::numeric_limits<double>::quiet_NaN()};
     double independent_disturbance_nm{0};
+    double planned_independent_disturbance_nm{0};
+    bool independent_input_planned_known{false};
     double command_time_s{std::numeric_limits<double>::quiet_NaN()};
     double feedback_time_s{std::numeric_limits<double>::quiet_NaN()};
     std::uint64_t feedback_sequence{0};
     bool feedforward_known{false},independent_disturbance_known{false};
     double actual_kp{0},actual_kd{0};bool actual_gains_known{false};
+    double reference_sample_time_s{0};
+    bool reference_sample_time_known{false};
 };
 struct Metrics {
     std::size_t samples{0},measurement_samples{0},limited_samples{0},tail_samples{0};
@@ -48,6 +58,14 @@ struct Metrics {
     double applied_input_peak_nm{0};
     std::size_t residual_samples{0},tail_reversals{0};
     bool continuous{true},settled{false},oscillating{false},observable{false},passed{false};
+    // New records explicitly scope the accuracy target to a final, fixed
+    // target window. Legacy peak/tail fields keep their original all-cycle
+    // meanings; absence of these endpoint fields is not a historical pass.
+    double endpoint_peak_error_rad{0},endpoint_rms_error_rad{0},endpoint_bias_error_rad{0};
+    double endpoint_window_start_s{0},endpoint_window_end_s{0};
+    std::size_t endpoint_measurement_samples{0};
+    bool endpoint_window_available{false},endpoint_passed{false};
+    std::string endpoint_reason{"final_target_window_not_measured"};
 };
 struct NoiseEstimate {
     double rms_rad{0},encoder_step_rad{0},velocity_rms{0},velocity_peak{0},velocity_step{0};
@@ -58,43 +76,196 @@ struct MotionGuardResult {
     bool triggered{false};std::string reason{"no_uncommanded_oscillation"};
     std::size_t position_reversals{0},reference_reversals{0};
     double actual_travel_rad{0},reference_travel_rad{0},residual_peak_to_peak_rad{0},window_s{0};
+    double effective_encoder_step_rad{0},hysteresis_rad{0},actual_peak_to_peak_rad{0},reference_peak_to_peak_rad{0};
+    std::size_t fresh_position_codes{0},encoder_step_evidence_pairs{0};
+    bool encoder_step_known{false};
+    double completed_alternating_travel_rad{0},repeated_leg_min_rad{0},repeated_leg_max_rad{0};
+    bool repeated_comparable_excursions{false};
+    std::size_t independent_input_reversals{0},requested_motion_reversals{0};
+    double independent_input_span_nm{0};bool independent_input_known{false};
+    bool independent_input_frequencies_known{false},input_tone_response_fit_available{false},input_tone_response_explained{false};
+    bool input_tone_unexplained_oscillation{false};
+    double input_tone_response_r_squared{0},input_tone_response_condition_number{0},input_tone_residual_peak_to_peak_rad{0};
+    std::string input_tone_explanation_reason{"not_evaluated"};
 };
 // Detect repeated position excursions which the accepted reference does not
 // request. This is an execution guard, not a mechanical-resonance identifier;
 // raw velocity codes and one dynamic overshoot cannot trigger it.
 class CommandConditionedMotionGuard {
     Requirements req_;NoiseEstimate noise_;std::deque<Sample> rows_;std::uint64_t sequence_{0};
+    ObservedPositionStep observed_position_step_;
+    std::array<double,3> independent_input_frequencies_{};
+    bool independent_input_frequencies_known_{false},known_input_oscillation_seen_{false};
+    double last_known_input_oscillation_s_{0};
+    static bool comparable_legs(const std::vector<double>& legs,double hysteresis,double& minimum,double& maximum) {
+        for(std::size_t start=0;start+4<=legs.size();++start) {
+            const auto first=legs.begin()+static_cast<std::ptrdiff_t>(start);
+            const auto bounds=std::minmax_element(first,first+4);
+            minimum=*bounds.first;maximum=*bounds.second;
+            if(minimum>=std::max(4*hysteresis,.25*maximum))return true;
+        }
+        return false;
+    }
+    double unknown_resolution_hysteresis() const {
+        // A final accuracy target is not an encoder-resolution measurement.
+        // Until raw codes establish their spacing, use the bounded experiment
+        // motion scale. It does not change commanded motion or Safety limits.
+        double scale=std::numeric_limits<double>::infinity();
+        for(const double value:{req_.amplitude_rad,req_.local_range_rad})
+            if(std::isfinite(value) && value>0)scale=std::min(scale,value);
+        return std::isfinite(scale)?std::max(1e-5,.25*scale):1e-5;
+    }
 public:
     explicit CommandConditionedMotionGuard(const Requirements& req=Requirements{},const NoiseEstimate& noise=NoiseEstimate{}):req_(req),noise_(noise){}
+    // Only the actual independent-input plan may establish this context.
+    // Requirements' default tones do not imply that any torque was applied.
+    void set_independent_input_frequencies(const std::array<double,3>& frequencies) {
+        independent_input_frequencies_known_=true;
+        for(std::size_t k=0;k<frequencies.size();++k)
+            if(!std::isfinite(frequencies[k]) || frequencies[k]<=0 || (k && frequencies[k]<=frequencies[k-1]))
+                independent_input_frequencies_known_=false;
+        independent_input_frequencies_=frequencies;known_input_oscillation_seen_=false;
+    }
+    void update_noise(const NoiseEstimate& measured) {
+        if(std::isfinite(measured.encoder_step_rad) && measured.encoder_step_rad>0)
+            noise_.encoder_step_rad=noise_.encoder_step_rad>0?std::min(noise_.encoder_step_rad,measured.encoder_step_rad):measured.encoder_step_rad;
+        if(std::isfinite(measured.rms_rad) && measured.rms_rad>=0)noise_.rms_rad=measured.rms_rad;
+    }
     MotionGuardResult observe(const Sample& row) {
         MotionGuardResult out;
-        if(!row.new_measurement || (row.feedback_sequence && sequence_==row.feedback_sequence))return out;
+        if(!row.new_measurement || (sequence_ && (!row.feedback_sequence || row.feedback_sequence<=sequence_)))return out;
         if(!std::isfinite(row.time_s) || !std::isfinite(row.actual) || !std::isfinite(row.reference))return out;
-        if(!rows_.empty() && (row.time_s<=rows_.back().time_s || row.time_s-rows_.back().time_s>.06))rows_.clear();
+        if(std::isfinite(row.command_time_s) && std::isfinite(row.feedback_time_s) &&
+           std::abs(row.command_time_s-row.feedback_time_s)>.06){out.reason="stale_feedback_not_motion_evidence";return out;}
+        if(!rows_.empty() && row.time_s<=rows_.back().time_s)return out;
+        if(!rows_.empty() && row.time_s-rows_.back().time_s>.06)rows_.clear();
+        observed_position_step_.observe(row.actual,row.feedback_sequence);
+        const double observed_step=observed_position_step_.qualified_step();
+        // The first large movement must never become an arbitrarily large
+        // noise allowance. Learning an unknown spacing may only reduce the
+        // existing motion threshold; a declared/earlier step only decreases.
+        if(observed_step>0 && (noise_.encoder_step_rad>0 || observed_step<=unknown_resolution_hysteresis()/3))
+            noise_.encoder_step_rad=noise_.encoder_step_rad>0?std::min(noise_.encoder_step_rad,observed_step):observed_step;
         sequence_=row.feedback_sequence;rows_.push_back(row);
         while(!rows_.empty() && rows_.front().time_s<row.time_s-.25)rows_.pop_front();
+        out.effective_encoder_step_rad=noise_.encoder_step_rad;
+        out.encoder_step_known=noise_.encoder_step_rad>0;
+        out.fresh_position_codes=observed_position_step_.distinct_positions();
+        out.encoder_step_evidence_pairs=observed_position_step_.step_evidence_pairs();
+        out.independent_input_frequencies_known=independent_input_frequencies_known_;
+        const double hysteresis=std::max({3*noise_.encoder_step_rad,6*noise_.rms_rad,
+            noise_.encoder_step_rad>0?0:unknown_resolution_hysteresis(),1e-5});
+        out.hysteresis_rad=hysteresis;
         if(rows_.size()<20 || rows_.back().time_s-rows_.front().time_s<.15)return out;
         out.window_s=rows_.back().time_s-rows_.front().time_s;
-        const double hysteresis=std::max({3*noise_.encoder_step_rad,6*noise_.rms_rad,.25*req_.peak_error_rad,1e-5});
-        const auto excursions=[&](bool actual) {
-            double extreme=actual?rows_.front().actual:rows_.front().reference,anchor=extreme,travel=0;int direction=0;std::size_t reversals=0;
+        std::vector<double> actual_legs;
+        const auto excursions=[&](bool actual,std::vector<double>* legs=nullptr,const Eigen::VectorXd* positions=nullptr) {
+            double extreme=positions?(*positions)[0]:actual?rows_.front().actual:rows_.front().reference,anchor=extreme,travel=0;int direction=0;std::size_t reversals=0,index=0;
             for(const auto& s:rows_) {
-                const double q=actual?s.actual:s.reference;
+                const double q=positions?(*positions)[static_cast<Eigen::Index>(index)]:actual?s.actual:s.reference;++index;
                 if(!direction){if(std::abs(q-anchor)>=hysteresis){direction=q>anchor?1:-1;extreme=q;}}
                 else if((q-extreme)*direction>=0)extreme=q;
-                else if((extreme-q)*direction>=hysteresis){travel+=std::abs(extreme-anchor);anchor=extreme;extreme=q;direction=-direction;++reversals;}
+                else if((extreme-q)*direction>=hysteresis){const double leg=std::abs(extreme-anchor);travel+=leg;
+                    if(legs)legs->push_back(leg);
+                    anchor=extreme;extreme=q;direction=-direction;++reversals;}
             }
             return std::pair<std::size_t,double>{reversals,travel+std::abs(extreme-anchor)};
         };
-        const auto actual=excursions(true),reference=excursions(false);
+        const auto actual=excursions(true,&actual_legs),reference=excursions(false);
         out.position_reversals=actual.first;out.reference_reversals=reference.first;
         out.actual_travel_rad=actual.second;out.reference_travel_rad=reference.second;
-        double low=std::numeric_limits<double>::infinity(),high=-low;
-        for(const auto& s:rows_){const double e=s.actual-s.reference;low=std::min(low,e);high=std::max(high,e);}
+        out.independent_input_known=std::all_of(rows_.begin(),rows_.end(),[](const Sample& s){
+            return s.independent_disturbance_known && std::isfinite(s.independent_disturbance_nm);
+        });
+        if(out.independent_input_known) {
+            double low_input=rows_.front().independent_disturbance_nm,high_input=low_input;
+            for(const auto& s:rows_){low_input=std::min(low_input,s.independent_disturbance_nm);high_input=std::max(high_input,s.independent_disturbance_nm);}
+            out.independent_input_span_nm=high_input-low_input;
+            // Known exogenous torque requests motion even with a fixed
+            // position reference. Compare only its dimensionless turn count;
+            // torque travel is never compared to joint displacement. A zero
+            // or DC input cannot excuse recurring position excursions.
+            if(out.independent_input_span_nm>1e-12) {
+                const double input_hysteresis=std::max(1e-12,.001*out.independent_input_span_nm);
+                double anchor=rows_.front().independent_disturbance_nm,extreme=anchor;int direction=0;
+                for(const auto& s:rows_) {
+                    const double input=s.independent_disturbance_nm;
+                    if(!direction){if(std::abs(input-anchor)>=input_hysteresis){direction=input>anchor?1:-1;extreme=input;}}
+                    else if((input-extreme)*direction>=0)extreme=input;
+                    else if((extreme-input)*direction>=input_hysteresis){extreme=input;direction=-direction;++out.independent_input_reversals;}
+                }
+            }
+        }
+        if(out.independent_input_known && out.independent_input_reversals>0) {
+            known_input_oscillation_seen_=true;last_known_input_oscillation_s_=row.time_s;
+        }
+        out.requested_motion_reversals=std::max(out.reference_reversals,out.independent_input_reversals);
+        double low=std::numeric_limits<double>::infinity(),high=-low,actual_low=low,actual_high=high,reference_low=low,reference_high=high;
+        for(const auto& s:rows_){const double e=s.actual-s.reference;low=std::min(low,e);high=std::max(high,e);
+            actual_low=std::min(actual_low,s.actual);actual_high=std::max(actual_high,s.actual);
+            reference_low=std::min(reference_low,s.reference);reference_high=std::max(reference_high,s.reference);}
+        out.actual_peak_to_peak_rad=actual_high-actual_low;out.reference_peak_to_peak_rad=reference_high-reference_low;
         out.residual_peak_to_peak_rad=high-low;
-        out.triggered=actual.first>=4 && actual.first>=reference.first+3 &&
-            actual.second>2.5*reference.second+8*hysteresis && high-low>4*hysteresis;
+        for(const double leg:actual_legs)out.completed_alternating_travel_rad+=leg;
+        // Four tiny turns around one large transition are not four cycles of
+        // that transition's amplitude. Require two completed back-and-forth
+        // excursions at a resolved, comparable scale; slow growth/decay within
+        // a factor four over these half-cycles is retained as motion evidence.
+        out.repeated_comparable_excursions=comparable_legs(actual_legs,hysteresis,out.repeated_leg_min_rad,out.repeated_leg_max_rad);
+        out.triggered=actual.first>=4 && actual.first>=out.requested_motion_reversals+3 &&
+            actual.second>2.5*reference.second+8*hysteresis && out.actual_peak_to_peak_rad>4*hysteresis &&
+            out.completed_alternating_travel_rad>=2*out.actual_peak_to_peak_rad && out.repeated_comparable_excursions;
+        // A stable resonant response can keep ringing at an applied tone while
+        // its known input fades or is just released. Only when the ordinary
+        // guard would trip, test this explicit plan-based explanation. It is
+        // neither a stability certificate nor a change to raw acceptance data.
+        if(out.triggered && independent_input_frequencies_known_ && out.independent_input_known && known_input_oscillation_seen_) {
+            const double release_window=std::isfinite(req_.tail_s)?std::max(.25,req_.tail_s):.25;
+            if(row.time_s-last_known_input_oscillation_s_<=release_window) {
+                bool clock_known=true;double previous_command=-1e300,previous_feedback=-1e300;
+                for(const auto& s:rows_) {
+                    if(!std::isfinite(s.command_time_s) || !std::isfinite(s.feedback_time_s) ||
+                       s.command_time_s<=previous_command || s.feedback_time_s<=previous_feedback ||
+                       std::abs(s.command_time_s-s.feedback_time_s)>.06)clock_known=false;
+                    previous_command=s.command_time_s;previous_feedback=s.feedback_time_s;
+                }
+                out.input_tone_explanation_reason="known_input_tone_clock_evidence_missing";
+                if(clock_known) {
+                    const auto count=static_cast<Eigen::Index>(rows_.size());
+                    Eigen::MatrixXd design(count,8);Eigen::VectorXd actual_positions(count);
+                    const double origin=rows_.front().feedback_time_s,span=rows_.back().feedback_time_s-origin;
+                    for(Eigen::Index k=0;k<count;++k) {
+                        const auto& s=rows_[static_cast<std::size_t>(k)];const double time=s.feedback_time_s-origin;
+                        design(k,0)=1;design(k,1)=time/span-.5;actual_positions[k]=s.actual;
+                        for(unsigned j=0;j<3;++j){const double angle=2*pi*independent_input_frequencies_[j]*time;
+                            design(k,2+2*j)=std::sin(angle);design(k,3+2*j)=std::cos(angle);}
+                    }
+                    for(Eigen::Index j=0;j<design.cols();++j){const double norm=design.col(j).norm();if(norm>1e-12)design.col(j)/=norm;}
+                    const Eigen::JacobiSVD<Eigen::MatrixXd> fit(design,Eigen::ComputeThinU|Eigen::ComputeThinV);
+                    const auto& values=fit.singularValues();
+                    out.input_tone_response_condition_number=values[values.size()-1]>1e-12?values[0]/values[values.size()-1]:1e30;
+                    out.input_tone_explanation_reason="known_input_tone_fit_ill_conditioned";
+                    if(out.input_tone_response_condition_number<=1e4) {
+                        const Eigen::VectorXd residual=actual_positions-design*fit.solve(actual_positions);
+                        const double total=(actual_positions.array()-actual_positions.mean()).matrix().squaredNorm();
+                        out.input_tone_response_fit_available=true;
+                        out.input_tone_response_r_squared=total>1e-18?std::clamp(1-residual.squaredNorm()/total,0.0,1.0):0;
+                        out.input_tone_residual_peak_to_peak_rad=residual.maxCoeff()-residual.minCoeff();
+                        std::vector<double> residual_legs;const auto remainder=excursions(true,&residual_legs,&residual);
+                        double completed=0,minimum=0,maximum=0;for(const double leg:residual_legs)completed+=leg;
+                        out.input_tone_unexplained_oscillation=remainder.first>=4 && remainder.second>8*hysteresis &&
+                            out.input_tone_residual_peak_to_peak_rad>4*hysteresis && completed>=2*out.input_tone_residual_peak_to_peak_rad &&
+                            comparable_legs(residual_legs,hysteresis,minimum,maximum);
+                        out.input_tone_response_explained=out.input_tone_response_r_squared>=.95 && !out.input_tone_unexplained_oscillation;
+                        out.input_tone_explanation_reason=out.input_tone_response_explained?"known_input_tones_explain_position_motion_not_an_acceptance_pass":
+                            out.input_tone_unexplained_oscillation?"resolved_repeated_motion_remains_outside_known_input_tones":"known_input_tones_do_not_explain_position_motion";
+                        if(out.input_tone_response_explained)out.triggered=false;
+                    }
+                }
+            }
+        }
         if(out.triggered)out.reason="repeated_position_oscillation_not_requested_by_reference";
+        else if(out.input_tone_response_explained)out.reason="position_motion_explained_by_known_independent_input_tones";
         return out;
     }
 };
@@ -169,6 +340,70 @@ struct MotionObservation {
     double initial_error_rad{0},positive_travel_rad{0},negative_travel_rad{0},alignment_delay_s{0};
     bool bidirectional{false},qualified{false},quantization_boundary{false};std::string reason{"insufficient_measurements"};
 };
+
+inline void assess_endpoint_window(Metrics& m,const std::vector<Sample>& rows,
+                                  const Requirements& req,double excitation_end_s) {
+    // A positioning score uses the raw maximum error over the final half
+    // second, after the planned endpoint dwell. It never waits for the error
+    // to meet the score: a complete, inaccurate window is a measured failure.
+    constexpr double window_s=.5,maximum_gap_s=.06;
+    if(rows.empty() || !std::isfinite(excitation_end_s) || excitation_end_s<0 ||
+       !std::isfinite(req.tail_s) || req.tail_s<window_s ||
+       !std::isfinite(req.peak_error_rad) || req.peak_error_rad<=0)return;
+    const double end=rows.back().time_s,begin=end-window_s;
+    if(!std::isfinite(end) || end<excitation_end_s+req.tail_s-maximum_gap_s || begin<excitation_end_s) {
+        m.endpoint_reason="final_target_window_incomplete";return;
+    }
+    m.endpoint_window_start_s=begin;m.endpoint_window_end_s=end;
+    const double target=rows.back().reference;
+    if(!std::isfinite(target)){m.endpoint_reason="final_target_nonfinite";return;}
+    // This is numerical equality of an accepted stationary command, not a
+    // noise tolerance or the user's positioning target. It cannot turn a
+    // slowly moving reference into an endpoint measurement.
+    const double reference_tolerance=1e-9*std::max(1.0,std::abs(target));
+    double sum=0,square=0,previous_fresh=begin,last_time=begin;
+    std::size_t window_samples=0;std::uint64_t sequence=0;
+    bool seen_row=false;
+    for(const auto& row:rows) {
+        if(row.time_s<begin)continue;
+        if(!std::isfinite(row.time_s) || !std::isfinite(row.reference) ||
+           !std::isfinite(row.reference_velocity) || !std::isfinite(row.actual)) {
+            m.endpoint_reason="final_target_nonfinite";return;
+        }
+        if((seen_row && row.time_s<=last_time) || row.time_s-last_time>maximum_gap_s) {
+            m.endpoint_reason="final_target_feedback_discontinuous";return;
+        }
+        seen_row=true;last_time=row.time_s;
+        if(std::abs(row.reference-target)>reference_tolerance ||
+           std::abs(row.reference_velocity)>reference_tolerance) {
+            m.endpoint_reason="final_target_reference_not_stationary";return;
+        }
+        if(row.limited){m.endpoint_reason="final_target_limited";return;}
+        const double error=row.actual-target;
+        m.endpoint_peak_error_rad=std::max(m.endpoint_peak_error_rad,std::abs(error));
+        sum+=error;square+=error*error;++window_samples;
+        if(!row.new_measurement)continue;
+        if(row.time_s-previous_fresh>maximum_gap_s ||
+           (sequence && row.feedback_sequence<=sequence)) {
+            m.endpoint_reason="final_target_feedback_discontinuous";return;
+        }
+        if((std::isfinite(row.command_time_s) || std::isfinite(row.feedback_time_s)) &&
+           (!std::isfinite(row.command_time_s) || !std::isfinite(row.feedback_time_s) ||
+            std::abs(row.command_time_s-row.feedback_time_s)>maximum_gap_s)) {
+            m.endpoint_reason="final_target_feedback_stale";return;
+        }
+        previous_fresh=row.time_s;sequence=row.feedback_sequence;++m.endpoint_measurement_samples;
+    }
+    if(m.endpoint_measurement_samples<20 || end-previous_fresh>maximum_gap_s || !window_samples) {
+        m.endpoint_reason="final_target_feedback_insufficient";return;
+    }
+    m.endpoint_rms_error_rad=std::sqrt(square/window_samples);
+    m.endpoint_bias_error_rad=sum/window_samples;
+    m.endpoint_window_available=true;
+    m.endpoint_passed=m.endpoint_peak_error_rad<req.peak_error_rad;
+    m.endpoint_reason=m.endpoint_passed?"final_target_window_qualified":"final_target_error_not_qualified";
+}
+
 inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,double excitation_end_s) {
     Metrics m;if(rows.empty())return m;
     double sum=0,vs=0,lo=rows.front().reference,hi=lo,actual_lo=rows.front().actual,actual_hi=actual_lo;
@@ -178,7 +413,7 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
     std::size_t excitation_samples=0;
     for(std::size_t k=0;k<rows.size();++k) {
         const auto& s=rows[k];
-        if(!std::isfinite(s.time_s)||!std::isfinite(s.reference)||!std::isfinite(s.actual)||!std::isfinite(s.velocity))return Metrics{};
+        if(!std::isfinite(s.time_s)||!std::isfinite(s.reference)||!std::isfinite(s.reference_velocity)||!std::isfinite(s.actual)||!std::isfinite(s.velocity))return Metrics{};
         if(k && (s.time_s<=rows[k-1].time_s || s.time_s-rows[k-1].time_s>0.06))m.continuous=false;
         if(s.new_measurement){if(s.time_s-last_measurement>0.06)m.continuous=false;last_measurement=s.time_s;++m.measurement_samples;}
         const double e=s.actual-s.reference;sum+=e*e;vs+=std::pow(s.velocity-s.reference_velocity,2);
@@ -228,10 +463,9 @@ inline Metrics assess(const std::vector<Sample>& rows,const Requirements& req,do
         m.observable=m.reference_span>=0.2*req.amplitude_rad &&
             m.actual_span>=0.2*m.reference_span && m.response_rms_ratio>=0.2;
     }
-    m.passed=m.observable && m.samples>=100 && m.measurement_samples>=100 && m.continuous && m.limited_samples==0 &&
-        m.rms_error<=req.rms_error_rad && m.peak_error<req.peak_error_rad &&
-        m.velocity_rms<=req.velocity_rms_rad_s && m.overshoot<=req.overshoot_rad &&
-        m.settled && m.settling_s<=req.settling_time_s && !m.oscillating;
+    assess_endpoint_window(m,rows,req,excitation_end_s);
+    m.passed=m.observable && m.samples>=100 && m.measurement_samples>=100 && m.continuous &&
+        m.limited_samples==0 && m.endpoint_window_available && m.endpoint_passed && !m.oscillating;
     return m;
 }
 inline MotionObservation observe_motion(const std::vector<Sample>& rows,const Requirements& req,
@@ -413,6 +647,7 @@ inline std::pair<double,double> probe(double time,const Requirements& req) {
     const double de=x<1 ? 6*x*(1-x)/edge*(time<edge?1.0:-1.0) : 0.0;
     const std::array<double,3> weights{.4,.35,.25};double q=0,v=0;
     for(std::size_t j=0;j<(req.motion_probe?1:3);++j){const double w=2*pi*req.frequencies_hz[j],weight=req.motion_probe?1:weights[j];q+=weight*std::sin(w*time);v+=weight*w*std::cos(w*time);}
-    return {req.amplitude_rad*envelope*q,req.amplitude_rad*(envelope*v+de*q)};
+    const double displacement=req.amplitude_rad*q+req.reference_bias_rad;
+    return {envelope*displacement,envelope*req.amplitude_rad*v+de*displacement};
 }
 } // namespace serial_arm::servo_tuning

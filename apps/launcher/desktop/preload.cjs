@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('serialArm', {
   selectProfilePackage: () => ipcRenderer.invoke('launcher:select-profile-package'),
   selectDestination: () => ipcRenderer.invoke('launcher:select-destination'),
   selectResources: () => ipcRenderer.invoke('launcher:select-resources'),
+  gainLive: {
+    open: snapshot => ipcRenderer.invoke('launcher:gain-live-open', snapshot),
+    publish: snapshot => ipcRenderer.send('launcher:gain-live-update', snapshot),
+  },
   window: action => ipcRenderer.invoke('launcher:window', action),
   clipboard: {
     read: () => ipcRenderer.invoke('launcher:clipboard', 'read'),

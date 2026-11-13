@@ -204,6 +204,7 @@ def _gain_export(record, dest, gain_purposes=None):
     for source in [folder / 'metadata.json', folder / 'gain-candidate.json',
                    *sorted(folder.glob('servo-probe-*.csv')), *sorted(folder.glob('gain-trajectory-*.csv')),
                    *sorted(folder.glob('drag-decay-*.csv')), *sorted(folder.glob('gain-hold-*.csv')),
+                   *sorted(folder.glob('gain-transition-*.csv')),
                    folder / 'frames.csv', folder / 'result.json']:
         if source.is_file() and not source.is_symlink(): shutil.copy2(source, evidence / source.name)
     snapshots = evidence / 'source'; snapshots.mkdir(exist_ok=True)

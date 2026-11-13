@@ -43,8 +43,9 @@ public:
      * @brief Hardware Backend 共享库加载器
      *
      * Loader 负责 dlopen() Backend shared library，通过 create_motor_bus()
-     * 创建 MotorBus，并将 destroy_motor_bus() 与 dlclose() 生命周期绑定到
-     * 返回的 std::unique_ptr<MotorBus> 中
+     * 创建 MotorBus，并将 destroy_motor_bus() 与 dlclose() 显式引用生命周期绑定到
+     * 返回的 std::unique_ptr<MotorBus> 中；DSO 代码保留至进程退出，避免共享总线
+     * 弱引用控制块在较晚清理时调用已卸载代码
      */
     HardwareLoader() = default;
     ~HardwareLoader();
@@ -61,8 +62,9 @@ public:
      * @return 持有 Backend 对象和共享库句柄生命周期的 MotorBus
      *
      * 当 plugin 不含路径分隔符时，Loader 会额外尝试 lib<plugin>.so
-     * 返回对象析构时先调用插件 destroy_motor_bus()，再 dlclose()；Robot、
-     * ROS 2、Python 和 Terminal 不需要感知 DSO 生命周期
+     * 返回对象析构时先调用插件 destroy_motor_bus()，再 dlclose() 释放显式引用；
+     * RTLD_NODELETE 保留代码映射至进程退出，不保留 Backend 对象或设备连接；
+     * Robot、ROS 2、Python 和 Terminal 不需要感知 DSO 生命周期
      */
     tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> load(const std::string& plugin, const std::string& config_path);
     /**

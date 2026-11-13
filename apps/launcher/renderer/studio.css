@@ -551,7 +551,10 @@ details.graphics-diagnostic-section[open] > summary { margin-bottom: 14px; }
 .gain-live-heading strong { font-size: 14px; font-weight: 500; color: var(--text); }
 .gain-live-heading [id$="-use"] { font-size: 12px; color: var(--muted); }
 .gain-live-times dd { font-size: 14px; }
-.gain-probe-status .gain-details { margin-top: 16px; }
+.gain-probe-status .gain-details { margin-top: 16px; min-width: 0; max-width: 100%; }
+.gain-probe-status [data-gain-taught-path] .table-scroll { min-width: 0; width: 100%; max-width: 100%; }
+.gain-probe-status [data-gain-taught-path="segment"] th:last-child,
+.gain-probe-status [data-gain-taught-path="segment"] td:last-child { min-width: 16ch; max-width: 24ch; white-space: normal; overflow-wrap: anywhere; }
 .gain-probe-status .gain-probe-metrics { grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); }
 .gain-probe-status .gain-probe-metrics > div { border: 0; padding: 0; background: none; }
 .gain-probe-status dt,.gain-probe-status .hint,.gain-probe-window span { font-size: 12px; }

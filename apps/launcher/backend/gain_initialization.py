@@ -1,4 +1,4 @@
-"""Read-only model suggestions for a newly created Profile, never qualification."""
+"""Reference-only URDF suggestions for a new Profile, never measured qualification."""
 import json
 import math
 from pathlib import Path
@@ -6,6 +6,17 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 import yaml
+
+
+MODEL_GAIN_REFERENCE_FIELDS = {
+    'reference_only': True,
+    'value_role': 'unmeasured_model_reference',
+    'accuracy_thresholds_enabled': False,
+}
+MODEL_GAIN_REFERENCE_COMMENT = (
+    '# 初次生成的 Kp/Kd 来自 URDF 几何、惯性与双对角化模型，仅供参考\n'
+    '# 这些初值尚未实测；分析指标不作为精度通过标准，实际表现由示教测量与使用确认\n'
+)
 
 
 # Same MIT capability table used by DamiaoMotorBus::configure; these values are
@@ -112,53 +123,130 @@ def model_gain_limits(core, urdf_path, hardware=None, driver=None):
     return limits, positions, hardware_complete
 
 
-def initialize_profile_gains(inspector, core_path, core, urdf_path, hardware, driver=None):
+def _executable_gain(value, term, capability):
+    """Only encoding is applied here; Safety continues to constrain execution."""
+    if value == 0:
+        return 0., []
+    if capability is None:
+        return value, []
+    maximum, quantum = capability[term+'_max'], capability[term+'_quantum']
+    encoded = min(maximum, max(quantum, math.floor(value/quantum+.5)*quantum))
+    reasons = []
+    if value > maximum: reasons.append(term+'_protocol_ceiling')
+    if encoded != min(value, maximum): reasons.append(term+'_protocol_quantization')
+    return encoded, reasons
+
+
+def initialize_profile_gains(inspector, core_path, core, urdf_path, hardware, driver=None, *, apply_generated=False):
+    """Consume the shared native URDF design; only new generated configs opt in.
+
+    Existing authored/user parameters remain untouched by read-only inspection.
+    Artificial motion/effort limits, old gains and park/taught poses never enter
+    the neutral URDF design. Hardware encoding is recorded as a separate step.
+    """
     probe = inspector.model_probe()
     if not probe:
         raise ValueError('模型增益初始化需要 Core Model Probe，请先编译安装模型检查组件')
-    limits, positions, complete = model_gain_limits(core, urdf_path, hardware, driver)
-    # Parameter edits are not on disk yet. Probe the actual edited model without
-    # replacing the user's Profile or resolving resources against a temp folder.
+    names = core['model']['joint_names']
     model = dict(core['model']);model['urdf_path'] = str(Path(urdf_path).resolve())
-    if model.get('gravity_correction_path'):
-        model['gravity_correction_path'] = str((Path(core_path).parent / model['gravity_correction_path']).resolve())
+    # A calibrated correction is not the sole URDF geometry/inertia prior.
+    model.pop('gravity_correction_path', None)
+    model['gravity_scale'] = {name: 1. for name in names}
     with tempfile.TemporaryDirectory(prefix='serialarm-gain-model-') as temporary:
         model_config = Path(temporary) / 'model.yaml'
         model_config.write_text(yaml.safe_dump({'model': model}, sort_keys=False), encoding='utf-8')
-        completed = subprocess.run([str(probe), '--config', str(model_config), '--positions',
-            ','.join(format(value, '.17g') for value in positions), '--gain-limits-json',
-            json.dumps(limits, separators=(',', ':'))], capture_output=True, text=True, timeout=12, check=False)
+        completed = subprocess.run([str(probe), '--config', str(model_config)],
+            capture_output=True, text=True, timeout=12, check=False)
     try:
         payload = json.loads(completed.stdout.strip())
     except json.JSONDecodeError:
         raise ValueError('模型增益初始化未返回有效结果，请编译安装当前 Core Model Probe')
-    result = payload.get('gain_initialization') or {}
-    axes = result.get('axes')
-    names = core['model']['joint_names']
-    if completed.returncode or payload.get('ok') is not True or result.get('valid') is not True:
-        raise ValueError('模型增益初始化失败，请修正 URDF 惯量、关节映射或能力限制：' + str(payload.get('error') or '缺少模型建议，请编译安装当前 Core'))
-    if not isinstance(axes, list) or [axis.get('joint') for axis in axes] != names or any(
-        not isinstance(axis.get(key), (float, int)) or not math.isfinite(axis[key]) or axis[key] < 0 or key == 'kp' and axis[key] == 0
-        for axis in axes for key in ('kp', 'kd')):
-        raise ValueError('模型增益初始化的关节顺序或建议参数无效')
-    result = {**result, 'measured': False, 'validated': False,
-              'demand_source': 'recovery_targets_without_demonstration',
-              'hardware_constraints': 'declared_motor_ranges' if complete else 'pending_hardware_selection',
-              'configuration_applied': False, 'runtime_baseline_unchanged': True,
-              'suggestion_applicable': all(row['protocol_kp_max'] is not None for row in limits),
-              'protocol_gain': protocol_gain_limits(core, hardware, driver),
-              'urdf_path': str(Path(urdf_path).resolve()), 'positions': positions, 'limits': limits,
-              'model_physical_prior': {'source': 'urdf_geometry_mass_com_inertia',
-                  'scope': 'M_C_g_only', 'actuator_response_measured': False,
-                  'excluded_fields': ['urdf_velocity_limit', 'urdf_effort_limit', 'policy_velocity', 'policy_acceleration', 'policy_effort']},
-              'task_design_targets': {'source': 'recovery_targets_without_demonstration',
-                  'peak_error_rad': math.pi/1800, 'settling_time_s': .7,
-                  'designed_probe_amplitude_rad': .008, 'tracking_demand_measured': False},
-              'user_constraints': {'source': 'declared_urdf_policy_and_protocol_constraints_not_physical_response_prior',
-                  'axes': [{key: value for key, value in row.items() if not key.startswith('gain_design_') and key != 'model_feedforward_mode'} for row in limits]},
-              'execution_conditions': {'model_feedforward_mode': (core.get('control', {}).get('runtime') or {}).get('model_feedforward_mode', 'NONE')}}
-    if not result['suggestion_applicable']:
-        result['pending_reason'] = 'select_supported_hardware_driver_before_applying_model_suggestions'
-    # Model candidates are evidence for calibration preparation, not qualified
-    # normal-operation or fault-recovery baselines. Leave the entire core intact.
+    design = payload.get('nominal_gain_design') or {}
+    if completed.returncode or payload.get('ok') is not True or design.get('valid') is not True:
+        raise ValueError('模型增益初始化失败，请修正 URDF 几何、惯量或受控关节映射：' +
+            str(payload.get('error') or '缺少共享 URDF 名义设计结果，请编译安装当前 Core Model Probe'))
+    if design.get('joint_names') != names:
+        raise ValueError('URDF 名义增益设计的受控关节顺序不匹配')
+    fields = ('unconstrained_kp', 'unconstrained_kd', 'inertia_basis')
+    if any(not isinstance(design.get(key), list) or len(design[key]) != len(names) or
+           any(isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0
+               for value in design[key]) for key in fields):
+        raise ValueError('URDF 名义增益设计的惯量或参数无效，请修正模型')
+    matrix = design.get('mass_matrix_basis')
+    if not isinstance(matrix,list) or len(matrix)!=len(names) or any(
+        not isinstance(row,list) or len(row)!=len(names) or any(
+            isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) for value in row)
+        for row in matrix):
+        raise ValueError('URDF 名义增益设计缺少有效质量矩阵，请修正模型')
+    protocol = protocol_gain_limits(core, hardware, driver)
+    axes = []
+    for index,name in enumerate(names):
+        capability = protocol.get(name)
+        kp,p_reasons = _executable_gain(design['unconstrained_kp'][index], 'kp', capability)
+        kd,d_reasons = _executable_gain(design['unconstrained_kd'][index], 'kd', capability)
+        axes.append({**MODEL_GAIN_REFERENCE_FIELDS, 'joint':name, 'kp':kp, 'kd':kd,
+            'unconstrained_kp':design['unconstrained_kp'][index], 'unconstrained_kd':design['unconstrained_kd'][index],
+            'inertia_min':matrix[index][index], 'inertia_max':matrix[index][index],
+            'inertia_basis':design['inertia_basis'][index],
+            'frequency_hz':design.get('design_frequency_hz'),
+            'frequency_role':'engineering_design_lower_bound_before_encoding_not_axis_bandwidth',
+            'working_kp_max':capability['kp_max'] if capability else None,
+            'working_kd_max':capability['kd_max'] if capability else None,
+            'constraints':p_reasons+d_reasons})
+    purpose_suggestions = {}
+    raw_purposes = design.get('purpose_nominal_gain_designs') or {}
+    for role in ('rigid_hold','rigid_tracking','compliant_hold','compliant_tracking','servo_tracking','compliant_drag'):
+        raw = raw_purposes.get(role) or {}
+        if any(not isinstance(raw.get(term),list) or len(raw[term])!=len(names) or any(
+            isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<0
+            for value in raw[term]) for term in ('unconstrained_kp','unconstrained_kd')):
+            raise ValueError('Core Model Probe 缺少有效的分用途 URDF 名义设计，请编译安装当前模型检查组件')
+        purpose_axes = []
+        for index,name in enumerate(names):
+            kp,p_reasons = _executable_gain(raw['unconstrained_kp'][index],'kp',protocol.get(name))
+            kd,d_reasons = _executable_gain(raw['unconstrained_kd'][index],'kd',protocol.get(name))
+            purpose_axes.append({**MODEL_GAIN_REFERENCE_FIELDS, 'joint':name,'kp':kp,'kd':kd,
+                'unconstrained_kp':raw['unconstrained_kp'][index],'unconstrained_kd':raw['unconstrained_kd'][index],
+                'constraints':p_reasons+d_reasons})
+        purpose_suggestions[role] = {**raw, **MODEL_GAIN_REFERENCE_FIELDS,
+            'axes':purpose_axes,'measured':False,'validated':False,
+            'encoded_modal_diagnostics':{'computed':False,'measured':False,
+                'gain_basis':'encoded_candidate' if protocol else 'unencoded_candidate',
+                'reason':'encoded_modal_diagnostics_not_computed_in_profile_import',
+                'raw_modal_diagnostics_apply_only_to_unconstrained_gains':True}}
+    result = {**design, **MODEL_GAIN_REFERENCE_FIELDS,
+        'axes':axes, 'purpose_suggestions':purpose_suggestions, 'measured':False, 'validated':False,
+        'scope':'unmeasured_urdf_neutral_nominal_design', 'demand_source':'explicit_generic_nominal_response_design',
+        'hardware_constraints':'declared_protocol_encoding' if protocol else 'pending_hardware_selection',
+        'configuration_applied':False, 'runtime_baseline_unchanged':True,
+        'suggestion_applicable':bool(protocol), 'protocol_gain':protocol,
+        'encoded_modal_diagnostics':{'computed':False,'measured':False,
+            'gain_basis':'encoded_candidate' if protocol else 'unencoded_candidate',
+            'reason':'encoded_modal_diagnostics_not_computed_in_profile_import',
+            'raw_modal_diagnostics_apply_only_to_unconstrained_gains':True},
+        'urdf_path':str(Path(urdf_path).resolve()), 'positions':[0.]*len(names),
+        'model_physical_prior':{'source':'urdf_geometry_mass_com_inertia', 'scope':'neutral_mass_matrix_only',
+            'actuator_response_measured':False,
+            'excluded_fields':['old_pd_gains','taught_path','park_position','urdf_position_limit',
+                'urdf_velocity_limit','urdf_effort_limit','policy_velocity','policy_acceleration','policy_effort']},
+        'task_design_targets':{'source':'explicit_generic_response_design_not_urdf_measurement',
+            'frequency_hz':design.get('design_frequency_hz'), 'damping_ratio':design.get('damping_ratio'),
+            'frequency_role':'lower_bound_on_undamped_ideal_model_modes_before_protocol_encoding',
+            'purposes':{role:{'frequency_hz':value.get('design_frequency_hz'),
+                'damping_ratio':value.get('damping_ratio'),'scope':value.get('scope')}
+                for role,value in purpose_suggestions.items()}},
+        'execution_conditions':{'model_feedforward_mode':(core.get('control',{}).get('runtime') or {}).get('model_feedforward_mode','NONE')}}
+    if not protocol:
+        result['pending_reason'] = '模型初始增益已生成，仅供参考；选择硬件后再核对协议编码范围，当前未测量执行器响应'
+    if apply_generated:
+        controller = core['control']['controller']
+        generated = {}
+        for role in ('rigid_hold','rigid_tracking','compliant_hold','compliant_tracking','servo_tracking','compliant_drag'):
+            purpose_axes = purpose_suggestions[role]['axes']
+            pair = {term:{axis['joint']:axis[term] for axis in purpose_axes} for term in ('kp','kd')}
+            controller[role].update(pair);generated[role] = pair
+        recovery = core['safety_policy']['fault_recovery']['compliant_recovery']
+        recovery.update({term:dict(generated['compliant_hold'][term]) for term in ('kp','kd')})
+        result.update(configuration_applied=True, configuration_initialized=True,
+            runtime_baseline_unchanged=False, generated_controller=generated)
     return result

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from copy import deepcopy
 from pathlib import Path
 
@@ -9,6 +10,51 @@ import yaml
 
 from control_parameters import canonical_core, effective_hardware
 from model_calibration_source import matches_recorded_fingerprint
+
+
+def _plugin_name(value):
+    name = Path(str(value or '')).name
+    if name.startswith('lib'):
+        name = name[3:]
+    return name.split('.so', 1)[0]
+
+
+def _serial_device_identity(value):
+    if not isinstance(value, str):
+        return value
+    path = Path(value)
+    try:
+        if path.is_absolute() and path.is_char_device():
+            return str(path.resolve(strict=True))
+    except (OSError, RuntimeError):
+        pass
+    return value
+
+
+def gain_hardware_context(hardware, plugin, overrides=None):
+    """Compare actual Damiao connection settings without rewriting snapshots"""
+    # HardwareLoader rewrites a file only for an actual override. In its
+    # absence, preserve authored flat fields, which override the named bus.
+    overrides = {key: value for key, value in (overrides or {}).items() if value not in (None, '')}
+    result = effective_hardware(hardware, overrides) if overrides else deepcopy(hardware)
+    if _plugin_name(plugin) != 'serial_arm_hardware_damiao' or not isinstance(result, dict):
+        return result
+    target = result.get('damiao', result)
+    if not isinstance(target, dict):
+        return result
+    buses = result.get('buses')
+    bus = buses.get(target.get('bus', 'main_can')) if isinstance(buses, dict) else None
+    if isinstance(bus, dict):
+        if 'serial_port' not in target and ('serial_port' in bus or 'device' in bus):
+            target['serial_port'] = deepcopy(bus.get('serial_port', bus.get('device')))
+        if 'baudrate' not in target and 'baudrate' in bus:
+            target['baudrate'] = deepcopy(bus['baudrate'])
+        for key in ('serial_port', 'device'):
+            if key in bus:
+                bus[key] = _serial_device_identity(bus[key])
+    if 'serial_port' in target:
+        target['serial_port'] = _serial_device_identity(target['serial_port'])
+    return result
 
 
 def _purpose_name(purpose):
@@ -74,6 +120,29 @@ def recorded_gain_core(core, metadata, candidate):
     return original
 
 
+def _unnamed_profile_evidence(folder, metadata, context):
+    """Bind config-only recordings by complete source and measured evidence"""
+    files=[]
+    for name, key in (('model.urdf','urdf_fingerprint'),('hardware.yaml','hardware_fingerprint'),
+                      ('hardware-effective.yaml','hardware_effective_fingerprint')):
+        snapshot=folder/'source'/name
+        if not matches_recorded_fingerprint(snapshot,metadata.get(key)):
+            raise ValueError('未记录机器人名称的增益记录缺少可信 '+name+' 快照，无法确认当前机械臂')
+        files.append(snapshot)
+    runtime=context.get('runtime') if isinstance(context,dict) else None
+    admittance=context.get('admittance') if isinstance(context,dict) else None
+    def finite_number(value):
+        return isinstance(value,(int,float)) and not isinstance(value,bool) and math.isfinite(value)
+    if (not isinstance(runtime,dict) or not isinstance(admittance,dict)
+            or not isinstance(runtime.get('write_enabled'),bool)
+            or not finite_number(runtime.get('ctrl_frequency_hz')) or runtime['ctrl_frequency_hz']<=0
+            or not finite_number(runtime.get('joint_acc_filter_alpha')) or not 0<=runtime['joint_acc_filter_alpha']<=1
+            or runtime.get('model_feedforward_mode') not in ('NONE','GRAVITY','FULL_INVERSE_DYNAMICS')
+            or not isinstance(admittance.get('enabled'),bool)):
+        raise ValueError('未记录机器人名称的增益记录缺少完整有效的实测控制上下文，无法确认当前机械臂')
+    return files
+
+
 def verify_gain_context(folder, info, core, hardware, purposes):
     """Return source evidence files, or reject a changed measurement context
 
@@ -83,7 +152,7 @@ def verify_gain_context(folder, info, core, hardware, purposes):
     folder = Path(folder)
     metadata_path = folder / 'metadata.json'
     metadata = json.loads(metadata_path.read_text(encoding='utf-8'))
-    if not metadata.get('profile') or metadata['profile'] != info['profile']:
+    if metadata.get('profile') and metadata['profile'] != info['profile']:
         raise ValueError('增益记录属于其他机器人或未记录机器人名称，请使用当前机器人的标定记录')
     recorded_core = folder / 'source/core.yaml'
     if not matches_recorded_fingerprint(recorded_core, metadata.get('core_fingerprint')):
@@ -91,6 +160,7 @@ def verify_gain_context(folder, info, core, hardware, purposes):
     candidate_path = folder / 'gain-candidate.json'
     candidate = json.loads(candidate_path.read_text(encoding='utf-8')) if candidate_path.is_file() else {}
     context = candidate.get('control_context')
+    unnamed_files=_unnamed_profile_evidence(folder,metadata,context) if not metadata.get('profile') else []
     original = recorded_gain_core(yaml.safe_load(recorded_core.read_text(encoding='utf-8')), metadata, candidate)
     core = canonical_core(core)
     names = metadata.get('joint_names') or (original.get('model') or {}).get('joint_names') or []
@@ -123,7 +193,7 @@ def verify_gain_context(folder, info, core, hardware, purposes):
             recorded = _joint_context(expected, names)
             if {key: current.get(key, False if key == 'enabled' else None) for key in expected} != recorded:
                 raise ValueError('core.capability.admittance 与增益测量使用的观测或导纳参数不同，请重新验证当前设置')
-    files = [metadata_path, recorded_core]
+    files = [metadata_path, recorded_core, *unnamed_files]
     if context is not None:
         files.append(candidate_path)
     correction = (original.get('model') or {}).get('gravity_correction_path')
@@ -146,25 +216,20 @@ def verify_gain_context(folder, info, core, hardware, purposes):
     overrides = metadata.get('hardware_overrides')
     if not isinstance(overrides, dict) or not matches_recorded_fingerprint(recorded_hardware, metadata.get('hardware_fingerprint')):
         raise ValueError('历史增益记录未保存硬件配置与连接覆盖值，请恢复原始任务文件或重新标定')
-    before_hardware = effective_hardware(yaml.safe_load(recorded_hardware.read_text(encoding='utf-8')), overrides)
-    if before_hardware != effective_hardware(hardware, info.get('connection_overrides')):
-        raise ValueError('硬件配置与增益标定时不同，请检查执行器、总线及连接覆盖值后重新标定')
     plugin = (metadata.get('runtime_provenance') or {}).get('hardware_plugin_file_path')
-
-    def plugin_name(value):
-        name = Path(str(value or '')).name
-        if name.startswith('lib'):
-            name = name[3:]
-        return name.split('.so', 1)[0]
-
-    if not plugin or plugin_name(plugin) != plugin_name(info.get('hardware_plugin')):
+    if not plugin or _plugin_name(plugin) != _plugin_name(info.get('hardware_plugin')):
         raise ValueError('增益标定使用的硬件驱动与当前机器人不同或未记录，请重新标定')
-    files.append(recorded_hardware)
+    before_hardware = gain_hardware_context(yaml.safe_load(recorded_hardware.read_text(encoding='utf-8')), plugin, overrides)
+    if before_hardware != gain_hardware_context(hardware, info.get('hardware_plugin'), info.get('connection_overrides')):
+        raise ValueError('硬件配置与增益标定时不同，请检查执行器、总线及连接覆盖值后重新标定')
+    if recorded_hardware not in files:
+        files.append(recorded_hardware)
     effective = folder / 'source/hardware-effective.yaml'
     if effective.is_file() or metadata.get('hardware_effective_fingerprint'):
         if not matches_recorded_fingerprint(effective, metadata.get('hardware_effective_fingerprint')):
             raise ValueError('增益标定的实际硬件配置快照已变化，请恢复原始任务文件')
-        if effective_hardware(yaml.safe_load(effective.read_text(encoding='utf-8'))) != before_hardware:
+        if gain_hardware_context(yaml.safe_load(effective.read_text(encoding='utf-8')), plugin) != before_hardware:
             raise ValueError('实际硬件配置快照与标定连接覆盖值不一致，请检查原始任务')
-        files.append(effective)
+        if effective not in files:
+            files.append(effective)
     return files

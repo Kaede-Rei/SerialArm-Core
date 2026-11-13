@@ -952,7 +952,8 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("max_kp", &RobotSessionActuatorInfo::max_kp)
         .def_readonly("max_kd", &RobotSessionActuatorInfo::max_kd)
         .def_readonly("kp_resolution", &RobotSessionActuatorInfo::kp_resolution)
-        .def_readonly("kd_resolution", &RobotSessionActuatorInfo::kd_resolution);
+        .def_readonly("kd_resolution", &RobotSessionActuatorInfo::kd_resolution)
+        .def_readonly("effort_resolution", &RobotSessionActuatorInfo::effort_resolution);
 
     py::class_<JointMotionStatus>(module,"JointMotionStatus")
         .def_readonly("id",&JointMotionStatus::id)
@@ -962,6 +963,8 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("velocity_tolerance",&JointMotionStatus::velocity_tolerance)
         .def_readonly("units",&JointMotionStatus::units)
         .def_readonly("reference_complete",&JointMotionStatus::reference_complete)
+        .def_readonly("target_reached",&JointMotionStatus::target_reached)
+        .def_readonly("position_error",&JointMotionStatus::position_error)
         .def_readonly("settled_s",&JointMotionStatus::settled_s)
         .def_readonly("reason",&JointMotionStatus::reason);
 

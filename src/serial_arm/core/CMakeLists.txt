@@ -184,6 +184,7 @@ find_package(Eigen3 REQUIRED NO_MODULE)
 
 add_library(serial_arm_dynamics
     src/dynamics/dynamics.cpp
+    src/dynamics/gain_offline_optimization.cpp
     src/dynamics/gravity_calibration.cpp
     src/dynamics/gravity_correction.cpp
 )

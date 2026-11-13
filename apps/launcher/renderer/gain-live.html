@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:">
+<title>实时执行增益</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="studio.css"><link rel="stylesheet" href="gain-live.css"></head>
+<body><main class="gain-live-shell">
+<!-- Primary: actual executed PD table; secondary: real task, phase and freshness.
+     Read-only monitor has no control action. Reuse existing text/card/line tokens,
+     12/14/20 px type and 8/16/24 px spacing; native frame owns window controls. -->
+<header><h1 id="gain-live-title">实时执行增益</h1><span id="gain-live-status" role="status">等待实时数据</span></header>
+<p id="gain-live-source" class="hint">控制周期实际输出的 Kp / Kd</p>
+<dl class="gain-live-meta"><div><dt id="gain-live-purpose-label">当前用途</dt><dd id="gain-live-purpose">—</dd></div><div><dt id="gain-live-phase-label">当前阶段</dt><dd id="gain-live-phase">—</dd></div><div><dt id="gain-live-age-label">反馈年龄</dt><dd id="gain-live-age">—</dd></div></dl>
+<div class="gain-live-table-wrap"><table class="workspace-table"><thead><tr id="gain-live-columns"></tr></thead><tbody id="gain-live-rows"></tbody></table></div>
+<footer><span id="gain-live-task">—</span><span id="gain-live-note">关闭此窗口不影响标定</span></footer>
+</main><script src="gain-live.js"></script></body></html>

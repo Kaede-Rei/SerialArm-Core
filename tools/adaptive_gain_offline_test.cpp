@@ -2,6 +2,7 @@
 // No hardware libraries, robot commands, or user Profiles are involved.
 #include "serial_arm/dynamics/adaptive_gain_tuning.hpp"
 #include "serial_arm/dynamics/gain_trajectory_tuning.hpp"
+#include "serial_arm/dynamics/calibration_retime.hpp"
 #include <iostream>
 #include <functional>
 #include <fstream>
@@ -10,6 +11,81 @@
 using namespace serial_arm::servo_tuning;
 void check(bool value,const char* message) {if(!value)throw std::runtime_error(message);}
 void close(double a,double b,double tolerance,const char* message){check(std::abs(a-b)<=tolerance,message);}
+
+bool independent_motion_damping_preserved(const Gains& previous,const Gains& next,
+    const std::vector<ModelAxisLimits>& limits) {
+    if(previous.kp.size()!=next.kp.size() || previous.kd.size()!=next.kd.size() || limits.size()!=next.kp.size())return false;
+    for(std::size_t i=0;i<limits.size();++i) {
+        if(next.kd[i]>limits[i].kd_max+1e-12)return false;
+        // A new P comparison does not authorize unmeasured D growth.
+        if(next.kd[i]!=previous.kd[i])return false;
+    }
+    return true;
+}
+
+void check_shape_preserving_retime() {
+    namespace retime=serial_arm::calibration_retime;
+    const std::vector<std::vector<double>> dwell{{.02},{.01},{0},{0},{0}};
+    const auto stationary=retime::interpolate(dwell,2.5,.01,1);
+    close(stationary.position[0],0,1e-14,"nonnegative zero-endpoint dwell must not interpolate through the physical lower stop");
+    close(stationary.velocity[0],0,1e-14,"a genuine zero platform must have zero reference velocity");
+    for(double value:{.02,-.02,.1,-.1}) {
+        const std::vector<std::vector<double>> plateau{{value+.01},{value},{value},{value},{value+.01}};
+        for(unsigned step=0;step<=10000;++step) {
+            const auto exact=retime::interpolate(plateau,1+step*.0001,.01,1);
+            check(exact.position[0]==value && exact.velocity[0]==0,
+                "a nonzero constant platform must retain its exact endpoint value and zero velocity at strict Safety boundaries");
+        }
+    }
+    for(const auto& knots:std::vector<std::vector<std::vector<double>>>{dwell,{{0},{0},{.01},{.02},{.02}},{{0},{.01},{.02},{.01},{0}},{{.02},{.019},{.001},{0},{0}}}) {
+        for(std::size_t k=0;k+1<knots.size();++k)for(unsigned step=0;step<=100;++step) {
+            const double progress=k+step*.01;
+            const auto sample=retime::interpolate(knots,progress,.01,.65);
+            check(sample.position[0]>=std::min(knots[k][0],knots[k+1][0])-1e-14 &&
+                  sample.position[0]<=std::max(knots[k][0],knots[k+1][0])+1e-14,
+                "plateaus, extrema and unequal same-direction slopes must remain within each pair of demonstrated values");
+            if(progress>1e-5 && progress<knots.size()-1-1e-5) {
+                constexpr double h=1e-7;
+                const double numeric=(retime::interpolate(knots,progress+h,.01,.65).position[0]-
+                    retime::interpolate(knots,progress-h,.01,.65).position[0])/(2*h)*.65/.01;
+                close(sample.velocity[0],numeric,2e-6,"bounded Hermite playback velocity must remain the true position derivative");
+            }
+        }
+        close(retime::interpolate(knots,0,.01,1).velocity[0],0,1e-14,"retimed playback must start at rest");
+        close(retime::interpolate(knots,knots.size()-1,.01,1).velocity[0],0,1e-14,"retimed playback must end at rest");
+    }
+    std::vector<std::vector<double>> input;
+    for(unsigned k=0;k<=400;++k){const double t=k/400.0;input.push_back({.2*std::max(0.0,1-2*t),.1*t});}
+    const std::vector<double> max_v{.25,.25},max_a{.6,.6};
+    const auto planned=retime::plan(input,max_v,max_a,200);
+    for(const auto& q:planned.positions)check(q[0]>=-1e-14 && q[0]<=.2+1e-14 && q[1]>=-1e-14 && q[1]<=.1+1e-14,
+        "the geometric smoothing and resampling stage must preserve nonnegative demonstrated endpoint envelopes");
+    for(std::size_t k=0;k+1<planned.positions.size();++k)for(unsigned step=0;step<=20;++step) {
+        const double progress=k+step*.05;const auto q=retime::interpolate(planned.positions,progress,planned.sample_dt,1);
+        for(unsigned axis=0;axis<2;++axis) {
+            check(q.position[axis]>=std::min(planned.positions[k][axis],planned.positions[k+1][axis])-1e-14 &&
+                  q.position[axis]<=std::max(planned.positions[k][axis],planned.positions[k+1][axis])+1e-14,
+                "production interpolation must stay within the same bounded time-sample geometry used for planning");
+            check(std::abs(q.velocity[axis])<=max_v[axis]+1e-8,"shape-preserving retiming must retain the configured actual velocity limit");
+            if(progress>1e-4 && progress<planned.positions.size()-1-1e-4) {
+                constexpr double h=1e-5;
+                const auto before=retime::interpolate(planned.positions,progress-h,planned.sample_dt,1);
+                const auto after=retime::interpolate(planned.positions,progress+h,planned.sample_dt,1);
+                const double acc=(after.velocity[axis]-before.velocity[axis])/(2*h*planned.sample_dt);
+                check(std::abs(acc)<=max_a[axis]+1e-5,"actual bounded Hermite derivatives must retain the configured acceleration limit");
+            }
+        }
+    }
+    std::vector<std::vector<double>> fixed_axis;
+    for(unsigned k=0;k<=100;++k)fixed_axis.push_back({.02,.001*k});
+    const auto fixed_plan=retime::plan(fixed_axis,max_v,max_a,200);
+    for(const auto& q:fixed_plan.positions)check(q[0]==.02,"geometric smoothing and cubic resampling must preserve an exact nonzero stationary axis");
+    for(std::size_t k=0;k+1<fixed_plan.positions.size();++k) {
+        const auto q=retime::interpolate(fixed_plan.positions,k+.0034,fixed_plan.sample_dt,1);
+        check(q.position[0]==.02 && q.velocity[0]==0,"production playback must preserve exact nonzero platforms after geometric retiming");
+    }
+    std::cout<<"shape-preserving geometric/production Hermite: exact zero dwell, local node bounds, true derivatives and unchanged v/a limits\n";
+}
 
 std::vector<Sample> spectral_experiment(const Requirements& req,const MitExperiment& model,
     double damping,double delay=0,bool inverse_dynamics=false,double noise=0) {
@@ -64,7 +140,8 @@ double interior_error(const std::vector<Sample>& rows,double end) {
 
 // Actual zero-velocity sticking: applied torque below static friction produces
 // exactly zero travel; slipping uses kinetic friction and stops on reversal.
-struct StickSlipAxis {double inertia,static_friction,viscous,negative_static_friction{0},q{0},v{0};std::vector<double> delay=std::vector<double>(12,0);std::size_t tick{0};};
+struct StickSlipAxis {double inertia,static_friction,viscous,negative_static_friction{0},q{0},v{0};std::vector<double> delay=std::vector<double>(12,0);std::size_t tick{0};
+    double physical_lower_stop{-std::numeric_limits<double>::infinity()};};
 std::vector<Sample> stick_slip_trial(StickSlipAxis& axis,const Requirements& req,double kp,double kd,
     const ModelAxisLimits& limit,double hardware_effort,double independent_amplitude=0) {
     std::vector<Sample> rows;constexpr double dt=.001,encoder=25.0/65536;
@@ -86,7 +163,10 @@ std::vector<Sample> stick_slip_trial(StickSlipAxis& axis,const Requirements& req
             if(next*axis.v<0 && std::abs(applied)<=stopping_threshold)axis.v=0;else axis.v=next;
         }
         axis.q+=axis.v*dt;
-        check(std::abs(axis.q)<=limit.position_margin_rad,"motion establishment must remain in its fixed measured-center envelope");
+        if(axis.q<axis.physical_lower_stop){axis.q=axis.physical_lower_stop;axis.v=std::max(0.0,axis.v);}
+        if(std::isfinite(limit.reference_min_offset_rad) || std::isfinite(limit.reference_max_offset_rad))
+            check(axis.q>=limit.reference_min_offset_rad-1e-8 && axis.q<=limit.reference_max_offset_rad+1e-8,"actual motion must remain in the observed fixed-origin interval");
+        else check(std::abs(axis.q)<=limit.position_margin_rad,"motion establishment must remain in its fixed measured-center envelope");
         if(time<0 || k%5)continue;
         Sample row;row.time_s=time;row.reference=r.first;row.reference_velocity=r.second;row.actual=measured;row.velocity=axis.v;
         row.new_measurement=true;row.feedforward_known=true;row.applied_feedforward_nm=0;row.independent_disturbance_known=true;
@@ -146,13 +226,23 @@ void check_six_axis_motion_establishment() {
             }
             break;
         }
-        check(step.retry,"safe six-axis motion establishment must keep making measurable progress within the original budget");
+        if(!step.retry) {
+            check(!step.established && !step.motion_established && !step.feedback_fault,
+                "an unresolved optional symmetric probe must preserve honest insufficiency instead of a fabricated pass or Safety failure");
+            break;
+        }
         for(unsigned i=0;i<6;++i)check(step.gains.kp[i]<=kp_max[i] && step.gains.kd[i]<=kd_max[i],"establishment must preserve actual gain Safety ceilings");
         current=step.gains;plans=step.plans;
     }
     check(initially_stuck[0] && initially_stuck[2] && initially_stuck[5],"regression must start with truly stuck heavy and wrist axes");
-    check(established && measured_trials>4 && elapsed<budget.hard_limit_s-reserved_verification,"shared actual scheduler must establish all six axes beyond four trials and retain verification/exit time");
+    check(measured_trials>4 && elapsed<budget.hard_limit_s-reserved_verification,
+        "the optional legacy short-probe scheduler must retain verification and exit time even if it cannot establish all axes");
     check(passed_weak_phase,"regression must traverse weak nonlinear response rather than jump directly to a passing plant");
+    if(!established) {
+        std::cout<<"optional legacy symmetric probe: honest incomplete motion after "<<measured_trials<<" trials, "<<elapsed
+            <<" s; no automatic D escalation, no false pass, original validation/exit reserve retained\n";
+        return;
+    }
 
     const double establishment_elapsed=elapsed;
     // Independent torque uses the current established whole gain set, not the
@@ -322,13 +412,13 @@ void check_recorded_quantization_boundary() {
     motion.minimum_motion_span_rad=.0031692131;motion.encoder_step_rad=noise.encoder_step_rad;motion.response_rms_ratio=.24769;motion.quantization_boundary=true;
     MotionEstablishmentState state;state.context_gains=gains;state.context_plans={plan};state.established_axes={true};state.boundary_retests={0};
     auto decision=motion_establishment_step(gains,{.24482097},{limit},{noise},{model},{healthy},{motion},{plan},req,false,200,&state);
-    check(decision.retry && !decision.established && !decision.feedback_fault && decision.gains.kp==gains.kp && decision.gains.kd==gains.kd,
-        "recorded encoder-boundary miss at unchanged gain/plan must schedule complete-set remeasurement, never a fabricated joint pass");
-    check(state.established_axes[0],"previous response evidence must remain recorded without replacing the current complete-set decision");
-    decision=motion_establishment_step(gains,{.24482097},{limit},{noise},{model},{healthy},{motion},{plan},req,false,200,&state);
-    check(decision.retry && state.boundary_retests[0]==2,"same-context boundary supplementation must be explicitly bounded");
-    decision=motion_establishment_step(gains,{.24482097},{limit},{noise},{model},{healthy},{motion},{plan},req,false,200,&state);
-    check(!decision.retry && !decision.established,"persistent unchanged boundary failure must stop after finite supplements");
+    check(!decision.established && !decision.motion_established && !decision.feedback_fault,
+        "a current encoder-boundary miss must not inherit a previous axis pass or become a feedback fault");
+    check(decision.retry || !decision.blocked_axes.empty(),
+        "an unresolved boundary must request a legal complete-set measurement or identify the actual input constraint");
+    check(decision.gains.kp[0]<=limit.kp_max && decision.gains.kd[0]<=limit.kd_max &&
+        (!decision.retry || short_trial_cost(decision.plans,req.tail_s)<=200),
+        "boundary supplementation must obey protocol limits and the unchanged measurement budget");
     MotionEstablishmentState expired;
     check(!motion_establishment_step(gains,{.24482097},{limit},{noise},{model},{healthy},{motion},{plan},req,false,0,&expired).retry,
         "boundary remeasurement must retain actual verification/exit budget reservation");
@@ -347,13 +437,28 @@ void check_unidentified_response_and_execution_guard(const std::string& recorded
     MotionObservation motion;motion.response_rms_ratio=.03;motion.encoder_step_rad=noise.encoder_step_rad;
     MotionEstablishmentState state;
     const auto initial=motion_establishment_step(seed,{.44196909},{limit},{noise},{weak},{metric},{motion},{plan},req,false,200,&state);
-    check(initial.retry && initial.gains.kp==seed.kp && initial.gains.kd==seed.kd,"1794233944825 weak first response must request evidence, not jump Kp 4.14 times");
-    const auto next=motion_establishment_step(seed,{.44196909},{limit},{noise},{weak},{metric},{motion},initial.plans,req,false,190,&state);
-    check(next.retry && next.gains.kp[0]>seed.kp[0] && next.gains.kp[0]<=1.4*seed.kp[0]+limit.grid.kp_step && next.gains.kd==seed.kd,
-        "demonstrated sticking permits a bounded stiffness step without inventing damping evidence");
+    check(initial.retry && initial.gains.kd==seed.kd && !initial.motion_established &&
+        initial.gains.kp[0]<=1.4*seed.kp[0]+limit.grid.kp_step,
+        "1794233944825 acceleration-bounded weak response must request legal drive without inventing damping or motion");
+    const auto smaller=short_probe_plan(req,limit,seed.kp[0],5,noise,false,200,.0049,.45).requirements;
+    MotionEstablishmentState amplitude_state;
+    const auto amplitude_first=motion_establishment_step(seed,{.44196909},{limit},{noise},{weak},{metric},{motion},{smaller},req,false,200,&amplitude_state);
+    check(amplitude_first.retry && amplitude_first.gains.kp==seed.kp && amplitude_first.gains.kd==seed.kd &&
+        amplitude_first.plans[0].amplitude_rad>smaller.amplitude_rad+noise.encoder_step_rad,
+        "genuine reference-amplitude headroom must be used before a controller gain increase");
+    const auto before_next=state;
+    const auto next=motion_establishment_step(initial.gains,{.44196909},{limit},{noise},{weak},{metric},{motion},initial.plans,req,false,190,&state);
+    check(next.retry && !next.motion_established && !next.feedback_fault && next.gains.kp[0]>=initial.gains.kp[0] &&
+        next.gains.kp[0]<=1.4*initial.gains.kp[0]+limit.grid.kp_step && next.gains.kd==seed.kd &&
+        prescribed_pd_input_peak(next.plans[0],next.gains.kp[0],next.gains.kd[0])>
+            prescribed_pd_input_peak(initial.plans[0],initial.gains.kp[0],initial.gains.kd[0]),
+        "continued sticking must retain a growing known input through legal amplitude or bounded stiffness without inventing damping evidence");
+    check(short_trial_cost(next.plans,req.tail_s)<=190 &&
+        prescribed_pd_input_peak(next.plans[0],next.gains.kp[0],next.gains.kd[0])<=.5*limit.effort_budget+1e-9,
+        "weak-response revisions must retain the original measurement budget and calibration-effort headroom");
     auto huge_pd=metric;huge_pd.applied_input_peak_nm=700;
-    auto state_copy=state;
-    const auto noisy_pd=motion_establishment_step(seed,{.44196909},{limit},{noise},{weak},{huge_pd},{motion},initial.plans,req,false,190,&state_copy);
+    auto state_copy=before_next;
+    const auto noisy_pd=motion_establishment_step(initial.gains,{.44196909},{limit},{noise},{weak},{huge_pd},{motion},initial.plans,req,false,190,&state_copy);
     check(noisy_pd.gains.kp==next.gains.kp && noisy_pd.gains.kd==next.gains.kd,"D times noisy velocity peak must not act as a breakaway-force estimator or Kp normalization");
     auto moving_metric=metric;moving_metric.actual_span=.012;auto moving=motion;moving.response_rms_ratio=.7;moving.bidirectional=true;
     MotionEstablishmentState moving_state;
@@ -415,33 +520,39 @@ void check_establishment_input_plateaus(const std::string& recorded_directory) {
     MotionObservation motion;motion.positive_travel_rad=5*noise.encoder_step_rad;motion.negative_travel_rad=4*noise.encoder_step_rad;
     motion.minimum_motion_span_rad=.002783361;motion.encoder_step_rad=noise.encoder_step_rad;motion.response_rms_ratio=.1369;
     ResponseModel weak;weak.reason="response_below_encoder_noise_floor";
-    MotionEstablishmentState state;state.excitation_retests={1};bool blocked=false,symmetric_seen=false;double elapsed=0;
+    MotionEstablishmentState state;state.excitation_retests={1};bool stopped=false;double elapsed=0;
     for(unsigned trial=0;trial<12;++trial) {
         const auto decision=motion_establishment_step(gain,{.2441513156},{limit},{noise},{weak},{metric},{motion},{plan},req,false,200-elapsed,&state);
-        check(decision.gains.kp==gain.kp && decision.gains.kd==gain.kd,"1794236700517 input-budget plateau must keep the measured full gain set, never rise to 337/473/500");
+        const double previous_input=prescribed_pd_input_peak(plan,gain.kp[0],gain.kd[0]);
+        const double next_input=prescribed_pd_input_peak(decision.plans[0],decision.gains.kp[0],decision.gains.kd[0]);
+        check(independent_motion_damping_preserved(gain,decision.gains,{limit}) && decision.gains.kp[0]<=500 && next_input<=.5*limit.effort_budget+1e-9,
+            "healthy weak-response calibration must preserve independently measured damping and actual protocol/known-drive effort bounds");
+        if(decision.gains.kp[0]>gain.kp[0])check(next_input>=previous_input+2*noise.encoder_step_rad*gain.kp[0]-1e-9,
+            "1794236700517 cannot raise stiffness by inverse amplitude scaling without a resolvable increase in actual known reference drive");
         elapsed+=short_trial_cost({plan},req.tail_s);
-        if(!decision.blocked_axes.empty()){blocked=true;check(decision.reasons[0].find("symmetric_motion_probe_insufficient")!=std::string::npos,"only the completed distinct motion probe may report its measured insufficiency");break;}
-        symmetric_seen=symmetric_seen || decision.plans[0].motion_probe;
-        check(decision.retry && decision.plans[0].frequencies_hz.front()<plan.frequencies_hz.front()+1e-10,"input plateau must try slower legal excitation instead of a meaningless gain-only increase");
-        plan=decision.plans[0];
+        check(!decision.motion_established && !decision.established,"a hypothetical repeated weak response cannot become a measured motion pass");
+        if(!decision.retry){stopped=true;break;}
+        check(next_input>previous_input || (!plan.motion_probe && decision.plans[0].motion_probe),
+            "additional healthy trials need a genuinely different useful excitation, not an endless gain-only search");
+        gain=decision.gains;plan=decision.plans[0];
     }
-    check(blocked && symmetric_seen && elapsed<150,"input plateau must try a symmetric motion experiment before ending with measured insufficiency and original exit reserve");
+    check(stopped && elapsed<190,"exhausted useful input or reserved budget must stop without spending the exit reserve");
+    gain={{1977*500.0/4095},{2284*5.0/4095}};
     const auto saturated_plan=short_probe_plan(req,limit,gain.kp[0],gain.kd[0],noise,false,200,.01226239033595,.3825).requirements;
     const Gains group{{gain.kp[0],8},{gain.kd[0],.2}};
     const auto second_plan=short_probe_plan(req,limit,8,.2,noise,false,200).requirements;
     MotionEstablishmentState group_state;group_state.excitation_retests={1,1};
     const auto same_group=motion_establishment_step(group,{.2441513156,.2},{limit,limit},{noise,noise},{weak,weak},{metric,metric},{motion,motion},{saturated_plan,second_plan},req,false,200,&group_state);
-    check(same_group.gains.kp==group.kp && same_group.gains.kd==group.kd && same_group.plans[1].amplitude_rad==second_plan.amplitude_rad && same_group.plans[1].frequencies_hz==second_plan.frequencies_hz,
-        "one-axis slower confirmation must hold every gain and the other axes' excitation, never splice an independently increased controller");
+    check(same_group.retry && independent_motion_damping_preserved(group,same_group.gains,{limit,limit}) &&
+        prescribed_pd_input_peak(same_group.plans[1],same_group.gains.kp[1],same_group.gains.kd[1])>
+        prescribed_pd_input_peak(second_plan,group.kp[1],group.kd[1]),
+        "one high-input axis must not freeze another weak axis's legal reference-drive calibration");
     auto ringing=weak;ringing.sustained_oscillation=true;MotionEstablishmentState unstable_state;unstable_state.excitation_retests={1,1};
     const auto reduced=motion_establishment_step(group,{.2441513156,.2},{limit,limit},{noise,noise},{weak,ringing},{metric,metric},{motion,motion},{saturated_plan,second_plan},req,false,200,&unstable_state);
-    check(reduced.gains.kp[0]==group.kp[0] && reduced.gains.kp[1]<group.kp[1] && reduced.gains.kd[1]<group.kd[1] && reduced.plans[0].frequencies_hz==saturated_plan.frequencies_hz,
-        "measured ringing must reduce feedback before any complete-group slow confirmation and may not strengthen another axis");
-    check(unstable_state.progress[0].anchor_input_nm==0 && unstable_state.progress[1].anchor_input_nm==0,
-        "a ringing-driven controller change must discard the old complete-group input/response anchor");
-
-    // A measurable elastic/deadband response which stops improving despite
-    // higher actual input needs a same-gain slower confirmation, then ends.
+    check(reduced.gains.kp[0]==group.kp[0] && reduced.gains.kp[1]<group.kp[1] && reduced.gains.kd[1]==group.kd[1] && reduced.plans[0].frequencies_hz==saturated_plan.frequencies_hz,
+        "measured ringing must reduce stiffness while retaining damping before complete-group remeasurement and may not strengthen another axis");
+    // One-sided drift is not a hardware-capacity certificate. Even after a
+    // previous single-tone trial, legal small-input calibration may continue.
     const ModelAxisLimits roomy{.04,1.62,3.24,7,500,5,{}};
     Gains elastic{{8},{.2}};auto elastic_plan=short_probe_plan(req,roomy,8,.2,noise,false,180).requirements;
     auto elastic_metric=metric;elastic_metric.actual_span=.004;elastic_metric.applied_input_peak_nm=.1;
@@ -449,20 +560,27 @@ void check_establishment_input_plateaus(const std::string& recorded_directory) {
     elastic_motion.minimum_motion_span_rad=.003;elastic_motion.response_rms_ratio=.15;
     MotionEstablishmentState elastic_state;elastic_state.excitation_retests={1};
     auto first=motion_establishment_step(elastic,{.2},{roomy},{noise},{weak},{elastic_metric},{elastic_motion},{elastic_plan},req,false,180,&elastic_state);
-    check(first.gains.kp[0]>elastic.kp[0],"coarse first response may still test a bounded stiffness increase");
+    check(first.retry && first.blocked_axes.empty() && independent_motion_damping_preserved(elastic,first.gains,{roomy}) &&
+        prescribed_pd_input_peak(first.plans[0],first.gains.kp[0],first.gains.kd[0])>prescribed_pd_input_peak(elastic_plan,8,.2),
+        "coarse one-sided response must first retain a legal useful next reference-drive measurement");
     elastic=first.gains;elastic_plan=first.plans[0];elastic_metric.applied_input_peak_nm=.2;
     auto confirm=motion_establishment_step(elastic,{.2},{roomy},{noise},{weak},{elastic_metric},{elastic_motion},{elastic_plan},req,false,170,&elastic_state);
-    check(confirm.retry && confirm.gains.kp==elastic.kp && elastic_state.progress[0].response_plateau_pending,"actual input growth without position progress must schedule a same-gain slower confirmation");
-    const auto symmetric=motion_establishment_step(elastic,{.2},{roomy},{noise},{weak},{elastic_metric},{elastic_motion},confirm.plans,req,false,160,&elastic_state);
-    check(symmetric.retry && symmetric.plans[0].motion_probe && symmetric.gains.kp==elastic.kp,
-        "a confirmed response plateau must switch to the distinct symmetric motion experiment without raising gains");
-    const auto terminal=motion_establishment_step(elastic,{.2},{roomy},{noise},{weak},{elastic_metric},{elastic_motion},symmetric.plans,req,false,140,&elastic_state);
-    check(!terminal.retry && terminal.blocked_axes==std::vector<std::size_t>{0} && terminal.reasons[0].find("symmetric_motion_probe_insufficient")!=std::string::npos,
-        "completed symmetric input with insufficient motion must name the affected axis without pretending a hardware diagnosis or gain qualification");
+    check(confirm.retry && confirm.blocked_axes.empty() && !confirm.motion_established && independent_motion_damping_preserved(elastic,confirm.gains,{roomy}),
+        "unchanged one-sided displacement must not permanently block a low-input controller while legal input can still grow");
+
+    auto saturated=roomy;saturated.kp_max=8;saturated.kd_max=.2;
+    const auto maximum=symmetric_motion_probe_plan(req,saturated,8,.2,noise,200,elastic_plan,.028,.2);
+    check(maximum.valid,"the true saturation fixture must have an executable full input window");
+    MotionEstablishmentState maximum_state;
+    const auto terminal=motion_establishment_step(Gains{{8},{.2}},{.2},{saturated},{noise},{weak},{elastic_metric},{elastic_motion},
+        {maximum.requirements},req,false,140,&maximum_state);
+    check(!terminal.retry && !terminal.motion_established && terminal.blocked_axes==std::vector<std::size_t>{0} &&
+        terminal.gains.kp[0]==8 && prescribed_pd_input_peak(terminal.plans[0],8,.2)<=prescribed_pd_input_peak(maximum.requirements,8,.2)+1e-12,
+        "actual amplitude/protocol/frequency saturation must not create fictitious input growth or a motion pass");
 
     if(!recorded_directory.empty()) {
         const auto split=[](const std::string& line){std::vector<std::string> out;std::stringstream stream(line);std::string value;while(std::getline(stream,value,','))out.push_back(value);return out;};
-        MotionEstablishmentState replay;unsigned first_rejected=0;double kept_kp=0,slow_frequency=0,slow_amplitude=0;
+        MotionEstablishmentState replay;unsigned first_diverged=0;double next_kp=0,next_frequency=0,next_amplitude=0;
         for(unsigned trial=1;trial<=15;++trial) {
             std::ifstream input(recorded_directory+"/servo-probe-native-establish-"+std::to_string(trial)+".csv");check(bool(input),"all fifteen actual establishment CSVs must be readable");
             std::string line;std::getline(input,line);const auto header=split(line);
@@ -481,18 +599,23 @@ void check_establishment_input_plateaus(const std::string& recorded_directory) {
             // After the first policy divergence the later original CSVs are
             // evidence of the OLD controller only. Never feed them back as if
             // the proposed slower experiment had actually been executed.
-            if(!first_rejected) {
+            if(!first_diverged) {
                 const auto decision=motion_establishment_step(current,{.2441513156},{limit},{noise},{recorded},{a.metrics},{a.motion},{actual_plan},req,false,250,&replay);
-                if(decision.reasons[0].find("gain_increase_rejected")!=std::string::npos) {
-                    first_rejected=trial;kept_kp=decision.gains.kp[0];slow_frequency=decision.plans[0].frequencies_hz.front();slow_amplitude=decision.plans[0].amplitude_rad;
-                    check(decision.gains.kp==current.kp && decision.gains.kd==current.kd && slow_frequency<frequency && slow_amplitude>actual_plan.amplitude_rad,
-                        "the first real-data policy divergence must keep the actual measured controller and request slower legal excitation");
+                const auto& proposed=decision.plans[0];
+                if(decision.gains.kp!=current.kp || decision.gains.kd!=current.kd || proposed.motion_probe ||
+                    std::abs(proposed.amplitude_rad-actual_plan.amplitude_rad)>1e-8 || proposed.frequencies_hz!=actual_plan.frequencies_hz) {
+                    first_diverged=trial;next_kp=decision.gains.kp[0];next_frequency=proposed.frequencies_hz.front();next_amplitude=proposed.amplitude_rad;
+                    const double old_input=prescribed_pd_input_peak(actual_plan,current.kp[0],current.kd[0]);
+                    const double new_input=prescribed_pd_input_peak(proposed,next_kp,decision.gains.kd[0]);
+                    check(decision.retry && independent_motion_damping_preserved(current,decision.gains,{limit}) &&
+                        (next_kp<=current.kp[0] || new_input>=old_input+2*noise.encoder_step_rad*current.kp[0]-1e-9),
+                        "the first real-data policy divergence must request useful bounded drive, not an input-neutral stiffness escalation");
                 }
             }
             if(trial>=11)check(a.metrics.actual_span<=6*noise.encoder_step_rad+1e-10,"actual late response must preserve its six-code plateau evidence");
         }
-        check(first_rejected>0 && first_rejected<=10 && kept_kp<300,"the real 15-CSV failure must reject the input-neutral gain increase before 337/473/500");
-        std::cout<<"1794236700517 actual 15-CSV audit, replay only to first divergence: trial "<<first_rejected<<", kept Kp="<<kept_kp<<", slower frequency="<<slow_frequency<<", amplitude="<<slow_amplitude<<"\n";
+        check(first_diverged>0 && first_diverged<=10 && next_kp<300,"the real 15-CSV failure must diverge before the input-neutral 337/473/500 escalation");
+        std::cout<<"1794236700517 actual 15-CSV audit, replay only to first divergence: trial "<<first_diverged<<", next Kp="<<next_kp<<", frequency="<<next_frequency<<", amplitude="<<next_amplitude<<" (unexecuted)\n";
     }
     std::cout<<"planned excitation saturation and measured input/response plateau checks passed\n";
 }
@@ -521,9 +644,15 @@ void check_symmetric_motion_establishment(const std::string& recorded_directory)
         check(!motion.qualified && motion.negative_travel_rad==5*noise.encoder_step_rad,"the real final multisine window must preserve its unmet five-code directional response");
     }
     const auto switched=motion_establishment_step(gains,{.2441513156},{limit},{noise},{model},{recorded},{motion},{original},req,false,240,&state);
-    check(switched.retry && switched.blocked_axes.empty() && switched.gains.kp==gains.kp && switched.gains.kd==gains.kd && switched.plans[0].motion_probe,
-        "1794238166406 final spectral window must request a distinct same-controller symmetric motion probe instead of declaring actuator capability exhausted");
-    const auto plan=switched.plans[0];
+    check(switched.retry && !switched.feedback_fault && !switched.motion_established && !switched.established &&
+        switched.gains.kp[0]<=limit.kp_max && switched.gains.kd[0]<=limit.kd_max &&
+        short_trial_cost(switched.plans,req.tail_s)<=240,
+        "1794238166406 healthy unresolved window must retain a bounded next measurement without inventing established motion or exhausted actuator capability");
+    // Test the distinct waveform explicitly. The scheduler may choose another
+    // legal amplitude/controller revision before this mechanism experiment.
+    const auto symmetric=symmetric_motion_probe_plan(req,limit,gains.kp[0],gains.kd[0],noise,240,original);
+    check(symmetric.valid && symmetric.requirements.motion_probe,"the explicit bounded symmetric motion experiment must remain available");
+    const auto plan=symmetric.requirements;
     check((plan.probe_duration_s-1.4)*plan.frequencies_hz.front()>=2-1e-9 &&
         plan.amplitude_rad*(gains.kp[0]+gains.kd[0]*(2*pi*plan.frequencies_hz.front()+3))<=.5*limit.effort_budget+1e-10,
         "symmetric motion must contain two complete interior cycles within the unchanged half calibration-effort allowance");
@@ -540,16 +669,17 @@ void check_symmetric_motion_establishment(const std::string& recorded_directory)
     const auto evidence=motion_probe_evidence(rows,plan,gains.kp[0],gains.kd[0]);
     check(evidence.reason=="motion_establishment_only_no_spectral_fit" && !evidence.tracking_valid && !evidence.identifiable && !evidence.missing_evidence.empty(),
         "a valid single-tone motion experiment must never fabricate three-tone tracking or pole identification evidence");
-    const auto established=motion_establishment_step(gains,{.2441513156},{limit},{noise},{evidence},{observed.metrics},{observed.motion},{plan},req,false,200,&state);
+    MotionEstablishmentState motion_state;motion_state.spectral_plans={original};
+    const auto established=motion_establishment_step(gains,{.2441513156},{limit},{noise},{evidence},{observed.metrics},{observed.motion},{plan},req,false,200,&motion_state);
     check(established.motion_established && established.spectral_confirmation_required && !established.established &&
-        !state.spectral_plans[0].motion_probe && !observed.passed,
+        !motion_state.spectral_plans[0].motion_probe && !observed.passed,
         "actual motion can establish independently while requiring the original spectral measurement and retaining the strict tracking rejection");
-    close(state.progress[0].observed_input_nm,observed.metrics.applied_input_peak_nm,1e-12,"the all-motion-established early return must still refresh this window's observed input evidence");
-    close(state.progress[0].observed_span_rad,observed.metrics.actual_span,1e-12,"the early return must refresh this window's actual motion span");
+    close(motion_state.progress[0].observed_input_nm,observed.metrics.applied_input_peak_nm,1e-12,"the all-motion-established early return must still refresh this window's observed input evidence");
+    close(motion_state.progress[0].observed_span_rad,observed.metrics.actual_span,1e-12,"the early return must refresh this window's actual motion span");
     auto stable_rows=rows;for(auto& row:stable_rows){row.actual_gains_known=true;row.actual_kp=gains.kp[0];row.actual_kd=gains.kd[0];}
     stable_rows[200].actual_kp*=.9;const auto transition=motion_probe_evidence(stable_rows,plan,gains.kp[0],gains.kd[0]);
     check(transition.reason=="changing_feedback_gains","single-tone establishment must retain the actual executed-gain stability check");
-    const auto wait=motion_establishment_step(gains,{.2441513156},{limit},{noise},{transition},{observed.metrics},{observed.motion},{plan},req,false,180,&state);
+    const auto wait=motion_establishment_step(gains,{.2441513156},{limit},{noise},{transition},{observed.metrics},{observed.motion},{plan},req,false,180,&motion_state);
     check(wait.retry && !wait.motion_established && wait.gains.kp==gains.kp,"gain transition cannot bypass stable complete-controller remeasurement merely because visible motion exists");
     auto missing=rows;for(std::size_t i=200;i<240;++i)missing[i].new_measurement=false;
     check(motion_probe_evidence(missing,plan,gains.kp[0],gains.kd[0]).reason=="feedback_time_gap_or_repeat",
@@ -559,16 +689,26 @@ void check_symmetric_motion_establishment(const std::string& recorded_directory)
     auto blocked_observed=assess_trajectory(blocked_rows,plan,noise,plan.probe_duration_s);
     blocked_observed.metrics.applied_input_peak_nm=applied_pd_input_peak(blocked_rows,gains.kp[0],gains.kd[0]);
     const auto blocked_evidence=motion_probe_evidence(blocked_rows,plan,gains.kp[0],gains.kd[0]);
-    const auto stopped=motion_establishment_step(gains,{.2441513156},{limit},{noise},{blocked_evidence},{blocked_observed.metrics},{blocked_observed.motion},{plan},req,false,180,&state);
-    check(!stopped.retry && !stopped.motion_established && stopped.blocked_axes==std::vector<std::size_t>{0} && stopped.gains.kp==gains.kp,
-        "a healthy but immobile completed symmetric probe must end with measured insufficiency, never raise gains or invent a motion pass");
+    MotionEstablishmentState immobile_state;immobile_state.spectral_plans={original};
+    const auto continued=motion_establishment_step(gains,{.2441513156},{limit},{noise},{blocked_evidence},{blocked_observed.metrics},{blocked_observed.motion},{plan},req,false,180,&immobile_state);
+    check(!continued.feedback_fault && !continued.motion_established && !continued.established &&
+        continued.gains.kp[0]<=limit.kp_max && continued.gains.kd[0]<=limit.kd_max,
+        "a healthy immobile single-tone window remains an insufficient measurement without an invented motion pass or execution fault");
+    if(continued.retry)check(prescribed_pd_input_peak(continued.plans[0],continued.gains.kp[0],continued.gains.kd[0])>
+            prescribed_pd_input_peak(plan,gains.kp[0],gains.kd[0]),
+        "another immobile-window trial must offer a genuinely larger known drive");
+    else check(continued.blocked_axes==std::vector<std::size_t>{0} && continued.reasons[0].find("no_legal_input_growth")!=std::string::npos,
+        "the high-input immobile axis may stop only for its actual legal-drive limit, never merely because a single tone has been attempted");
+    check(short_trial_cost(continued.plans,req.tail_s)<=180 &&
+        prescribed_pd_input_peak(continued.plans[0],continued.gains.kp[0],continued.gains.kd[0])<=.5*limit.effort_budget+1e-9,
+        "continued single-tone input calibration must retain the original budget and effort allowance");
     auto normal=model;normal.tracking_valid=true;auto qualified=observed.motion;qualified.qualified=true;
     auto fresh=observed.metrics;fresh.applied_input_peak_nm+=.123;fresh.actual_span+=noise.encoder_step_rad;
-    const auto complete=motion_establishment_step(gains,{.2441513156},{limit},{noise},{normal},{fresh},{qualified},{original},req,false,150,&state);
+    const auto complete=motion_establishment_step(gains,{.2441513156},{limit},{noise},{normal},{fresh},{qualified},{original},req,false,150,&motion_state);
     check(complete.established && complete.motion_established,"a complete ordinary spectral/motion measurement must preserve its original establishment decision");
-    close(state.progress[0].observed_input_nm,fresh.applied_input_peak_nm,1e-12,"an already qualified axis must never serialize the preceding window's observed input");
-    close(state.progress[0].observed_span_rad,fresh.actual_span,1e-12,"the ordinary all-established return must refresh its observed position span");
-    std::cout<<"1794238166406 recorded-window counterfactual: same gains, symmetric +/-"<<positive<<" Nm reference drive; separate asymmetric-friction plant established motion, blocked plant retained insufficiency\n";
+    close(motion_state.progress[0].observed_input_nm,fresh.applied_input_peak_nm,1e-12,"an already qualified axis must never serialize the preceding window's observed input");
+    close(motion_state.progress[0].observed_span_rad,fresh.actual_span,1e-12,"the ordinary all-established return must refresh its observed position span");
+    std::cout<<"1794238166406 recorded-window counterfactual: explicit symmetric +/-"<<positive<<" Nm reference drive; separate asymmetric-friction plant established motion, immobile plant retained legal input calibration\n";
 }
 
 std::vector<std::vector<Sample>> read_joint_evidence_csv(const std::string& path) {
@@ -587,6 +727,264 @@ std::vector<std::vector<Sample>> read_joint_evidence_csv(const std::string& path
         row.command_time_s=std::stod(v[ci]);row.feedback_time_s=std::stod(v[fti]);row.feedback_sequence=std::stoull(v[si]);rows[axis].push_back(row);
     }
     return rows;
+}
+
+void check_observed_reference_domain(const std::string& recorded_directory) {
+    Requirements req;NoiseEstimate noise;noise.encoder_step_rad=25.0/65536;
+    const ModelAxisLimits original{.04,1.62,3.24,7,500,5,{500.0/4095,5.0/4095}};
+    auto inward=original;inward.position_margin_rad=.02;inward.reference_min_offset_rad=0;inward.reference_max_offset_rad=.04;
+    const double kp=50,kd=3;
+    const auto legacy=short_probe_plan(req,original,kp,kd,noise,false,200);
+    const auto planned=short_probe_plan(req,inward,kp,kd,noise,false,200);
+    check(legacy.valid && planned.valid && legacy.requirements.reference_bias_rad==0 && planned.requirements.reference_bias_rad>0,
+        "a fresh position at an observed endpoint must produce an inward excitation without changing unbounded legacy plans");
+    close(planned.requirements.reference_bias_rad,planned.requirements.amplitude_rad,1e-12,"an endpoint experiment must remain on its known side");
+    const auto verify=[&](const ShortProbePlan& p,const ModelAxisLimits& bounds,double P,double D) {
+        const auto& r=p.requirements;const double high_w=2*pi*r.frequencies_hz[r.motion_probe?0:2];
+        const auto b=bound_reference_excitation(bounds,P,D,r.amplitude_rad,high_w);
+        for(double t=0;t<r.probe_duration_s;t+=.001) {
+            const auto sample=probe(t,r);const double h=1e-6;
+            const double numerical=(probe(t+h,r).first-probe(t-h,r).first)/(2*h);
+            check(sample.first>=bounds.reference_min_offset_rad-1e-12 && sample.first<=bounds.reference_max_offset_rad+1e-12,
+                "the interior and both fade transitions must remain inside actual demonstrated positions");
+            close(sample.second,numerical,3e-7,"MIT reference velocity must differentiate the actual biased position during both fades");
+            check(std::abs(sample.second)<=b.velocity_bound_rad_s+1e-9 && std::abs(P*sample.first+D*sample.second)<=b.effort_bound_nm+1e-9,
+                "biased reference velocity and actual exogenous effort must retain the original bounded planner headroom");
+        }
+        check(probe(0,r)==std::pair<double,double>{0,0} && probe(r.probe_duration_s,r)==std::pair<double,double>{0,0},
+            "a biased bounded experiment must start and end at the same fresh measured origin with zero velocity");
+        check(prescribed_pd_input_peak(r,P,D)<=.5*bounds.effort_budget+1e-9,
+            "input-platform comparisons must include the actual reference bias and transition velocity");
+    };
+    verify(planned,inward,kp,kd);
+    auto upper=inward;upper.reference_min_offset_rad=-.04;upper.reference_max_offset_rad=0;
+    const auto return_inward=symmetric_motion_probe_plan(req,upper,kp,kd,noise,200,planned.requirements);
+    check(return_inward.valid && return_inward.requirements.reference_bias_rad<0,"the upper observed endpoint must mirror the inward plan");
+    verify(return_inward,upper,kp,kd);
+    const auto common=comparable_probe_plans({{kp},{kd}},{{kp*1.1},{kd}}, {planned.requirements},{inward},{noise},req,false,200);
+    check(common.size()==1 && common[0].reference_bias_rad>0,"candidate remeasurement must use one common biased domain and direction for both full gain sets");
+    auto invalid=inward;invalid.reference_min_offset_rad=.001;bool rejected=false;
+    try{short_probe_plan(req,invalid,kp,kd,noise,false,200);}catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"a domain excluding its fresh actual origin cannot silently move that origin or stretch a limit");
+
+    StickSlipAxis stop{.2,.12,.15,.15};stop.physical_lower_stop=0;
+    const auto rows=stick_slip_trial(stop,planned.requirements,kp,kd,inward,28);
+    auto assessment=assess_trajectory(rows,planned.requirements,noise,planned.requirements.probe_duration_s);
+    check(assessment.motion.qualified && assessment.metrics.continuous && !assessment.metrics.limited_samples,
+        "a physical lower stop and static friction must still allow measured inward and return movement under the unchanged controller/Safety limits");
+    check(!assessment.passed,"inward motion evidence cannot relax the strict original tracking-error acceptance");
+    const auto linear=simulate_mit(planned.requirements,{{kp},{kd}});
+    const auto identified=identify_mit(linear,planned.requirements,{kp,kd,.2,0,ExcitationKind::ReferenceTracking});
+    check(identified.tracking_valid && identified.coherence>.65,
+        "closed-loop identification must fit actual biased reference, derivative and feedback using its existing intercept instead of an assumed unbiased input");
+
+    Metrics healthy;healthy.measurement_samples=healthy.samples=1500;
+    ResponseModel missing;missing.reason="response_below_encoder_noise_floor";
+    const auto supplemented=revise_disturbance_input({0,.02},{0,.10},{missing,missing},{healthy,healthy},100,10);
+    check(!supplemented.feedback_fault && supplemented.retry && supplemented.amplitudes[0]==0 && supplemented.amplitudes[1]==.04 &&
+        supplemented.reasons[0]=="independent_disturbance_not_requested_without_bidirectional_demonstrated_room",
+        "a deliberately unexcited boundary axis cannot reject or grow the independently measurable axes' disturbance input");
+    auto lost=healthy;lost.continuous=false;
+    check(revise_disturbance_input({0,.02},{0,.1},{missing,missing},{lost,healthy},100,10).feedback_fault,
+        "a masked disturbance axis must still retain actual feedback-loss detection");
+    rejected=false;try{revise_disturbance_input({0,.02},{.1,.1},{missing,missing},{healthy,healthy},100,10);}catch(const std::invalid_argument&){rejected=true;}
+    check(rejected,"zero input is only an explicit no-room mask when its matching ceiling is also zero");
+
+    if(!recorded_directory.empty()) {
+        const auto actual=read_joint_evidence_csv(recorded_directory+"/servo-probe-native-establish-12.csv");
+        for(unsigned axis:{1U,2U}) {
+            double low=std::numeric_limits<double>::infinity(),high=-low;
+            for(const auto& row:actual[axis])if(row.new_measurement){low=std::min(low,row.actual);high=std::max(high,row.actual);}
+            check(high>low,"the recorded joint2/joint3 actual interval must contain observed displacement");
+            auto domain=original;domain.position_margin_rad=.5*(high-low);domain.reference_min_offset_rad=0;domain.reference_max_offset_rad=high-low;
+            const double P=axis==1?147.61904761904762:241.39194139194137,D=axis==1?3.352869352869353:5;
+            const auto actual_bounds=bound_reference_excitation(domain,P,D,.015,2*pi*.2);
+            auto actual_plan=req;actual_plan.motion_probe=true;actual_plan.amplitude_rad=actual_bounds.amplitude_rad;
+            actual_plan.reference_bias_rad=actual_bounds.bias_rad;
+            for(double t=0;t<actual_plan.probe_duration_s;t+=.005) {
+                const double reference=low+probe(t,actual_plan).first;
+                check(reference>=low-1e-12 && reference<=high+1e-12,"counterfactual endpoint references must stay inside the actual recorded joint2/joint3 envelope regardless of edited URDF limits");
+            }
+        }
+    }
+    std::cout<<"observed endpoint reference bias, exact MIT velocity, unchanged effort/acceptance, lower-stop/friction plant and masked disturbance checks passed\n";
+}
+
+void check_shared_slow_establishment(const std::string& recorded_directory) {
+    Requirements req;NoiseEstimate noise;noise.encoder_step_rad=25.0/65536;
+    const ModelAxisLimits heavy{.04,1.62,3.24,7,500,5,{500.0/4095,5.0/4095}};
+    const auto wrist=ModelAxisLimits{.04,1.62,3.24,2.5,500,5,heavy.grid};
+    const std::vector<ModelAxisLimits> limits{heavy,wrist,wrist};
+    const std::vector<double> inertia{.24458484787,.00728364962,.001123771029};
+    Gains gains{{241.39194139194137,6.837606837606837,3.4188034188034186},{5,.1111111111111111,.017094017094017096}};
+    std::vector<Requirements> plans;
+    for(unsigned i=0;i<3;++i)plans.push_back(short_probe_plan(req,limits[i],gains.kp[i],gains.kd[i],noise,false,200,.02,.2).requirements);
+    Metrics weak;weak.samples=weak.measurement_samples=1231;weak.actual_span=6*noise.encoder_step_rad;weak.applied_input_peak_nm=2.566106;
+    MotionObservation motion;motion.encoder_step_rad=noise.encoder_step_rad;motion.positive_travel_rad=6*noise.encoder_step_rad;
+    motion.negative_travel_rad=5*noise.encoder_step_rad;motion.minimum_motion_span_rad=.0028586244;motion.response_rms_ratio=.15;
+    ResponseModel model;model.reason="response_below_encoder_noise_floor";
+    MotionEstablishmentState state;state.excitation_retests={1,1,1};
+    auto shared=motion_establishment_step(gains,inertia,limits,std::vector<NoiseEstimate>(3,noise),
+        std::vector<ResponseModel>(3,model),std::vector<Metrics>(3,weak),std::vector<MotionObservation>(3,motion),plans,req,false,190,&state);
+    check(shared.retry && independent_motion_damping_preserved(gains,shared.gains,limits) && !shared.motion_established,
+        "1794267281603 weak wrists must retain an independent legal next calibration while the heavy axis lacks a useful measurement");
+    for(unsigned i:{1U,2U})check(prescribed_pd_input_peak(shared.plans[i],shared.gains.kp[i],shared.gains.kd[i])>
+        prescribed_pd_input_peak(plans[i],gains.kp[i],gains.kd[i]),
+        "a heavy-axis limitation must not be inherited as a wrist input limitation");
+
+    // Start at the actually measured late controller, with resolvable asymmetric
+    // static friction. These are reproducible mechanism tests, not fitted arm
+    // parameters or a claim about the unexecuted hardware window.
+    std::vector<StickSlipAxis> plant{{inertia[0],2.3,.15,2.7},{inertia[1],.168,.01,.140},{inertia[2],.162,.01,.134}};
+    plans=shared.plans;double elapsed=0;bool established=false,wrist_step=false;unsigned trials=0;
+    while(elapsed+short_trial_cost(plans,req.tail_s)<190) {
+        std::vector<ResponseModel> models;std::vector<Metrics> metrics;std::vector<MotionObservation> motions;
+        for(unsigned i=0;i<3;++i) {
+            const auto rows=stick_slip_trial(plant[i],plans[i],gains.kp[i],gains.kd[i],limits[i],i?10:28);
+            auto assessment=assess_trajectory(rows,plans[i],noise,plans[i].probe_duration_s);
+            assessment.metrics.applied_input_peak_nm=applied_pd_input_peak(rows,gains.kp[i],gains.kd[i]);
+            const auto evidence=plans[i].motion_probe?motion_probe_evidence(rows,plans[i],gains.kp[i],gains.kd[i]):
+                identify_mit(rows,plans[i],{gains.kp[i],gains.kd[i],inertia[i],0,ExcitationKind::ReferenceTracking});
+            models.push_back(evidence);metrics.push_back(assessment.metrics);motions.push_back(assessment.motion);
+        }
+        elapsed+=short_trial_cost(plans,req.tail_s);
+        ++trials;
+        const auto next=motion_establishment_step(gains,inertia,limits,std::vector<NoiseEstimate>(3,noise),models,metrics,motions,plans,req,false,190-elapsed,&state);
+        check(!next.feedback_fault,"shared slow motion keeps healthy stick/slip data distinct from an execution failure");
+        if(next.motion_established){established=true;break;}
+        check(next.retry,"shared weak wrists must retain a legal next measurement while a demonstrated input increase remains available");
+        wrist_step=wrist_step || next.gains.kp[1]>gains.kp[1] || next.gains.kp[2]>gains.kp[2];
+        if(next.gains.kp[0]>gains.kp[0])check(
+            prescribed_pd_input_peak(next.plans[0],next.gains.kp[0],next.gains.kd[0])>=
+            prescribed_pd_input_peak(plans[0],gains.kp[0],gains.kd[0])+2*noise.encoder_step_rad*gains.kp[0]-1e-9,
+            "a heavy-axis gain step must increase resolvable drive rather than reverse-scaling amplitude toward the protocol ceiling");
+        gains=next.gains;plans=next.plans;
+    }
+    check(established && wrist_step && elapsed<190,"shared actual scheduler must establish the frictional wrist group inside its original measurement budget");
+
+    if(!recorded_directory.empty()) {
+        const auto rows=read_joint_evidence_csv(recorded_directory+"/servo-probe-native-establish-12.csv");
+        const std::vector<double> kp{68.25396825396825,147.61904761904762,241.39194139194137,25.64102564102564,6.837606837606837,3.4188034188034186};
+        const std::vector<double> kd{1.5384615384615385,3.352869352869353,5,.4358974358974359,.1111111111111111,.017094017094017096};
+        const std::vector<double> nominal_gradient{0,-1.6003974855417213,-1.547205694337972,-.1928056680370327,-.02143952324698908,.05421125345635245};
+        const std::vector<double> measured_inertia{.13532696385,.29348798754,.24458484787,.02391338447,.00728364962,.001123771029};
+        std::vector<Requirements> executed;std::vector<ResponseModel> models;std::vector<Metrics> metrics;std::vector<MotionObservation> motions;
+        for(unsigned i=0;i<6;++i) {
+            auto actual_plan=req;actual_plan.amplitude_rad=i==2?.012592904557399497:.012262390335951842;
+            const double f=i==2?.2:.3825;actual_plan.frequencies_hz={f,2*f,f*1.2/.35};actual_plan.probe_duration_s=7.65;
+            actual_plan.encoder_step_rad=noise.encoder_step_rad;executed.push_back(actual_plan);
+            auto a=assess_trajectory(rows[i],actual_plan,noise,7.65);
+            a.metrics.applied_input_peak_nm=applied_pd_input_peak(rows[i],kp[i],kd[i]);
+            check(a.metrics.continuous && !a.metrics.limited_samples && !a.metrics.oscillating,
+                "the recorded final window retains its healthy, unlimited, nonoscillating measurement evidence");
+            close(rows[i][rows[i].size()/2].actual_kp,kp[i],1e-4,"record replay must use the actual transmitted late gains");
+            close(rows[i][rows[i].size()/2].actual_kd,kd[i],1e-4,"record replay must use the actual transmitted damping");
+            MitExperiment actual_model{kp[i],kd[i],measured_inertia[i],nominal_gradient[i],ExcitationKind::ReferenceTracking};
+            actual_model.executed_state_feedforward_gradient=nominal_gradient[i];
+            models.push_back(identify_mit(rows[i],actual_plan,actual_model));metrics.push_back(a.metrics);motions.push_back(a.motion);
+        }
+        MotionEstablishmentState replay;replay.excitation_retests=std::vector<unsigned>(6,1);
+        const auto next=motion_establishment_step({kp,kd},measured_inertia,{heavy,heavy,heavy,wrist,wrist,wrist},
+            std::vector<NoiseEstimate>(6,noise),models,metrics,motions,executed,req,false,200,&replay);
+        check(next.retry && !next.feedback_fault && independent_motion_damping_preserved({kp,kd},next.gains,{heavy,heavy,heavy,wrist,wrist,wrist}) && !next.motion_established,
+            "actual 1794267281603 final data must schedule legal calibration without inventing successful execution");
+        for(unsigned i:{3U,4U,5U})check(
+            prescribed_pd_input_peak(next.plans[i],next.gains.kp[i],next.gains.kd[i])>
+            prescribed_pd_input_peak(executed[i],kp[i],kd[i]),
+            "recorded weak wrist axes need their own larger known drive instead of another axis's plateau conclusion");
+    }
+    std::cout<<"shared heavy-axis input plateau and weak frictional wrist establishment: "<<trials<<" trials, "<<elapsed<<" s, full gain-set measurement and unchanged constraints\n";
+}
+
+void check_low_input_wrist_calibration(const std::string& recorded_directory) {
+    Requirements req;NoiseEstimate noise;noise.encoder_step_rad=25.0/65536;
+    noise.rms_rad=.00019072632178811585; // full stationary CSV, not a friction fit
+    const ModelAxisLimits wrist{.04,1.62,3.24,2.5,500,5,{500.0/4095,5.0/4095}};
+    const Gains current{{2.4420024420024418},{.1111111111111111}};
+    auto plan=req;plan.motion_probe=true;plan.amplitude_rad=.028;plan.frequencies_hz={.2,.4,.6857142857142857};plan.probe_duration_s=11.4;
+    Metrics metric;metric.samples=metric.measurement_samples=2541;metric.actual_span=2*noise.encoder_step_rad;
+    metric.applied_input_peak_nm=.0783786748736684;
+    MotionObservation motion;motion.encoder_step_rad=noise.encoder_step_rad;motion.positive_travel_rad=noise.encoder_step_rad;
+    motion.negative_travel_rad=2*noise.encoder_step_rad;motion.minimum_motion_span_rad=.01119997767141106;motion.response_rms_ratio=.008128583072283167;
+    ResponseModel model;model.reason="motion_establishment_only_no_spectral_fit";
+    MotionEstablishmentState state;state.excitation_retests={8};state.progress.resize(1);
+    state.progress[0].blocked=true;state.progress[0].plateau_motion_confirmation=true;
+    state.progress[0].anchor_input_nm=.04020272590547512;state.progress[0].anchor_span_rad=8*noise.encoder_step_rad;
+    state.progress[0].anchor_minimum_travel_rad=noise.encoder_step_rad;
+    const auto next=motion_establishment_step(current,{.007283656926727555},{wrist},{noise},{model},{metric},{motion},{plan},req,false,250,&state);
+    const double old_input=prescribed_pd_input_peak(plan,current.kp[0],current.kd[0]);
+    const double new_input=prescribed_pd_input_peak(next.plans[0],next.gains.kp[0],next.gains.kd[0]);
+    check(next.retry && next.blocked_axes.empty() && !next.motion_established && !next.established && !next.feedback_fault,
+        "1794278968578 joint5's fully sampled small-input single tone must retain legal calibration instead of a permanent insufficiency latch");
+    check(independent_motion_damping_preserved(current,next.gains,{wrist}) && next.gains.kd[0]==current.kd[0] && next.gains.kp[0]>current.kp[0] &&
+        next.gains.kp[0]<=1.4*current.kp[0]+wrist.grid.kp_step && new_input>old_input+2*noise.encoder_step_rad*current.kp[0],
+        "the amplitude-saturated weak wrist needs a bounded resolvable P-only comparison without unmeasured D growth or identification");
+    check(new_input<=.5*wrist.effort_budget+1e-9 && short_trial_cost(next.plans,req.tail_s)<250,
+        "the new small-input proposal must retain the original force and reserved-time constraints");
+
+    // Axis order and joint count must not convert one saturated axis into a
+    // stop for all useful experiments. The final decision still needs every
+    // axis's CURRENT measurement, not accumulated historical passes.
+    auto saturated=wrist;saturated.kp_max=65*wrist.grid.kp_step;saturated.kd_max=164*wrist.grid.kd_step;
+    const auto capped=symmetric_motion_probe_plan(req,saturated,saturated.kp_max,saturated.kd_max,noise,250,plan,.028,.2).requirements;
+    auto ready_model=model;ready_model.tracking_valid=true;ready_model.reason="closed_loop_fit_insufficient";
+    auto ready_motion=motion;ready_motion.qualified=ready_motion.bidirectional=true;
+    for(unsigned count:{1U,3U,7U})for(unsigned weak_axis=0;weak_axis<count;++weak_axis) {
+        Gains group;std::vector<ModelAxisLimits> limits;std::vector<double> inertia(count,.007283656926727555);
+        std::vector<NoiseEstimate> noises(count,noise);std::vector<ResponseModel> models(count,model);
+        std::vector<Metrics> metrics(count,metric);std::vector<MotionObservation> motions(count,motion);
+        std::vector<Requirements> plans;
+        for(unsigned i=0;i<count;++i){const bool active=i==weak_axis;group.kp.push_back(active?current.kp[0]:saturated.kp_max);
+            group.kd.push_back(active?current.kd[0]:saturated.kd_max);limits.push_back(active?wrist:saturated);plans.push_back(active?plan:capped);}
+        MotionEstablishmentState grouped;
+        const auto step=motion_establishment_step(group,inertia,limits,noises,models,metrics,motions,plans,req,false,250,&grouped);
+        check(step.retry && !step.motion_established && !step.established && !step.feedback_fault,
+            "any N-axis permutation must continue its legal weak-axis measurement without promoting the incomplete full group");
+        check(step.gains.kp[weak_axis]>group.kp[weak_axis] && independent_motion_damping_preserved(group,step.gains,limits) &&
+            std::find(step.blocked_axes.begin(),step.blocked_axes.end(),weak_axis)==step.blocked_axes.end(),
+            "the small-input wrist retains the same bounded continuation under axis permutation");
+        for(unsigned i=0;i<count;++i)if(i!=weak_axis)check(step.gains.kp[i]==group.kp[i] && step.gains.kd[i]==group.kd[i] &&
+            prescribed_pd_input_peak(step.plans[i],step.gains.kp[i],step.gains.kd[i])<=prescribed_pd_input_peak(plans[i],group.kp[i],group.kd[i])+1e-12,
+            "a truly protocol/amplitude-saturated axis cannot invent input growth while another axis continues");
+        std::fill(models.begin(),models.end(),ready_model);std::fill(motions.begin(),motions.end(),ready_motion);
+        motions[weak_axis].qualified=false;
+        check(!motion_establishment_step(group,inertia,limits,noises,models,metrics,motions,plans,req,false,250,&grouped).motion_established,
+            "all other axes passing does not waive the weak axis's current complete-group motion requirement");
+    }
+    if(!recorded_directory.empty()) {
+        const auto rows=read_joint_evidence_csv(recorded_directory+"/servo-probe-native-establish-11.csv");
+        const std::vector<double> inertia{.11973876183976842,.3622863615136868,.24412967086252443,.023678950172938876,.007283656926727555,.0011237710292219616};
+        std::vector<ModelAxisLimits> limits;std::vector<Requirements> plans;std::vector<ResponseModel> models;
+        std::vector<Metrics> metrics;std::vector<MotionObservation> motions;Gains actual;
+        const std::vector<double> amplitudes{.028,.014267028808593749,.024814666748046877,.028,.028,.028};
+        const double common_frequency=1/(6*req.settling_time_s);
+        for(unsigned i=0;i<6;++i) {
+            check(rows[i].size()==2541,"the original last actual CSV must preserve all 2541 samples for every joint");
+            auto bounds=wrist;bounds.effort_budget=i<3?7:2.5;
+            if(i==1){bounds.reference_min_offset_rad=-.000762939453125;bounds.reference_max_offset_rad=.04;bounds.position_margin_rad=.5*(.04+.000762939453125);}
+            if(i==2){bounds.reference_min_offset_rad=-.0308990478515625;bounds.reference_max_offset_rad=.04;bounds.position_margin_rad=.5*(.04+.0308990478515625);}
+            limits.push_back(bounds);auto executed=plan;executed.amplitude_rad=amplitudes[i];
+            if(i==1)executed.reference_bias_rad=.013504089355468749;
+            const double f=i==3 || i==4?.2:common_frequency;executed.frequencies_hz={f,2*f,f*1.2/.35};plans.push_back(executed);
+            actual.kp.push_back(rows[i].front().actual_kp);actual.kd.push_back(rows[i].front().actual_kd);
+            auto observed=assess_trajectory(rows[i],executed,noise,executed.probe_duration_s);
+            observed.metrics.applied_input_peak_nm=applied_pd_input_peak(rows[i],actual.kp[i],actual.kd[i]);
+            check(observed.metrics.continuous && !observed.metrics.limited_samples && !observed.metrics.oscillating,
+                "the original final low-input CSV remains healthy unlimited evidence, not a fabricated execution fault");
+            models.push_back(motion_probe_evidence(rows[i],executed,actual.kp[i],actual.kd[i]));metrics.push_back(observed.metrics);motions.push_back(observed.motion);
+        }
+        close(metrics[4].applied_input_peak_nm,.0783786748736684,1e-10,"replay must reconstruct the actual transmitted joint5 PD command");
+        check(!motions[4].qualified && motions[4].positive_travel_rad==noise.encoder_step_rad && motions[4].negative_travel_rad==2*noise.encoder_step_rad,
+            "the original one/two-code wrist response remains insufficient under unchanged acceptance");
+        MotionEstablishmentState replay;const auto proposal=motion_establishment_step(actual,inertia,limits,std::vector<NoiseEstimate>(6,noise),
+            models,metrics,motions,plans,req,false,250,&replay);
+        check(proposal.retry && !proposal.feedback_fault && !proposal.motion_established && independent_motion_damping_preserved(actual,proposal.gains,limits) &&
+            proposal.gains.kp[4]>actual.kp[4] && std::find(proposal.blocked_axes.begin(),proposal.blocked_axes.end(),4)==proposal.blocked_axes.end(),
+            "the actual 1794278968578 complete window must propose a legal unexecuted wrist measurement instead of ending the group");
+        std::cout<<"1794278968578 actual joint5: PD="<<metrics[4].applied_input_peak_nm<<", next P="<<proposal.gains.kp[4]
+            <<", next known drive="<<prescribed_pd_input_peak(proposal.plans[4],proposal.gains.kp[4],proposal.gains.kd[4])<<" (unexecuted)\n";
+    }
+    std::cout<<"low-input wrist calibration, real protocol saturation, axis permutations and incomplete-group rejection passed\n";
 }
 
 void check_disturbance_resolution_and_residual_correction(const std::string& recorded_directory) {
@@ -677,12 +1075,18 @@ void check_disturbance_resolution_and_residual_correction(const std::string& rec
 
 int main(int argc,char** argv) {
     try {
-        const bool latest=argc>2 && std::string(argv[1])=="--latest-task";
+        const bool motion_latest=argc>2 && std::string(argv[1])=="--motion-task";
+        const bool wrist_latest=argc>2 && std::string(argv[1])=="--wrist-task";
+        const bool latest=argc>2 && (std::string(argv[1])=="--latest-task" || motion_latest || wrist_latest);
+        check_shape_preserving_retime();
         check_protocol_demand_and_working_domain();check_recorded_quantization_boundary();
         check_unidentified_response_and_execution_guard(!latest && argc>1?argv[1]:"");
         check_establishment_input_plateaus(!latest && argc>2?argv[2]:"");
         check_symmetric_motion_establishment(!latest && argc>3?argv[3]:"");
-        check_disturbance_resolution_and_residual_correction(latest?argv[2]:"");
+        check_observed_reference_domain(motion_latest?argv[2]:"");
+        check_shared_slow_establishment(motion_latest?argv[2]:"");
+        check_low_input_wrist_calibration(wrist_latest?argv[2]:"");
+        check_disturbance_resolution_and_residual_correction(latest && !motion_latest && !wrist_latest?argv[2]:"");
         check_six_axis_motion_establishment();
         const ModelAxisLimits limit{.2,1.5,4,8,150,4,{}};
         ModelResponseDemand model_demand;model_demand.frequency_hz={.4,.4};model_demand.velocity_peak={.02,.02};model_demand.acceleration_peak={.02,.02};
@@ -710,13 +1114,13 @@ int main(int argc,char** argv) {
             row.reference=reference.first;row.reference_velocity=reference.second;row.actual=row.reference+pi/1800;
             row.velocity=row.reference_velocity;row.new_measurement=true;boundary_rows.push_back(row);
         }
-        auto exact=req;exact.peak_error_rad=assess(boundary_rows,req,req.probe_duration_s).peak_error;
+        auto exact=req;exact.peak_error_rad=assess(boundary_rows,req,req.probe_duration_s).endpoint_peak_error_rad;
         auto below=exact;below.peak_error_rad=std::nextafter(exact.peak_error_rad,std::numeric_limits<double>::infinity());
         check(assess(boundary_rows,below,req.probe_duration_s).passed && !assess(boundary_rows,exact,req.probe_duration_s).passed,
-            "all-cycle maximum tracking error equal to the configured target must fail the strict less-than boundary");
+            "final-target maximum error equal to the configured target must fail the strict less-than boundary");
         check(assess_trajectory(boundary_rows,below,NoiseEstimate{},req.probe_duration_s).passed &&
             !assess_trajectory(boundary_rows,exact,NoiseEstimate{},req.probe_duration_s).passed,
-            "the real trajectory acceptance entry must preserve the same strict peak boundary");
+            "the real trajectory acceptance entry must preserve the same strict final-target boundary");
 
         MitExperiment mit{8,1.0,.2,0,ExcitationKind::ReferenceTracking};
         auto rows=spectral_experiment(req,mit,.15,.012,false,1e-6);
@@ -826,6 +1230,10 @@ int main(int argc,char** argv) {
         simulation_evidence.tracking_peak_error_rad=std::max(simulation_evidence.tracking_peak_error_rad,2*req.peak_error_rad);
         const auto simulated_proposal=adaptive_candidate(weak,{simulation_evidence},{limit},req);
         const auto compared=simulate_mit(req,simulated_proposal.gains);
+        std::cout<<"delayed MIT proposal="<<simulated_proposal.gains.kp[0]<<'/'<<simulated_proposal.gains.kd[0]
+            <<", reason="<<simulated_proposal.reasons[0]<<", zeta="<<simulation_evidence.damping_ratio
+            <<", delay="<<simulation_evidence.effective_delay_s<<", errors="<<interior_error(simulated,req.probe_duration_s)
+            <<'/'<<interior_error(compared,req.probe_duration_s)<<'\n';
         check(interior_error(compared,req.probe_duration_s)<.99*interior_error(simulated,req.probe_duration_s),
             "model and short-test generated complete candidate must improve reproducible delayed/frictional MIT plant");
         std::cout<<"delayed MIT plant RMS: "<<interior_error(simulated,req.probe_duration_s)

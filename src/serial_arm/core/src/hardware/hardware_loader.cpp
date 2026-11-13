@@ -144,7 +144,8 @@ tl::expected<std::filesystem::path, HardwareLoaderErr> write_effective_config(
  * @brief 绑定 Backend 对象和共享库句柄生命周期的 MotorBus wrapper
  *
  * 外部仍只持有 std::unique_ptr<MotorBus>；wrapper 析构时先通过
- * destroy_motor_bus() 销毁真实 Backend，再 dlclose() 对应 shared library
+ * destroy_motor_bus() 销毁真实 Backend，再 dlclose() 释放显式引用
+ * DSO 代码保留到进程退出，供 Core 注册表中仍存活的弱引用控制块析构使用
  */
 class LoadedMotorBus final : public MotorBus {
 public:
@@ -248,7 +249,12 @@ tl::expected<std::unique_ptr<MotorBus>, HardwareLoaderErr> HardwareLoader::load(
 
     void* handle{ nullptr };
     for(const auto& candidate : candidates) {
-        handle = dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL);
+        // A backend's transport can leave weak shared_ptr control blocks in
+        // the Core BusRegistry after its last live object has been destroyed.
+        // Their final _M_destroy/vtable may reside in this DSO or a dependency.
+        // Keep code mapped until process exit; backend objects and device
+        // resources are still destroyed normally by LoadedMotorBus.
+        handle = dlopen(candidate.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
         if(handle) break;
     }
     if(!handle) return tl::make_unexpected(HardwareLoaderErr::OPEN_FAILED);

@@ -182,6 +182,7 @@ void PyRobotSession::configure(
             item.max_kd,
             item.kp_resolution,
             item.kd_resolution,
+            item.effort_resolution,
             });
     }
 
@@ -260,7 +261,7 @@ void PyRobotSession::start() {
         for(std::size_t i=0;i<capabilities.size();++i) {
             const auto& item=capabilities[i];
             actuator_info_[i]={item.actuator_name,cfg_.joint_names[i],item.min_pos,item.max_pos,
-                item.max_vel,item.max_effort,item.max_kp,item.max_kd,item.kp_resolution,item.kd_resolution};
+                item.max_vel,item.max_effort,item.max_kp,item.max_kd,item.kp_resolution,item.kd_resolution,item.effort_resolution};
         }
         ref_pos_ = robot_->get_joint_state().pos;
         ref_vel_.assign(ref_pos_.size(), 0.0);

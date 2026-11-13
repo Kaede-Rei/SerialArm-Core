@@ -158,6 +158,7 @@ with serial_arm.RobotSession.from_profile("dm_arm_gray") as arm:
         if motion.id != motion_id:
             raise RuntimeError("Motion was replaced by another request")
         if motion.state == "completed":
+            print("目标已到达" if motion.target_reached else "动作已结束，存在到位偏差", motion.position_error)
             break
         if motion.state in ("interrupted", "failed"):
             raise RuntimeError(motion.reason)
@@ -169,7 +170,7 @@ with serial_arm.RobotSession.from_profile("dm_arm_gray") as arm:
     # 真机应用在此完成自己的停放流程与支撑确认，再退出上下文并失能
 ```
 
-`move_to()` 返回运动编号表示请求已接收；同一编号的 `completed` 表示满足到位条件，不能用固定 `sleep()` 代替完成判定
+`move_to()` 返回运动编号表示请求已接收；同一编号的 `completed` 表示参考已完成，且新鲜位置反馈的运动窗口已经稳定；`target_reached` 另行说明是否在原关节类型位置容差内，`position_error` 保留实际位置减目标的位置偏差；稳态静差不会让请求永久处于 `running`，也不会被写成目标已到达；稳定速度采用250毫秒新鲜位置窗口估计并检查行程范围，保留150毫秒持续稳定确认，不依赖固定 `sleep()`；原始速度、控制命令、位置容差与 Safety 均不因此改变
 
 `stop()` 和上下文退出停止线程并失能，不执行停放轨迹；机械臂失能前应有可靠支撑
 
@@ -228,6 +229,8 @@ GUI 的 °／mm 显示不改变配置与 API 的 SI 单位；Backend 须先转�
 PD 配置不提供用户上限；旧 `safety_policy.max_kp_override`、`max_kd_override` 与平铺格式 `limits.max_kp`、`max_kd` 接受但完全忽略，包括字段值与维度校验；运行时 `safety.limits.max_kp/max_kd` 仍保留，表示硬件协议能力经映射后的边界，加载、配置及连接能力刷新都从当前硬件重新生成
 
 `ActuatorCapability.kp_resolution/kd_resolution` 表示协议增益步进，0 表示连续或未声明；Joint 侧 `JointLimitCfg` 的同名数组按 `pos_ratio × tor_ratio` 映射；达妙 MIT 的执行器侧上限为 `500/5`，步进为 `500/4095`、`5/4095`；位置、速度、加速度、力矩与故障检查继续使用既有 Safety 规则
+
+`ActuatorCapability.effort_resolution` 与 Python `ActuatorInfo.effort_resolution` 保存执行器侧力矩命令步长，0 表示未声明；达妙由已确认协议范围计算 `2 × TMAX / 4095`，关节命令步长按 `tor_ratio` 映射；它用于独立输入可分辨性规划，不等同于电机实际力矩测量精度，也不修改用户 Safety 限制
 
 普通周期与故障保持共用增益投影；故障保持在投影后检查实际 PD 与前馈总力矩，超出既有力矩边界时返回 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`，经现有停止／失能路径处理
 
@@ -329,11 +332,21 @@ if(!held) return 1;
 
 `set_calibration_disturbance(torque, now)` 为独立扰动短测提供有界关节力矩入口，`clear_calibration_disturbance()` 清除该输入；扰动仍经过原有力矩、参考与 Safety 约束，调用方需按周期刷新并在所有退出路径清除；周期输出的 `calibration_disturbance` 记录本周期实际叠加的扰动，不以请求值代替执行值
 
-HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；`ControlRuntime::submit_reference()` 在 HOLD 中仍返回 `CMD_NOT_ALLOWED_IN_MODE`；候选的 `available`、`qualification_complete` 与 `validated` 分别表示参数测量完整、验收证据完整与达标，见 [时间与结果语义](calibration.md#时间与结果语义)
+HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；`ControlRuntime::submit_reference()` 在 HOLD 中仍返回 `CMD_NOT_ALLOWED_IN_MODE`；新候选的 `available` 表示参数测量完整，`qualification_complete` 保留证据范围完整度；`validated` 为旧接口兼容字段，新任务固定为 false，不能把仅供参考的指标提升为精度通过，见 [时间与结果语义](calibration.md#时间与结果语义)
 
 自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
 
-机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据
+新增益任务保存 `acceptance_scope=measured_response_reference_only_v1`、`reference_only=true` 和 `accuracy_thresholds_enabled=false`，取消精度／误差验收阈值；过程峰值、RMS、滞后和 `endpoint_*` 最终目标窗数据均为参考指标；旧 `gain_requirements` 误差目标参数兼容读取但不再用于新任务的流程门槛或通过评分；`available` 继续表示实际完整参数测量，新任务 `validated` 与 `endpoint_passed` 等兼容字段固定为 false；历史标志与范围按原记录保留，不将参考分析自动补成通过；新 Profile 初始化凭据保存 `reference_only=true`、`value_role=unmeasured_model_reference` 和 `accuracy_thresholds_enabled=false`，双对角化初值算法不变
+
+运动中整定阶段为 `trajectory_adapting`；`online_trajectory_PD_update` 保存 `time_s/source_record_path`、`previous_kp/kd`、`proposed_kp/kd`、`candidate_generated/admission_allowed/installed`、逐轴模型与原因；`installed` 只表示目标组已交给平滑切换，实时有效增益仍读取 `RobotCycleOutput.joint_cmd.kp/kd`；`native_validation.online_adaptation=false` 才是最终冻结整组测量，变增益学习记录不会提前提升为 `available`；整轨 CSV 新增 `planned_independent_disturbance_nm/independent_input_planned_known`，用以核对已知独立输入是否被实时约束削减，缺少这些列的旧数据按旧格式读取
+
+在线模型另外保存 `fresh_samples/command_samples/resampled_samples`、`feedback_interval_min_s/max_s`、`observed_encoder_step_rad` 与 `fit_attempts/rank_rejections/plausibility_rejections/prediction_rejections`；分别区分原始输出、真实命令和等间隔建模点，以及信息秩、作用方向／动态系数与留出预测问题；尚未执行的训练／留出预测 RMS 为 `null`，不以默认零误差填补缺测；旧事件缺少这些字段时界面显示未知
+
+`structure/parameter_count/training_span_rad/validation_error_limit_rad` 保存所选局部模型与训练窗预测尺度；用途成本区分跟踪和柔性；`taught_measurement_anchor_visit` 记录原路径源索引、计划和实际成本、引用角及 CSV，`interior_purpose_measurement_skipped` 说明内点或预算缺项且不默认回端点扰动；`rigid_purpose_local_comparison` 与 `compliant_purpose_local_comparison` 保留整组比较，`kept` 不代表性能认证；共享扰动用 `shared_disturbance_evidence` 引用实际源记录
+
+保持结果的 `hold_evaluation_scope` 区分内点固定目标分析与整轨终点定位；增加 `entry_actual_pos/controls_known/reference_fixed/independent_input_zero`，保持 CSV 的 `kp/kd` 为实际周期值并附 `actual_gains_known`；参数过渡与积分建立期继续保留全过程异常运动记录，最终固定参数窗口单独检查
+
+机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；新任务基本参数测全为 `measured_reference_complete`，缺项为 `insufficient_measurement`，正常无故障测量阶段为 COMPLETE；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据
 
 ### 周期输出与读取
 
@@ -586,7 +599,7 @@ except serial_arm.SerialArmError as exc:
 | `capabilities()` / `size()` | 提供真实型号或明确保守的物理能力与轴数 |
 | `cleanup()` | `noexcept`、可重复调用，释放 Backend 自己持有的逻辑资源 |
 
-`HardwareLoader::load(plugin, path[, overrides])` 返回绑定 Backend 与 DSO 生命周期的 `unique_ptr<MotorBus>`；析构时先销毁 Backend 再卸载共享库，调用方不手动 `dlclose()`
+`HardwareLoader::load(plugin, path[, overrides])` 返回绑定 Backend 与 DSO 显式引用生命周期的 `unique_ptr<MotorBus>`；析构时先销毁 Backend、释放设备与总线连接，再释放加载句柄；DSO 代码通过 `RTLD_NODELETE` 保留至进程退出，供共享总线注册表中较晚释放的弱引用控制块安全析构，调用方不手动 `dlclose()`
 
 `HardwareConfigOverrides` 只覆盖本次加载的 `serial_port`、`baudrate` 与 `bus`，不回写硬件 YAML
 

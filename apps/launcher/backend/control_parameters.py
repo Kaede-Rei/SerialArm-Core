@@ -168,17 +168,24 @@ def gain_measurement_available(validation, joint_count, kind):
                     for key in ('worst_error_rad', 'worst_velocity_rad_s')))
     if kind == 'drag':
         axes = validation.get('axes')
+        quiet_scope = isinstance(axes, list) and any(isinstance(axis, dict) and
+                      'quiet_stability_measured' in axis for axis in axes)
         return (validation.get('completed') is True and isinstance(axes, list) and
                 len(axes) == joint_count and all(isinstance(axis, dict) and
                 _gain_number(axis.get('samples')) and axis['samples'] > 0 and
-                all(_gain_number(axis.get(key)) and axis[key] >= 0 for key in
-                    ('initial_velocity_rad_s', 'peak_velocity_rad_s', 'final_velocity_rad_s', 'decay_s'))
+                ((axis.get('quiet_stability_measured') is True and
+                  all(_gain_number(axis.get(key)) and axis[key] >= 0 for key in
+                      ('quiet_position_span_rad', 'quiet_speed_rad_s'))) if quiet_scope else
+                 all(_gain_number(axis.get(key)) and axis[key] >= 0 for key in
+                     ('initial_velocity_rad_s', 'peak_velocity_rad_s', 'final_velocity_rad_s', 'decay_s')))
                 for axis in axes))
     return False
 
 
 def gain_purpose_available(candidate, purpose, fields):
     if not isinstance(fields, dict) or fields.get('error') in ('not_started', 'measurement_in_progress'):
+        return False
+    if any(value in ('not_started', 'measurement_in_progress') for value in fields.get('warnings', [])):
         return False
     if fields.get('available') is False and candidate.get('validation_scope') != 'independent_demonstration_trajectory':
         return False
@@ -216,15 +223,35 @@ def gain_purpose_available(candidate, purpose, fields):
     return True
 
 
+def gain_review_ready(candidate):
+    category = candidate.get('category')
+    groups = candidate.get('targets') if category == 'all' else {category: candidate}
+    if not isinstance(groups, dict) or not groups or category == 'all' and set(groups) != set(GAIN_PURPOSE_KEYS):
+        return False
+    if candidate.get('validation_scope') == 'independent_demonstration_trajectory':
+        return any(purpose in GAIN_PURPOSE_KEYS and gain_purpose_available(candidate, purpose, fields)
+                   for purpose, fields in groups.items())
+    if any(candidate.get(key) is False for key in ('review_ready', 'measurement_complete', 'qualification_complete')):
+        return False
+    for purpose, fields in groups.items():
+        if purpose not in GAIN_PURPOSE_KEYS or not gain_purpose_available(candidate, purpose, fields):
+            return False
+    return True
+
+
 def gain_selection_report(candidate, groups):
     warnings = [value for value in candidate.get('warnings', []) if isinstance(value, str)]
     for purpose, fields in groups.items():
         warnings.extend(value for value in fields.get('warnings', []) if isinstance(value, str))
         if fields.get('validated') is not True:
             warnings.append(purpose + ' 未达参考指标，保留实测结果，可应用或导出')
-        if (fields.get('disturbance_verification') or {}).get('available') is False:
+        disturbance = fields.get('disturbance_verification') or {}
+        if purpose != 'compliant_drag' and (disturbance.get('available') is not True or
+                disturbance.get('completed') is False or not disturbance.get('record_path')):
             warnings.append(purpose + ' 独立扰动测量不足，尚未完成抗扰验收')
-        if purpose in ('rigid_tracking', 'compliant_tracking') and (fields.get('hold_disturbance_verification') or {}).get('available') is False:
+        hold_disturbance = fields.get('hold_disturbance_verification') or {}
+        if purpose in ('rigid_tracking', 'compliant_tracking') and (hold_disturbance.get('available') is not True or
+                hold_disturbance.get('completed') is False or not hold_disturbance.get('record_path')):
             warnings.append(purpose + ' 保持扰动测量未完成')
     rigid, soft = groups.get('rigid_tracking'), groups.get('compliant_tracking')
     if soft and soft.get('compliant_separation_validated') is not True:
@@ -236,6 +263,8 @@ def gain_selection_report(candidate, groups):
 
 
 def deployment_gain_groups(candidate, gain_purposes=None):
+    if not gain_review_ready(candidate):
+        raise ValueError('增益标定测量未完成，尚未生成可审核结果；请补齐缺测用途后再应用或导出')
     category = candidate.get('category')
     if category == 'identification_tracking':
         raise ValueError('旧辨识增益记录未包含导纳联合验收，请重新运行伺服跟踪标定')
