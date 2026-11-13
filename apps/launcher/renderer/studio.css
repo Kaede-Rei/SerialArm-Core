@@ -294,6 +294,8 @@ input[role="switch"][data-studio-switch] { box-shadow:0 0 0 2px color-mix(in srg
 /* Native dialogs reverse from the current presentation; closing never locks input. */
 .page.page-transition-out { animation:none; }
 .page.page-transition-in { animation:none; }
+[data-studio-content-enter] { opacity:calc(.68 + .32 * var(--studio-content-progress,1)); translate:0 calc((1 - var(--studio-content-progress,1)) * 8px); will-change:opacity,translate; }
+@media(prefers-reduced-motion:reduce) { [data-studio-content-enter] { opacity:1; translate:none; } }
 .studio-dialog,.project-sheet {
   opacity:0; transform:translateY(6px) scale(.99);
   transition:opacity 160ms var(--motion-ease),transform 180ms var(--motion-ease),display 180ms allow-discrete,overlay 180ms allow-discrete;

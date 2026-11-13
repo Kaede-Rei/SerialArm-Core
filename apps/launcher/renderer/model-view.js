@@ -113,12 +113,13 @@ export class SerialArmModelView {
     this.language = language;
     this.mode = mode === 'compatibility' ? 'compatibility' : 'normal';
     this.onStatus = onStatus;
-    this.disposed = false; this.running = true; this.needsRender = true;
+    this.disposed = false; this.running = true; this.paused = false; this.needsRender = true;
     this.modelGeneration = 0; this.drawCount = 0; this.modelLoaded = false;
     this.modelStatus = 'empty'; this.modelErrors = []; this.modelError = null;
     this.ghostLinkGroups = new Map();
     this.meshGeometryCache = new Map(); this.ghostEdges = new Map();
     this.geometryJobs = new Map(); this.geometryJobSerial = 0;
+    this.poseFrames = null; this.totalComVisual = null;
     this.status = 'initializing'; this.error = null; this.suspended = false;
     this.diagnostics = {threeRevision: THREE.REVISION, mode: this.mode, creationErrors: []};
     this.scene = new THREE.Scene();
@@ -212,13 +213,43 @@ export class SerialArmModelView {
       modelStatus: this.modelStatus, modelError: this.modelError ? {...this.modelError} : null,
       modelErrors: this.modelErrors.map(error => ({...error})),
       meshCount, renderCalls: this.renderer?.info.render.calls || 0, triangles: this.renderer?.info.render.triangles || 0,
-      suspended: this.suspended, error: this.error ? {...this.error} : null,
+      suspended: this.suspended, paused: this.paused, error: this.error ? {...this.error} : null,
       diagnostics: structuredClone(this.diagnostics)};
   }
 
   emitStatus() {
     try { this.onStatus?.(this.getRenderState()); }
     catch (error) { console.error('Model view status handler failed', error); }
+  }
+
+  pause() {
+    if (this.disposed) return;
+    this.paused = true; this.suspended = true;
+    this.stopScheduledDraw();
+    if (this.controls) this.controls.enabled = false;
+    this.smoothZoom?.cancel(); this.cameraTransition?.cancel();
+  }
+
+  attach(container, language = this.language) {
+    if (this.disposed || !container) return false;
+    this.pause();
+    this.resizeObserver?.disconnect(); this.intersectionObserver?.disconnect();
+    this.container = container; this.offscreen = false;
+    if (language !== this.language) {
+      this.language = language; this.cameraTools?.remove(); this.cameraHint?.remove();
+      this.installCameraTools();
+    }
+    container.replaceChildren(this.canvas, this.cameraTools, this.cameraHint);
+    this.resizeObserver?.observe(container); this.intersectionObserver?.observe(container);
+    return true;
+  }
+
+  resume() {
+    if (this.disposed || !this.running) return false;
+    this.paused = false; this.lastFrameTime = undefined;
+    if (this.controls) this.controls.enabled = true;
+    this.resize(); this.requestRender();
+    return true;
   }
 
   failGraphics(error, phase = 'render', status = 'failed') {
@@ -255,6 +286,7 @@ export class SerialArmModelView {
     this.camera.updateProjectionMatrix(); this.controls.update();
     if (vector(state.camera?.quaternion, 4)) this.camera.quaternion.fromArray(state.camera.quaternion);
     if (state.layers) this.layers = {...this.layers, ...state.layers};
+    for (const values of Object.values(this.objectVisibility)) values.clear();
     for (const [kind, values] of Object.entries(state.objectVisibility || {})) {
       if (!this.objectVisibility[kind] || !Array.isArray(values)) continue;
       for (const item of values) if (Array.isArray(item) && typeof item[0] === 'string') this.objectVisibility[kind].set(item[0], item[1] !== false);
@@ -411,6 +443,8 @@ export class SerialArmModelView {
     this.setLayers(this.layers); this.refreshVisibility();
     this.resetView({immediate: !this.hasFramedModel}); this.hasFramedModel = true;
     if(this.modelErrors.length===0 && !await this.prepareGhostPose(generation))return false;
+    if(this.modelErrors.length===0)await this.renderer.compileAsync(this.scene,this.camera);
+    if(this.disposed || !this.running || generation!==this.modelGeneration)return false;
     this.modelLoaded = this.modelErrors.length === 0;
     this.modelStatus = this.modelLoaded ? 'ready' : 'failed';
     if (!this.modelLoaded) this.modelError = {category: 'model', code: 'MODEL_RESOURCE_LOAD_FAILED',
@@ -543,13 +577,25 @@ export class SerialArmModelView {
   }
 
   updateCenterOfMass(native){
-    while(this.comGroup.children.length){const child=this.comGroup.children[0];this.comGroup.remove(child);disposeObject(child);const index=this.labels.indexOf(child);if(index>=0)this.labels.splice(index,1);}
-    this.requestRender();
-    const com=native?.state?.center_of_mass;if(!Array.isArray(com)||com.length!==3)return;
-    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(...com)]),new THREE.LineBasicMaterial({color:0x22d3a6,transparent:true,opacity:0.95,depthTest:false}));line.userData.layer='com';this.comGroup.add(line);
-    const point=new THREE.Mesh(new THREE.SphereGeometry(0.014,16,12),new THREE.MeshBasicMaterial({color:0x22d3a6,depthTest:false}));point.position.set(...com);point.userData.layer='com';this.comGroup.add(point);
-    const label=this.makeLabel('Total COM',[com[0]+0.025,com[1]+0.025,com[2]+0.025],['com','labels']);this.comGroup.add(label);
-    this.refreshVisibility();
+    const com=native?.state?.center_of_mass,previous=this.totalComVisual;
+    if(!Array.isArray(com)||com.length!==3){
+      if(!previous)return false;
+      while(this.comGroup.children.length){const child=this.comGroup.children[0];this.comGroup.remove(child);disposeObject(child);const index=this.labels.indexOf(child);if(index>=0)this.labels.splice(index,1);}
+      this.totalComVisual=null;this.requestRender();return true;
+    }
+    if(previous&&previous.coordinates.every((value,index)=>value===com[index]))return false;
+    if(!previous){
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(),new THREE.Vector3(...com)]),new THREE.LineBasicMaterial({color:0x22d3a6,transparent:true,opacity:0.95,depthTest:false}));line.userData.layer='com';this.comGroup.add(line);
+      const point=new THREE.Mesh(new THREE.SphereGeometry(0.014,16,12),new THREE.MeshBasicMaterial({color:0x22d3a6,depthTest:false}));point.position.set(...com);point.userData.layer='com';this.comGroup.add(point);
+      const label=this.makeLabel('Total COM',[com[0]+0.025,com[1]+0.025,com[2]+0.025],['com','labels']);this.comGroup.add(label);
+      this.totalComVisual={line,point,label,coordinates:com.slice()};this.refreshVisibility();
+    }else{
+      previous.line.geometry.getAttribute('position').setXYZ(1,...com);previous.line.geometry.getAttribute('position').needsUpdate=true;
+      previous.line.geometry.computeBoundingSphere();previous.point.position.set(...com);
+      previous.label.position.set(com[0]+0.025,com[1]+0.025,com[2]+0.025);
+      previous.coordinates=com.slice();this.requestRender();
+    }
+    return true;
   }
 
   // Independent reference pose overlay; never changes the measured robot pose
@@ -588,12 +634,19 @@ export class SerialArmModelView {
 
   updatePose(native) {
     if (this.disposed || !this.running) return;
-    const frames=new Map((native?.state?.frames||[]).map(x=>[x.name,x]));
+    const input=native?.state?.frames||[];
+    const unchanged=this.poseFrames?.size===input.length&&input.every(frame=>{
+      const previous=this.poseFrames.get(frame.name),position=frame.position||[0,0,0],quaternion=frame.quaternion||[0,0,0,1];
+      return previous&&previous.position.every((value,index)=>value===position[index])&&previous.quaternion.every((value,index)=>value===quaternion[index]);
+    });
+    if(unchanged)return this.updateCenterOfMass(native);
+    const frames=new Map(input.map(frame=>[frame.name,frame]));
+    this.poseFrames=new Map(input.map(frame=>[frame.name,{position:(frame.position||[0,0,0]).slice(),quaternion:(frame.quaternion||[0,0,0,1]).slice()}]));
     for(const [name,group] of this.linkGroups){const frame=frames.get(name);if(frame)group.matrix.copy(frameMatrix(frame));}
     for(const [name,helper] of this.frameHelpers){const frame=frames.get(name);if(frame)helper.matrix.copy(frameMatrix(frame));}
     for(const entry of this.jointAxes){const transform=this.jointTransform(entry.joint,frames);if(!transform)continue;const position=new THREE.Vector3().setFromMatrixPosition(transform);if(entry.arrow){entry.arrow.position.copy(position);entry.arrow.setDirection(new THREE.Vector3(...(entry.joint.axis||[1,0,0])).normalize().transformDirection(transform));}entry.origin.position.copy(position);entry.label.position.copy(position).add(new THREE.Vector3(0.02,0.02,0.02));}
     for(const entry of this.effectiveGroups){const transform=this.jointTransform(entry.joint,frames);if(transform)entry.holder.matrix.copy(transform);}
-    this.updateCenterOfMass(native);
+    this.updateCenterOfMass(native);this.requestRender();return true;
   }
 
   clearGravityComparison() {
@@ -806,7 +859,7 @@ export class SerialArmModelView {
   }
 
   resize() {
-    if (this.disposed || !this.running || !this.renderer) return;
+    if (this.disposed || !this.running || this.paused || !this.renderer) return;
     this.smoothZoom.cancel();
     const width=this.container.clientWidth, height=this.container.clientHeight;
     if (width <= 0 || height <= 0) { this.suspended = true; this.stopScheduledDraw(); return; }
@@ -824,12 +877,12 @@ export class SerialArmModelView {
   }
 
   drawable() {
-    return !document.hidden && !this.offscreen && this.container.isConnected &&
+    return !this.paused && !document.hidden && !this.offscreen && this.container.isConnected &&
       this.container.clientWidth > 0 && this.container.clientHeight > 0;
   }
 
   requestRender() {
-    if (this.disposed || !this.running) return;
+    if (this.disposed || !this.running || this.paused) return;
     this.needsRender = true;
     this.suspended = !this.drawable();
     if (this.suspended || this.animationFrame != null || this.frameTimer != null || this.drawing) return;
@@ -861,7 +914,7 @@ export class SerialArmModelView {
 
   animate(time = performance.now()) {
     this.animationFrame = null;
-    if (this.disposed || !this.running) return;
+    if (this.disposed || !this.running || this.paused) return;
     if (!this.drawable()) { this.suspended = true; this.lastFrameTime = undefined; return; }
     this.suspended = false;
     const interval = this.mode === 'compatibility' ? 1000 / 30 : 0;
@@ -890,6 +943,7 @@ export class SerialArmModelView {
 
   disposeRoot() {
     this.modelGeneration++;
+    this.poseFrames=null;this.totalComVisual=null;
     this.clearGhostPose();
     this.disposeGeometryPreparation();
     disposeObject(this.root);
@@ -898,6 +952,7 @@ export class SerialArmModelView {
 
   releaseResources() {
     this.stopScheduledDraw(); this.modelGeneration++;
+    this.poseFrames=null;this.totalComVisual=null;
     this.resizeObserver?.disconnect(); this.intersectionObserver?.disconnect();
     if (this.onVisibilityChange) document.removeEventListener('visibilitychange', this.onVisibilityChange);
     this.smoothZoom?.dispose(); this.cameraTransition?.dispose();

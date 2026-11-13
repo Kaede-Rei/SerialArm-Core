@@ -74,12 +74,62 @@
     }
     reduced.addEventListener('change', resetMotion);
     new MutationObserver(resetMotion).observe(document.documentElement, {attributes:true,attributeFilter:['data-reduce-motion']});
-    function enterPage(page) {
-        const current = motions.get(page);
-        move(page, 1, {from:current?.value ?? .94,response:panelResponse,min:0,max:1,staticValue:1,
-            apply:value => { page.style.opacity = String(value); },
-            settled:() => page.style.removeProperty('opacity')});
+    const contentChanges = new WeakMap();
+    const contentExcluded = '.page-head,nav,.workspace-operation-panel,.robot-operation-bar,.workbench-model,.model-center,.description-preview,#model-viewport,#workbench-viewport,#description-viewport,#runtime-panel,.xterm,canvas,[hidden]';
+    function contentTargets(host) {
+        const targets=[];
+        function visit(node) {
+            if (node.matches(contentExcluded) || !node.getClientRects().length) return;
+            if (node.querySelector(contentExcluded)) { for (const child of node.children) visit(child); }
+            else targets.push(node);
+        }
+        // Keep the page header, navigation, preview and safety controls fixed.
+        const panel=host.querySelector('[data-studio-subpage-panel],.setup-main');
+        if(panel)visit(panel);
+        else for(const node of (host.querySelector(':scope > .studio-page-body')||host).children)visit(node);
+        return targets;
     }
+    function clearContentPresentation(record) {
+        for(const node of record.targets||[]) {
+            node.removeAttribute('data-studio-content-enter');
+            node.style.removeProperty('--studio-content-progress');
+        }
+        record.targets=[];
+    }
+    function prepareContentChange(host,key) {
+        if(!host)return;
+        let record=contentChanges.get(host);
+        if(!record){record={key:undefined,channel:{},targets:[]};contentChanges.set(host,record);}
+        record.pending=record.key!==undefined&&record.key!==key;
+        if(!record.pending){record.key=key;return;}
+        const active=document.activeElement;
+        record.focus=host.contains(active)&&active.closest('nav')
+            ? {node:active,selector:['data-studio-subpage-key','data-profile-group'].filter(name=>active.hasAttribute(name)).map(name=>`[${name}="${CSS.escape(active.getAttribute(name))}"]`).join('')}
+            : null;
+        const current=motions.get(record.channel);
+        // The caller replaces content synchronously. A rapid switch continues
+        // the incoming presentation and velocity; no outgoing DOM is retained.
+        record.from=current?.value??0;
+        clearContentPresentation(record);
+        record.key=key;
+    }
+    function finishContentChange(host,key) {
+        if(!host)return;
+        let record=contentChanges.get(host);
+        if(!record){record={key,channel:{},targets:[]};contentChanges.set(host,record);return;}
+        // A locally refreshed subpage also updates its enclosing page key;
+        // that bookkeeping must not start a second content transition.
+        if(record.key!==key){if(!record.pending)record.key=key;return;}
+        if(!record.pending&&!motions.has(record.channel))return;
+        record.pending=false;record.targets=contentTargets(host);
+        if(record.focus?.selector&&!record.focus.node.isConnected&&document.activeElement===document.body)host.querySelector(record.focus.selector)?.focus({preventScroll:true});
+        record.focus=null;
+        for(const node of record.targets)node.dataset.studioContentEnter='true';
+        move(host,1,{channel:record.channel,from:record.from,response:panelResponse,min:0,max:1,staticValue:1,
+            apply:value=>{for(const node of record.targets)node.style.setProperty('--studio-content-progress',String(value));},
+            settled:()=>clearContentPresentation(record)});
+    }
+    function enterPage() { /* The render hooks hand off only eligible content. */ }
     function anchorPopover(menu, trigger) {
         const bound = anchors.get(menu);
         if (bound) { bound.trigger = trigger; return; }
@@ -123,6 +173,12 @@
     function animateDisclosure(node, open, currentHeight = null) {
         const record = rememberDisclosure(node), summary = node.firstElementChild;
         const from = motions.get(node)?.value ?? currentHeight ?? record.height;
+        // Measuring the native collapsed height temporarily shortens ancestor
+        // scroll ranges. Keep that measurement from committing a scroll clamp;
+        // the restored presentation height then drives the gradual real clamp.
+        const scroll=[];
+        for(let parent=node.parentElement;parent;parent=parent.parentElement)
+            if(parent.scrollTop||parent.scrollLeft)scroll.push({node:parent,top:parent.scrollTop,left:parent.scrollLeft});
         const gap = record.open === node.open ? parseFloat(getComputedStyle(summary).marginBottom) || 0 : record.summaryGap;
         if (!open) {
             if (node.contains(document.activeElement) && !summary.contains(document.activeElement)) summary.focus({preventScroll:true});
@@ -149,6 +205,10 @@
                 node.style.removeProperty('--studio-disclosure-height'); node.style.removeProperty('--studio-disclosure-gap');
                 record.height = node.getBoundingClientRect().height; restoreDisclosureChildren(record);
             }});
+        if(!motionReduced())for(const item of scroll) {
+            if(item.node.scrollTop!==item.top)item.node.scrollTop=item.top;
+            if(item.node.scrollLeft!==item.left)item.node.scrollLeft=item.left;
+        }
     }
     let composing = false;
     document.addEventListener('compositionstart', () => { composing = true; }, true);
@@ -253,7 +313,7 @@
     document.addEventListener('change',event=>{if(event.target.matches('input[type=radio],input[role=switch]'))refreshMotion();});
     window.addEventListener('resize',refreshMotion);
     document.fonts.ready.then(refreshMotion); enhanceInteractiveMotion();
-    window.serialArmStudio = {enterPage,anchorPopover};
+    window.serialArmStudio = {enterPage,anchorPopover,prepareContentChange,finishContentChange};
 })();
 
 // Progressive enhancement keeps the original selects and their change handlers

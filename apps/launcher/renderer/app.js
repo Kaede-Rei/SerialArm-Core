@@ -459,6 +459,7 @@ function statusUI() {
 
 function resetProfileWorkspaceState() {
     profileLoadGeneration++;
+    modelLoadGeneration++; pageModelMount = null; workspaceMount = null; disposeModelPreview();
     graphicsState.records.clear(); graphicsState.current = null; graphicsState.ghostKey = '';
     const preserve = new Set(['page','previousPage','language','theme','fontLigatures','mode','source','entryIntent','libraryQuery','libraryFilter','library','libraryPath','activeLibraryId','config','status','profiles','session','busy','blockingBusy','backendError','inspecting','workbenchEpoch']);
     for (const [key,value] of Object.entries(profileWorkspaceDefaults)) if (!preserve.has(key)) state[key]=structuredClone(value);
@@ -1446,10 +1447,25 @@ function modelPage() {
     const empty = !state.modelData ? `<div class="model-empty"><div>${icon('model')}</div><h3>${available ? t('noModel') : t('modelUnavailable')}</h3><p>${t('offlinePreview')}</p></div>` : '';
     return pageHead('modelTitle', 'modelPageDesc', action) + `<section class="model-review"><div class="model-tools"><div class="model-toolbar" aria-label="${busyText('模型图层','Model layers')}"><label><input type="checkbox" data-model-layer="visual" ${state.modelLayers.visual ? 'checked' : ''}>${t('visualLayer')}</label><label><input type="checkbox" data-model-layer="collision" ${state.modelLayers.collision ? 'checked' : ''}>${t('collisionLayer')}</label><label><input type="checkbox" data-model-layer="linkFrames" ${state.modelLayers.linkFrames ? 'checked' : ''}>${t('linkFrameLayer')}</label><label><input type="checkbox" data-model-layer="jointAxes" ${state.modelLayers.jointAxes ? 'checked' : ''}>${t('jointAxisLayer')}</label><label><input type="checkbox" data-model-layer="com" ${state.modelLayers.com ? 'checked' : ''}>${t('comLayer')}</label><label><input type="checkbox" data-model-layer="inertia" ${state.modelLayers.inertia ? 'checked' : ''}>${t('inertiaLayer')}</label><label><input type="checkbox" data-model-layer="labels" ${state.modelLayers.labels ? 'checked' : ''}>${t('labelsLayer')}</label><div class="layer-actions"><button id="model-layers-all" class="tree-action">${t('allLayers')}</button><button id="model-layers-none" class="tree-action">${t('noLayers')}</button></div></div><details class="model-display-options"><summary>${busyText('显示与惯性','Display and inertia')}</summary><div class="model-display-options-body"><span class="inertia-source-options" role="group" aria-label="${state.language === 'en' ? 'Inertia data source' : '惯性数据来源'}"><span>${state.language === 'en' ? 'Inertia source' : '惯性来源'}</span><label><input type="radio" name="model-inertia-source" value="urdf" data-model-inertia-source ${state.modelInertiaSource === 'urdf' ? 'checked' : ''}>${state.language === 'en' ? 'Link / URDF' : 'Link 原始'}</label><label><input type="radio" name="model-inertia-source" value="core" data-model-inertia-source ${state.modelInertiaSource === 'core' ? 'checked' : ''}>${state.language === 'en' ? 'Core reduced' : 'Core 约简'}</label></span><span class="model-legend"><i class="legend-frame"></i>XYZ <i class="legend-axis"></i>Axis <span id="model-com-legend"><i class="${state.modelInertiaSource === 'core' ? 'legend-effective' : 'legend-com'}"></i>${state.modelInertiaSource === 'core' ? 'Core COM' : 'Link COM'}</span><i class="legend-total-com"></i>Total COM</span></div></details></div><div class="model-workspace"><aside class="model-tree" aria-label="${busyText('模型对象','Model objects')}">${modelTreeHtml()}</aside><section class="model-center"><div id="model-viewport">${empty}</div></section><aside class="model-inspector" aria-label="${busyText('检视器','Inspector')}">${modelInspectorHtml()}</aside></div><details class="joint-preview model-pose-controls" id="model-pose-preview"><summary class="joint-preview-head"><b>${t('jointPreview')}</b><span>${busyText('仅用于模型预览','Model preview only')}</span></summary><div class="model-pose-body"><div class="model-pose-actions"><button id="model-zero" class="button">${busyText('预览零位','Preview zero')}</button></div><div class="model-pose-joints">${modelJointHtml()}</div></div></details></section>`;
 }
+let modelLoadGeneration = 0;
+function modelSourceKey() {
+    return JSON.stringify([state.source,state.config.profile_file || '',state.config.profile || '',state.config.resource_paths || '']);
+}
 async function loadModelData(positions = null) {
-    if (!state.info) await inspect(); if (!state.info?.available?.model) throw new Error(t('modelUnavailable')); state.modelLoading = true;
-    try { const data = await api.request('model', { config: state.config, positions: positions || undefined }); state.modelData = data; state.modelPositions = data.native.state.positions.slice(); if (!state.modelSelection) state.modelSelection = data.model.links[0]?.name || ''; }
-    finally { state.modelLoading = false; }
+    if (!state.info) await inspect();
+    if (!state.info?.available?.model) throw new Error(t('modelUnavailable'));
+    const generation = ++modelLoadGeneration, source = modelSourceKey(), identity = JSON.stringify(state.modelIdentity), config = {...state.config};
+    pageModelMount = null; workspaceMount = null; disposeModelPreview();
+    graphicsState.records.clear(); graphicsState.current = null;
+    state.modelData = null; state.modelLoading = true;
+    try {
+        const data = await api.request('model', {config, positions: positions || undefined});
+        if (generation !== modelLoadGeneration || source !== modelSourceKey() || identity !== JSON.stringify(state.modelIdentity)) return null;
+        state.modelData = data; state.modelPreviewSourceKey = source;
+        state.modelPositions = data.native.state.positions.slice();
+        if (!state.modelSelection) state.modelSelection = data.model.links[0]?.name || '';
+        return data;
+    } finally { if (generation === modelLoadGeneration) state.modelLoading = false; }
 }
 // Graphics readiness belongs to the preview, independently of native robot state.
 const graphicsState = {effectiveMode: 'normal', requestedMode: 'normal', requiresRestart: false, records: new Map(), current: null, ghostKey: '', status: null, actionError: ''};
@@ -1471,16 +1487,104 @@ function previewRecord(host, payload) {
 }
 function disposeModelPreview() {
     restoreCalibrationTaskPreview();
+    ++modelPreviewGeneration; modelPreviewPreparation = null;
     if (!modelView) return;
     const record = graphicsState.current;
     if (record?.payload === modelView.payload) {
         const viewState = modelView.captureViewState?.();
         record.viewState = modelView.getRenderState?.().modelStatus === 'failed' ? record.viewState || viewState : viewState || record.viewState;
     }
-    const old = modelView; modelView = null; graphicsState.ghostKey = '';
+    const old = modelView; modelView = null; graphicsState.ghostKey = ''; ++ghostGeneration;
     if (ghostPending?.view === old) { ghostPending.resolve(); ghostPending = null; }
     if (ghostDrawnView === old) { ghostDrawnView = null; ghostDrawnAt = 0; ghostDrawnKey = ''; }
     old.dispose();
+}
+let modelPreviewGeneration = 0, modelPreviewPreparation = null, retainedPreviewHost = null;
+function previewRetentionHost() {
+    if (!retainedPreviewHost?.isConnected) {
+        retainedPreviewHost = document.createElement('div'); retainedPreviewHost.hidden = true;
+        retainedPreviewHost.dataset.retainedModelPreview = 'true'; retainedPreviewHost.setAttribute('aria-hidden','true');
+        document.body.append(retainedPreviewHost);
+    }
+    return retainedPreviewHost;
+}
+function suspendModelPreview() {
+    restoreCalibrationTaskPreview();
+    if (!modelView) return;
+    const record = graphicsState.current;
+    if (record?.payload === modelView.payload && modelView.modelLoaded) record.viewState = modelView.captureViewState();
+    ++ghostGeneration; ghostPending?.resolve(); ghostPending = null;
+    graphicsState.ghostKey = ''; ghostDrawnView = null; ghostDrawnAt = 0; ghostDrawnKey = '';
+    modelView.clearGhostPose(); modelView.clearGravityComparison();
+    state.modelCalibrationComparisonKey = ''; state.modelCalibrationComparisonView = null;
+    modelView.attach(previewRetentionHost(),state.language);
+}
+async function prepareModelPreview(payload, host) {
+    const mode = graphicsState.effectiveMode;
+    if (mode === 'rescue') return null;
+    if (modelPreviewPreparation?.payload === payload && modelPreviewPreparation.mode === mode) return modelPreviewPreparation.promise;
+    if (modelView?.payload === payload && modelView.mode === mode && !modelView.disposed) {
+        const report = modelView.getRenderState();
+        if (!modelView.running || ['failed','lost'].includes(report.status) || report.modelStatus === 'failed' || modelView.gl?.isContextLost()) {
+            const failure = Object.assign(new Error(report.error?.message || report.modelError?.message || busyText('三维上下文已失效，请重试预览','The 3D context is unavailable; retry the preview')),{category:report.modelStatus === 'failed'?'model':'graphics'});
+            disposeModelPreview(); throw failure;
+        }
+        return modelView;
+    }
+    disposeModelPreview();
+    const request = {payload,mode,generation:modelPreviewGeneration}; modelPreviewPreparation = request;
+    request.promise = (async()=>{
+        if (!modelModule) modelModule = await import('./model-view.js');
+        if (modelPreviewPreparation !== request || request.generation !== modelPreviewGeneration) return null;
+        let view;
+        try {
+            view = new modelModule.SerialArmModelView(host,file=>api.modelResource(file),state.language,{mode,onStatus:report=>{
+                const record = graphicsState.current;
+                if (modelView === view && record?.payload === payload) reportPreviewState(record,view,report);
+            }});
+            modelView = view; view.pause();
+            if (!await view.setModel(payload)) {
+                if (view.disposed || modelView !== view) return null;
+                throw Object.assign(new Error(view.modelError?.message || busyText('模型资源加载未完成','Model resources did not finish loading')),{category:'model'});
+            }
+            if (modelPreviewPreparation !== request || request.generation !== modelPreviewGeneration || modelView !== view) return null;
+            view.defaultViewState = view.captureViewState();
+            return view;
+        } catch (error) {
+            if (modelView === view) modelView = null;
+            view?.dispose(); throw error;
+        } finally { if (modelPreviewPreparation === request) modelPreviewPreparation = null; }
+    })();
+    return request.promise;
+}
+function attachModelPreview(view,host,record,configure) {
+    view.attach(host,state.language);
+    view.clearGhostPose(); view.clearGravityComparison();
+    view.restoreViewState(record.viewState || view.defaultViewState);
+    configure(view);
+    view.updatePose(record.payload.native);
+    state.modelCalibrationComparisonKey = ''; state.modelCalibrationComparisonView = null;
+    graphicsState.ghostKey = ''; ghostDrawnView = null; ghostDrawnKey = '';
+}
+async function preloadProfileModel() {
+    const payload = state.modelData || await loadModelData();
+    if (!payload || graphicsState.effectiveMode === 'rescue') return;
+    const host = previewRetentionHost(), record = previewRecord(host,payload);
+    try {
+        const view = await prepareModelPreview(payload,host);
+        if (!view && record.fault) throw Object.assign(new Error(record.fault.message),{category:record.fault.category});
+    }
+    catch (error) { if (state.modelData === payload) failModelPreview(record,error,null,error.category === 'model'?'model':'renderer'); throw error; }
+    if (state.modelData === payload) modelView?.pause();
+}
+async function preloadAvailableProfileModel() {
+    if (!state.info?.available?.model) return null;
+    const message = busyText('正在预加载模型与三维资源...', 'Preloading model and 3D resources...');
+    const prepare = async()=>{
+        setOperationOverlay(message);
+        try { await preloadProfileModel(); return null; } catch (error) { return error; }
+    };
+    return state.blockingBusy ? prepare() : blockingOperation(message,prepare);
 }
 function graphicsAvailabilityProblem(requireGhost = false) {
     const report = modelView?.getRenderState?.();
@@ -1757,7 +1861,7 @@ async function mountPageModelView(page, hostId, getPayload, configure) {
     const host = $(hostId), payload = getPayload();
     if (state.page !== page || !payload || !host) return;
     if (pageModelMount?.host === host && pageModelMount.payload === payload) return pageModelMount.promise;
-    if (modelView?.container === host && modelView.payload === payload) return;
+    if (modelView?.container === host && modelView.payload === payload && !modelView.paused) return;
     const record = previewRecord(host, payload);
     if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
     const request = {host, payload}; pageModelMount = request;
@@ -1765,20 +1869,14 @@ async function mountPageModelView(page, hostId, getPayload, configure) {
         let view, phase = 'renderer';
         const current = () => pageModelMount === request && state.page === page && $(hostId) === host && getPayload() === payload;
         try {
-            if (!modelModule) modelModule = await import('./model-view.js');
-            if (!current()) return;
-            disposeModelPreview();
-            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language, {mode: graphicsState.effectiveMode, onStatus: report => reportPreviewState(record, view, report)});
-            modelView = view;
             phase = 'model';
-            await view.setModel(payload);
-            if (!current() || modelView !== view) { view.dispose(); return; }
-            configure(view);
-            if (record.viewState) view.restoreViewState(record.viewState);
+            view = await prepareModelPreview(payload,host);
+            if (!view || !current() || modelView !== view) return;
+            attachModelPreview(view,host,record,configure);
+            view.resume();
             view.renderOnce();
         } catch (error) {
             if (current()) failModelPreview(record, error, view, phase);
-            else view?.dispose();
         } finally { if (pageModelMount === request) pageModelMount = null; }
     })();
     return request.promise;
@@ -5475,7 +5573,48 @@ function workbenchRecoveryNotice() {
     const en = state.language === 'en';
     return `<section class="workspace-section" role="alert"><h3>${en ? 'Control session not responding' : '控制会话无响应'}</h3><p class="hint">${en ? 'The previous hardware command timed out. It may still be executing, and the displayed joint state may be stale. Do not repeat enable or disable. Secure the robot using physical safety measures, then use Disconnect workspace in the top toolbar to confirm disconnection and reconnect' : '上一条硬件命令已超时，原生命令可能仍在执行，界面关节反馈可能过期，请勿重复使能或失能；先采取物理安全措施，再使用顶部“断开工作台”确认断连并重新连接'}</p></section>`;
 }
-let connectionPortScanPending = null;
+let connectionPortScanPending = null, connectionPortScanNotice = null, connectionPortScanNoticeTimer = null;
+function clearConnectionPortScanNotice() {
+    clearTimeout(connectionPortScanNoticeTimer); connectionPortScanNoticeTimer = null;
+    connectionPortScanNotice = null;
+    const popover = $('workspace-port-scan-status');
+    if (popover?.matches(':popover-open')) popover.hidePopover();
+    window.removeEventListener('resize', positionConnectionPortScanNotice);
+    document.removeEventListener('scroll', positionConnectionPortScanNotice, true);
+}
+function positionConnectionPortScanNotice() {
+    const popover = $('workspace-port-scan-status'), button = $('workspace-scan-ports');
+    if (!connectionPortScanNotice || !popover || !button) return;
+    const rect = button.getBoundingClientRect(), width = popover.offsetWidth || 220;
+    popover.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, rect.right - width))}px`;
+    popover.style.top = `${rect.bottom + 8}px`;
+}
+function refreshConnectionPortScanNotice() {
+    const notice = connectionPortScanNotice;
+    if (notice && (notice.page !== state.page || notice.expiresAt && notice.expiresAt <= Date.now())) clearConnectionPortScanNotice();
+    const popover = $('workspace-port-scan-status'), button = $('workspace-scan-ports');
+    if (!popover || !button || !connectionPortScanNotice) return;
+    const current = connectionPortScanNotice;
+    popover.dataset.phase = current.phase;
+    const title = current.phase === 'pending' ? busyText('正在刷新', 'Refreshing') : current.phase === 'success' ? busyText('已刷新', 'Refreshed') : busyText('刷新失败', 'Refresh failed');
+    const titleNode = popover.querySelector('[data-scan-title]'), detailNode = popover.querySelector('[data-scan-detail]');
+    if (titleNode.textContent !== title) titleNode.textContent = title;
+    if (detailNode.textContent !== current.detail) detailNode.textContent = current.detail;
+    detailNode.hidden = !current.detail;
+    popover.querySelector('.connection-scan-indicator').textContent = current.phase === 'pending' ? '' : current.phase === 'success' ? '✓' : '!';
+    positionConnectionPortScanNotice();
+    window.serialArmStudio?.anchorPopover(popover, button);
+    if (!popover.matches(':popover-open')) popover.showPopover();
+    positionConnectionPortScanNotice();
+}
+function finishConnectionPortScanNotice(notice, phase, detail) {
+    if (connectionPortScanNotice !== notice) return;
+    const duration = phase === 'success' ? 1600 : 3000;
+    Object.assign(notice, {phase, detail, expiresAt:Date.now() + duration});
+    clearTimeout(connectionPortScanNoticeTimer);
+    connectionPortScanNoticeTimer = setTimeout(() => { if (connectionPortScanNotice === notice) clearConnectionPortScanNotice(); }, duration);
+    refreshConnectionPortScanNotice();
+}
 function connectionDefaultPort() {
     const buses = state.info?.serial_buses || [];
     const bus = state.config.bus || state.info?.bus;
@@ -5490,7 +5629,7 @@ function connectionPortOptionsHtml() {
 function connectionPortSelectorHtml() {
     const locked = profileSelectionLocked(), buses = state.info?.serial_buses || [];
     const bus = buses.length > 1 ? `<label class="connection-bus-field"><span>${t('bus')}</span><select id="workspace-serial-bus" ${locked ? 'disabled' : ''}><option value="">${esc(state.info?.bus ? busyText('默认：', 'Default: ') + state.info.bus : busyText('选择总线', 'Choose bus'))}</option>${buses.map(item => `<option value="${esc(item.name)}" ${item.name === state.config.bus ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>` : '';
-    return `<div class="workspace-connection" role="group" aria-label="${esc(busyText('本次连接', 'Session connection'))}">${bus}<label class="connection-port-field"><span>${t('serial')}</span><select id="workspace-serial-port" ${locked ? 'disabled' : ''}>${connectionPortOptionsHtml()}</select></label><button type="button" id="workspace-scan-ports" class="button icon" aria-label="${esc(busyText('扫描串口', 'Scan serial ports'))}" title="${esc(busyText('扫描串口', 'Scan serial ports'))}" ${connectionPortScanPending ? 'disabled' : ''}>${icon('refresh')}</button></div>`;
+    return `<div class="workspace-connection" role="group" aria-label="${esc(busyText('本次连接', 'Session connection'))}">${bus}<label class="connection-port-field"><span>${t('serial')}</span><select id="workspace-serial-port" ${locked ? 'disabled' : ''}>${connectionPortOptionsHtml()}</select></label><div class="connection-scan-anchor"><button type="button" id="workspace-scan-ports" class="button icon" aria-label="${esc(busyText('扫描串口', 'Scan serial ports'))}" aria-controls="workspace-port-scan-status" title="${esc(busyText('扫描串口', 'Scan serial ports'))}" ${connectionPortScanPending ? 'disabled' : ''}>${icon('refresh')}</button><div id="workspace-port-scan-status" class="studio-popover connection-scan-status" popover="manual" role="status" aria-live="polite" aria-atomic="true"><div class="connection-scan-status-content"><span class="connection-scan-indicator" aria-hidden="true"></span><div><strong data-scan-title></strong><small data-scan-detail hidden></small></div></div></div></div></div>`;
 }
 function refreshConnectionPortControls() {
     const select = $('workspace-serial-port');
@@ -5498,15 +5637,24 @@ function refreshConnectionPortControls() {
     const scan = $('workspace-scan-ports');
     if (scan) { scan.disabled = !!connectionPortScanPending; scan.setAttribute('aria-busy', String(!!connectionPortScanPending)); }
     window.serialArmStudio?.enhanceSelects();
+    refreshConnectionPortScanNotice();
 }
 async function scanConnectionPorts() {
-    if (connectionPortScanPending) return connectionPortScanPending;
+    if (connectionPortScanPending) return;
+    clearTimeout(connectionPortScanNoticeTimer); connectionPortScanNoticeTimer = null;
+    const notice = {phase:'pending', detail:'', expiresAt:0, page:state.page};
+    connectionPortScanNotice = notice;
+    window.addEventListener('resize', positionConnectionPortScanNotice);
+    document.addEventListener('scroll', positionConnectionPortScanNotice, true);
     const job = api.request('status');
     connectionPortScanPending = job;
     refreshConnectionPortControls();
     try {
         const status = await job;
         state.status.devices = status.devices || [];
+        finishConnectionPortScanNotice(notice, 'success', state.status.devices.length ? busyText(`找到 ${state.status.devices.length} 个串口`, `${state.status.devices.length} serial ports found`) : busyText('未发现串口', 'No serial ports found'));
+    } catch (error) {
+        finishConnectionPortScanNotice(notice, 'error', localizedError(error?.message || String(error)));
     } finally {
         connectionPortScanPending = null;
         refreshConnectionPortControls();
@@ -5524,7 +5672,8 @@ function bindConnectionPortControls() {
     };
     if (port) port.onchange = () => update('serial_port', port.value);
     if (bus) bus.onchange = () => update('bus', bus.value);
-    if ($('workspace-scan-ports')) $('workspace-scan-ports').onclick = () => operation(scanConnectionPorts);
+    if ($('workspace-scan-ports')) $('workspace-scan-ports').onclick = scanConnectionPorts;
+    refreshConnectionPortControls();
 }
 function workspaceSessionActionHtml() {
     const connected = workbenchConnected();
@@ -5796,6 +5945,7 @@ function refreshGeometryPanel(resetScroll = false) {
     const active = document.activeElement;
     const field = active?.closest?.('.studio-select')?.querySelector('select') || active;
     const focus = panel.contains(active) && field.id ? {id:field.id, trigger:field !== active, value:field.value, checked:field.checked, start:field.selectionStart, end:field.selectionEnd} : null;
+    window.serialArmStudio?.prepareContentChange(panel, 'geometry:' + state.geometryTab);
     panel.innerHTML = geometryPanelHtml(false);
     for (const [index, item] of [...panel.querySelectorAll('details')].entries()) {
         const key = item.id || item.querySelector('summary')?.textContent.trim() || String(index);
@@ -5816,6 +5966,9 @@ function refreshGeometryPanel(resetScroll = false) {
     }
     if (scrollContainer) scrollContainer.scrollTop = scroll;
     if(view)restorePageView(view,panel);else {const inner=panel.closest('.studio-page-body');if(inner)inner.scrollTop=0;}
+    window.serialArmStudio?.finishContentChange(panel, 'geometry:' + state.geometryTab);
+    renderedPageViewKey = pageViewKey();
+    window.serialArmStudio?.finishContentChange($('page'), renderedPageViewKey);
 }
 function geometryPage() {
     return pageHead('geometryTitle', 'geometryDesc', workspaceSessionActionHtml()) + workspaceControlsHtml()
@@ -5831,7 +5984,7 @@ async function mountWorkbenchView() {
     const host = $('workbench-viewport'), payload = state.modelData, page = state.page;
     if (!['workbench', 'geometry', 'calibration'].includes(page) || !payload || !host) return;
     if (workspaceMount?.host === host && workspaceMount.payload === payload) return workspaceMount.promise;
-    if (modelView?.container === host && modelView.payload === payload) return;
+    if (modelView?.container === host && modelView.payload === payload && !modelView.paused) return;
     const record = previewRecord(host, payload);
     if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
     const request = {host, payload}; workspaceMount = request;
@@ -5839,21 +5992,15 @@ async function mountWorkbenchView() {
         let view, phase = 'renderer';
         const current = () => workspaceMount === request && $('workbench-viewport') === host && state.modelData === payload && state.page === page;
         try {
-            if (!modelModule) modelModule = await import('./model-view.js');
-            if (!current()) return;
-            disposeModelPreview();
-            view = new modelModule.SerialArmModelView(host, file => api.modelResource(file), state.language, {mode: graphicsState.effectiveMode, onStatus: report => reportPreviewState(record, view, report)});
-            modelView = view;
             phase = 'model';
-            await view.setModel(payload);
-            if (!current() || modelView !== view) { view.dispose(); return; }
-            view.setLayers({visual:true, collision:false, linkFrames:false, jointAxes:false, com:false, inertia:false, labels:false});
-            if (record.viewState) view.restoreViewState(record.viewState);
-            view.renderOnce();
+            view = await prepareModelPreview(payload,host);
+            if (!view || !current() || modelView !== view) return;
+            attachModelPreview(view,host,record,view=>view.setLayers({visual:true, collision:false, linkFrames:false, jointAxes:false, com:false, inertia:false, labels:false}));
+            updateWorkbenchModel();
+            view.resume(); view.renderOnce();
             updateWorkbenchModel(); updateModelCalibrationComparison(); updateStartGhost(true);
         } catch (error) {
             if (current()) failModelPreview(record, error, view, phase);
-            else view?.dispose();
         } finally { if (workspaceMount === request) workspaceMount = null; }
     })();
     return request.promise;
@@ -6501,8 +6648,11 @@ async function openLibraryEntry(id) {
     if (!profileContextCurrent(context) || profileSelectionLocked()) return false;
     state.readiness = readiness;
     state.profileDirty = false; clearProfileFormState(); state.profileGroup = 'model';
+    const modelError = await preloadAvailableProfileModel();
+    if (!profileContextCurrent(context) || profileSelectionLocked()) return false;
     state.page = 'lifecycle';
     await save(); shell();
+    if (modelError) toast(modelError,true);
 }
 async function importProfileSource(source) {
     const found = await blockingOperation(busyText('正在检查 Profile...', 'Inspecting Profile...'), () => api.request('profile_source_inspect', { source }));
@@ -6578,8 +6728,10 @@ async function createDescriptionProfile() {
     state.readiness = await api.request('readiness', { config: state.config });
     state.profileInteractionGoal = null; state.profileEditor = await api.request('profile_editor_load', { config: state.config });
     state.profileGroup = 'hardware'; state.profileDirty = false; clearProfileFormState();
+    const modelError = await preloadAvailableProfileModel();
     state.createdProfileWizard = true; state.descriptionStep = 4;
     state.page = 'profile_setup'; await save(); shell();
+    if (modelError) toast(modelError,true);
 }
 
 function collectProfileEditor() {
@@ -6764,6 +6916,7 @@ function refreshWorkspacePanel(resetScroll = false) {
     const details = samePanel ? new Map([...task.querySelectorAll('details')].map((item, index) => [item.id || item.querySelector('summary')?.textContent.trim() || String(index), item.open])) : new Map();
     const active = document.activeElement, select = active?.closest?.('.studio-select')?.querySelector('select');
     const focusId = samePanel && task.contains(active) ? select?.id || active.id : '';
+    window.serialArmStudio?.prepareContentChange(task, subview);
     task.innerHTML = workspaceTaskPresentationHtml();
     for (const [index, item] of [...task.querySelectorAll('details')].entries()) {
         const key = item.id || item.querySelector('summary')?.textContent.trim() || String(index);
@@ -6795,6 +6948,8 @@ function refreshWorkspacePanel(resetScroll = false) {
     refreshCalibrationQuickControls(); refreshCalibrationActionControls(); refreshGainApplyControls(); updateModelCalibrationTaskOverlay();
     if (state.setupFocus?.page === state.page) focusSetupTarget();
     if (state.page === 'workbench' && state.workbenchTab === 'monitor') drawWorkbenchChart();
+    window.serialArmStudio?.finishContentChange(task, subview);
+    window.serialArmStudio?.finishContentChange($('page'), renderedPageViewKey);
     if (state.modelData && !modelView && !workspaceMount) operation(mountWorkbenchView);
     return true;
 }
@@ -6818,12 +6973,13 @@ function render(options = {}) {
     const view=sameView?capturePageView():null;
     workspaceMount = null;
     pageModelMount = null;
-    disposeModelPreview();
+    suspendModelPreview();
     const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, geometry: geometryPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
     const factory = pages[state.page] || startPage;
     const pageChanged = renderedPage !== state.page;
     const page = $('page');
     if (page.contains($('runtime-panel'))) placeRuntimePanel(page.parentElement);
+    window.serialArmStudio?.prepareContentChange(page, pageViewKey());
     page.innerHTML = factory();
     const studio = !!state.config.profile && state.page !== 'settings';
     if (studio && !['start','library','description','model','lifecycle','profile_setup'].includes(state.page) && !page.querySelector('#robot-operation')) {
@@ -6863,12 +7019,15 @@ function render(options = {}) {
     if(view)restorePageView(view);else if(!sameView)main.scrollTop=0;
     if (state.page === 'profile_setup') bindProfileGuidance();
     if (state.setupFocus?.page === state.page) focusSetupTarget();
+    window.serialArmStudio?.finishContentChange(page, pageViewKey());
+    if (['workbench', 'calibration'].includes(state.page)) window.serialArmStudio?.finishContentChange(document.querySelector('.workbench-task'), workspaceRenderSubview);
+    if (state.page === 'geometry') window.serialArmStudio?.finishContentChange(document.querySelector('.geometry-panel'), 'geometry:' + state.geometryTab);
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
     if (state.page === 'run') setTimeout(() => { try { fit?.fit(); } catch { } }, 50);
-    if (state.page === 'model') setTimeout(() => operation(mountModelView), 0);
-    if (['workbench', 'geometry', 'calibration'].includes(state.page)) setTimeout(() => operation(mountWorkbenchView), 0);
-    if (state.page === 'description' && state.descriptionAnalysis) setTimeout(() => operation(mountDescriptionView), 0);
+    if (state.page === 'model') operation(mountModelView);
+    if (['workbench', 'geometry', 'calibration'].includes(state.page)) operation(mountWorkbenchView);
+    if (state.page === 'description' && state.descriptionAnalysis) operation(mountDescriptionView);
 }
 function capture() {
     const locked = profileSelectionLocked();
@@ -6938,6 +7097,7 @@ async function requestWorkbenchStop(params = {}) {
 }
 function actionBusyMessage(action) { const labels = { activate: ['正在使能...', 'Activating...'], park: ['正在停放并失能...', 'Parking and disabling...'], deactivate: ['正在立即失能...', 'Disabling...'], hold: ['正在保持当前位置...', 'Holding current position...'], rigid_hold: ['正在刚性保持当前位置...', 'Capturing rigid hold...'], clear_fault: ['正在清除故障...', 'Clearing fault...'], fault_compliant: ['正在进入柔性恢复...', 'Entering compliant recovery...'], fault_rigid: ['正在返回刚性保持...', 'Returning to rigid hold...'] }; const value = labels[action] || ['正在处理...', 'Working...']; return busyText(value[0], value[1]); }
 async function refreshProfiles() {
+    if (!state.blockingBusy) return blockingOperation(busyText('正在打开 Profile...', 'Opening Profile...'),refreshProfiles);
     if (!capture()) return false;
     profileLoadGeneration++;
     if (state.source === 'external' && !state.config.profile_file) throw new Error(t('fileHint'));
@@ -6945,12 +7105,16 @@ async function refreshProfiles() {
     if (!profileContextCurrent(context) || profileSelectionLocked()) return false;
     state.profiles = data.profiles;
     if (!state.profiles.some(p => p.name === state.config.profile)) state.config.profile = state.profiles[0]?.name || '';
-    state.info = null; render(); await save(); await inspect(); render();
+    state.info = null; render(); await save(); await inspect();
+    const modelError = await preloadAvailableProfileModel(); render();
+    if (modelError) toast(modelError,true);
 }
 function adoptInspectionInfo(info) {
     const identity=info.model_identity || null;
     if (profileSelectionLocked() && identity && state.modelIdentity && JSON.stringify(identity)!==JSON.stringify(state.modelIdentity)) return false;
-    if(identity && state.modelIdentity && JSON.stringify(identity)!==JSON.stringify(state.modelIdentity)) {
+    const sourceChanged = state.modelPreviewSourceKey && state.modelPreviewSourceKey !== modelSourceKey();
+    if(sourceChanged || identity && state.modelIdentity && JSON.stringify(identity)!==JSON.stringify(state.modelIdentity)) {
+        modelLoadGeneration++;
         pageModelMount=null;workspaceMount=null;disposeModelPreview();graphicsState.records.clear();graphicsState.current=null;
         state.modelData=null;state.modelPositions=[];state.modelSelection='';state.modelVisibility={links:{},linkFrames:{},joints:{}};
         state.workbenchTargets=[];state.workbenchTargetEpoch=null;state.pendingTarget=null;state.pendingMotionId=null;
@@ -7182,7 +7346,7 @@ function bindPage() {
         $('source-builtin').onclick = () => operation(async () => { if (!capture()) return; state.source = 'builtin'; state.config.profile_file = ''; await refreshProfiles(); });
         $('source-external').onclick = () => { if (!capture()) return; profileLoadGeneration++; state.source = 'external'; state.info = null; state.profiles = []; state.config.profile = ''; render(); };
         $('browse-profile')?.addEventListener('click', () => operation(async () => { if (!capture()) return; const context = profileRequestContext(), file = await api.selectProfile(); if (file && profileContextCurrent(context) && !profileSelectionLocked()) { state.config.profile_file = file; if ($('profile_file')) $('profile_file').value = file; await refreshProfiles(); } }));
-        $('profile-select').onchange = () => operation(async () => { if (!capture()) return; await inspect(); render(); });
+        $('profile-select').onchange = () => blockingOperation(busyText('正在打开 Profile...', 'Opening Profile...'),async () => { if (!capture()) return; await inspect(); const modelError=await preloadAvailableProfileModel(); render(); if(modelError)toast(modelError,true); });
         if ($('profile_file')) $('profile_file').onchange = () => operation(refreshProfiles);
         $('refresh-profiles').onclick = () => blockingOperation(busyText('正在刷新 Profile...', 'Refreshing profiles...'), refreshProfiles);
         $('inspect-profile').onclick = () => blockingOperation(busyText('正在检查配置...', 'Inspecting configuration...'), async () => { await inspect(); render(); });
