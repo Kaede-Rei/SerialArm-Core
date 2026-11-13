@@ -3,14 +3,18 @@
 (() => {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     const motionReduced = () => reduced.matches || document.documentElement.dataset.reduceMotion === 'true';
+    // ATIL quick (900/.7) and panel (560/1) pacing, normalized to damping
+    // ratio 1: no bounce, and current value/velocity survive a reversal.
+    const quickResponse = 2 * Math.PI / Math.sqrt(900 / .7);
+    const panelResponse = 2 * Math.PI / Math.sqrt(560);
     const motions = new Map(), anchors = new WeakMap();
     let pressed = null, frame = 0, previous = 0;
     function tick(now) {
         if (motionReduced()) { resetMotion(); return; }
-        const dt = Math.max(0,Math.min((now - previous) / 1000 || 1 / 60, .032));
+        const dt = Math.max(0,(now - previous) / 1000);
         previous = now;
-        for (const [node, motion] of motions) {
-            if (!node.isConnected) { motions.delete(node); continue; }
+        for (const [key, motion] of motions) {
+            if (!motion.node.isConnected) { motions.delete(key); continue; }
             // Exact critically damped step avoids frame-rate dependent overshoot.
             const omega = 2 * Math.PI / motion.response;
             const offset = motion.value - motion.target, carry = motion.velocity + omega * offset;
@@ -20,22 +24,22 @@
             const bounded = Math.max(motion.min, Math.min(motion.max, motion.value));
             if (bounded !== motion.value) { motion.value = bounded; motion.velocity = 0; }
             motion.apply(motion.value);
-            if (Math.abs(motion.value - motion.target) < .0001 && Math.abs(motion.velocity) < .001) {
-                motion.apply(motion.target); motion.settled?.(motion.target); motions.delete(node);
+            if (Math.abs(motion.value - motion.target) < (motion.positionEpsilon ?? .0001) && Math.abs(motion.velocity) < (motion.velocityEpsilon ?? .001)) {
+                motion.apply(motion.target); motion.settled?.(motion.target); motions.delete(key);
             }
         }
         frame = motions.size ? requestAnimationFrame(tick) : 0;
     }
     function move(node, target, options) {
-        if (motionReduced()) { options.apply(options.staticValue ?? target); options.settled?.(options.staticValue ?? target); return; }
-        const motion = motions.get(node) || {value:options.from,velocity:0};
-        Object.assign(motion, options, {target}); motions.set(node, motion);
+        const key = options.channel || node;
+        if (motionReduced()) { motions.delete(key); options.apply(options.staticValue ?? target); options.settled?.(options.staticValue ?? target); return; }
+        const motion = motions.get(key) || {value:options.from,velocity:0};
+        Object.assign(motion, options, {target,node}); motions.set(key, motion);
         motion.apply(motion.value);
-        if (frame) cancelAnimationFrame(frame);
-        previous = performance.now(); frame = requestAnimationFrame(tick);
+        if (!frame) { previous = performance.now(); frame = requestAnimationFrame(tick); }
     }
     function respond(button, target) {
-        move(button, target, {from:Number(getComputedStyle(button).scale) || 1,response:.18,min:.97,max:1,staticValue:1,
+        move(button, target, {from:Number(getComputedStyle(button).scale) || 1,response:quickResponse,min:.97,max:1,staticValue:1,
             apply:value => { button.style.scale = String(value); },
             settled:value => { if (value === 1) button.style.removeProperty('scale'); }});
     }
@@ -68,7 +72,7 @@
     new MutationObserver(resetMotion).observe(document.documentElement, {attributes:true,attributeFilter:['data-reduce-motion']});
     function enterPage(page) {
         const current = motions.get(page);
-        move(page, 1, {from:current?.value ?? .94,response:.16,min:0,max:1,staticValue:1,
+        move(page, 1, {from:current?.value ?? .94,response:panelResponse,min:0,max:1,staticValue:1,
             apply:value => { page.style.opacity = String(value); },
             settled:() => page.style.removeProperty('opacity')});
     }
@@ -76,6 +80,7 @@
         const bound = anchors.get(menu);
         if (bound) { bound.trigger = trigger; return; }
         const anchor = {trigger}; anchors.set(menu, anchor);
+        menu.dataset.motionAnchored = 'true';
         function animate(open) {
             const source = anchor.trigger.getBoundingClientRect();
             const left = parseFloat(menu.style.left) || menu.getBoundingClientRect().left;
@@ -84,7 +89,7 @@
             const origin = Math.max(0,Math.min(menu.offsetWidth,source.left + source.width / 2 - left));
             menu.style.transformOrigin = `${origin}px ${above ? '100%' : '0%'}`;
             menu.dataset.motionPlacement = above ? 'above' : 'below';
-            move(menu, open ? 1 : 0, {from:motions.get(menu)?.value ?? (open ? 0 : 1),response:.14,min:0,max:1,
+            move(menu, open ? 1 : 0, {from:motions.get(menu)?.value ?? (open ? 0 : 1),response:quickResponse,min:0,max:1,
                 apply:value => { menu.style.opacity=String(value); menu.style.transform=motionReduced()?'none':`translateY(${(above ? 4 : -4)*(1-value)}px) scale(${.97+.03*value})`; }});
         }
         menu.addEventListener('beforetoggle', event => {
@@ -94,6 +99,109 @@
         });
         menu.addEventListener('toggle', event => { if (event.newState === 'open') animate(true); });
     }
+    // Keep native details and their editors mounted. The open attribute changes
+    // immediately; only the visual height is animated, never the user's action.
+    const disclosures = new WeakMap();
+    const detailsSupported = CSS.supports('selector(details::details-content)');
+    function rememberDisclosure(node) {
+        let record = disclosures.get(node);
+        if (!record) {
+            record = {open:node.open,height:node.getBoundingClientRect().height,summaryGap:parseFloat(getComputedStyle(node.firstElementChild).marginBottom) || 0,inert:new Map()};
+            disclosures.set(node, record); node.dataset.studioDisclosure = 'true';
+        }
+        return record;
+    }
+    function restoreDisclosureChildren(record) {
+        for (const [child, inert] of record.inert) child.inert = inert;
+        record.inert.clear();
+    }
+    function animateDisclosure(node, open, currentHeight = null) {
+        const record = rememberDisclosure(node), summary = node.firstElementChild;
+        const from = motions.get(node)?.value ?? currentHeight ?? record.height;
+        const gap = record.open === node.open ? parseFloat(getComputedStyle(summary).marginBottom) || 0 : record.summaryGap;
+        if (!open) {
+            if (node.contains(document.activeElement) && !summary.contains(document.activeElement)) summary.focus({preventScroll:true});
+            for (const child of node.children) if (child !== summary && !record.inert.has(child)) { record.inert.set(child,child.inert); child.inert = true; }
+        } else restoreDisclosureChildren(record);
+        record.open = open; node.open = open;
+        delete node.dataset.studioDisclosureAnimating;
+        node.style.removeProperty('--studio-disclosure-height'); node.style.removeProperty('--studio-disclosure-gap');
+        const target = node.getBoundingClientRect().height;
+        if (open) record.openHeight = target; else record.closedHeight = target;
+        record.summaryGap = parseFloat(getComputedStyle(summary).marginBottom) || 0;
+        node.dataset.studioDisclosureAnimating = 'true';
+        if (!open) node.style.setProperty('--studio-disclosure-gap',`${gap}px`);
+        move(node,target,{from,response:panelResponse,min:record.closedHeight ?? Math.min(from,target),max:Math.max(record.openHeight ?? 0,from,target),staticValue:target,positionEpsilon:.1,velocityEpsilon:.5,
+            apply:value => node.style.setProperty('--studio-disclosure-height',`${value}px`),
+            settled:() => {
+                delete node.dataset.studioDisclosureAnimating;
+                node.style.removeProperty('--studio-disclosure-height'); node.style.removeProperty('--studio-disclosure-gap');
+                record.height = node.getBoundingClientRect().height; restoreDisclosureChildren(record);
+            }});
+    }
+    let composing = false;
+    document.addEventListener('compositionstart', () => { composing = true; }, true);
+    document.addEventListener('compositionend', () => { composing = false; }, true);
+    document.addEventListener('click', event => {
+        if (!detailsSupported || event.defaultPrevented || composing || !(event.target instanceof Element)) return;
+        const summary = event.target.closest('summary'), node = summary?.parentElement;
+        if (!(node instanceof HTMLDetailsElement) || node.firstElementChild !== summary || event.target.closest('a,button,input,select,textarea,[contenteditable]')) return;
+        event.preventDefault(); animateDisclosure(node,!node.open,node.getBoundingClientRect().height);
+    });
+    const segments = new Map(), subpages = new Map();
+    const segmentSelector = '.segmented,.workspace-tabs,.manager-filters,[data-studio-subpage-nav]';
+    function segmentKey(group, buttons) {
+        if (group.dataset.studioSubpageNav) return `subpage:${group.dataset.studioSubpageNav}`;
+        return `${group.matches('.manager-filters')?'library':group.matches('.workspace-tabs')?'tabs':'segments'}:${buttons.map(button => [...button.attributes].filter(attribute=>attribute.name.startsWith('data-')).map(attribute=>`${attribute.name}=${attribute.value}`).join(',') || button.textContent.trim()).join('|')}`;
+    }
+    function updateSegments() {
+        for (const group of document.querySelectorAll(segmentSelector)) {
+            const buttons = [...group.children].filter(node=>node instanceof HTMLButtonElement);
+            const active = buttons.find(button=>button.matches('[aria-pressed="true"],[aria-selected="true"],[aria-current],.active'));
+            if (!active || buttons.length < 2 || !group.getClientRects().length) continue;
+            const key = segmentKey(group,buttons), bounds = group.getBoundingClientRect(), selected = active.getBoundingClientRect();
+            const x = selected.left - bounds.left - group.clientLeft + group.scrollLeft, width = selected.width;
+            let record = segments.get(key);
+            if (!record) { record = {x,width,xChannel:{},widthChannel:{}}; segments.set(key,record); }
+            let indicator = group.querySelector(':scope > .studio-segment-indicator');
+            if (!indicator) { indicator=document.createElement('span'); indicator.className='studio-segment-indicator'; indicator.setAttribute('aria-hidden','true'); group.append(indicator); }
+            group.dataset.studioSegmented = 'true';
+            if (!group.dataset.studioSubpageNav) { indicator.style.top=`${selected.top - bounds.top - group.clientTop + group.scrollTop}px`; indicator.style.height=`${selected.height}px`; }
+            move(indicator,x,{channel:record.xChannel,from:record.x,response:quickResponse,min:0,max:Math.max(group.scrollWidth,x),positionEpsilon:.1,velocityEpsilon:.5,
+                apply:value => { record.x=value; indicator.style.transform=`translateX(${value}px)`; }});
+            move(indicator,width,{channel:record.widthChannel,from:record.width,response:quickResponse,min:0,max:Math.max(group.scrollWidth,width),positionEpsilon:.1,velocityEpsilon:.5,
+                apply:value => { record.width=value; indicator.style.width=`${value}px`; }});
+            if (group.dataset.studioSubpageNav) {
+                const name = group.dataset.studioSubpageNav, panel = [...document.querySelectorAll('[data-studio-subpage-panel]')].find(node=>node.dataset.studioSubpagePanel === name);
+                const selection = panel?.dataset.studioSubpageKey || active.dataset.studioSubpageKey;
+                if (panel && subpages.has(name) && subpages.get(name) !== selection) enterPage(panel);
+                subpages.set(name,selection);
+            }
+        }
+    }
+    function enhanceInteractiveMotion() {
+        if (detailsSupported) for (const node of document.querySelectorAll('details')) {
+            if (node.firstElementChild?.tagName !== 'SUMMARY') continue;
+            const record = rememberDisclosure(node);
+            if (record.open !== node.open && motions.has(node)) animateDisclosure(node,node.open);
+            // Programmatic reveal for a field/anchor stays synchronous; render
+            // and telemetry refreshes do not replay disclosure entrance motion.
+            else if (record.open !== node.open) { record.open=node.open; record.height=node.getBoundingClientRect().height; restoreDisclosureChildren(record); }
+            else if (!motions.has(node)) { record.height=node.getBoundingClientRect().height; record.summaryGap=parseFloat(getComputedStyle(node.firstElementChild).marginBottom)||0; }
+        }
+        updateSegments();
+    }
+    let enhancementQueued = false;
+    const refreshMotion = () => {
+        if (enhancementQueued) return;
+        enhancementQueued = true; queueMicrotask(() => { enhancementQueued=false; enhanceInteractiveMotion(); });
+    };
+    new MutationObserver(records => {
+        if (records.some(record=>record.type==='attributes' ? record.target instanceof HTMLDetailsElement || record.target.closest(segmentSelector)
+            : [...record.addedNodes].some(node=>node instanceof Element && (node.matches(`details,${segmentSelector}`) || node.querySelector(`details,${segmentSelector}`))))) refreshMotion();
+    }).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','class','aria-pressed','aria-selected','aria-current']});
+    window.addEventListener('resize',refreshMotion);
+    document.fonts.ready.then(refreshMotion); enhanceInteractiveMotion();
     window.serialArmStudio = {enterPage,anchorPopover};
 })();
 

@@ -531,16 +531,32 @@ function bindProfileManager(root) {
         await blockingOperation(busyText('正在打开 Profile...', 'Opening Profile...'), () => openLibraryEntry(button.dataset.libraryOpen));
     }));
     const menu = manager.querySelector('[popover]');
-    manager.querySelectorAll('[data-library-menu]').forEach(button => button.onclick = () => {
-        const rect = button.getBoundingClientRect();
-        menu.querySelector('[data-library-remove]').dataset.libraryRemove = button.dataset.libraryMenu;
-        menu.querySelector('[data-library-remove]').disabled = profileSelectionLocked();
+    const menuTriggers = [...manager.querySelectorAll('[data-library-menu]')];
+    let menuTrigger = null;
+    const positionMenu = () => {
+        if (!menuTrigger) return;
+        const rect = menuTrigger.getBoundingClientRect(), height = menu.offsetHeight || 52;
         menu.style.left = `${Math.max(8, Math.min(innerWidth - 200, rect.right - 184))}px`;
-        menu.style.top = `${Math.min(innerHeight - 64, rect.bottom + 5)}px`;
-        window.serialArmStudio?.anchorPopover(menu, button);
-        menu.showPopover(); button.setAttribute('aria-expanded', 'true');
-        const closed = event => { if (event.newState === 'closed') { button.setAttribute('aria-expanded', 'false'); menu.removeEventListener('toggle', closed); } };
-        menu.addEventListener('toggle', closed);
+        menu.style.top = `${rect.bottom + height + 5 <= innerHeight - 8 ? rect.bottom + 5 : Math.max(8, rect.top - height - 5)}px`;
+    };
+    menuTriggers.forEach(button => {
+        // The native invoker toggle avoids closing on auto light-dismiss and
+        // reopening in the same pointer click handler.
+        button.popoverTargetElement = menu;
+        button.popoverTargetAction = 'toggle';
+        button.setAttribute('aria-controls', menu.id);
+        button.onclick = () => {
+            if (menu.matches(':popover-open') && menuTrigger !== button) menu.hidePopover();
+            menuTrigger = button;
+            menu.querySelector('[data-library-remove]').dataset.libraryRemove = button.dataset.libraryMenu;
+            menu.querySelector('[data-library-remove]').disabled = profileSelectionLocked();
+            positionMenu(); window.serialArmStudio?.anchorPopover(menu, button);
+        };
+    });
+    menu.addEventListener('toggle', event => {
+        const open = event.newState === 'open';
+        menuTriggers.forEach(button => button.setAttribute('aria-expanded', String(open && button === menuTrigger)));
+        if (open) positionMenu();
     });
     menu.querySelector('[data-library-remove]').onclick = () => {
         if (profileSelectionLocked()) return;
@@ -1050,9 +1066,9 @@ function profileTree(value, path, depth = 0) {
         const leaves = Object.keys(value).length;
         const isHardware = path[0] === 'hardware';
         if (!isHardware && depth > 1 && leaves <= 12 && Object.values(value).every(item => item === null || typeof item !== 'object' || Array.isArray(item)))
-            return `<fieldset class="parameter-subgroup"><legend>${esc(paramLabel(path.at(-1)))}</legend><div class="parameter-fields">${children}</div></fieldset>`;
+            return `<fieldset class="parameter-subgroup parameter-fieldset"><legend>${esc(paramLabel(path.at(-1)))}</legend><div class="parameter-fields">${children}</div></fieldset>`;
         const expanded = isHardware ? (depth <= 1 || !!state.profileError?.includes(path.join('.'))) : true;
-        return `<details class="parameter-subgroup ${isHardware ? 'hardware-subgroup' : ''}" ${expanded ? 'open' : ''}><summary>${esc(paramLabel(path.at(-1)))}${isHardware ? `<small>${leaves} ${state.language === 'en' ? 'items' : '项'}</small>` : ''}</summary><div class="parameter-fields">${children}</div></details>`;
+        return `<details class="parameter-subgroup parameter-disclosure ${isHardware ? 'hardware-subgroup' : ''}" ${expanded ? 'open' : ''}><summary>${esc(paramLabel(path.at(-1)))}${isHardware ? `<small>${leaves} ${state.language === 'en' ? 'items' : '项'}</small>` : ''}</summary><div class="parameter-fields">${children}</div></details>`;
     }
     return profileField(path, value);
 }
@@ -1319,7 +1335,7 @@ function profileSetupPage() {
     const err = state.profileError ? `<div class="parameter-error" role="alert">${esc(state.profileError)}</div>` : '';
     const sectionTitle = state.language === 'en' ? ({model:'Model and gravity',mapping:'Joint mapping',motion:'Motion and interaction',safety:'Safety policy',shutdown:'Parking',hardware:'Hardware and buses'}[key]) : current[1];
     const sourcePath = key === 'hardware' ? e.hardware_path : e.core_path;
-    return (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + pageHead('profileSetup', 'profileSetupSubtitle') + `<div class="profile-settings"><section class="setup-save-context" aria-label="${busyText('参数保存','Save configuration')}"><div><b>${esc(state.config.profile || e.profile || 'Profile')}</b><span id="profile-dirty-state" role="status">${changed ? busyText('有未保存修改','Unsaved changes') : savedNote || busyText('已加载默认配置','Saved defaults loaded')}</span></div><div class="parameter-top-actions">${backAction}<button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div></section>${gravityValidationNoticeHtml(e)}<section class="parameter-layout setup-editor"><aside class="setup-sidebar"><nav class="parameter-groups" aria-label="${busyText('参数分组','Configuration groups')}">${profileGroups.map(([id, title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}" ${id === key ? 'aria-current="page"' : ''}>${esc(state.language === 'en' ? ({model:'Model and gravity',mapping:'Joint mapping',motion:'Motion and interaction',safety:'Safety policy',shutdown:'Parking',hardware:'Hardware and buses'}[id]) : title)}${id === 'motion' ? '<small>Kp/Kd　M/D/K</small>' : ''}</button>`).join('')}</nav><section class="setup-inspector"><details class="parameter-source"><summary>${busyText('配置文件','Configuration file')}</summary><code>${esc(sourcePath)}</code></details><div id="profile-guide-container">${profileGuidanceHtml(e)}</div></section></aside><section class="card parameter-card setup-main"><div class="setup-editor-head"><h2 class="section-title">${esc(sectionTitle)}</h2>${info ? `<p class="parameter-guidance">${info}</p>` : ''}</div><div class="card-body">${err}${completeMapping}${body}${optional}</div></section></section></div>`;
+    return (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + pageHead('profileSetup', 'profileSetupSubtitle') + `<div class="profile-settings"><section class="setup-save-context" aria-label="${busyText('参数保存','Save configuration')}"><div><b>${esc(state.config.profile || e.profile || 'Profile')}</b><span id="profile-dirty-state" role="status">${changed ? busyText('有未保存修改','Unsaved changes') : savedNote || busyText('已加载默认配置','Saved defaults loaded')}</span></div><div class="parameter-top-actions">${backAction}<button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div></section>${gravityValidationNoticeHtml(e)}<section class="setup-inspector"><details class="parameter-source"><summary>${busyText('配置文件','Configuration file')}</summary><code>${esc(sourcePath)}</code></details><div id="profile-guide-container">${profileGuidanceHtml(e)}</div></section><section class="parameter-layout setup-editor"><aside class="setup-sidebar"><nav class="parameter-groups" aria-label="${busyText('参数分组','Configuration groups')}">${profileGroups.map(([id, title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}" ${id === key ? 'aria-current="page"' : ''}>${esc(state.language === 'en' ? ({model:'Model and gravity',mapping:'Joint mapping',motion:'Motion and interaction',safety:'Safety policy',shutdown:'Parking',hardware:'Hardware and buses'}[id]) : title)}${id === 'motion' ? '<small>Kp/Kd　M/D/K</small>' : ''}</button>`).join('')}</nav></aside><section class="card parameter-card setup-main"><div class="setup-editor-head"><h2 class="section-title">${esc(sectionTitle)}</h2>${info ? `<p class="parameter-guidance">${info}</p>` : ''}</div><div class="card-body">${err}${completeMapping}${body}${optional}</div></section></section></div>`;
 }
 function connectionSettingsHtml() {
     const info = state.info;
@@ -1415,6 +1431,10 @@ function jointSliderRowHtml(name, index, joint, value, kind = 'model', actual = 
     const number = kind === 'model' ? `data-model-number="${index}"` : `data-target-joint="${index}"`;
     const displayId = kind === 'model' ? `joint-value-${index}` : `target-value-${index}`;
     const disabled = enabled && known ? '' : 'disabled';
+    if (kind === 'model') {
+        const rangeId = `model-joint-range-${index}`, numberId = `model-joint-number-${index}`, labelId = `model-joint-label-${index}`, boundsId = `model-joint-bounds-${index}`;
+        return `<div class="joint-preview-row model-joint-row" data-model-preview-joint="${index}"><div class="model-joint-heading"><label id="${labelId}" for="${rangeId}">${esc(name)}</label><span id="${displayId}" class="model-joint-current">${Number.isFinite(value) ? (value * spec.factor).toFixed(3) : '—'} ${unit}</span></div><div class="model-joint-slider"><input id="${rangeId}" type="range" ${slider} min="${lower}" max="${upper}" step="0.01" value="${center * spec.factor}" ${disabled} aria-labelledby="${labelId}" aria-describedby="${boundsId}"><div id="${boundsId}" class="model-joint-bounds"><span>${lower.toFixed(2)} ${unit}</span><span>${bounded ? 'URDF' : busyText('预览范围','Preview range')}</span><span>${upper.toFixed(2)} ${unit}</span></div></div><div class="model-joint-value"><input id="${numberId}" class="joint-number" ${number} type="number" ${bounded ? `min="${lower}" max="${upper}"` : ''} step="0.01" value="${Number.isFinite(value) ? (value * spec.factor).toFixed(3) : ''}" ${disabled} aria-labelledby="${labelId}"><label for="${numberId}">${unit}</label></div></div>`;
+    }
     return `<div class="joint-preview-row ${kind === 'target' ? 'target-joint-row' : ''}"><label>${esc(name)} <span id="${displayId}">${Number.isFinite(value) ? (value * spec.factor).toFixed(3) : '—'} ${unit}</span>${kind === 'target' ? `<small>${state.language === 'en' ? 'Actual' : '实测'} <b id="target-actual-${index}">${Number.isFinite(actual) ? (actual * spec.factor).toFixed(3) : '—'}</b> ${unit}</small>` : ''}</label><input type="range" ${slider} min="${lower}" max="${upper}" step="0.01" value="${center * spec.factor}" ${disabled} aria-label="${esc(name)} ${unit}"><input class="joint-number" ${number} type="number" ${bounded ? `min="${lower}" max="${upper}"` : ''} step="0.01" value="${Number.isFinite(value) ? (value * spec.factor).toFixed(3) : ''}" ${disabled} aria-label="${esc(name)} ${unit}"></div>`;
 }
 function modelJointHtml() {
@@ -1425,7 +1445,7 @@ function modelJointHtml() {
 function modelPage() {
     const available = state.info?.available?.model; const action = `${button('model-reload', state.modelData ? 'modelReload' : 'modelLoad', 'refresh', 'primary')}`;
     const empty = !state.modelData ? `<div class="model-empty"><div>${icon('model')}</div><h3>${available ? t('noModel') : t('modelUnavailable')}</h3><p>${t('offlinePreview')}</p></div>` : '';
-    return pageHead('modelTitle', 'modelPageDesc', action) + `<section class="model-review"><div class="model-tools"><div class="model-toolbar" aria-label="${busyText('模型图层','Model layers')}"><label><input type="checkbox" data-model-layer="visual" ${state.modelLayers.visual ? 'checked' : ''}>${t('visualLayer')}</label><label><input type="checkbox" data-model-layer="collision" ${state.modelLayers.collision ? 'checked' : ''}>${t('collisionLayer')}</label><label><input type="checkbox" data-model-layer="linkFrames" ${state.modelLayers.linkFrames ? 'checked' : ''}>${t('linkFrameLayer')}</label><label><input type="checkbox" data-model-layer="jointAxes" ${state.modelLayers.jointAxes ? 'checked' : ''}>${t('jointAxisLayer')}</label><label><input type="checkbox" data-model-layer="com" ${state.modelLayers.com ? 'checked' : ''}>${t('comLayer')}</label><label><input type="checkbox" data-model-layer="inertia" ${state.modelLayers.inertia ? 'checked' : ''}>${t('inertiaLayer')}</label><label><input type="checkbox" data-model-layer="labels" ${state.modelLayers.labels ? 'checked' : ''}>${t('labelsLayer')}</label><div class="layer-actions"><button id="model-layers-all" class="tree-action">${t('allLayers')}</button><button id="model-layers-none" class="tree-action">${t('noLayers')}</button></div></div><details class="model-display-options"><summary>${busyText('显示与惯性','Display and inertia')}</summary><div class="model-display-options-body"><span class="inertia-source-options" role="group" aria-label="${state.language === 'en' ? 'Inertia data source' : '惯性数据来源'}"><span>${state.language === 'en' ? 'Inertia source' : '惯性来源'}</span><label><input type="radio" name="model-inertia-source" value="urdf" data-model-inertia-source ${state.modelInertiaSource === 'urdf' ? 'checked' : ''}>${state.language === 'en' ? 'Link / URDF' : 'Link 原始'}</label><label><input type="radio" name="model-inertia-source" value="core" data-model-inertia-source ${state.modelInertiaSource === 'core' ? 'checked' : ''}>${state.language === 'en' ? 'Core reduced' : 'Core 约简'}</label></span><span class="model-legend"><i class="legend-frame"></i>XYZ <i class="legend-axis"></i>Axis <span id="model-com-legend"><i class="${state.modelInertiaSource === 'core' ? 'legend-effective' : 'legend-com'}"></i>${state.modelInertiaSource === 'core' ? 'Core COM' : 'Link COM'}</span><i class="legend-total-com"></i>Total COM</span></div></details></div><div class="model-workspace"><aside class="model-tree" aria-label="${busyText('模型对象','Model objects')}">${modelTreeHtml()}</aside><section class="model-center"><div id="model-viewport">${empty}</div></section><aside class="model-inspector" aria-label="${busyText('检视器','Inspector')}">${modelInspectorHtml()}</aside></div><details class="joint-preview model-pose-controls" id="model-pose-preview"><summary class="joint-preview-head"><b>${t('jointPreview')}</b><span>${busyText('仅用于模型预览','Model preview only')}</span></summary><div class="model-pose-actions"><button id="model-zero" class="button">${busyText('预览零位','Preview zero')}</button></div><div class="model-pose-joints">${modelJointHtml()}</div></details></section>`;
+    return pageHead('modelTitle', 'modelPageDesc', action) + `<section class="model-review"><div class="model-tools"><div class="model-toolbar" aria-label="${busyText('模型图层','Model layers')}"><label><input type="checkbox" data-model-layer="visual" ${state.modelLayers.visual ? 'checked' : ''}>${t('visualLayer')}</label><label><input type="checkbox" data-model-layer="collision" ${state.modelLayers.collision ? 'checked' : ''}>${t('collisionLayer')}</label><label><input type="checkbox" data-model-layer="linkFrames" ${state.modelLayers.linkFrames ? 'checked' : ''}>${t('linkFrameLayer')}</label><label><input type="checkbox" data-model-layer="jointAxes" ${state.modelLayers.jointAxes ? 'checked' : ''}>${t('jointAxisLayer')}</label><label><input type="checkbox" data-model-layer="com" ${state.modelLayers.com ? 'checked' : ''}>${t('comLayer')}</label><label><input type="checkbox" data-model-layer="inertia" ${state.modelLayers.inertia ? 'checked' : ''}>${t('inertiaLayer')}</label><label><input type="checkbox" data-model-layer="labels" ${state.modelLayers.labels ? 'checked' : ''}>${t('labelsLayer')}</label><div class="layer-actions"><button id="model-layers-all" class="tree-action">${t('allLayers')}</button><button id="model-layers-none" class="tree-action">${t('noLayers')}</button></div></div><details class="model-display-options"><summary>${busyText('显示与惯性','Display and inertia')}</summary><div class="model-display-options-body"><span class="inertia-source-options" role="group" aria-label="${state.language === 'en' ? 'Inertia data source' : '惯性数据来源'}"><span>${state.language === 'en' ? 'Inertia source' : '惯性来源'}</span><label><input type="radio" name="model-inertia-source" value="urdf" data-model-inertia-source ${state.modelInertiaSource === 'urdf' ? 'checked' : ''}>${state.language === 'en' ? 'Link / URDF' : 'Link 原始'}</label><label><input type="radio" name="model-inertia-source" value="core" data-model-inertia-source ${state.modelInertiaSource === 'core' ? 'checked' : ''}>${state.language === 'en' ? 'Core reduced' : 'Core 约简'}</label></span><span class="model-legend"><i class="legend-frame"></i>XYZ <i class="legend-axis"></i>Axis <span id="model-com-legend"><i class="${state.modelInertiaSource === 'core' ? 'legend-effective' : 'legend-com'}"></i>${state.modelInertiaSource === 'core' ? 'Core COM' : 'Link COM'}</span><i class="legend-total-com"></i>Total COM</span></div></details></div><div class="model-workspace"><aside class="model-tree" aria-label="${busyText('模型对象','Model objects')}">${modelTreeHtml()}</aside><section class="model-center"><div id="model-viewport">${empty}</div></section><aside class="model-inspector" aria-label="${busyText('检视器','Inspector')}">${modelInspectorHtml()}</aside></div><details class="joint-preview model-pose-controls" id="model-pose-preview"><summary class="joint-preview-head"><b>${t('jointPreview')}</b><span>${busyText('仅用于模型预览','Model preview only')}</span></summary><div class="model-pose-body"><div class="model-pose-actions"><button id="model-zero" class="button">${busyText('预览零位','Preview zero')}</button></div><div class="model-pose-joints">${modelJointHtml()}</div></div></details></section>`;
 }
 async function loadModelData(positions = null) {
     if (!state.info) await inspect(); if (!state.info?.available?.model) throw new Error(t('modelUnavailable')); state.modelLoading = true;
@@ -1837,7 +1857,7 @@ function workbenchTabs() {
         ['tuning', 'tuningTab', en ? 'Adjust interaction and record response' : '调整交互响应并记录'],
         ['monitor', 'monitorTab', en ? 'Feedback, references and torque' : '反馈、参考与力矩'],
     ];
-    return `<nav class="workbench-tab-grid workspace-task-navigation" aria-label="${en ? 'Workspace tools' : '工作台工具'}">${tabs.map(([key, label, description]) => `<button type="button" data-workbench-tab="${key}" class="calibration-entry workspace-task-tab ${state.workbenchTab === key ? 'selected' : ''}" aria-pressed="${state.workbenchTab === key}" aria-controls="workbench-task-panel" title="${esc(description)}"><span class="calibration-entry-title">${t(label)}</span></button>`).join('')}</nav>`;
+    return `<nav class="workbench-tab-grid workspace-task-navigation workspace-subpage-nav" data-studio-subpage-nav="workbench" aria-label="${en ? 'Workspace pages' : '工作台子页'}">${tabs.map(([key, label, description]) => `<button type="button" data-workbench-tab="${key}" data-studio-subpage-key="${key}" class="calibration-entry workspace-task-tab workspace-subpage-button ${state.workbenchTab === key ? 'selected' : ''}" aria-pressed="${state.workbenchTab === key}" ${state.workbenchTab === key ? 'aria-current="page"' : ''} aria-controls="workbench-task-panel" title="${esc(description)}"><span class="calibration-entry-title">${t(label)}</span></button>`).join('')}</nav>`;
 }
 function taskStateLabel(mode) {
     if (mode === 'COMPLIANT_DRAG') return state.language === 'en' ? 'Dragging' : '拖拽';
@@ -1974,14 +1994,14 @@ function robotOperationHtml() {
     const robotState = workbenchConnected() ? state.telemetry?.robot_state || 'UNKNOWN' : 'OFFLINE';
     const actions = items => items.map(([action, title]) => {
         const reason = controlOperationProblem(action);
-        return `<button type="button" data-workbench-action="${action}" class="button ${action === 'deactivate' ? 'danger' : action === 'activate' ? 'primary' : ''}" ${reason ? 'disabled' : ''} title="${esc(reason)}">${title}</button>`;
+        return `<button type="button" data-workbench-action="${action}" class="button ${action === 'deactivate' ? 'danger' : action === 'activate' ? 'primary' : ''}" ${reason ? 'disabled' : ''} ${action === 'activate' ? 'aria-describedby="control-operation-hint"' : ''} title="${esc(reason)}">${title}</button>`;
     }).join('');
     return `<section class="workspace-section robot-operation-bar" id="robot-operation" aria-label="${en ? 'Robot controls' : '机械臂控制'}">
       <div class="robot-operation-toolbar">
       <div class="robot-operation-state"><span class="robot-operation-dot ${robotState === 'ACTIVE' ? 'on' : 'off'}" aria-hidden="true"></span><strong>${en ? 'Robot state' : '机械臂状态'}</strong><span id="control-task-state">${esc(robotState)}</span><button type="button" class="button robot-operation-connect" data-robot-connect ${workbenchConnected() ? 'hidden' : ''}>${t('startWorkbench')}</button></div>
-      <div class="robot-operation-group robot-operation-main" role="group" aria-label="${en ? 'Power and stop' : '使能与停放'}">${actions([['activate', t('activateRobot')], ['park', t('parkRobot')], ['deactivate', t('deactivateRobot')]])}</div></div>
-      <div class="robot-operation-actions"><div class="robot-operation-group robot-operation-recovery" role="group" aria-label="${en ? 'Hold and recovery' : '保持与恢复'}">${actions([['rigid_hold', en ? 'Rigid hold here' : '当前位置刚性保持'], ['fault_compliant', t('compliantRecovery')], ['clear_fault', t('clearFault')]])}</div><p id="control-operation-hint" class="hint"></p></div>
-      <div id="control-operation-next"></div>
+      </div>
+      <div class="robot-operation-actions"><div class="robot-operation-group robot-operation-main" role="group" aria-label="${en ? 'Power and stop' : '使能与停放'}"><div class="robot-operation-enable">${actions([['activate', t('activateRobot')]])}<div class="robot-operation-guidance"><p id="control-operation-hint" class="hint"></p><div id="control-operation-next"></div></div></div>${actions([['park', t('parkRobot')], ['deactivate', t('deactivateRobot')]])}</div>
+      <div class="robot-operation-group robot-operation-recovery" role="group" aria-label="${en ? 'Hold and recovery' : '保持与恢复'}">${actions([['rigid_hold', en ? 'Rigid hold here' : '当前位置刚性保持'], ['fault_compliant', t('compliantRecovery')], ['clear_fault', t('clearFault')]])}</div></div>
     </section>`;
 }
 let robotOperationHeaderObserver = null;
@@ -4828,7 +4848,13 @@ function calibrationNavigationHtml(entry, locked) {
     const en=state.language==='en';
     const gravityStatus=state.readiness?.checks?.gravity_verification;
     const gravityLabel=gravityStatus==='verified'?(en?'Verified':'已验收'):gravityStatus==='stale'?(en?'Needs review':'需复验'):(en?'Pending verification':'待验证');
-    return `<div class="calibration-entry-stack" role="group" aria-label="${esc(busyText('标定工具', 'Calibration tools'))}"><button data-calibration-entry="gravity_verify" type="button" aria-pressed="${entry === 'gravity_verify'}" class="calibration-entry calibration-entry-featured ${entry === 'gravity_verify' ? 'selected' : ''}" ${locked && entry !== 'gravity_verify' ? 'disabled' : ''}><span class="calibration-entry-featured-main"><span class="calibration-entry-title">${en ? 'Gravity compensation verification' : '重力补偿验证'}</span><span>${en ? 'Controlled drag, gravity scaling and on-robot acceptance' : '受控拖拽、补偿比例验证与真机验收'}</span></span><span class="readiness-chip ${gravityStatus === 'verified' ? 'ready' : gravityStatus === 'stale' ? 'warning' : 'pending'}">${gravityLabel}</span></button><div class="calibration-entry-grid">${calibrationToolDefinitions.map(([key, zh, enName, zhDesc, enDesc]) => `<button data-calibration-entry="${key}" type="button" aria-pressed="${entry === key}" class="calibration-entry ${entry === key ? 'selected' : ''}" ${locked && entry !== key ? 'disabled' : ''}><span class="calibration-entry-title">${en ? enName : zh}</span><span>${en ? enDesc : zhDesc}</span></button>`).join('')}</div></div>`;
+    const labels={gravity_verify:['重力验证','Verify'],teaching:['示教','Teach'],gain:['增益','Gains'],gravity:['重力校正','Gravity'],dynamics:['动力学','Dynamics']};
+    const tools=[['gravity_verify','重力补偿验证','Gravity compensation verification','受控拖拽、补偿比例验证与真机验收','Controlled drag, gravity scaling and on-robot acceptance'],...calibrationToolDefinitions];
+    return `<nav class="workspace-subpage-nav calibration-subpage-nav" data-studio-subpage-nav="calibration" aria-label="${esc(busyText('动力学标定子页', 'Dynamics calibration pages'))}">${tools.map(([key,zh,enName,zhDesc,enDesc])=>{
+        const selected=entry===key,status=key==='gravity_verify'?gravityLabel:'';
+        const title=[en?enName:zh,en?enDesc:zhDesc,status].filter(Boolean).join('；');
+        return `<button data-calibration-entry="${key}" data-studio-subpage-key="${key}" type="button" aria-pressed="${selected}" ${selected?'aria-current="page"':''} aria-controls="calibration-task-panel" aria-label="${esc([en?enName:zh,status].filter(Boolean).join('，'))}" title="${esc(title)}" class="calibration-entry workspace-subpage-button ${selected?'selected':''}" ${locked&&!selected?'disabled':''}><span class="calibration-entry-title">${labels[key]?.[en?1:0]||(en?enName:zh)}</span>${key==='gravity_verify'?`<i class="workspace-subpage-status ${gravityStatus==='verified'?'ready':gravityStatus==='stale'?'warning':'pending'}" aria-hidden="true"></i>`:''}</button>`;
+    }).join('')}</nav>`;
 }
 function calibrationPanelHtml(includeControls = true) {
     const en = state.language === 'en';
@@ -4837,7 +4863,7 @@ function calibrationPanelHtml(includeControls = true) {
     const entry = state.calibrationEntry;
     const gravityStatus = state.readiness?.checks?.gravity_verification;
     const gravityLabel = gravityStatus === 'verified' ? (en ? 'Verified' : '已验收') : gravityStatus === 'stale' ? (en ? 'Needs review' : '需复验') : (en ? 'Pending verification' : '待验证');
-    return `<div class="workspace-panel calibration-panel">${includeControls ? calibrationQuickControlsHtml() : ''}${calibrationNavigationHtml(entry,locked)}${calibrationAlignmentPanelHtml()}
+    return `<div class="workspace-panel calibration-panel">${includeControls ? calibrationQuickControlsHtml() : ''}${calibrationNavigationHtml(entry,locked)}<div id="calibration-task-panel" class="workspace-subpage-content" data-studio-subpage-panel="calibration" data-studio-subpage-key="${esc(entry)}">${calibrationAlignmentPanelHtml()}
       ${(state.calibrationRuntimeCandidates?.gain_applied || state.calibrationRuntimeCandidates?.gravity_applied || state.calibrationRuntimeCandidates?.dynamics_applied) ? `<section class="workspace-section"><h3>${en ? 'Active temporary candidates' : '当前临时覆盖'}</h3><p class="hint">${en ? 'Support and disable the arm, then undo temporary settings and disconnect' : '先支撑并失能，再撤销临时参数并断开'}</p><div class="workspace-actions">${[['gain', 'gain_applied', en ? 'Gains' : '增益'], ['gravity', 'gravity_applied', en ? 'Gravity' : '重力'], ['dynamics', 'dynamics_applied', en ? 'Dynamics' : '动力学']].filter(([key, flag]) => state.calibrationRuntimeCandidates?.[flag]).map(([key, flag, name]) => `<button class="button" data-candidate-undo="${key}" ${workbenchConnected() && state.telemetry?.robot_state === 'INACTIVE' ? '' : 'disabled'}>${en ? 'Undo ' : '撤销'}${name}</button>`).join('')}</div></section>` : ''}
       ${entry === 'gravity_verify' ? gravityVerificationPanelHtml() :
             entry === 'teaching' ? calibrationStandalonePanelHtml('teaching') :
@@ -4846,7 +4872,7 @@ function calibrationPanelHtml(includeControls = true) {
                         advancedIdentificationPanelHtml() + calibrationToolHistoryHtml('dynamics')}
       ${entry === 'gravity' ? calibrationUnifiedResultsHtml() : ''}
       ${entry === 'gravity' ? singleCalibrationToolsHtml() : ''}
-    </div>`;
+    </div></div>`;
 }
 
 function matrixHtml(matrix) { if (!Array.isArray(matrix)) return '—'; return `<table class="matrix-table">${matrix.map(row => `<tr>${row.map(v => `<td>${Number(v).toFixed(4)}</td>`).join('')}</tr>`).join('')}</table>`; }
@@ -5452,10 +5478,64 @@ function workbenchRecoveryNotice() {
     const en = state.language === 'en';
     return `<section class="workspace-section" role="alert"><h3>${en ? 'Control session not responding' : '控制会话无响应'}</h3><p class="hint">${en ? 'The previous hardware command timed out. It may still be executing, and the displayed joint state may be stale. Do not repeat enable or disable. Secure the robot using physical safety measures, then use Disconnect workspace in the top toolbar to confirm disconnection and reconnect' : '上一条硬件命令已超时，原生命令可能仍在执行，界面关节反馈可能过期，请勿重复使能或失能；先采取物理安全措施，再使用顶部“断开工作台”确认断连并重新连接'}</p></section>`;
 }
+let connectionPortScanPending = null;
+function connectionDefaultPort() {
+    const buses = state.info?.serial_buses || [];
+    const bus = state.config.bus || state.info?.bus;
+    return buses.find(item => item.name === bus)?.device || state.info?.default_port || '';
+}
+function connectionPortOptionsHtml() {
+    const selected = state.config.serial_port || '', fallback = connectionDefaultPort();
+    const ports = [...new Set([...(state.status.devices || []), selected].filter(Boolean))];
+    return `<option value="" ${!selected ? 'selected' : ''}>${esc(fallback ? busyText('默认：', 'Default: ') + fallback : busyText('使用 Profile 默认串口', 'Use Profile serial default'))}</option>` +
+        ports.map(port => `<option value="${esc(port)}" ${port === selected ? 'selected' : ''}>${esc(port)}</option>`).join('');
+}
+function connectionPortSelectorHtml() {
+    const locked = profileSelectionLocked(), buses = state.info?.serial_buses || [];
+    const bus = buses.length > 1 ? `<label class="connection-bus-field"><span>${t('bus')}</span><select id="workspace-serial-bus" ${locked ? 'disabled' : ''}><option value="">${esc(state.info?.bus ? busyText('默认：', 'Default: ') + state.info.bus : busyText('选择总线', 'Choose bus'))}</option>${buses.map(item => `<option value="${esc(item.name)}" ${item.name === state.config.bus ? 'selected' : ''}>${esc(item.name)}</option>`).join('')}</select></label>` : '';
+    return `<div class="workspace-connection" role="group" aria-label="${esc(busyText('本次连接', 'Session connection'))}">${bus}<label class="connection-port-field"><span>${t('serial')}</span><select id="workspace-serial-port" ${locked ? 'disabled' : ''}>${connectionPortOptionsHtml()}</select></label><button type="button" id="workspace-scan-ports" class="button icon" aria-label="${esc(busyText('扫描串口', 'Scan serial ports'))}" title="${esc(busyText('扫描串口', 'Scan serial ports'))}" ${connectionPortScanPending ? 'disabled' : ''}>${icon('refresh')}</button></div>`;
+}
+function refreshConnectionPortControls() {
+    const select = $('workspace-serial-port');
+    if (select) { select.innerHTML = connectionPortOptionsHtml(); select.disabled = profileSelectionLocked(); }
+    const scan = $('workspace-scan-ports');
+    if (scan) { scan.disabled = !!connectionPortScanPending; scan.setAttribute('aria-busy', String(!!connectionPortScanPending)); }
+    const list = $('ports');
+    if (list) list.innerHTML = (state.status.devices || []).map(port => `<option value="${esc(port)}">`).join('');
+    window.serialArmStudio?.enhanceSelects();
+}
+async function scanConnectionPorts() {
+    if (connectionPortScanPending) return connectionPortScanPending;
+    const job = api.request('status');
+    connectionPortScanPending = job;
+    refreshConnectionPortControls();
+    try {
+        const status = await job;
+        state.status.devices = status.devices || [];
+    } finally {
+        connectionPortScanPending = null;
+        refreshConnectionPortControls();
+    }
+}
+function bindConnectionPortControls() {
+    const port = $('workspace-serial-port'), bus = $('workspace-serial-bus');
+    const update = (key, value) => {
+        if (profileSelectionLocked()) { refreshConnectionPortControls(); return; }
+        state.config[key] = value;
+        profileLoadGeneration++;
+        const legacy = $(key); if (legacy) legacy.value = value;
+        refreshConnectionPortControls();
+        operation(save);
+    };
+    if (port) port.onchange = () => update('serial_port', port.value);
+    if (bus) bus.onchange = () => update('bus', bus.value);
+    if ($('workspace-scan-ports')) $('workspace-scan-ports').onclick = () => operation(scanConnectionPorts);
+}
 function workspaceSessionActionHtml() {
     const connected = workbenchConnected();
-    if (!connected) return `<button id="start-workbench" class="button primary">${t('startWorkbench')}</button>`;
-    return `<button id="stop-workbench" class="button danger">${state.language === 'en' ? 'Disconnect workspace' : '断开工作台'}</button>`;
+    return connectionPortSelectorHtml() + (connected
+        ? `<button id="stop-workbench" class="button danger">${state.language === 'en' ? 'Disconnect workspace' : '断开工作台'}</button>`
+        : `<button id="start-workbench" class="button primary">${t('startWorkbench')}</button>`);
 }
 function workspaceModelNoteHtml() {
     const base = t(workbenchConnected() ? 'actualTelemetry' : 'offlineWaiting');
@@ -5487,7 +5567,7 @@ function workspaceContextNoteHtml(kind) {
 }
 function workspaceTaskPresentationHtml() {
     if (state.page === 'calibration') return workspaceContextNoteHtml('calibration') + calibrationPanelHtml(false);
-    return workbenchTabs() + `<div class="workbench-task-content" id="workbench-task-panel">${workbenchPanelHtml()}</div>`;
+    return workbenchTabs() + `<div class="workbench-task-content" id="workbench-task-panel" data-studio-subpage-panel="workbench" data-studio-subpage-key="${esc(state.workbenchTab)}">${workbenchPanelHtml()}</div>`;
 }
 
 async function geometryCommand(method, params = {}) {
@@ -5671,10 +5751,10 @@ function geometryPanelHtml(includeControls = true) {
     const options = (fixed.frame_options || []).map(frame => `<option value="${esc(frame)}" ${frame === (fixedActive ? fixed.parent_frame : state.geometryFrame || fixed.suggested_frame) ? 'selected' : ''}>${esc(frame)}</option>`).join('');
     const tr = (zh, english) => en ? english : zh;
     const fmt = x => Number.isFinite(Number(x)) ? Number(x).toFixed(3) : '—';
-    const tab = `<div class="calibration-entry-grid">${[
+    const tab = `<nav class="workspace-subpage-nav geometry-subpage-nav" data-studio-subpage-nav="geometry" aria-label="${tr('几何标定子页', 'Geometry pages')}">${[
         ['fixed', tr('固定点几何标定', 'Fixed-point geometry'), tr('多姿态采样、针尖位置求解与独立验证', 'Multi-pose sampling, tip fitting and independent validation')],
         ['repeat', tr('定点重复到位测试', 'Point repeatability test'), tr('触点撤离示教与自动往返验证', 'Teach contact withdrawal and verify repeated round trips')],
-    ].map(([key, title, description]) => `<button type="button" class="calibration-entry ${state.geometryTab === key ? 'selected' : ''}" data-geometry-tab="${key}" aria-pressed="${state.geometryTab === key}" ${running && state.geometryTab !== key ? 'disabled' : ''}><span class="calibration-entry-title">${title}</span><span>${description}</span></button>`).join('')}</div>`;
+    ].map(([key, title, description]) => `<button type="button" class="calibration-entry workspace-subpage-button ${state.geometryTab === key ? 'selected' : ''}" data-geometry-tab="${key}" data-studio-subpage-key="${key}" aria-pressed="${state.geometryTab === key}" ${state.geometryTab === key ? 'aria-current="page"' : ''} aria-controls="geometry-task-panel" title="${esc(description)}" ${running && state.geometryTab !== key ? 'disabled' : ''}><span class="calibration-entry-title">${title}</span></button>`).join('')}</nav>`;
     const fixedContent = `<div class="geometry-task-flow"><section class="workspace-section geometry-card"><div class="workspace-section-head"><div><h3>${tr('固定点实验', 'Fixed-point experiment')}</h3><p class="hint">${tr('使用同一组多姿态接触数据，求解针尖相对于末端 Frame 的临时偏移，并验证 FK 跨姿态一致性', 'Fit the temporary tip offset and verify FK consistency from one multi-pose fixed-point experiment')}</p></div><span class="result-badge ${report?.passed ? 'pass' : report ? 'warn' : 'neutral'}">${report ? tr(report.passed ? '验证通过' : '待审核', report.passed ? 'Validated' : 'Needs review') : candidate ? tr('待验证', 'Pending validation') : fixedActive ? tr('采样中', 'Sampling') : tr('未启动', 'Not started')}</span></div>
       <label>${tr('实验用途', 'Purpose')}<select id="geometry-purpose" ${fixedActive ? 'disabled' : ''}><option value="diagnostic" ${selectedPurpose === 'diagnostic' ? 'selected' : ''}>${tr('临时针尖　FK 诊断', 'Temporary tip　FK diagnosis')}</option><option value="tcp" ${selectedPurpose === 'tcp' ? 'selected' : ''}>${tr('真实工具尖端　TCP 位置标定', 'Actual tool tip　TCP position calibration')}</option></select></label>
       <label>${tr('末端参考 Frame', 'Tip parent frame')}<select id="geometry-frame" ${fixedActive ? 'disabled' : ''}>${options}</select></label>
@@ -5708,7 +5788,7 @@ function geometryPanelHtml(includeControls = true) {
       <p class="geometry-note">${tr('本测试不自动测量接触误差，触点是否对准及目标直径由用户自行目视判断，不可直接将针尖直径当作重复定位精度', 'No automatic contact-error measurement is made; assess alignment visually, and do not equate tip diameter with calibrated repeatability')}</p>
       <p class="hint">${tr('自动运行前务必确保回放终点不会向刚性针尖施加危险碰撞力，建议先在不接触针尖的位置以低速检查整条轨迹', 'Verify the complete trajectory at low speed with safe clearance before replay; no automatic collision detection is provided')}</p>
     </section></div>`;
-    return `${includeControls ? calibrationQuickControlsHtml() : ''}${tab}${state.geometryTab === 'fixed' ? fixedContent : repeatContent}`;
+    return `${includeControls ? calibrationQuickControlsHtml() : ''}${tab}<div id="geometry-task-panel" class="workspace-subpage-content" data-studio-subpage-panel="geometry" data-studio-subpage-key="${esc(state.geometryTab)}">${state.geometryTab === 'fixed' ? fixedContent : repeatContent}</div>`;
 }
 function refreshGeometryPanel(resetScroll = false) {
     if (state.page !== 'geometry') return;
@@ -6388,7 +6468,7 @@ function drawWorkbenchChart() { const canvas = $('workbench-chart'); if (!canvas
 function runPage() {
     const modes = ['terminal', 'hardware', 'moveit'];
     const selected = state.info?.available?.[state.mode];
-    return pageHead('runtimeTitle', '') + `<div class="studio-shell-adapters"><section class="studio-shell-adapter-choices" aria-labelledby="studio-adapter-mode-title"><h2 id="studio-adapter-mode-title">${busyText('选择运行模式','Choose a run mode')}</h2><div class="mode-grid mode-grid-three" role="group" aria-labelledby="studio-adapter-mode-title">${modes.map(mode => `<button type="button" class="mode-card ${state.mode === mode ? 'active' : ''}" data-mode="${mode}" aria-pressed="${state.mode === mode}"><span class="mode-type ${state.info?.available?.[mode] ? 'is-ready' : 'is-unavailable'}">${t(state.info?.available?.[mode] ? 'ready' : 'unavailable')}</span>${icon(mode)}<h3>${t(mode)}</h3><p>${t(mode + 'Desc')}</p></button>`).join('')}</div></section><section class="card launch-panel studio-shell-launch"><div><span class="studio-shell-label">${t('selectedRobot')}</span><h2>${esc(state.config.profile || '—')}</h2><p><strong>${t(state.mode)}</strong><span>${esc(selected ? t('real') : state.info?.unavailable_reasons?.[state.mode] || t('modeMissing'))}</span></p><div class="launch-command">${esc(state.info?.profile_file || state.config.profile_file || '')}</div></div>${button('launch-session', 'launch', 'run', 'primary')}</section></div>`;
+    return pageHead('runtimeTitle', '', workspaceSessionActionHtml()) + `<div class="studio-shell-adapters"><section class="studio-shell-adapter-choices" aria-labelledby="studio-adapter-mode-title"><h2 id="studio-adapter-mode-title">${busyText('选择运行模式','Choose a run mode')}</h2><div class="mode-grid mode-grid-three" role="group" aria-labelledby="studio-adapter-mode-title">${modes.map(mode => `<button type="button" class="mode-card ${state.mode === mode ? 'active' : ''}" data-mode="${mode}" aria-pressed="${state.mode === mode}"><span class="mode-type ${state.info?.available?.[mode] ? 'is-ready' : 'is-unavailable'}">${t(state.info?.available?.[mode] ? 'ready' : 'unavailable')}</span>${icon(mode)}<h3>${t(mode)}</h3><p>${t(mode + 'Desc')}</p></button>`).join('')}</div></section><section class="card launch-panel studio-shell-launch"><div><span class="studio-shell-label">${t('selectedRobot')}</span><h2>${esc(state.config.profile || '—')}</h2><p><strong>${t(state.mode)}</strong><span>${esc(selected ? t('real') : state.info?.unavailable_reasons?.[state.mode] || t('modeMissing'))}</span></p><div class="launch-command">${esc(state.info?.profile_file || state.config.profile_file || '')}</div></div>${button('launch-session', 'launch', 'run', 'primary')}</section></div>`;
 }
 function diagnosticsPage() {
     const checks = [{ name: 'installation', ok: !!state.status.installed, detail: state.status.prefix || t('notInstalled') }, ...(state.info?.checks || [])];
@@ -6894,7 +6974,7 @@ async function inspect(options = {}) {
     const status = await api.request('status'); const info = await api.request('inspect', snapshot);
     if (serial !== state.inspecting || !profileContextCurrent(context)) return false;
     if (!adoptInspectionInfo(info)) return false;
-    state.status = status; await save(); statusUI();
+    state.status = status; await save(); statusUI(); refreshConnectionPortControls();
     return true;
 }
 let navigationGeneration = 0;
@@ -6958,6 +7038,7 @@ async function navigate(page) {
     }
 }
 function bindPage() {
+    bindConnectionPortControls();
     bindGraphicsActions();
     wireCalibrationQuickControls();
     observeRobotOperationHeader();
@@ -7101,7 +7182,7 @@ function bindPage() {
     if ($('open-capability-calibration')) $('open-capability-calibration').onclick = () => operation(()=>openSetupTarget({page:'calibration',tool:'gain'}));
     if ($('settings-back')) $('settings-back').onclick = () => operation(() => navigate(state.previousPage || 'start'));
     for (const key of Object.keys(state.config)) {
-        const element = $(key); if (element) element.onchange = () => { if (!capture()) return; state.info = null; operation(save); };
+        const element = $(key); if (element) element.onchange = () => { if (!capture()) return; state.info = null; refreshConnectionPortControls(); operation(save); };
     }
     if ($('serial_port')) $('serial_port').setAttribute('list', 'ports');
     if ($('source-builtin')) {
@@ -7132,14 +7213,14 @@ function bindPage() {
         document.querySelectorAll('[data-model-joint]').forEach(input => input.oninput = () => { const i = Number(input.dataset.modelJoint), name = state.modelData?.native?.config?.joint_names?.[i]; state.modelPositions[i] = jointInputToNative(name,input.value); const number = document.querySelector(`[data-model-number="${i}"]`); if (number) number.value = Number(input.value).toFixed(3); const value = $('joint-value-' + i); if (value) value.textContent = jointDisplayValue(state.modelPositions[i],name); queuePreview(); });
         document.querySelectorAll('[data-model-number]').forEach(input => input.onchange = () => { const i = Number(input.dataset.modelNumber), name = state.modelData?.native?.config?.joint_names?.[i]; const slider = document.querySelector(`[data-model-joint="${i}"]`); let value = Number(input.value); if (!Number.isFinite(value)) return; value = Math.max(Number(slider.min), Math.min(Number(slider.max), value)); state.modelPositions[i] = jointInputToNative(name,value); slider.value = String(value); input.value = value.toFixed(3); const label = $('joint-value-' + i); if (label) label.textContent = jointDisplayValue(state.modelPositions[i],name); queuePreview(); });
     }
+    if ($('start-workbench')) $('start-workbench').onclick = () => startWorkbench();
+    if ($('stop-workbench')) $('stop-workbench').onclick = () => confirmWorkbenchDisconnect();
     if (['workbench', 'geometry', 'calibration', 'diagnostics'].includes(state.page)) {
         document.querySelectorAll('[data-workbench-tab]').forEach(b => b.onclick = () => { state.workbenchTab = b.dataset.workbenchTab; render(); if (state.workbenchTab === 'replay') operation(async () => { await refreshTeachTrajectories(); render(); }); });
         wireTeachReplay();
         if (state.page === 'geometry') wireGeometry();
         document.querySelectorAll('[data-calibration-com-scale]').forEach(button => button.onclick = () => { state.modelCalibrationDisplayScale = Number(button.dataset.calibrationComScale); document.querySelectorAll('[data-calibration-com-scale]').forEach(other => { const active = Number(other.dataset.calibrationComScale) === state.modelCalibrationDisplayScale; other.classList.toggle('active', active); other.setAttribute('aria-pressed', String(active)); }); const hint = document.querySelector('.calibration-com-hint'); if (hint) hint.textContent = state.modelCalibrationDisplayScale === 1 ? (state.language === 'en' ? 'True 3D locations' : '真实三维位置') : (state.language === 'en' ? 'Visual displacement only' : '仅放大显示位移，不更改实际坐标'); updateModelCalibrationComparison(); });
         if ($('calibration-com-unchanged')) $('calibration-com-unchanged').onchange = event => { state.modelCalibrationShowUnchanged = event.target.checked; updateModelCalibrationComparison(); };
-        if ($('start-workbench')) $('start-workbench').onclick = () => startWorkbench();
-        if ($('stop-workbench')) $('stop-workbench').onclick = () => confirmWorkbenchDisconnect();
         document.querySelectorAll('[data-gain-purpose]').forEach(button => button.onclick = () => switchWorkbenchGainPurpose(button.dataset.gainPurpose));
         document.querySelectorAll('[data-feedforward-mode]').forEach(b => b.onclick = () => switchWorkbenchMode('feedforward', b.dataset.feedforwardMode));
         document.querySelectorAll('[data-reference-behavior]').forEach(button => button.onclick = () => blockingOperation(busyText('正在切换控制方式', 'Switching control method'), async () => {

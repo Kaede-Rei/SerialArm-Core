@@ -1,0 +1,22 @@
+/* The selected port is a session override; Profile hardware paths are defaults. */
+.page-head-actions:has(.workspace-connection),
+.page-head-actions > .workspace-actions:has(.workspace-connection) {
+  display:flex; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:8px;
+  max-width:100%;
+}
+.workspace-connection { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; max-width:100%; }
+.workspace-connection label { display:flex; align-items:center; gap:8px; min-width:0; color:var(--muted); font-size:12px; }
+.workspace-connection label > span { flex:none; }
+.workspace-connection .studio-select { width:clamp(150px,18vw,250px); min-width:0; }
+.workspace-connection .connection-bus-field .studio-select { width:110px; }
+.workspace-connection select { width:200px; min-height:36px; }
+.workspace-connection .ros-select-trigger { min-height:36px; }
+.workspace-connection #workspace-scan-ports { width:36px; min-width:36px; height:36px; }
+.workspace-connection [aria-busy="true"] { color:var(--info); }
+.workspace-connection .ros-select-trigger > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media(max-width:1100px) {
+  .page-head:has(.workspace-connection) { flex-wrap:wrap; gap:12px; }
+  .page-head:has(.workspace-connection) .page-heading { flex:1 1 160px; }
+  .page-head:has(.workspace-connection) .page-head-actions { flex:1 1 auto; }
+}
+

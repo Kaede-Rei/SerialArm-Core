@@ -14,14 +14,20 @@
   background: transparent;
   box-shadow: none;
 }
-.robot-operation-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; }
+.robot-operation-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; }
 .robot-operation-toolbar .robot-operation-state { flex-wrap: wrap; gap: 8px; }
 .robot-operation-toolbar .robot-operation-state strong { color: var(--muted); font-weight: 400; }
-.robot-operation-toolbar .robot-operation-main { margin-inline-start: auto; }
-.robot-operation-bar .robot-operation-actions { align-items: center; gap: 8px 20px; margin-top: 8px; }
+.robot-operation-bar .robot-operation-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 12px; }
+.robot-operation-bar .robot-operation-group { justify-content: center; gap: 8px; max-width: 100%; }
+.robot-operation-bar .robot-operation-main { margin-inline: auto; }
 .robot-operation-bar .robot-operation-recovery { padding: 0; border: 0; }
-.robot-operation-bar .robot-operation-group > .button { min-height: 34px; padding: 6px 12px; font-size: 14px; white-space: nowrap; }
-.robot-operation-bar .robot-operation-actions .hint { flex: 1 1 180px; margin: 0; font-size: 12px; }
+.robot-operation-bar .robot-operation-group .button { min-height: 34px; padding: 6px 12px; font-size: 14px; white-space: nowrap; }
+.robot-operation-enable { display: flex; align-items: center; gap: 10px; max-width: 100%; }
+.robot-operation-guidance { display: flex; align-items: center; gap: 8px; max-width: 320px; text-align: start; }
+.robot-operation-guidance:has(#control-operation-hint:empty):has(#control-operation-next:empty) { display: none; }
+.robot-operation-bar .robot-operation-guidance .hint { flex: 1 1 auto; margin: 0; font-size: 12px; line-height: 1.5; }
+.robot-operation-guidance #control-operation-next { flex: none; }
+.robot-operation-guidance #control-operation-next .button { min-height: 30px; padding: 4px 8px; font-size: 12px; }
 .studio-workspace-layout {
   grid-template-columns: minmax(260px,.82fr) minmax(360px,1.18fr);
   align-items: start;
@@ -65,34 +71,48 @@
 .workspace-context-note > summary { width: fit-content; cursor: pointer; }
 .workspace-context-note .hint { max-width: 60ch; font-size: 12px; }
 
-/* Navigation names the task once; descriptions remain available on hover. */
-.studio-workspace-task .workspace-task-navigation {
+/* Subpages share one navigation treatment; the motion engine owns the active line. */
+.studio-workspace-task .workspace-subpage-nav {
+  position: relative;
+  isolation: isolate;
   display: flex;
-  gap: 3px;
+  align-items: stretch;
+  gap: 4px;
   margin: 0;
-  padding: 3px;
+  padding: 0 0 3px;
   border: 0;
-  border-radius: 8px;
-  background: var(--subtle);
+  border-bottom: .5px solid var(--line);
+  border-radius: 0;
+  background: transparent;
 }
-.studio-workspace-task .workspace-task-navigation .workspace-task-tab {
+.studio-workspace-task .workspace-subpage-nav .workspace-subpage-button {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex: 1 1 0;
+  flex-direction: row;
+  gap: 6px;
   align-items: center;
   justify-content: center;
   min-width: 0;
-  min-height: 36px;
-  padding: 7px;
-  border: .5px solid transparent;
-  border-radius: 6px;
+  min-height: 42px;
+  padding: 10px 4px;
+  border: 0;
+  border-radius: 6px 6px 0 0;
   background: transparent;
   text-align: center;
   box-shadow: none;
 }
-#page .workspace-task-navigation .workspace-task-tab .calibration-entry-title { display: inline; color: var(--muted); font-size: 14px; font-weight: 500; }
-.studio-workspace-task .workspace-task-navigation .workspace-task-tab.selected { border-color: var(--line); background: var(--card); box-shadow: none; }
-#page .workspace-task-navigation .workspace-task-tab.selected .calibration-entry-title { color: var(--text); }
-.studio-workspace-task .workspace-task-tab:hover { background: var(--hover); }
+#page .workspace-subpage-nav .workspace-subpage-button .calibration-entry-title { display: block; min-width: 0; color: var(--muted); font-size: 14px; font-weight: 500; line-height: 1.5; white-space: normal; }
+#page .calibration-subpage-nav .workspace-subpage-button .calibration-entry-title { white-space: nowrap; }
+#page .workspace-subpage-nav .workspace-subpage-button.selected .calibration-entry-title { color: var(--accent-text,var(--accent)); font-weight: 600; }
+.studio-workspace-task .workspace-subpage-nav .workspace-subpage-button:hover:not(:disabled) { background: color-mix(in srgb,var(--accent) 9%,transparent); }
+#page .workspace-subpage-nav .workspace-subpage-button:hover:not(:disabled) .calibration-entry-title { color: var(--text); }
+.studio-workspace-task .workspace-subpage-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.workspace-subpage-status { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--blue,var(--muted)); }
+.workspace-subpage-status.ready { background: var(--green-indicator,var(--green)); }
+.workspace-subpage-status.warning { background: var(--yellow,var(--accent)); }
+.workspace-subpage-content { display: flex; flex-direction: column; min-width: 0; }
 .studio-workspace-task .control-target-head { align-items: center; }
 .control-speed-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
 .control-speed-field #workbench-speed { width: 70px; font-size: 14px; }
@@ -107,15 +127,7 @@
 .studio-workspace-task .control-settings-body > .workspace-section:first-child { padding-top: 0; }
 .studio-workspace-task .control-settings-body > details { border: 0; border-top: .5px solid var(--line); border-radius: 0; background: transparent; }
 
-/* Calibration and geometry share compact task selection and document-like sections. */
-.studio-workspace-task .calibration-entry-stack { gap: 8px; margin-bottom: 4px; }
-.studio-workspace-task .calibration-entry-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
-.studio-workspace-task .calibration-entry-stack .calibration-entry,
-.studio-workspace-task .geometry-panel > .calibration-entry-grid .calibration-entry { min-height: 38px; padding: 9px 10px; border: .5px solid transparent; border-radius: 7px; background: var(--subtle); box-shadow: none; }
-.studio-workspace-task .calibration-entry-stack .calibration-entry.selected,
-.studio-workspace-task .geometry-panel > .calibration-entry-grid .calibration-entry.selected { border-color: var(--line-strong,var(--line)); background: var(--card); }
-.studio-workspace-task .calibration-entry-featured-main > span:last-child,
-.studio-workspace-task .calibration-entry-grid > .calibration-entry > span:last-child:not(.calibration-entry-title) { display: none; }
+/* Geometry and calibration content keep the same document-like section rhythm. */
 #page .studio-workspace-task .calibration-entry-title { font-size: 14px; font-weight: 500; line-height: 1.5; }
 .studio-workspace-task .calibration-standalone-card { gap: 12px; }
 .studio-workspace-task .calibration-standalone-card .workspace-section-head { margin: 0; }
@@ -133,6 +145,7 @@
   .studio-workspace-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .studio-workspace-layout .studio-workspace-preview { position: relative; top: auto; height: clamp(280px,40dvh,400px); }
   .studio-workspace-layout .studio-workspace-task { padding: 16px; }
+  .robot-operation-guidance { max-width: 260px; }
 }
 @media (max-height:700px) {
   .studio-workspace-controls .robot-operation-bar { padding-block: 8px; }

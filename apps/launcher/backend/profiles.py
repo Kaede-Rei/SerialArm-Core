@@ -32,6 +32,18 @@ def config_values(config):
     return result
 
 
+def serial_devices():
+    """Enumerate serial nodes and their stable aliases without opening a port."""
+    patterns = ('/dev/ttyACM*', '/dev/ttyUSB*', '/dev/ttyS*', '/dev/ttyAMA*',
+                '/dev/ttyTHS*', '/dev/rfcomm*', '/dev/serial/by-id/*', '/dev/serial/by-path/*')
+    devices = {name for pattern in patterns for name in glob.glob(pattern)}
+    targets = {os.path.realpath(name) for name in devices}
+    for name in glob.glob('/dev/*'):
+        if os.path.islink(name) and os.path.realpath(name) in targets:
+            devices.add(name)
+    return sorted(devices)
+
+
 def read_yaml(path):
     path = Path(path).expanduser().resolve()
     if path.stat().st_size > 2 * 1024 * 1024: raise ValueError('YAML exceeds 2 MiB')
@@ -194,7 +206,7 @@ class Inspector:
                 'prefix': m.get('install_prefix', ''), 'ros_distro': m.get('ros_distro') if m.get('ros2') else '',
                 'terminal': self.machine_terminal(), 'ros2': self.ros_executable(),
                 'last_attempt': json.loads(attempt.read_text()) if attempt.exists() else {},
-                'devices': sorted(set(glob.glob('/dev/ttyACM*') + glob.glob('/dev/ttyUSB*') + glob.glob('/dev/serial/by-id/*')))}
+                'devices': serial_devices()}
 
     def ros_executable(self):
         distro = self.manifest().get('ros_distro') or 'humble'
@@ -564,6 +576,7 @@ class Inspector:
                 'profile': c['profile'], 'profile_file': listing['profile_file'], 'resources': resources,
                 'checks': checks, 'available': available, 'unavailable_reasons': adapter_problems, 'write_enabled': write_enabled,
                 'devices': devices, 'default_port': default_port, 'default_baudrate': selected.get('baudrate', ''),
+                'serial_buses': [{'name': name, 'device': item.get('device', '')} for name, item in buses.items() if isinstance(item, dict)],
                 'joint_units': joint_units, 'bus': bus_name, 'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
                 'connection_overrides': {key: c[key] for key in ('serial_port', 'baudrate', 'bus') if c[key]},
                 'controllers': (profile.get('controllers') or {}).get('spawn', ['joint_state_broadcaster', 'joint_trajectory_controller']),
