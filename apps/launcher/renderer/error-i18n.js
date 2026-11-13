@@ -220,7 +220,19 @@
             .replace(/^(?:操作失败|错误)[:：]\s*/, '').trim();
         const trajectoryRange=trajectoryRangeMessage(clean,lang);
         if(trajectoryRange)return trajectoryRange;
-        if(clean==='reference_analysis_available')return lang==='en'?'Measured gains and analyses are available for reference':'实测参数与分析已保存，仅供参考';
+        if(clean==='reference_analysis_available')return lang==='en'?'Results saved':'结果已保存';
+        const referenceMessages={
+            drag_demonstrated_motion_release:['沿示教短段建立运动，随后测量零刚度释放','Preparing motion on a taught segment, then measuring zero-stiffness release'],
+            drag_demonstrated_preparation:['正在沿示教短段带动关节','Moving joints along a taught segment'],
+            drag_release_requires_known_constant_damping:['释放窗口的实际阻尼未保持一致','Actual damping was not constant during release'],
+            drag_demonstrated_release_stopped_at_measured_domain:['释放响应已到本次示教测量范围，保留部分记录','Release response reached the taught measurement domain; partial evidence retained'],
+            purpose_pulse_unresolved_at_current_ceiling_measure_opposite_direction:['本方向输入已到测量边界，改测有示教余量的反向','This input direction reached its measurement bound; measure the legal opposite direction'],
+            both_legal_input_directions_measured_unresolved_small_stiffness_reduction_comparison:['两方向输入均已测到边界，安排小幅降低 Kp 的比较，Kd 保持','Both input directions reached their bounds; compare a small Kp reduction with Kd retained'],
+            online_measured_static_bias_or_same_direction_lag_bounded_P_response_trial_not_identification:['依据实测静差或同向滞后进行有界 Kp 响应试探，Kd 保持；尚未辨识模型','Bounded Kp response trial from measured static error or same-direction lag; Kd retained, model not identified'],
+            online_unresolved_response_trial_exhausted_continue_taught_path:['本位置的有界响应试探已结束，继续沿示教轨迹测量','Bounded response trials at this pose are complete; measurement continues along the taught path'],
+            online_response_trial_has_no_existing_effort_room:['本次响应试探没有足够的既有力矩余量，保留参数继续运动','Insufficient existing effort room for this response trial; retain gains and continue motion']
+        };
+        if(referenceMessages[clean])return referenceMessages[clean][lang==='en'?1:0];
         if(lang==='en')return input;
         // Leave fully localized backend diagnostics intact.
         if (!/[A-Za-z]{3,}/.test(clean)) return clean;

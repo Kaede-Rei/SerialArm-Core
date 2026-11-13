@@ -66,6 +66,10 @@ double ref_at(const std::vector<Sample>& rows,double time,bool velocity) {
 }
 YAML::Node model_node(const OnlineTrajectoryAxisModel& m) {
     YAML::Node out;out["valid"]=m.valid;out["reason"]=m.reason;out["fresh_samples"]=m.samples;
+    out["response_establishment_trial"]=m.response_establishment_trial;
+    out["measured_error_bias_rad"]=m.measured_error_bias_rad;
+    out["unresolved_trial_origin_kp"]=m.unresolved_trial_origin_kp;
+    out["unresolved_trial_kp_ceiling"]=m.unresolved_trial_kp_ceiling;
     out["model_dt_s"]=m.dt_s;out["delay_s"]=m.delay_s;out["iv_rank"]=m.iv_rank;
     out["structure"]=m.structure;out["parameter_count"]=m.parameter_count;
     out["iv_condition"]=m.iv_condition;out["prior_inertia"]=m.prior_inertia;
@@ -116,6 +120,7 @@ int main(int argc,char** argv) {
         const auto pstep=numbers(initialization["protocol_kp_quantum"],n,"protocol_kp_quantum");
         const auto dstep=numbers(initialization["protocol_kd_quantum"],n,"protocol_kd_quantum");
         std::vector<ModelAxisLimits> limits(n);std::vector<NoiseEstimate> noise(n);bool recorded_budget=false;
+        std::string budget_source="recorded_working_domain_feedback_effort_budget";
         for(std::size_t i=0;i<n;++i){limits[i].kp_max=pmax[i];limits[i].kd_max=dmax[i];limits[i].grid={pstep[i],dstep[i]};}
         for(const auto& experiment:source["experiments"]) {
             if(experiment["working_domain"] && experiment["working_domain"].size()==n && !recorded_budget) {
@@ -128,12 +133,20 @@ int main(int argc,char** argv) {
                     noise[i].encoder_step_rad=std::max(a["encoder_step_rad"].as<double>(0),a["effective_encoder_step_rad"].as<double>(0));
                 }
         }
+        if(!recorded_budget)for(const auto& event:source["candidate_comparisons"]) {
+            if(event["kind"] && event["kind"].as<std::string>()=="whole_group_candidate_admission" &&
+                event["feedback_effort_budget_nm"] && event["feedback_effort_budget_nm"].size()==n) {
+                const auto budgets=numbers(event["feedback_effort_budget_nm"],n,"recorded admission feedback effort budget");
+                for(std::size_t i=0;i<n;++i)limits[i].effort_budget=budgets[i];
+                recorded_budget=true;budget_source="recorded_complete_group_admission_feedback_effort_budget";break;
+            }
+        }
         if(!recorded_budget)throw std::runtime_error("task lacks recorded working-domain effort budgets; no default substituted");
         std::map<std::string,Rows> cached;std::map<std::string,std::size_t> reasons;std::size_t events=0,axes=0,valid=0,generated=0,admitted=0;
         YAML::Node report;report["task_id"]=source["task_id"];report["shadow_replay"]=true;
         report["interpretation"]="Archived feedback is reused only to replay each original decision independently; proposed gains were not physically executed";
         report["future_feedforward_assumption"]="last_executed_non_PD_torque_held_over_local_prediction_horizon";
-        report["budget_source"]="recorded_working_domain_feedback_effort_budget";
+        report["budget_source"]=budget_source;
         report["noise_source"]="recorded_static_noise_and_causal_position_code_spacing";
         long online_index=-1;
         for(const auto& event:source["candidate_comparisons"]) {
@@ -182,7 +195,12 @@ int main(int argc,char** argv) {
                     }
                 }
             }
-            const auto decision=online_trajectory_candidate(incumbent,measured,future,inertia,purpose_limits,causal_noise,purpose_options);
+            // Each historical decision is independent: a shadow proposal was
+            // never physically executed and cannot create response evidence
+            // for a later decision. Persistent run limits are exercised by
+            // the actual closed-loop simulator, not by invented CSV feedback.
+            OnlineTrajectoryState first_trial_state;
+            const auto decision=online_trajectory_candidate(incumbent,measured,future,inertia,purpose_limits,causal_noise,purpose_options,&first_trial_state);
             std::vector<double> E(n,std::numeric_limits<double>::quiet_NaN()),V=E,freshE(n),freshV(n);
             for(std::size_t i=0;i<n;++i) {
                 double e=1e-9,v=0;std::size_t count=0;

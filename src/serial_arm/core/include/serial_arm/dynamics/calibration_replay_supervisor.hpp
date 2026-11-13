@@ -152,9 +152,9 @@ inline bool revise_tracking(std::vector<double>& kp,std::vector<double>& kd,
     }
     return changed;
 }
-// Compliant calibration is constrained by the measured or configured rigid
-// reference rather than the motor ceiling. A gain set that has no meaningful
-// stiffness separation is not a valid compliant candidate
+// Rigid proportions may seed a compliant candidate, but do not identify a
+// physical upper limit. Purpose measurements decide yielding/recovery; the
+// executable PD range remains the existing protocol/feedback effort domain.
 struct CompliantBounds {
     std::vector<double> kp_ceiling;
     std::vector<double> kd_ceiling;
@@ -172,8 +172,8 @@ inline CompliantBounds compliant_bounds(const std::vector<double>& rigid_kp,
            !std::isfinite(safety_kp[i]) || !std::isfinite(safety_kd[i]) ||
            rigid_kp[i]<=0.0 || rigid_kd[i]<=0.0 || safety_kp[i]<=0.0 || safety_kd[i]<=0.0)
             return bounds;
-        bounds.kp_ceiling.push_back(std::min(safety_kp[i],0.65*rigid_kp[i]));
-        bounds.kd_ceiling.push_back(std::min(safety_kd[i],0.85*rigid_kd[i]));
+        bounds.kp_ceiling.push_back(safety_kp[i]);
+        bounds.kd_ceiling.push_back(safety_kd[i]);
     }
     bounds.valid=true;
     return bounds;

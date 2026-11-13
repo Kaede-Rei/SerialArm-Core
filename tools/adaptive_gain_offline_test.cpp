@@ -194,8 +194,12 @@ void check_six_axis_motion_establishment() {
     std::vector<Requirements> plans;for(unsigned i=0;i<6;++i){const auto p=short_probe_plan(req,limits[i],current.kp[i],current.kd[i],noise[i],false,220);check(p.valid,"initial six-axis probe must be bounded");plans.push_back(p.requirements);}
     double elapsed=0;bool established=false,passed_weak_phase=false;unsigned measured_trials=0;std::vector<bool> initially_stuck(6,false);
     CalibrationBudget budget(28.22,CalibrationMode::QuickAll);constexpr double reserved_verification=153;
+    // Replay the archived optional-probe experiment with its original time
+    // allocation. Product 18T/24T and 12T/15T budgets are checked separately.
+    const double archived_horizon_s=15*budget.recorded_duration_s;
+    const auto probe_remaining=[&]{return std::max(0.0,std::min(budget.remaining(elapsed),archived_horizon_s-elapsed));};
     MotionEstablishmentState establishment_state;
-    while(budget.can_start(elapsed,short_trial_cost(plans,req.tail_s),reserved_verification)) {
+    while(short_trial_cost(plans,req.tail_s)+reserved_verification+budget.exit_reserve_s<=probe_remaining()) {
         std::vector<ResponseModel> models;std::vector<Metrics> metrics;std::vector<MotionObservation> motion;
         for(unsigned i=0;i<6;++i) {
             const auto rows=stick_slip_trial(plant[i],plans[i],current.kp[i],current.kd[i],limits[i],hardware[i]);
@@ -210,13 +214,13 @@ void check_six_axis_motion_establishment() {
         }
         elapsed+=short_trial_cost(plans,req.tail_s);++measured_trials;
         const auto step=motion_establishment_step(current,inertia,limits,noise,models,metrics,motion,plans,req,false,
-            budget.remaining(elapsed)-reserved_verification-budget.exit_reserve_s,&establishment_state);
+            probe_remaining()-reserved_verification-budget.exit_reserve_s,&establishment_state);
         check(!step.feedback_fault,"static friction and low coherence must not be misclassified as a feedback fault");
         if(step.motion_established) {
             established=true;
             if(step.spectral_confirmation_required) {
                 plans=comparable_probe_plans(current,current,establishment_state.spectral_plans,limits,noise,req,false,
-                    budget.remaining(elapsed)-reserved_verification-budget.exit_reserve_s);
+                    probe_remaining()-reserved_verification-budget.exit_reserve_s);
                 for(unsigned i=0;i<6;++i) {
                     check(!plans[i].motion_probe,"established single-tone motion must restore a separate actual three-frequency experiment");
                     const auto rows=stick_slip_trial(plant[i],plans[i],current.kp[i],current.kd[i],limits[i],hardware[i]);
@@ -235,7 +239,7 @@ void check_six_axis_motion_establishment() {
         current=step.gains;plans=step.plans;
     }
     check(initially_stuck[0] && initially_stuck[2] && initially_stuck[5],"regression must start with truly stuck heavy and wrist axes");
-    check(measured_trials>4 && elapsed<budget.hard_limit_s-reserved_verification,
+    check(measured_trials>4 && elapsed<archived_horizon_s-reserved_verification,
         "the optional legacy short-probe scheduler must retain verification and exit time even if it cannot establish all axes");
     check(passed_weak_phase,"regression must traverse weak nonlinear response rather than jump directly to a passing plant");
     if(!established) {
@@ -258,7 +262,7 @@ void check_six_axis_motion_establishment() {
     const double legacy_wrist_torque=.5*initialized.gains.kp[5]*std::min(plans[5].amplitude_rad,2*req.hold_error_rad);
     check(torque[5]>10*legacy_wrist_torque,"current measured wrist gains must plan independent torque far above the obsolete seed-normalized input");
     bool wrist_observable=false,heavy_unobservable_at_cap=false;unsigned disturbance_trials=0;
-    while(budget.can_start(elapsed,short_trial_cost(plans,req.tail_s),reserved_verification)) {
+    while(short_trial_cost(plans,req.tail_s)+reserved_verification+budget.exit_reserve_s<=probe_remaining()) {
         std::vector<ResponseModel> models;std::vector<Metrics> metrics;DisturbanceAssessment heavy;
         for(unsigned i=0;i<6;++i) {
             const auto rows=stick_slip_trial(disturbance_plant[i],plans[i],current.kp[i],current.kd[i],limits[i],hardware[i],torque[i]);
@@ -1240,16 +1244,16 @@ int main(int argc,char** argv) {
             <<" -> "<<interior_error(compared,req.probe_duration_s)<<" rad\n";
 
         CalibrationBudget quick(25,CalibrationMode::QuickAll),fine(25,CalibrationMode::FineSingle);
-        close(quick.target_s,300,0,"quick target must be 12T");close(quick.hard_limit_s,375,0,"quick hard cap must be 15T");
-        close(fine.target_s,300,0,"fine target must be 12T");close(fine.hard_limit_s,600,0,"fine hard cap must be 24T");
-        check(!quick.can_start(370,5) && quick.can_start(300,20,20),"whole-trial and exit/validation reservation must fit");
-        check(quick.expired(375) && !quick.expired(374),"deadline must be strict");
+        close(quick.target_s,450,0,"quick target must be 18T");close(quick.hard_limit_s,600,0,"quick hard cap must be 24T");
+        close(fine.target_s,300,0,"fine target must be 12T");close(fine.hard_limit_s,375,0,"fine hard cap must be 15T");
+        check(!quick.can_start(595,5) && quick.can_start(300,20,20),"whole-trial and exit/validation reservation must fit");
+        check(quick.expired(600) && !quick.expired(599),"deadline must be strict");
         NoiseEstimate noise;noise.encoder_step_rad=1e-5;noise.rms_rad=1e-6;
         auto plan=short_probe_plan(req,limit,8,1,noise,false,30);
         check(plan.valid && plan.requirements.probe_duration_s<8,"quick identification must have bounded short experiment");
         check(!short_probe_plan(req,limit,8,1,noise,false,2).valid,"short test must honor remaining budget");
         noise.rms_rad=.1;
         check(!short_probe_plan(req,limit,8,1,noise,false,30).valid,"unobservable probe cannot become a successful default estimate");
-        std::cout<<"adaptive gain offline checks passed: mapped model seeds, MIT input definition, tracking/disturbance evidence, feedforward, noise, timing, ceilings, candidate direction, 12T/15T/24T budgets\n";
+        std::cout<<"adaptive gain offline checks passed: mapped model seeds, MIT input definition, tracking/disturbance evidence, feedforward, noise, timing, ceilings, candidate direction, 18T/24T all-purpose and 12T/15T single-purpose budgets\n";
     } catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

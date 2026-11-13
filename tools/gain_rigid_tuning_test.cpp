@@ -177,7 +177,82 @@ void arbitrary_counts_and_actual_mit_improvement() {
     candidate[2].fixed_gain_measurement_complete=false;candidate[2].measured_kp=10;
     check(!rigid_use_preferred(next,candidate,old,previous),"a missing whole-group measurement was silently filled from the baseline");
 }
+
+void paired_quantized_mean_uncertainty() {
+    NoiseEstimate noise;noise.encoder_step_rad=.001;noise.rms_rad=.00001;
+    auto before=evidence(),after=before;after.measured_kp=11.2;
+    before.disturbance.motion_floor_rad=after.disturbance.motion_floor_rad=3*noise.encoder_step_rad;
+    before.disturbance.peak_displacement_rad=.020;after.disturbance.peak_displacement_rad=.018;
+    std::vector<double> zero(100,0),held_before(100,.020),held_after,tail(100,.003);
+    for(unsigned i=0;i<100;++i)held_after.push_back(i%2?.017:.018);
+    compliant_use_detail::mean_response(before.disturbance,zero,held_before,tail,noise);
+    compliant_use_detail::mean_response(after.disturbance,zero,held_after,tail,noise);
+    check(before.disturbance.displacement_mean_rad-after.disturbance.displacement_mean_rad<before.disturbance.motion_floor_rad,
+        "paired quantized regression must improve by less than the old three-code motion-detection floor");
+    const Gains old{{10},{1}},next{{11.2},{1}};
+    check(rigid_use_preferred(next,{after},old,{before}),
+        "a paired mean improvement above conservative quantization/noise uncertainty must not require a full three-code motion floor");
+    auto no_difference=after;no_difference.disturbance.peak_displacement_rad=before.disturbance.peak_displacement_rad;
+    compliant_use_detail::mean_response(no_difference.disturbance,zero,held_before,tail,noise);
+    check(!rigid_use_preferred(next,{no_difference},old,{before}),"identical repeated encoder codes cannot average into an improvement");
+    auto noisy=noise;noisy.rms_rad=.002;
+    auto uncertain=after;compliant_use_detail::mean_response(uncertain.disturbance,zero,held_after,tail,noisy);
+    check(!rigid_use_preferred(next,{uncertain},old,{before}),"uncertain paired means must not acquire certainty from nominal sample count");
+    for(std::size_t n:{1,3,7}) {
+        Gains base,new_group;std::vector<RigidUseEvidence> b(n,before),a(n,before);
+        base.kp.assign(n,10);base.kd.assign(n,1);new_group=base;new_group.kp[0]=11.2;a[0]=after;
+        check(rigid_use_preferred(new_group,a,base,b),"paired mean selection must follow arbitrary mapped joint counts");
+        if(n>1) {
+            auto worse=a;worse.back().disturbance.peak_displacement_rad=.023;
+            std::vector<double> large(100,.023);compliant_use_detail::mean_response(worse.back().disturbance,zero,large,tail,noise);
+            check(!rigid_use_preferred(new_group,worse,base,b),"one resolved worse axis cannot hide behind another axis's mean improvement");
+        }
+        for(auto* values:{&base.kp,&base.kd,&new_group.kp,&new_group.kd})std::reverse(values->begin(),values->end());
+        std::reverse(a.begin(),a.end());std::reverse(b.begin(),b.end());
+        check(rigid_use_preferred(new_group,a,base,b),"paired uncertainty must be invariant under a complete joint permutation");
+    }
 }
-int main(){try{directions_and_protocol();reference_comparison_and_hold();arbitrary_counts_and_actual_mit_improvement();
+void single_axis_resolving_trial_and_actual_effort() {
+    for(std::size_t n:{1,3,7}) {
+        Gains gains;gains.kp.assign(n,10);gains.kd.assign(n,5);
+        std::vector<RigidUseEvidence> measured(n,evidence(10,5));
+        for(auto& x:measured){x.disturbance.peak_displacement_rad=.0004;x.disturbance.final_reference_error_rad=.0001;}
+        // Give one arbitrary mapped axis the dominant resolved response. No
+        // joint name or model-specific gain participates in the decision.
+        const std::size_t focus=n/2;measured[focus].disturbance.peak_displacement_rad=.01;
+        measured[focus].disturbance.encoder_step_rad=.0018;
+        const auto proposal=rigid_candidate_report(gains,std::vector<double>(n,500),std::vector<double>(n,5),measured);
+        std::size_t coordinates=0;
+        for(std::size_t i=0;i<n;++i){coordinates+=proposal.gains.kp[i]!=gains.kp[i];coordinates+=proposal.gains.kd[i]!=gains.kd[i];}
+        check(proposal.changed && coordinates==1 && proposal.gains.kp[focus]>11.2 && proposal.gains.kp[focus]<=12.5,
+            "a coarse unresolved 12 percent trial must select one evidence-dominant axis and a resolving step inside the small trust region");
+        check(.01*(proposal.gains.kp[focus]-10)/proposal.gains.kp[focus]>=.0018-1e-12,
+            "the selected P trial must predict at least the actual paired code resolution");
+        auto reversed=gains;auto reversed_evidence=measured;
+        std::reverse(reversed.kp.begin(),reversed.kp.end());std::reverse(reversed.kd.begin(),reversed.kd.end());
+        std::reverse(reversed_evidence.begin(),reversed_evidence.end());
+        const auto shuffled=rigid_candidate_report(reversed,std::vector<double>(n,500),std::vector<double>(n,5),reversed_evidence);
+        for(std::size_t i=0;i<n;++i)near(shuffled.gains.kp[i],proposal.gains.kp[n-1-i],
+            "permuting the complete joint mapping changed the selected physical response trial");
+        std::vector<ModelAxisLimits> bounds(n,ModelAxisLimits{.1,5,20,2,500,5,{0,0}});
+        for(auto& x:measured){x.error_envelope_rad=.01;x.velocity_error_envelope_rad_s=.01;x.fresh_error_rad=.005;x.fresh_velocity_error_rad_s=0;}
+        // Reduce available effort so only a smaller but still resolving step
+        // fits. The helper must use that real envelope, not enlarge Safety.
+        measured[focus].disturbance.encoder_step_rad=.0002;
+        bounds[focus].effort_budget=.154;
+        const auto tight=rigid_candidate_report(gains,std::vector<double>(n,500),std::vector<double>(n,5),measured,{},bounds);
+        check(tight.changed && tight.gains.kp[focus]>10 && tight.gains.kp[focus]<=10.4+1e-9,
+            "existing effort headroom must shorten a resolving single-axis trial rather than drop it or exceed the limit");
+        for(auto& b:bounds)b.effort_budget=.149;
+        check(!rigid_candidate_report(gains,std::vector<double>(n,500),std::vector<double>(n,5),measured,{},bounds).changed,
+            "an already exhausted measured PD envelope must not permit a resolving-gain increase");
+        measured[focus].disturbance.encoder_step_rad=.003;
+        const auto unresolved=rigid_candidate_report(gains,std::vector<double>(n,500),std::vector<double>(n,5),measured);
+        check(unresolved.gains.kp[focus]==10,"a step requiring more than the bounded local trust region must not jump toward the protocol maximum");
+    }
+}
+}
+int main(){try{directions_and_protocol();reference_comparison_and_hold();arbitrary_counts_and_actual_mit_improvement();paired_quantized_mean_uncertainty();
+    single_axis_resolving_trial_and_actual_effort();
     std::cout<<"rigid bounded empirical gain checks passed\n";return 0;}
     catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}}

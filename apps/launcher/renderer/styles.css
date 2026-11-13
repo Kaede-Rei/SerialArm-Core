@@ -646,6 +646,7 @@ dialog .robot-reminder-choice input{width:16px;height:16px;flex:none;accent-colo
 @media(max-width:600px){.interaction-goal-fields{grid-template-columns:minmax(0,1fr)}.target-joint-row{grid-template-columns:minmax(0,1fr) 80px}.target-joint-row label{grid-column:1/-1}.target-joint-row input[type=range]{min-width:0}.motion-control-chain{font-size:10px}.control-gain-context{grid-template-columns:95px minmax(0,1fr)}}
 .joint-number{border:1px solid var(--line);border-radius:7px;background:var(--subtle);color:var(--text)}
 .gain-qualification-table td:nth-child(2){white-space:normal;min-width:160px;line-height:1.65}
+.gain-purpose-evidence-table th{white-space:normal}.gain-purpose-evidence-table td:last-child{white-space:normal;min-width:180px;max-width:320px;line-height:1.6}
 .task-progress-track.is-indeterminate span{animation:task-measuring 1.8s ease-in-out infinite}
 @keyframes task-measuring{0%{transform:translateX(-100%)}100%{transform:translateX(300%)}}
 @media(prefers-reduced-motion:reduce){.task-progress-track.is-indeterminate span{animation:none}}

@@ -24,6 +24,15 @@ struct OnlineTrajectoryOptions {
     double compliant_displacement_rad{.04};
     double compliant_recovery_error_rad{.008},compliant_final_speed_rad_s{.01};
 };
+// One invocation cannot tell whether its previous unmodelled trial moved the
+// plant. Keep that experiment's trust region for the whole traversal instead
+// of restarting it on every overlapping window. The state is local to a run,
+// never a historical gain seed or a physical actuator limit.
+struct OnlineTrajectoryAxisState {
+    bool unresolved_trial_active{false};
+    double unresolved_origin_kp{0},trial_position_rad{0},trial_time_s{0},trial_error_sign{0},last_window_time_s{0};
+};
+struct OnlineTrajectoryState {std::vector<OnlineTrajectoryAxisState> axes;};
 struct OnlineTrajectoryAxisModel {
     bool valid{false},reference_only{true};
     std::string reason{"insufficient_online_measurements"};
@@ -42,6 +51,8 @@ struct OnlineTrajectoryAxisModel {
     std::size_t fit_attempts{0},rank_rejections{0},plausibility_rejections{0},prediction_rejections{0};
     std::string structure{"arx2_separate_input_coefficients"};
     std::size_t parameter_count{5};
+    bool response_establishment_trial{false};
+    double measured_error_bias_rad{0},unresolved_trial_origin_kp{0},unresolved_trial_kp_ceiling{0};
 };
 struct OnlineTrajectoryReport {
     Gains gains;
@@ -379,6 +390,82 @@ inline Eigen::VectorXd rollout(const OnlineTrajectoryAxisModel& model,const std:
     }
     return residual;
 }
+
+// A stationary friction/dead-zone response is not an LTI identification. It
+// can still support a small, explicit response-establishment experiment. Do
+// not fabricate an IV model, adjust Kd for static error, or restart a blind
+// gain escalation at each sliding window. Actual resolved response, not an
+// accuracy target, opens the next experimental trust region.
+inline bool establish_response(const std::vector<Point>& p,const std::vector<OnlineTrajectoryReference>& future,
+    std::size_t axis,double P,double D,const ModelAxisLimits& bound,const NoiseEstimate& noise,
+    const OnlineTrajectoryOptions& options,OnlineTrajectoryAxisState& state,
+    OnlineTrajectoryAxisModel& model,double& proposed,std::string& reason) {
+    if(options.use!=OnlineTrajectoryUse::Tracking || p.size()<50 || P<=0)return false;
+    const double floor=std::max({6*noise.rms_rad,3*noise.encoder_step_rad,
+        3*model.observed_encoder_step_rad,1e-5});
+    const double end=p.back().t,begin=end-.6;
+    std::size_t count=0,positive=0,negative=0,reversals=0;int previous_sign=0;
+    double sum=0,qlo=1e30,qhi=-1e30,rlo=1e30,rhi=-1e30,E=0,V=0,along=0,reference_travel=0;
+    double previous_r=0;bool had_r=false;
+    for(const auto& x:p) {
+        E=std::max(E,std::abs(x.r-x.q));V=std::max(V,std::abs(x.rv-x.v));
+        if(x.t<begin)continue;
+        // The candidate is based on the controller actually present at the
+        // end of the gain ramp, rather than a mixture of unexecuted gains.
+        if(std::abs(x.P-P)>1e-5*std::max(P,1.0) || std::abs(x.D-D)>1e-5*std::max(D,1.0))continue;
+        const double error=x.r-x.q;sum+=error;++count;
+        positive+=error>floor;negative+=error<-floor;
+        const int sign=error>floor?1:error<-floor?-1:0;
+        if(sign){if(previous_sign && sign!=previous_sign)++reversals;previous_sign=sign;}
+        qlo=std::min(qlo,x.q);qhi=std::max(qhi,x.q);rlo=std::min(rlo,x.r);rhi=std::max(rhi,x.r);
+        along+=error*x.rv;
+        if(had_r)reference_travel+=std::abs(x.r-previous_r);
+        previous_r=x.r;had_r=true;
+    }
+    if(count<10 || reversals>=2 || std::max(positive,negative)<.9*count)return false;
+    const double error=sum/count;if(std::abs(error)<=floor)return false;
+    const bool quiet_reference=rhi-rlo<=floor && qhi-qlo<=floor;
+    const bool moving_lag=reference_travel>2*floor && along>0;
+    if(!quiet_reference && !moving_lag)return false;
+    // A forthcoming reversal can remove the error without greater stiffness;
+    // do not increase gain into that reversal using old stationary evidence.
+    double r,rv,ff;if(!future_at(future,axis,end+std::min(.2,options.horizon_s),r,rv,ff) ||
+        (r-p.back().q)*error<=0)return false;
+    if(state.unresolved_trial_active && end<state.last_window_time_s) {
+        // A later traversal has its own record clock. Keep the unresolved
+        // gain allowance, but do not count the intervening reference handoff
+        // or a changed starting pose as a response to this trial.
+        state.trial_position_rad=p.back().q;state.trial_time_s=end;
+    }
+    state.last_window_time_s=end;
+    if(state.unresolved_trial_active && end>state.trial_time_s+.2 &&
+       state.trial_error_sign*(p.back().q-state.trial_position_rad)>floor)state.unresolved_trial_active=false;
+    if(!state.unresolved_trial_active) {
+        state.unresolved_trial_active=true;state.unresolved_origin_kp=P;
+        state.trial_position_rad=p.back().q;state.trial_time_s=end;state.trial_error_sign=std::copysign(1.0,error);
+    }
+    // Two ordinary small steps (or two protocol codes) are the complete blind
+    // trial allowance. A nonresponding mechanical stop cannot drive P to the
+    // protocol ceiling. Failure to resolve movement is recorded; the taught
+    // path continues and provides a different operating point naturally.
+    const double blind_room=std::max(2*options.maximum_relative_gain_step*state.unresolved_origin_kp,
+        2*bound.grid.kp_step);
+    const double ceiling=std::min(bound.kp_max,state.unresolved_origin_kp+blind_room);
+    model.measured_error_bias_rad=error;model.unresolved_trial_origin_kp=state.unresolved_origin_kp;
+    model.unresolved_trial_kp_ceiling=ceiling;
+    const double step=std::max(options.maximum_relative_gain_step*P,bound.grid.kp_step);
+    double next=quantize_gain(std::min(ceiling,P+step),bound.grid.kp_step,bound.kp_max);
+    if(next<=P && bound.grid.kp_step>0 && P+bound.grid.kp_step<=ceiling+1e-10)
+        next=quantize_gain(P+bound.grid.kp_step,bound.grid.kp_step,bound.kp_max);
+    if(next<=P){reason="online_unresolved_response_trial_exhausted_continue_taught_path";return false;}
+    // Both the observed window and fresh residual must admit the entire new
+    // group at the existing effort allowance. No accuracy gate or increased
+    // Safety/effort limit is involved in response establishment.
+    if(next*E+D*V>bound.effort_budget+1e-10){reason="online_response_trial_has_no_existing_effort_room";return false;}
+    proposed=next;model.response_establishment_trial=true;
+    reason="online_measured_static_bias_or_same_direction_lag_bounded_P_response_trial_not_identification";
+    return true;
+}
 } // namespace online_trajectory_detail
 
 // Pure planning helper. Remaining negative/positive room is separate, so a
@@ -410,7 +497,7 @@ inline double online_trajectory_injection(double time_s,std::size_t axis,double 
 inline OnlineTrajectoryReport online_trajectory_candidate(const Gains& current,
     const std::vector<std::vector<Sample>>& rows_by_axis,const std::vector<OnlineTrajectoryReference>& future,
     const std::vector<double>& inertia,const std::vector<ModelAxisLimits>& limits,const std::vector<NoiseEstimate>& noise,
-    const OnlineTrajectoryOptions& options=OnlineTrajectoryOptions{}) {
+    const OnlineTrajectoryOptions& options=OnlineTrajectoryOptions{},OnlineTrajectoryState* state=nullptr) {
     using namespace online_trajectory_detail;
     const auto n=current.kp.size();
     if(!n || current.kd.size()!=n || rows_by_axis.size()!=n || inertia.size()!=n || limits.size()!=n || noise.size()!=n)
@@ -427,6 +514,7 @@ inline OnlineTrajectoryReport online_trajectory_candidate(const Gains& current,
     double last_future=-std::numeric_limits<double>::infinity();
     for(const auto& f:future){if(!std::isfinite(f.time_s) || f.time_s<=last_future)throw std::invalid_argument("unordered online future reference");last_future=f.time_s;}
     OnlineTrajectoryReport out;out.gains=current;out.models.resize(n);out.reasons.resize(n);
+    if(state && state->axes.size()!=n)state->axes.assign(n,{});
     for(std::size_t axis=0;axis<n;++axis) {
         const auto& bound=limits[axis];
         for(double value:{inertia[axis],bound.effort_budget,bound.kp_max,bound.kd_max})
@@ -437,7 +525,14 @@ inline OnlineTrajectoryReport online_trajectory_candidate(const Gains& current,
         auto& model=out.models[axis];auto p=points(rows_by_axis[axis],options,model);
         if(p.empty()){out.reasons[axis]=model.reason;continue;}
         model=fit(p,inertia[axis],noise[axis],options,model);
-        if(!model.valid){out.reasons[axis]=model.reason;continue;}
+        if(!model.valid){
+            out.reasons[axis]=model.reason;
+            if(state && establish_response(p,future,axis,current.kp[axis],current.kd[axis],bound,noise[axis],options,
+                state->axes[axis],model,out.gains.kp[axis],out.reasons[axis]))out.changed=true;
+            continue;
+        }
+        if(state && model.measured_span_rad>std::max({6*noise[axis].rms_rad,3*noise[axis].encoder_step_rad,
+            3*model.observed_encoder_step_rad,1e-5}))state->axes[axis].unresolved_trial_active=false;
         const double P=current.kp[axis],D=current.kd[axis];
         double reflo=p.front().r,refhi=reflo,vscale=0,E=0,V=0;
         for(const auto& s:p){reflo=std::min(reflo,s.r);refhi=std::max(refhi,s.r);vscale=std::max(vscale,std::abs(s.rv));E=std::max(E,std::abs(s.r-s.q));V=std::max(V,std::abs(s.rv-s.v));}

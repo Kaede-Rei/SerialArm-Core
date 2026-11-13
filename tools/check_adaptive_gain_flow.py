@@ -157,8 +157,8 @@ def assert_budget(plan: dict, tuning_mode: str):
     assert plan['valid'], plan
     assert plan['gain_tuning_mode'] == tuning_mode, plan
     assert plan['budget_source_duration_s'] == 25, plan
-    assert plan['target_budget_s'] == 300, plan
-    assert plan['hard_limit_s'] == (375 if tuning_mode == 'quick' else 600), plan
+    assert plan['target_budget_s'] == (450 if tuning_mode == 'quick' else 300), plan
+    assert plan['hard_limit_s'] == (600 if tuning_mode == 'quick' else 375), plan
 
 
 def application_fixture(folder: Path, meta: dict, original_gains: dict, names: list[str]) -> tuple[Path, dict]:
@@ -206,7 +206,7 @@ def run(terminal: Path) -> dict:
             fine = native.request('model_calibration_gain_plan', {'gain_mode': 'servo_tracking', 'gain_tuning_mode': 'fine'})
             assert_budget(quick, 'quick')
             assert_budget(fine, 'fine')
-            checks.append('quick_12T_target_15T_hard_and_fine_12T_target_24T_hard')
+            checks.append('four_use_18T_target_24T_hard_and_single_use_12T_target_15T_hard')
             assert quick['budget_source'] == 'original_recorded_samples', quick
             assert quick['budget_source_task_id'] == 'offline-original-25s', quick
             assert not math.isclose(quick['trajectory_duration_s'], 25, abs_tol=.01), quick
@@ -306,7 +306,7 @@ def budget_limited_exit(terminal: Path) -> dict:
             status=native.request('model_calibration_status')
             assert status['phase']=='waiting_replay_confirmation' and not status['gain_available'], status
             assert not (Path(imported['directory'])/'gain-candidate.json').exists(), status
-            return {'status': 'passed', 'recorded_T_s': .2, 'hard_limit_s': 3,
+            return {'status': 'passed', 'recorded_T_s': .2, 'hard_limit_s': plan['hard_limit_s'],
                     'actual_elapsed_s': time.monotonic()-started, 'available': False, 'validated': False,
                     'scope': 'synthetic_short_budget_refuses_unfinishable_measurements_before_start'}
         finally:

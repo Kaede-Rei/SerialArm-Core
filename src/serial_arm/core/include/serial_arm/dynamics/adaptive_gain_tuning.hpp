@@ -1203,7 +1203,7 @@ struct CalibrationBudget {
     CalibrationMode mode{CalibrationMode::QuickAll};
     explicit CalibrationBudget(double original_recorded_duration_s,CalibrationMode selected):recorded_duration_s(original_recorded_duration_s),mode(selected) {
         if(!std::isfinite(recorded_duration_s) || recorded_duration_s<=0)throw std::invalid_argument("gain budget requires trustworthy original recording duration");
-        target_s=12*recorded_duration_s;hard_limit_s=(mode==CalibrationMode::QuickAll?15:24)*recorded_duration_s;
+        target_s=(mode==CalibrationMode::QuickAll?18:12)*recorded_duration_s;hard_limit_s=(mode==CalibrationMode::QuickAll?24:15)*recorded_duration_s;
         exit_reserve_s=std::min(2.0,.1*recorded_duration_s);
     }
     double remaining(double elapsed_s)const{return std::max(0.0,hard_limit_s-std::max(0.0,elapsed_s));}

@@ -32,6 +32,8 @@ struct TaughtMeasurementAnchor {
     double minimum_normalized_room{0}, mean_normalized_room{0};
     std::vector<double> position;
     TaughtMeasurementRoom room;
+    double nearby_response_motion_score{0};
+    std::vector<double> nearby_reference_span_rad;
 };
 
 struct TaughtMeasurementSchedule {
@@ -194,6 +196,85 @@ inline TaughtMeasurementSchedule plan_taught_measurement_schedule(
     }
     out.valid=true;out.has_anchor=out.common_anchor.available;
     out.reason=out.has_anchor?"interior_demonstrated_measurement_anchor_selected":
+        "continue_demonstrated_path_no_interior_measurable_anchor";
+    return out;
+}
+
+// A response measurement should be encountered beside useful taught motion,
+// rather than at the geometric midpoint of a long stationary plateau. Keep
+// exactly the geometry/actual-room eligibility above; among equally covered
+// interiors rank the nearby *recorded reference* travel using measured axis
+// priorities supplied by the caller. Weights are not mechanical parameters.
+inline TaughtMeasurementSchedule plan_taught_response_measurement_schedule(
+    const std::vector<std::vector<double>>& checked_path,const TaughtMeasurementRoomRequest& request,
+    double sample_dt,const std::vector<double>& axis_weights,double local_radius_s=4.0) {
+    auto out=plan_taught_measurement_schedule(checked_path,request);
+    const auto joints=checked_path.empty()?0:checked_path.front().size();
+    if(!out.valid)return out;
+    if(!std::isfinite(sample_dt) || sample_dt<=0 || !std::isfinite(local_radius_s) || local_radius_s<=0 ||
+       axis_weights.size()!=joints) {
+        out.valid=false;out.has_anchor=false;out.reason="taught_response_schedule_time_or_weight_mapping_invalid";return out;
+    }
+    double weight_sum=0;
+    for(double weight:axis_weights) {
+        if(!std::isfinite(weight) || weight<0) {
+            out.valid=false;out.has_anchor=false;out.reason="taught_response_schedule_weight_invalid";return out;
+        }
+        weight_sum+=weight;
+    }
+    if(!out.has_anchor || weight_sum<=0)return out;
+    const auto radius=std::min(checked_path.size()-1,
+        static_cast<std::size_t>(std::floor(local_radius_s/sample_dt)));
+    const double source_duration=(checked_path.size()-1)*sample_dt;
+    const double transition_room_s=std::min(1.0,.25*source_duration);
+    std::vector<bool> preferred(checked_path.size(),false);
+    for(const auto index:request.preferred_source_indices)preferred[index]=true;
+    TaughtMeasurementAnchor common;
+    std::vector<TaughtMeasurementAnchor> per_axis(joints);
+    std::vector<double> per_axis_activity(joints,-1);
+    for(std::size_t k=1;k+1<checked_path.size();++k) {
+        if(k*sample_dt<transition_room_s || source_duration-k*sample_dt<transition_room_s)continue;
+        const auto& q=checked_path[k];
+        if(taught_measurement_detail::same_pose(q,checked_path.front(),request) ||
+           taught_measurement_detail::same_pose(q,checked_path.back(),request))continue;
+        TaughtMeasurementAnchor anchor;anchor.source_index=k;anchor.position=q;anchor.preferred=preferred[k];
+        anchor.room=evaluate_taught_measurement_room(q,out.demonstrated_lower_rad,out.demonstrated_upper_rad,request);
+        anchor.nearby_reference_span_rad.resize(joints,0);
+        std::vector<double> activity(joints,0);
+        double sum=0,minimum=1;
+        for(std::size_t j=0;j<joints;++j)if(anchor.room.bidirectional_measurable[j]) {
+            const double span=out.demonstrated_upper_rad[j]-out.demonstrated_lower_rad[j];
+            const double normalized=2*std::min(anchor.room.negative_room_rad[j],anchor.room.positive_room_rad[j])/span;
+            ++anchor.measurable_axis_count;minimum=std::min(minimum,normalized);sum+=normalized;
+            double low=q[j],high=q[j];
+            const auto from=k>radius?k-radius:0,to=std::min(checked_path.size()-1,k+radius);
+            for(std::size_t index=from;index<=to;++index){low=std::min(low,checked_path[index][j]);high=std::max(high,checked_path[index][j]);}
+            const double travel=high-low;anchor.nearby_reference_span_rad[j]=travel;
+            const double step=request.observed_position_step_rad.empty()?0:request.observed_position_step_rad[j];
+            const double noise=request.stationary_noise_rms_rad.empty()?0:request.stationary_noise_rms_rad[j];
+            const double resolution=std::max({3*step,6*noise,taught_measurement_detail::numerical_tolerance(low,high)});
+            if(travel>resolution)activity[j]=std::min(1.0,travel/span);
+            anchor.nearby_response_motion_score+=(axis_weights[j]/weight_sum)*activity[j];
+        }
+        anchor.available=anchor.measurable_axis_count>0;
+        anchor.minimum_normalized_room=anchor.available?minimum:0;
+        anchor.mean_normalized_room=anchor.available?sum/anchor.measurable_axis_count:0;
+        const auto better=[&](const TaughtMeasurementAnchor& candidate,const TaughtMeasurementAnchor& baseline,
+                              double candidate_activity,double baseline_activity) {
+            if(!baseline.available)return candidate.available;
+            if(candidate.measurable_axis_count!=baseline.measurable_axis_count)
+                return candidate.measurable_axis_count>baseline.measurable_axis_count;
+            if(std::abs(candidate_activity-baseline_activity)>1e-12)return candidate_activity>baseline_activity;
+            return taught_measurement_detail::better(candidate,baseline);
+        };
+        for(std::size_t j=0;j<joints;++j)if(anchor.room.bidirectional_measurable[j] &&
+            better(anchor,per_axis[j],activity[j],per_axis_activity[j])) {
+            per_axis[j]=anchor;per_axis_activity[j]=activity[j];
+        }
+        if(anchor.available && better(anchor,common,anchor.nearby_response_motion_score,common.nearby_response_motion_score))common=std::move(anchor);
+    }
+    out.common_anchor=std::move(common);out.axis_anchors=std::move(per_axis);out.has_anchor=out.common_anchor.available;
+    out.reason=out.has_anchor?"interior_anchor_prioritizes_measured_response_and_nearby_resolved_taught_motion":
         "continue_demonstrated_path_no_interior_measurable_anchor";
     return out;
 }

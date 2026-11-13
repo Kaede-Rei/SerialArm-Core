@@ -136,10 +136,58 @@ void split_cubic_clock() {
           !advance_taught_measurement_time_warp(warp,1,-.1).valid,
         "unsupported transition duration or backward clock was accepted");
 }
+void response_priority_escapes_long_plateau() {
+    for(std::size_t joints:{1,3,7}) {
+        constexpr double dt=.02;const std::size_t samples=1201,focus=joints/2;
+        std::vector<std::vector<double>> path(samples,std::vector<double>(joints));
+        TaughtMeasurementRoomRequest request;request.required_room_rad.assign(joints,.01);
+        request.observed_position_step_rad.assign(joints,.0004);request.stationary_noise_rms_rad.assign(joints,.0001);
+        request.preferred_source_indices={600};
+        std::vector<double> weights(joints,1);weights[focus]=100;
+        for(std::size_t k=0;k<samples;++k)for(std::size_t j=0;j<joints;++j) {
+            const double t=k*dt,scale=1+.2*j;
+            path[k][j]=scale*(j==focus?(t<4?.125*t:t<=20?.5:.5+.125*(t-20)):t/24);
+        }
+        const auto geometry=plan_taught_measurement_schedule(path,request);
+        check(geometry.has_anchor && geometry.common_anchor.source_index==600,
+            "long-plateau fixture must reproduce the geometric room midpoint preference");
+        const auto response=plan_taught_response_measurement_schedule(path,request,dt,weights);
+        check(response.valid && response.has_anchor && response.common_anchor.measurable_axis_count==joints &&
+            response.common_anchor.source_index!=600 && response.common_anchor.nearby_reference_span_rad[focus]>.3,
+            "a weak axis must move measurement beside its naturally moving taught part while preserving measurable room coverage");
+        check(response.common_anchor.source_index*dt>=1 &&
+            (samples-1-response.common_anchor.source_index)*dt>=1,
+            "response-weighted selection must leave source-clock braking and resume room");
+        auto shuffled=path;auto reverse_weights=weights;auto reverse_request=request;
+        for(auto& q:shuffled)std::reverse(q.begin(),q.end());
+        std::reverse(reverse_weights.begin(),reverse_weights.end());
+        std::reverse(reverse_request.required_room_rad.begin(),reverse_request.required_room_rad.end());
+        std::reverse(reverse_request.observed_position_step_rad.begin(),reverse_request.observed_position_step_rad.end());
+        std::reverse(reverse_request.stationary_noise_rms_rad.begin(),reverse_request.stationary_noise_rms_rad.end());
+        const auto permuted=plan_taught_response_measurement_schedule(shuffled,reverse_request,dt,reverse_weights);
+        check(permuted.common_anchor.source_index==response.common_anchor.source_index,
+            "response anchor selection must follow the physical evidence under arbitrary joint permutation");
+        const auto fallback=plan_taught_response_measurement_schedule(path,request,dt,std::vector<double>(joints,0));
+        check(fallback.common_anchor.source_index==geometry.common_anchor.source_index,
+            "no resolved response priority must retain the existing geometry behavior");
+    }
+    TaughtMeasurementRoomRequest request;request.required_room_rad={.1,.1};
+    request.observed_position_step_rad={.001,.001};
+    // Motion priority cannot trade away an otherwise available measurement
+    // axis or turn an endpoint into a perturbation equilibrium.
+    const std::vector<std::vector<double>> path{{0,0},{.2,0},{.4,0},{.5,.5},{.6,1},{.8,1},{1,1}};
+    const auto covered=plan_taught_response_measurement_schedule(path,request,1,{100,1},.5);
+    check(covered.has_anchor && covered.common_anchor.source_index==3 && covered.common_anchor.measurable_axis_count==2,
+        "higher reference motion cannot replace a geometry-eligible two-axis anchor with a one-axis endpoint-side anchor");
+    check(!plan_taught_response_measurement_schedule(path,request,0,{1,1}).valid &&
+        !plan_taught_response_measurement_schedule(path,request,1,{1}).valid &&
+        !plan_taught_response_measurement_schedule(path,request,1,{1,-1}).valid,
+        "missing source clock or invalid mapped response weights cannot manufacture an anchor");
+}
 }
 int main() {
     try {
-        interior_selection();actual_feedback_owns_room();arbitrary_joint_count_and_missing_room();split_cubic_clock();
+        interior_selection();actual_feedback_owns_room();arbitrary_joint_count_and_missing_room();split_cubic_clock();response_priority_escapes_long_plateau();
         std::cout<<"Taught measurement schedule: interior per-axis room, actual feedback, split cubic 1x clock PASS\n";
     } catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
 }

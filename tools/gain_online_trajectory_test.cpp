@@ -28,7 +28,7 @@ OnlineTrajectoryReference reference(double t,std::size_t n) {
     }
     return f;
 }
-Run run(std::size_t n,bool adaptive,double inertia_scale=1,bool known_input=true,double viscosity=.25,double coupling=0,bool protocol_grid=false,bool jittered_feedback=false,std::size_t initial_kp_codes=0,const Gains* frozen_gains=nullptr,bool excite=true) {
+Run run(std::size_t n,bool adaptive,double inertia_scale=1,bool known_input=true,double viscosity=.25,double coupling=0,bool protocol_grid=false,bool jittered_feedback=false,std::size_t initial_kp_codes=0,const Gains* frozen_gains=nullptr,bool excite=true,double stiction_nm=0,bool response_trials=true) {
     std::vector<double> inertias;std::vector<ModelAxisLimits> bounds(n);std::vector<NoiseEstimate> noise(n);
     Gains actual,target;std::vector<double> q(n,0),v(n,0),accepted_r(n,0),accepted_rv(n,0),injection(n,0),ff(n,0);
     std::vector<std::deque<double>> delayed(n,std::deque<double>(9,0));
@@ -47,7 +47,7 @@ Run run(std::size_t n,bool adaptive,double inertia_scale=1,bool known_input=true
         mass(i,j)=i==j?.035+.021*i:coupling*std::sqrt((.035+.021*i)*(.035+.021*j));
     const Eigen::LDLT<Eigen::MatrixXd> inverse_mass(mass);
     if(frozen_gains)actual=*frozen_gains;
-    target=actual;Gains ramp_source=actual;double ramp_started=0;Run out;out.rows.resize(n);
+    target=actual;Gains ramp_source=actual;double ramp_started=0;Run out;out.rows.resize(n);OnlineTrajectoryState response_state;
     std::deque<std::vector<double>> q_history,v_history;
     std::vector<double> measured_q(n,0),measured_v(n,0);
     std::size_t next_host_tick=0,host_count=0,feedback_sequence=0;
@@ -104,7 +104,7 @@ Run run(std::size_t n,bool adaptive,double inertia_scale=1,bool known_input=true
                 next_update=t+1;
                 std::vector<OnlineTrajectoryReference> future;
                 for(std::size_t k=0;k<=43;++k)future.push_back(reference(t-.06+.02*k,n));
-                const auto report=online_trajectory_candidate(actual,out.rows,future,inertias,bounds,noise);
+                const auto report=online_trajectory_candidate(actual,out.rows,future,inertias,bounds,noise,{},response_trials?&response_state:nullptr);
                 out.reports.push_back(report);
                 if(protocol_grid && !out.first_p_code_step)for(std::size_t i=0;i<n;++i)
                     if(std::abs(report.gains.kp[i]-actual.kp[i])>1e-10){out.first_p_code_step=std::abs(report.gains.kp[i]-actual.kp[i])/bounds[i].grid.kp_step;break;}
@@ -122,6 +122,10 @@ Run run(std::size_t n,bool adaptive,double inertia_scale=1,bool known_input=true
             delayed[i].push_back(command);const double torque=delayed[i].front();delayed[i].pop_front();
             const double load=.2*I+viscosity*I*v[i]+.12*I*std::tanh(v[i]/.02);
             force[i]=torque-load;
+            if(stiction_nm>0) {
+                if(std::abs(v[i])<1e-4 && std::abs(force[i])<=stiction_nm){force[i]=0;v[i]=0;}
+                else force[i]-=std::copysign(stiction_nm,std::abs(v[i])>1e-4?v[i]:force[i]);
+            }
         }
         const Eigen::VectorXd acceleration=inverse_mass.solve(force);
         for(std::size_t i=0;i<n;++i){v[i]+=acceleration[i]*plant_dt;q[i]+=v[i]*plant_dt;
@@ -166,9 +170,89 @@ void tied_input_model_and_compliant_objective() {
     check(lower.size()==compliant.size() && higher.size()==compliant.size() && lower.squaredNorm()<higher.squaredNorm(),
         "an insufficient-yield compliant predictor must favor the softer bounded comparison instead of maximizing rigid tracking stiffness");
 }
+
+std::vector<std::vector<Sample>> stopped_rows(const Gains& gains,double end,double actual=0) {
+    std::vector<std::vector<Sample>> out(gains.kp.size());
+    for(std::size_t axis=0;axis<out.size();++axis)for(std::size_t k=0;k<=800;++k) {
+        Sample s;s.time_s=s.command_time_s=end-4+.005*k;s.feedback_time_s=s.time_s-.003;
+        s.actual=actual;s.velocity=0;s.reference=.05+actual;s.reference_velocity=0;
+        s.actual_kp=gains.kp[axis];s.actual_kd=gains.kd[axis];s.actual_gains_known=true;
+        s.feedforward_known=true;s.applied_feedforward_nm=0;s.independent_disturbance_known=true;s.independent_input_planned_known=true;
+        s.feedback_sequence=k+1;s.new_measurement=true;out[axis].push_back(s);
+    }
+    return out;
+}
+void unresolved_response_trial_is_finite() {
+    for(std::size_t n:{1,3,7}) {
+        Gains gains;gains.kp.assign(n,2);gains.kd.assign(n,.1);
+        std::vector<ModelAxisLimits> bound(n);std::vector<NoiseEstimate> noise(n);std::vector<double> inertia(n,.01);
+        for(auto& b:bound){b.kp_max=500;b.kd_max=5;b.effort_budget=2;b.grid={.1,.01};}
+        for(auto& x:noise)x.encoder_step_rad=.0001;
+        OnlineTrajectoryState state;std::size_t changed=0;
+        for(std::size_t window=0;window<14;++window) {
+            // A second traversal resets its local CSV clock; it must not
+            // silently restart an exhausted unresponsive experiment.
+            const double t=window<7?4+window:4+window-7;
+            const auto rows=stopped_rows(gains,t);std::vector<OnlineTrajectoryReference> future;
+            for(std::size_t k=0;k<=50;++k)future.push_back({t-.06+.02*k,std::vector<double>(n,.05),std::vector<double>(n,0),std::vector<double>(n,0)});
+            const auto report=online_trajectory_candidate(gains,rows,future,inertia,bound,noise,{},&state);
+            for(std::size_t axis=0;axis<n;++axis) {
+                check(!report.models[axis].valid,"a stopped plant must never become a successful IV identification");
+                check(report.gains.kd[axis]==.1,"static bias exploration must leave D unchanged");
+                check(report.gains.kp[axis]<=2.48+1e-10 && report.gains.kp[axis]>=gains.kp[axis],
+                    "overlapping windows and later traversals must share one finite unresolved P trust region");
+            }
+            changed+=report.changed;gains=report.gains;
+            if(window==0)check(report.changed && report.models[0].response_establishment_trial,
+                "fresh known-input static error must get an explicit bounded experiment despite an unavailable LTI model");
+        }
+        check(changed>0 && changed<7,"a nonresponding stop must exhaust blind trials instead of climbing to the protocol ceiling");
+        auto rows=stopped_rows(gains,20);for(auto& axis:rows)for(auto& s:axis)s.limited=true;
+        std::vector<OnlineTrajectoryReference> future;
+        for(std::size_t k=0;k<=50;++k)future.push_back({19.94+.02*k,std::vector<double>(n,.05),std::vector<double>(n,0),std::vector<double>(n,0)});
+        OnlineTrajectoryState fresh;
+        check(!online_trajectory_candidate(gains,rows,future,inertia,bound,noise,{},&fresh).changed,
+            "a limited stopped response cannot open a response-establishment trial");
+        rows=stopped_rows(gains,20);for(auto& axis:rows)for(auto& s:axis)s.feedforward_known=false;
+        check(!online_trajectory_candidate(gains,rows,future,inertia,bound,noise,{},&fresh).changed,
+            "unknown feedforward cannot support empirical P trials either");
+    }
+}
+void dry_friction_uses_trajectory_response_trials() {
+    for(std::size_t n:{1,3,7}) {
+        constexpr double dry_friction=.08;
+        const auto old=run(n,false,1,true,.25,0,true,true,3,nullptr,true,dry_friction);
+        const auto model_only=run(n,true,1,true,.25,0,true,true,3,nullptr,true,dry_friction,false);
+        const auto learned=run(n,true,1,true,.25,0,true,true,3,nullptr,true,dry_friction);
+        std::size_t trials=0;
+        for(const auto& report:learned.reports)for(const auto& model:report.models)if(model.response_establishment_trial) {
+            ++trials;check(!model.valid,"a nonlinear response trial must keep unsupported IV identification explicit");
+        }
+        check(trials>0,"dry friction below linear identifiability must produce real in-path response trials");
+        const auto old_fixed=run(n,false,1,true,.25,0,true,true,0,&old.last,false,dry_friction);
+        const auto model_fixed=run(n,false,1,true,.25,0,true,true,0,&model_only.last,false,dry_friction);
+        const auto new_fixed=run(n,false,1,true,.25,0,true,true,0,&learned.last,false,dry_friction);
+        double old_square=0,model_square=0,new_square=0;std::size_t samples=0;
+        for(std::size_t axis=0;axis<n;++axis)for(std::size_t k=0;k<old_fixed.rows[axis].size();++k) {
+            const auto& a=old_fixed.rows[axis][k];const auto& b=new_fixed.rows[axis][k];
+            check(a.reference==b.reference && a.reference_velocity==b.reference_velocity &&
+                a.time_s==b.time_s && a.applied_feedforward_nm==b.applied_feedforward_nm,
+                "dry-friction improvement must be measured on the same whole reference and execution conditions");
+            old_square+=std::pow(a.reference-a.actual,2);new_square+=std::pow(b.reference-b.actual,2);
+            model_square+=std::pow(model_fixed.rows[axis][k].reference-model_fixed.rows[axis][k].actual,2);++samples;
+        }
+        std::cout<<n<<" dry-friction axes: response_trials="<<trials<<" fixed same-path RMS="
+            <<std::sqrt(old_square/samples)<<" -> IV-only "<<std::sqrt(model_square/samples)<<" -> "<<std::sqrt(new_square/samples)<<'\n';
+        check(new_square<old_square,"real response trials and supported models must improve the whole dry-friction plant response");
+        check(new_square<model_square,"bounded response establishment must improve this nonlinear family beyond freezing gains when the IV fit fails");
+        check(learned.last.kp!=old.last.kp,"dry-friction trajectory learning must reach actual P commands");
+    }
+}
 }
 int main(){
     tied_input_model_and_compliant_objective();
+    unresolved_response_trial_is_finite();
+    dry_friction_uses_trajectory_response_trials();
     for(std::size_t n:{1,3,7}){
         const auto baseline=run(n,false),adaptive=run(n,true);
         check(adaptive.models>0,"independent taught-path measurements must identify supported local models");

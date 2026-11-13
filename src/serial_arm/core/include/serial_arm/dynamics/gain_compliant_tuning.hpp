@@ -39,9 +39,49 @@ struct CompliantUseAssessment {
     double final_equilibrium_error_rad{0},final_reference_error_rad{0},final_drift_rad{0},final_speed_rad_s{0};
     double displacement_limit_rad{0};
     double measured_kp{std::numeric_limits<double>::quiet_NaN()},measured_kd{std::numeric_limits<double>::quiet_NaN()};
+    double encoder_step_rad{0},position_noise_rms_rad{0};
+    double displacement_mean_rad{std::numeric_limits<double>::quiet_NaN()};
+    double displacement_mean_uncertainty_rad{std::numeric_limits<double>::quiet_NaN()};
+    double final_reference_mean_error_rad{std::numeric_limits<double>::quiet_NaN()};
+    double final_reference_mean_uncertainty_rad{std::numeric_limits<double>::quiet_NaN()};
+    std::size_t mean_baseline_samples{0},mean_hold_samples{0},mean_tail_samples{0};
+    unsigned unresolved_input_direction_mask{0};
+    bool unresolved_both_input_directions_at_ceiling{false};
     std::string reason{"compliant_use_not_measured"};
     std::string validation_scope{"known_joint_torque_yield_and_unloaded_equilibrium_recovery_not_contact_force"};
 };
+
+namespace compliant_use_detail {
+struct MeanEvidence {double mean{0},uncertainty{0};std::size_t samples{0};};
+inline MeanEvidence mean_evidence(const std::vector<double>& values,const NoiseEstimate& noise) {
+    MeanEvidence out;out.samples=values.size();if(values.empty())return out;
+    for(double x:values)out.mean+=x;
+    out.mean/=values.size();
+    double variance=0,covariance=0;
+    for(std::size_t i=0;i<values.size();++i) {
+        const double x=values[i]-out.mean;variance+=x*x;
+        if(i)covariance+=x*(values[i-1]-out.mean);
+    }
+    variance/=values.size();
+    const double rho=variance>0?std::clamp(covariance/(values.size()*variance),0.0,.99):0;
+    const double effective=std::clamp(values.size()*(1-rho)/(1+rho),1.0,static_cast<double>(values.size()));
+    // Repeated copies of one code never average away its quantization
+    // interval. Serial correlation reduces, rather than invents, evidence.
+    out.uncertainty=.5*noise.encoder_step_rad+3*std::sqrt(std::max(variance,noise.rms_rad*noise.rms_rad)/effective);
+    return out;
+}
+inline void mean_response(CompliantUseAssessment& out,const std::vector<double>& baseline,
+    const std::vector<double>& held,const std::vector<double>& tail_error,const NoiseEstimate& noise) {
+    out.encoder_step_rad=noise.encoder_step_rad;out.position_noise_rms_rad=noise.rms_rad;
+    const auto b=mean_evidence(baseline,noise),h=mean_evidence(held,noise),t=mean_evidence(tail_error,noise);
+    out.mean_baseline_samples=b.samples;out.mean_hold_samples=h.samples;out.mean_tail_samples=t.samples;
+    if(b.samples>=3 && h.samples>=3) {
+        out.displacement_mean_rad=std::abs(h.mean-b.mean);
+        out.displacement_mean_uncertainty_rad=b.uncertainty+h.uncertainty;
+    }
+    if(t.samples>=3){out.final_reference_mean_error_rad=std::abs(t.mean);out.final_reference_mean_uncertainty_rad=t.uncertainty;}
+}
+}
 
 inline CompliantUseRequirements compliant_use_requirements(double local_range_rad,
     double model_predicted_displacement_rad,const NoiseEstimate& noise) {
@@ -68,12 +108,13 @@ inline CompliantUseAssessment assess_compliant_response(const std::vector<Sample
     out.measured_kp=fresh.front().actual_kp;out.measured_kd=fresh.front().actual_kd;
     out.motion_floor_rad=std::max({3*noise.encoder_step_rad,6*noise.rms_rad,.0002});
     double origin=0,reference=0;std::size_t origin_samples=0;
+    std::vector<double> baseline_positions,held_positions,tail_errors;
     // A quiet pre-input baseline is mandatory. A state already displaced by
     // the injected torque cannot be relabelled as the unloaded equilibrium.
     for(const auto& row:fresh)if(row.time_s<=fresh.front().time_s+.15 && row.time_s<release_s &&
         row.independent_disturbance_known && std::isfinite(row.independent_disturbance_nm) &&
         std::abs(row.independent_disturbance_nm)<=1e-10) {
-        origin+=row.actual;reference+=row.reference;++origin_samples;
+        origin+=row.actual;reference+=row.reference;++origin_samples;baseline_positions.push_back(row.actual);
     }
     if(origin_samples<3){out.reason="compliant_unloaded_baseline_missing";return out;}
     origin/=origin_samples;reference/=origin_samples;out.initial_equilibrium_rad=origin;
@@ -100,6 +141,7 @@ inline CompliantUseAssessment assess_compliant_response(const std::vector<Sample
             const double input=row.independent_disturbance_nm;
             out.input_peak_nm=std::max(out.input_peak_nm,std::abs(input));
             input_energy+=input*input;input_displacement+=input*displacement;
+            if(row.time_s>=fresh.front().time_s+.75*(release_s-fresh.front().time_s))held_positions.push_back(row.actual);
         }
         if(row.time_s>=release_s) {
             input_removed=input_removed && row.independent_disturbance_known && std::isfinite(row.independent_disturbance_nm) &&
@@ -109,6 +151,7 @@ inline CompliantUseAssessment assess_compliant_response(const std::vector<Sample
                drag_position_speed(history,noise,.25)>req.final_speed_rad_s)last_bad=row.time_s;
         }
         if(row.time_s>=tail_start) {
+            tail_errors.push_back(row.actual-row.reference);
             ++tail_count;tail_low=std::min(tail_low,row.actual);tail_high=std::max(tail_high,row.actual);
             out.final_equilibrium_error_rad=std::max(out.final_equilibrium_error_rad,std::abs(displacement));
             out.final_reference_error_rad=std::max(out.final_reference_error_rad,std::abs(row.actual-row.reference));
@@ -120,6 +163,7 @@ inline CompliantUseAssessment assess_compliant_response(const std::vector<Sample
     // static stiffness identification or a measured end-effector contact force.
     out.yield_observed=out.peak_displacement_rad>out.motion_floor_rad && out.signed_compliance_rad_nm>0;
     out.final_drift_rad=tail_count?tail_high-tail_low:std::numeric_limits<double>::infinity();
+    compliant_use_detail::mean_response(out,baseline_positions,held_positions,tail_errors,noise);
     out.final_speed_rad_s=drag_position_speed(released,noise,.5);
     out.release_reversals=tail_position_reversals(released,release_s,out.motion_floor_rad);
     out.sustained_oscillation=out.release_reversals>=4 && out.final_drift_rad>out.motion_floor_rad;
@@ -167,9 +211,10 @@ inline TrajectoryCandidateReport compliant_candidate_report(const Gains& current
             assessment.peak_displacement_rad>assessment.displacement_limit_rad) {
             out.gains.kp[i]=std::min(kp_max[i],1.08*current.kp[i]);reason="measured_yield_above_model_local_envelope_small_stiffness_comparison";
         } else if(assessment.input_measurement_complete && !assessment.yield_observed && !assessment.limited) {
-            out.gains.kp[i]=.92*current.kp[i];
-            if(assessment.stable_recovery)out.gains.kd[i]=.92*current.kd[i];
-            reason="known_input_yield_unresolved_small_restoring_and_damping_reduction_requires_remeasurement";
+            if(assessment.unresolved_both_input_directions_at_ceiling) {
+                out.gains.kp[i]=.92*current.kp[i];
+                reason="both_legal_input_directions_measured_unresolved_small_stiffness_reduction_comparison";
+            } else reason="known_input_yield_unresolved_increase_measurement_input_before_gain_revision";
         } else if(assessment.measurement_complete && !assessment.limited && assessment.stable_recovery &&
                   assessment.peak_displacement_rad<std::max(2*assessment.motion_floor_rad,.25*assessment.displacement_limit_rad)) {
             out.gains.kp[i]=.92*current.kp[i];out.gains.kd[i]=.92*current.kd[i];
@@ -196,7 +241,8 @@ inline TrajectoryCandidateReport compliant_candidate_report(const Gains& current
     for(std::size_t i=0;i<n;++i)resolved_change=resolved_change || (measured[i].measurement_complete && measured[i].yield_observed &&
         (out.gains.kp[i]!=current.kp[i] || out.gains.kd[i]!=current.kd[i]));
     if(resolved_change)for(std::size_t i=0;i<n;++i)if(measured[i].input_measurement_complete && !measured[i].yield_observed &&
-        !measured[i].measurement_complete && (out.gains.kp[i]!=current.kp[i] || out.gains.kd[i]!=current.kd[i])) {
+        !measured[i].measurement_complete && !measured[i].unresolved_both_input_directions_at_ceiling &&
+        (out.gains.kp[i]!=current.kp[i] || out.gains.kd[i]!=current.kd[i])) {
         // Design this subset before measuring the complete new group. Never
         // splice separately measured axis winners after the comparison.
         out.gains.kp[i]=current.kp[i];out.gains.kd[i]=current.kd[i];

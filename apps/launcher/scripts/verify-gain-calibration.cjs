@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.join(root, 'renderer/app.js'), 'utf8');
 const errorContext=vm.createContext({});
 vm.runInContext(fs.readFileSync(path.join(root,'renderer/error-i18n.js'),'utf8'),errorContext);
 const translateError=errorContext.serialArmErrorI18n.translate;
-for(const [language,label] of [['zh-CN','实测参数与分析已保存，仅供参考'],['en','Measured gains and analyses are available for reference']])assert.equal(translateError('reference_analysis_available',language),label,'A recorded normal-completion code is not translated as a failure');
+for(const [language,label] of [['zh-CN','结果已保存'],['en','Results saved']])assert.equal(translateError('reference_analysis_available',language),label,'A recorded normal-completion code is not translated as a failure');
 assert(/失败|操作未完成/.test(translateError('model_calibration_gain_begin failed: reference_analysis_available')),'Only the exact completion status is localized as a normal result; a failed operation keeps its failure context');
 const rangeError='trajectory_range_violation:joint=joint2;sample=42;value=-0.003;lower=0;upper=2;margin=0;unit=rad;scope=command_reference';
 for(const prefix of ['', 'cannot safely plan demonstration: ', 'Error invoking remote method \'launcher:request\': Error: imported trajectory: ']){
@@ -81,12 +81,22 @@ const context = vm.createContext({state:{language:'zh-CN',gainMode:'all',gainTun
   gainCandidateReviewHtml:()=>'',gainTaskWarningsHtml:()=>'',gainModelInitializationHtml:()=>''});
 for (const name of ['gainTimeText','gainBudgetValues','gainBudgetHtml','gainCalibrationOptionsHtml','gainCandidateGroups','gainCandidatePurposeAvailable','gainCandidateReviewReady','gainCandidateDeployable']) vm.runInContext(extract(name),context);
 const html = vm.runInContext('gainCalibrationOptionsHtml({gain_budget_source_duration_s:25},null,false)',context);
-assert(html.includes('四用途快速标定') && html.includes('目标用时') && html.includes('5 分 0 秒') && html.includes('6 分 15 秒'));
+assert(html.includes('四用途快速标定') && html.includes('目标用时') && html.includes('7 分 30 秒') && html.includes('10 分 0 秒'));
 context.state.gainTuningMode='fine';context.state.gainFinePurpose='servo_tracking';
 const fine = vm.runInContext('gainCalibrationOptionsHtml({gain_budget_source_duration_s:25},null,false)',context);
-assert(fine.includes('10 分 0 秒') && fine.includes('id="gain-target"'));
+assert(fine.includes('5 分 0 秒') && fine.includes('6 分 15 秒') && fine.includes('id="gain-target"'));
 assert.equal(context.state.gainMode,'servo_tracking');
-assert(!html.includes('data-gain-requirement')&&!fine.includes('data-gain-requirement')&&html.includes('仅供参考'),'Both modes omit accuracy target inputs and explain reference-only analysis');
+assert(!html.includes('data-gain-requirement')&&!fine.includes('data-gain-requirement')&&html.includes('选择需要采用的用途'),'Both modes omit obsolete accuracy inputs and state the next user action');
+for(const [mode,target,maximum] of [['quick',450,600],['fine',300,375]]){
+ context.budgetInput={gain_tuning_mode:mode,gain_budget_source_duration_s:25};
+ const budget=vm.runInContext('gainBudgetValues(budgetInput,true)',context);
+ assert.equal(budget.target,target);assert.equal(budget.maximum,maximum);
+}
+context.budgetInput={schema:'serial_arm_gain_candidate',gain_tuning_mode:'quick',budget_source_duration_s:28.14,target_budget_s:337.68,time_budget_s:422.1};
+const historicalBudget=vm.runInContext('gainBudgetValues(budgetInput,true)',context);
+assert.equal(historicalBudget.target,337.68);assert.equal(historicalBudget.maximum,422.1,'Old task budgets are displayed exactly as recorded');
+delete context.budgetInput.target_budget_s;delete context.budgetInput.time_budget_s;
+assert.equal(vm.runInContext('gainBudgetValues(budgetInput,true).maximum',context),0,'Missing historical budget fields remain unknown rather than adopting a new policy');
 assert(!source.includes('gain_requirements:')&&!source.includes('function readGainRequirements'),'Frontend does not submit obsolete accuracy thresholds');
 const tracking = {independent:true,duration_s:1,measured_duration_s:1,metrics:[{samples:200,measurement_samples:200,rms_error_rad:.01,peak_error_rad:.02,velocity_rms_rad_s:.01,tail_error_rad:.01,settling_s:.2}]};
 const warning = {category:'servo_tracking',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[3],kd:[.4],validated:false,available:true,qualification_complete:true,disturbance_verification:{available:true,completed:true,record_path:'disturbance.csv'},native_validation:tracking,admittance_required:false,admittance_validation:{required:false,status:'not_requested'}};
@@ -121,7 +131,7 @@ Object.assign(context,{t:key=>key,localizedError:String,gainProbeMessageLabel:St
   gainPathValidationHtml:()=>'',gainTaughtPathMetricsHtml:()=>'',gainObserverAndBoundsHtml:()=>'',
   gainQualificationScopeHtml:()=>'',selectedGainPurposes:()=>['servo_tracking'],setupActionHtml:()=>'',gainCalibrationPhaseText:()=>'任务已结束'});
 context.state.calibrationRuntimeCandidates={};
-for (const name of ['busyText','canonicalGainPurpose','gainPurposeLabel','capabilityNumber','gainProbePhaseLabel','gainProbeStageLabel','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainProbeGhostSource','gainCheckStatus','gainCompliantScopeSummaryHtml','gainCompliantScopeEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainCalibrationQualityWarning','gainTaskConclusion','gainMeasurementPhaseLabel','gainMeasurementReasonLabel','gainWarningLabel','gainCandidateAvailabilityLabel','gainCandidateResultCounts','gainCandidateParameterSourceHtml','gainCandidateParametersHtml','gainModelInitializationHtml','gainResponseModelsHtml','gainMotionEstablishmentHtml','gainExperimentHtml','gainTaughtPathMetricsHtml','gainCandidateReviewHtml'])vm.runInContext(extract(name),context);
+for (const name of ['busyText','canonicalGainPurpose','gainPurposeLabel','capabilityNumber','gainProbePhaseLabel','gainProbeStageLabel','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainProbeGhostSource','gainCheckStatus','gainCompliantScopeSummaryHtml','gainPurposeDirectionEvidenceHtml','gainEvidenceRecordHtml','bindGainEvidencePaths','gainCompliantScopeEvidenceHtml','gainDirectDisturbanceScope','gainMeasurementSourceKey','gainPurposeMeasurementEvidence','gainPurposeMeasurementWarnings','gainDirectDisturbanceEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainCalibrationQualityWarning','gainTaskConclusion','gainMeasurementPhaseLabel','gainMeasurementReasonLabel','gainWarningLabel','gainCandidateAvailabilityLabel','gainCandidateResultCounts','gainCandidateParameterSourceHtml','gainCandidateParametersHtml','gainModelInitializationHtml','gainResponseModelsHtml','gainMotionEstablishmentHtml','gainFixedReferenceEvidenceHtml','gainExperimentHtml','gainTaughtPathMetricsHtml','gainCandidateReviewHtml'])vm.runInContext(extract(name),context);
 assert(vm.runInContext("gainProbeMessageLabel('bounded_endpoint_transition')",context).includes('最新实测位置平滑过渡'));
 assert(vm.runInContext("gainProbeStageLabel('trajectory_discovery')",context).includes('沿示教路径建立响应'));
 for(const message of ['taught_path_original_speed_discovery','taught_path_feedback_bounded_discovery','taught_path_candidate_window','taught_path_discovery_complete']) {
@@ -135,27 +145,42 @@ context.dragScope={available:true,completed:true,validated:true,record_path:'dra
 const quietScopeHtml=vm.runInContext("gainDragScopeEvidenceHtml(dragScope,['J1'])",context);
 assert(quietScopeHtml.includes('data-gain-drag-scopes')&&quietScopeHtml.includes('无外力稳定')&&quietScopeHtml.includes('释放衰减')&&quietScopeHtml.includes('<td>未测量</td><td>—</td>')&&quietScopeHtml.includes('drag-quiet.csv'),'Quiet validation never promotes an unexcited release or its default decay value to a measured result');
 const quietScopeSummary=vm.runInContext('gainDragScopeSummaryHtml(dragScope)',context);
-assert(quietScopeSummary.includes('<strong>已测量，仅供参考</strong>')&&quietScopeSummary.includes('释放衰减：未测量'),'A completed quiet scope remains visible separately from missing release evidence');
+assert(quietScopeSummary.includes('<strong>已测量</strong>')&&quietScopeSummary.includes('释放衰减：未测量'),'A completed quiet scope remains visible separately from missing release evidence');
 context.dragScope.axes.push({joint:'J2',quiet_stability_measured:true,quiet_stability_passed:false,release_decay_measured:true,release_decay_passed:true,decay_s:.7});
 assert.equal(vm.runInContext('gainDragScopes(dragScope).quiet.passed',context),false,'One failed joint keeps the all-axis quiet scope from passing');
 assert.equal(vm.runInContext('gainDragScopes(dragScope).release.measured',context),false,'All participating joints need actual release evidence for an all-axis measured release scope');
 Object.assign(context.dragScope.axes[0],{release_decay_measured:true,release_decay_passed:true,decay_s:.6});
 context.dragScope.axes[1].quiet_stability_passed=true;
 assert(vm.runInContext('gainDragScopes(dragScope).quiet.passed&&gainDragScopes(dragScope).release.passed',context),'Both measured all-axis scopes may pass independently');
+Object.assign(context.dragScope.axes[0],{preparation_motion_observed:true,release_motion_observed:false,fast_stop_observed:true,decay_time_is_upper_bound:true,decay_time_upper_bound_s:.025,decay_s:0,reason:'drag_release_fast_stop_upper_bound_recorded'});
+const fastStopRecord=JSON.stringify(context.dragScope);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const html=vm.runInContext('gainDragScopeEvidenceHtml(dragScope)',context);
+ assert(html.includes('data-gain-stop-upper-bound>≤ 0.025')&&html.includes(language==='en'?'Stopping-time upper bound':'停止时间上界'),'Fast release records a stopping-time upper bound rather than an exact zero decay');
+ assert(html.includes(language==='en'?'Motion before release':'释放前运动')&&html.includes(language==='en'?'Motion after release':'释放后运动'),'Preparation and post-release motion remain distinct evidence');
+ assert(html.includes('<td>0.7</td>'),'A historical measured decay without a bound flag retains its recorded value');
+}
+assert.equal(JSON.stringify(context.dragScope),fastStopRecord,'Rendering does not rewrite fast-stop evidence');
+context.dragScope.axes[0].decay_time_upper_bound_s=null;
+assert(!vm.runInContext('gainDragScopeEvidenceHtml(dragScope)',context).includes('data-gain-stop-upper-bound'),'A missing upper bound cannot fall back to an exact default decay');
+context.dragScope.axes[0].decay_time_upper_bound_s=.025;context.dragScope.axes[0].release_decay_measured=false;
+assert(!vm.runInContext('gainDragScopeEvidenceHtml(dragScope)',context).includes('data-gain-stop-upper-bound'),'An unmeasured release cannot display a stale bound as measured');
+context.state.language='zh-CN';
 context.dragScope={available:true,completed:true,validated:true,axes:[{joint:'J1',passed:true,decay_s:0}]};
 assert.equal(vm.runInContext('gainDragScopes(dragScope)',context),null);
 assert.equal(vm.runInContext('gainDragScopeEvidenceHtml(dragScope)',context),'');
 assert(vm.runInContext('gainDragScopeSummaryHtml(dragScope)',context).includes('历史拖拽测量'),'Historical aggregate success does not invent either new quiet or release scope');
 context.compliantScope={record_path:'compliant-disturbance.csv',axes:[{joint:'J1',measurement_complete:true,input_measurement_complete:true,passed:true,yield_observed:true,stable_recovery:true,peak_displacement_rad:.01,displacement_limit_rad:.02,initial_reference_error_rad:.03,final_equilibrium_error_rad:.001,release_recovery_s:.5,final_drift_rad:.0001,reason:'bounded_compliant_yield_and_stable_recovery_qualified',validation_scope:'known_joint_torque_yield_and_unloaded_equilibrium_recovery_not_contact_force'}]};
 const compliantScopeHtml=vm.runInContext("gainCompliantScopeEvidenceHtml(compliantScope,['J1'])",context);
-assert(compliantScopeHtml.includes('data-gain-compliant-scope')&&compliantScopeHtml.includes('最终平衡误差 °')&&compliantScopeHtml.includes('初始参考误差 °')&&compliantScopeHtml.includes('独立输入已测')&&compliantScopeHtml.includes('有界柔顺位移与稳定恢复已记录，仅供参考')&&compliantScopeHtml.includes('compliant-disturbance.csv'),'Compliant use reports actual independent yielding and equilibrium recovery separately from reference tracking');
-assert(vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('<strong>已测量，仅供参考</strong>'));
+assert(compliantScopeHtml.includes('data-gain-compliant-scope')&&compliantScopeHtml.includes('最终平衡误差 °')&&compliantScopeHtml.includes('初始参考误差 °')&&compliantScopeHtml.includes('独立输入已测')&&compliantScopeHtml.includes('已测得柔顺位移及稳定恢复')&&compliantScopeHtml.includes('compliant-disturbance.csv'),'Compliant use reports actual independent yielding and equilibrium recovery separately from reference tracking');
+assert(vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('<strong>已测量</strong>'));
 context.compliantScope.axes[0].measurement_complete=false;
-assert(vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('测量未完成')&&!vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('<strong>已测量，仅供参考</strong>'),'An old or inconsistent passed flag cannot complete an unmeasured compliant scope');
+assert(vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('测量未完成')&&!vm.runInContext('gainCompliantScopeSummaryHtml(compliantScope)',context).includes('<strong>已测量</strong>'),'An old or inconsistent passed flag cannot complete an unmeasured compliant scope');
 assert.equal(vm.runInContext('gainCompliantScopeEvidenceHtml({validated:true})',context),'','Legacy tracking success does not supply missing compliant-use evidence');
 context.compliantExperiment={kind:'independent_torque_disturbance',kp:[8],kd:[.4],axes:[],compliant_use_axes:context.compliantScope.axes};
 assert(vm.runInContext("gainExperimentHtml(compliantExperiment,['J1'])",context).includes('data-gain-compliant-scope'),'Live typed compliant experiment records use the same purpose evidence renderer');
-for(const reason of ['zero_stiffness_quiet_stability_qualified_release_separate','drag_release_decay_unmeasured:joint5','drag_release_motion_unresolved_quiet_result_remains_available','zero_stiffness_bias_drift_requires_feedforward_review','bounded_compliant_yield_and_stable_recovery_qualified','compliant_yield_unresolved_do_not_substitute_rigid_tracking','compliant_unloaded_equilibrium_recovery_incomplete']){
+for(const reason of ['zero_stiffness_quiet_stability_qualified_release_separate','drag_release_decay_unmeasured:joint5','drag_release_motion_unresolved_quiet_result_remains_available','drag_release_fast_stop_upper_bound_recorded','drag_release_actual_input_or_timing_unknown','drag_release_reference_velocity_not_zero','drag_input_at_impulse_and_protocol_domain_ceiling','drag_input_retry_requires_complete_known_unlimited_input','drag_known_unresolved_input_bounded_increase','drag_pulse_stopped_at_measured_domain_margin','zero_stiffness_bias_drift_requires_feedforward_review','bounded_compliant_yield_and_stable_recovery_qualified','compliant_yield_unresolved_do_not_substitute_rigid_tracking','compliant_unloaded_equilibrium_recovery_incomplete']){
  context.reason=reason;for(const language of ['zh-CN','en']){context.state.language=language;assert(!vm.runInContext('gainWarningLabel(reason)',context).includes(reason));}
 }
 context.state.language='zh-CN';
@@ -221,7 +246,7 @@ Object.assign(context,{priorityErrors:[],reportedCalibrationErrors:new Set(),las
 vm.runInContext(extract('checkRuntimeAlerts'),context);
 context.qualityStatus={workflow_kind:'gain',task_id:'quality-warning',phase:'failed',error:'identification_insufficient:gain_endpoint_transition_reference_timeout',termination:{kind:'insufficient_measurement',reason:'identification_insufficient:gain_endpoint_transition_reference_timeout',fault_interrupted:false}};
 assert(vm.runInContext('gainCalibrationQualityWarning(qualityStatus)',context));
-assert(vm.runInContext('gainTaskConclusion(qualityStatus).title',context).includes('有效测量不足'),'A structured non-Safety shortfall retains a neutral terminal review even in historical failed phases');
+assert(vm.runInContext('gainTaskConclusion(qualityStatus).title',context).includes('待补测'),'A structured non-Safety shortfall retains a neutral terminal review even in historical failed phases');
 vm.runInContext("checkRuntimeAlerts({robot_state:'ACTIVE',model_calibration:qualityStatus})",context);assert.equal(context.priorityErrors.length,0,'Non-Safety measurement shortfalls do not produce red execution-fault popups');
 context.qualityStatus.termination.kind='execution_fault';vm.runInContext("checkRuntimeAlerts({robot_state:'ACTIVE',model_calibration:qualityStatus})",context);assert.equal(context.priorityErrors.length,1,'A declared actual execution fault still produces the existing fault prompt');
 context.qualityStatus.fault_interrupted=true;context.qualityStatus.termination.kind='insufficient_measurement';vm.runInContext("checkRuntimeAlerts({robot_state:'FAULT',fault:{code:'SAFETY_FAILED'},model_calibration:qualityStatus})",context);assert.equal(context.priorityErrors.length,2,'Robot Safety faults remain visible regardless of an unfinished measurement result');
@@ -442,7 +467,7 @@ assert(vm.runInContext("gainWarningLabel('frequency_identification_warning:J2:mi
 for(const language of ['zh-CN','en']) {
   context.state.language=language;
   const refused=vm.runInContext("gainWarningLabel('candidate_not_admitted_retained_complete_measured_controller:native-before-frozen-install')",context);
-  assert(refused.includes(language==='en'?'previous complete measured gain set':'上一整组实测增益')&&!refused.includes('candidate_not_admitted'),'An inadmissible proposal explains retained measurement and continuation in both languages');
+  assert(refused.includes(language==='en'?'previous complete gain set':'上一整组参数')&&!refused.includes('candidate_not_admitted'),'An inadmissible proposal explains retained measurement and continuation in both languages');
 }
 context.state.language='zh-CN';
 assert(translateError('frequency_identification_warning:J2:mit_affine_inverse_response_gain_holdout_failed').includes('留出响应与模型预测不一致'));
@@ -514,13 +539,13 @@ assert(!vm.runInContext('gainTaskConclusion({},exitFaultReview).success',context
 context.warningReview.native_validation={...tracking,completed:false};assert(!vm.runInContext('gainCandidateDeployable(warningReview)',context),'The review hint never makes incomplete measurements applicable');
 context.summaryStatus={workflow_kind:'gain',phase:'complete',task_id:'warning-review',termination:{kind:'insufficient_measurement',reason:'measurement_warning:native-training:gain_endpoint_transition_feedback_wait_timeout'}};
 const warningConclusion=vm.runInContext('gainTaskConclusion(summaryStatus)',context);
-assert(warningConclusion.title.includes('有效测量不足')&&warningConclusion.reason.includes('流程已继续')&&!warningConclusion.reason.includes('measurement_warning:'),'The first warning remains a readable final cause rather than an execution-fault headline');
+assert(warningConclusion.title.includes('待补测')&&warningConclusion.reason.includes('流程已继续')&&!warningConclusion.reason.includes('measurement_warning:'),'The first warning remains a readable final cause rather than an execution-fault headline');
 context.summaryStatus.phase='gain_adaptation';context.summaryStatus.error=context.summaryStatus.termination.reason;context.summaryStatus.termination.kind='running';
 assert(vm.runInContext('gainProbeStatusValues(summaryStatus).error',context)==='','A continued stage warning does not populate the red live execution-error field');
 context.partialPassed={...context.warningReview,category:'all',targets:{servo_tracking:{...warning,validated:true},rigid_tracking:{error:'not_started'},compliant_tracking:{error:'not_started'},compliant_drag:{error:'not_started'}}};
 const partialPassed=vm.runInContext('gainCandidateReviewHtml(partialPassed)',context);
 assert(partialPassed.includes('gain-result-outcome is-reference')&&!partialPassed.includes('gain-result-outcome is-pass'),'One passed available use does not color the whole task as passed while other uses remain unmeasured');
-assert(partialPassed.includes('部分用途参数已测完') && partialPassed.includes('data-gain-candidate-purpose="servo_tracking"') && partialPassed.includes('data-tool-export="gain"'));
+assert(partialPassed.includes('部分用途待补测') && partialPassed.includes('data-gain-candidate-purpose="servo_tracking"') && partialPassed.includes('data-tool-export="gain"'));
 assert(vm.runInContext("gainCandidateDeployable(partialPassed,['servo_tracking'])",context),'One completely measured use remains applicable while other four-use measurements are incomplete');
 assert(!vm.runInContext("gainCandidateDeployable(partialPassed,['rigid_tracking'])",context),'Unmeasured uses remain unavailable for explicit selection');
 context.incompleteReview={...warning,measurement_complete:false,review_ready:false,qualification_complete:false,review_required:false,disturbance_verification:{available:false,completed:false}};
@@ -528,11 +553,11 @@ assert(vm.runInContext('gainCandidateDeployable(incompleteReview)',context),'Mod
 assert(vm.runInContext('gainTaskConclusion({phase:"complete"},incompleteReview).review',context));
 assert(!context.incompleteReview.validated,'Making complete parameters available does not promote missing disturbance qualification to validated');
 const incompleteScopeHtml=vm.runInContext('gainCandidateReviewHtml(incompleteReview)',context);
-assert(incompleteScopeHtml.includes('独立扰动测量不足，抗扰分析未完成')&&incompleteScopeHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Missing independent disturbance remains a visible warning beside applicable measured gains');
+assert(incompleteScopeHtml.includes('抗扰响应待补测')&&incompleteScopeHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Missing independent disturbance remains a visible warning beside applicable measured gains');
 context.incompleteReview.task_id='retained-parameters';
-assert(vm.runInContext('gainTaskConclusion({phase:"complete",task_id:"retained-parameters",termination:{kind:"insufficient_measurement"}},incompleteReview).title',context).includes('参数实测已保留'),'A final missing-purpose-evidence outcome does not imply that complete parameter measurements vanished');
+assert(vm.runInContext('gainTaskConclusion({phase:"complete",task_id:"retained-parameters",termination:{kind:"insufficient_measurement"}},incompleteReview).title',context).includes('参数已测量'),'A final missing-purpose-evidence outcome does not imply that complete parameter measurements vanished');
 vm.runInContext(extract('gainCalibrationPhaseText'),context);
-assert(vm.runInContext('gainCalibrationPhaseText({phase:"complete",task_id:"retained-parameters",termination:{kind:"insufficient_measurement"}},incompleteReview)',context).includes('参数已实测，仅供参考'),'Top state distinguishes available measured parameters from incomplete qualification');
+assert(vm.runInContext('gainCalibrationPhaseText({phase:"complete",task_id:"retained-parameters",termination:{kind:"insufficient_measurement"}},incompleteReview)',context).includes('参数已测量'),'Top state distinguishes available measured parameters from incomplete qualification');
 context.incompleteReview.native_validation={...tracking,completed:false};
 assert(!vm.runInContext('gainCandidateDeployable(incompleteReview)',context),'Actual incomplete trajectory measurements still prevent application');
 context.incompleteReview={...warning,validated:true,validation_scope:'legacy_local_probes',measurement_complete:false};
@@ -567,7 +592,7 @@ for(const language of ['zh-CN','en']){
  context.state.language=language;
  const referenceHtml=vm.runInContext('gainCandidateReviewHtml(referenceOnly)',context);
  assert(!/达标|验收通过|Target met|Target not met|Outside reference limits|>Passed</.test(referenceHtml));
- assert(referenceHtml.includes(language==='en'?'for reference':'仅供参考')&&referenceHtml.includes('4.5837°')&&referenceHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Reference-only results keep measured values and temporary-application availability');
+ assert(referenceHtml.includes(language==='en'?'Review the measured motion':'请根据实测表现')&&referenceHtml.includes('4.5837°')&&referenceHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Reference-only results keep measured values and temporary-application availability');
 }
 assert.equal(JSON.stringify(context.referenceOnly),originalReferenceRecord,'Rendering never rewrites new or historical task records');
 context.state.language='zh-CN';
@@ -578,7 +603,7 @@ const statusBefore=JSON.stringify(context.completedReferenceStatus);
 context.state.calibrationToolSelected={gain:{gain_candidate:context.referenceOnly}};
 for(const language of ['zh-CN','en']){
  context.state.language=language;
- const expected=language==='en'?'Measured gains and analyses are available for reference':'实测参数与分析已保存，仅供参考';
+ const expected=language==='en'?'Results saved':'结果已保存';
  const conclusion=vm.runInContext('gainTaskConclusion(completedReferenceStatus,referenceOnly)',context);
  assert(conclusion.success&&conclusion.reason===expected&&conclusion.rawReason==='reference_analysis_available','Completed reference analyses have a readable normal summary and retain their original technical code');
  assert.equal(vm.runInContext('gainProbeStatusValues(completedReferenceStatus).message',context),expected,'The live measurement summary uses the same completion text as the saved review');
@@ -645,6 +670,32 @@ for(const language of ['zh-CN','en']){
 assert.equal(JSON.stringify(context.purposeRecords),purposeBefore,'Purpose diagnostics are read-only');
 context.state.language='zh-CN';
 
+context.passingPurpose={kind:'taught_path_purpose_dwell',completed:true,source_index:45,reverse:true,elapsed_s:28.4,measurement_dwell_s:8.2,resumed:true,arrival_error_gate:false,record_path:'gain-trajectory-native-passing-purpose.csv',reason:'taught_path_purpose_dwell_complete'};
+const passingBefore=JSON.stringify(context.passingPurpose);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ assert(!vm.runInContext("gainProbeStageLabel('trajectory_purpose_pass')",context).includes('trajectory_purpose_pass'));
+ assert(!vm.runInContext("gainProbePhaseLabel('native-passing')",context).includes('native-passing'));
+ assert(!vm.runInContext("gainProbeMessageLabel('normal_taught_path_with_purpose_dwell')",context).includes('normal_taught_path_with_purpose_dwell'));
+ for(const purpose of ['servo','compliant']){
+  context.resumedStatus={phase:'running',gain_protocol:'taught_trajectory',gain_active_target:purpose,gain_probe_stage:'trajectory_purpose_pass',gain_probe_kind:purpose==='compliant'?'compliant-passing':'native-passing',gain_probe_message:'normal_taught_path_with_purpose_dwell'};
+  assert(vm.runInContext('gainProbeStatusValues(resumedStatus).use===gainPurposeLabel(resumedStatus.gain_active_target)',context),'After a purpose dwell the live use follows the resumed path, not the last hold or drag measurement');
+  assert(vm.runInContext("gainProbeStatusValues(resumedStatus).phase===gainProbeStageLabel('trajectory_purpose_pass')",context),'After a purpose dwell the live stage shows resumed path traversal');
+ }
+ const html=vm.runInContext('gainExperimentHtml(passingPurpose,["J1"])',context);
+ assert(html.includes('data-gain-passing-purpose')&&html.includes('28.4')&&html.includes('8.2')&&html.includes('gain-trajectory-native-passing-purpose.csv'));
+ assert(html.includes(language==='en'?'Resumed in the same direction':'已继续原方向')&&!/验收通过|Calibration failed|Qualified/.test(html));
+ context.partialPassing={...context.passingPurpose,completed:false,resumed:false,elapsed_s:48.926704956,pause_begin_s:7.888727158,pause_end_s:0,measurement_dwell_s:0,reason:'taught_path_purpose_dwell_interrupted_or_partial'};
+ const partialHtml=vm.runInContext('gainExperimentHtml(partialPassing,["J1"])',context);
+ assert(partialHtml.includes(language==='en'?'Not yet resumed':'尚未继续')&&!partialHtml.includes(language==='en'?'Traversal complete':'本趟已走完'));
+ assert(partialHtml.includes(language==='en'?'Measurement interrupted; path not yet resumed':'测量中断，尚未恢复轨迹')&&partialHtml.includes('41.04')&&partialHtml.includes(language==='en'?'Dwell elapsed before interruption s':'中断前已停留用时 s'),'An interrupted callback shows its elapsed partial dwell, not the uncommitted zero source-clock insertion');
+ context.unknownPassing={kind:'taught_path_purpose_dwell'};
+ const unknownHtml=vm.runInContext('gainExperimentHtml(unknownPassing,["J1"])',context);
+ assert(!unknownHtml.includes(language==='en'?'Resumed in the same direction':'已继续原方向')&&!unknownHtml.includes('0.00'),'Missing legacy dwell timing is not shown as a measured zero');
+}
+assert.equal(JSON.stringify(context.passingPurpose),passingBefore);
+context.state.language='zh-CN';
+
 context.onlineUpdate={kind:'online_trajectory_PD_update',stage:'trajectory_adapting',method:'indirect_local_IV_ARX_projected_PD',reference_only:true,accuracy_thresholds_enabled:false,completed:false,time_s:4,record_path:'gain-trajectory-native-online-0.csv',candidate_generated:true,admission_allowed:true,installed:true,previous_kp:[10,20],previous_kd:[1,2],proposed_kp:[11,20],proposed_kd:[.9,2],models:[{joint:'Alpha',valid:true,reason:'held_out_local_iv_model_supported',dt_s:.02,delay_s:.04,iv_rank:5,training_samples:100,validation_samples:40,validation_rms_rad:.0002,arx:[1.7,-.7,.004,.002,0],predicted_cost_before:1,predicted_cost_after:.9},{joint:'Beta',valid:false,reason:'independent_input_not_informative_for_local_model',iv_rank:3,arx:[999,998,997,996,995],predicted_cost_before:777,predicted_cost_after:666}],reasons:['online_iv_predictive_small_pd_step_reference_only_external_gain_ramp_required','independent_input_not_informative_for_local_model']};
 Object.assign(context.onlineUpdate.models[0],{fresh_samples:788,command_samples:800,resampled_samples:199,feedback_interval_min_s:.0014,feedback_interval_max_s:.0131,observed_encoder_step_rad:25/65536,fit_attempts:7,rank_rejections:0,plausibility_rejections:4,prediction_rejections:1,structure:'arx2_tied_zoh_input_coefficient',parameter_count:4,training_span_rad:.035,validation_error_limit_rad:.007});
 const onlineBefore=JSON.stringify(context.onlineUpdate);
@@ -672,6 +723,174 @@ for(const reason of finalWindowReasons){
   assert(!translateError(reason).includes(reason),'Priority errors localize the same actual measurement reason');
 }
 context.state.language='zh-CN';
+// Direct pulse evidence is a measured input/output scope, separate from a model fit.
+context.directPulse={kind:'independent_torque_disturbance',method:'isolated_smooth_torque_pulse',model_identified:false,
+ direct_measurement_complete:true,available:false,completed:true,record_path:'gain-purpose-rigid.csv',kp:[10],kd:[1],
+ axes:[{joint:'J1',input_measurement_complete:true,direct_response_complete:true,measurement_complete:false,hold_settled:true,
+  hold_signed_displacement_rad:-.004,effective_compliance_rad_nm:.02,reason:'disturbance_response_qualified'}]};
+context.pulseParameters={kind:'short_experiment_parameters',waveform:'isolated_smooth_pulse',isolation:'sequential_single_axis',
+ other_axes_execution:'fixed_reference_same_complete_gains',kp:[10],kd:[1],pulse_axes:[{joint:'J1',scheduled:true,start_s:.2,release_s:1,end_s:2,amplitude_nm:.1,direction:-1,reason:'demonstrated_room_supports_one_sided_smooth_disturbance'}]};
+context.actualDrag={kind:'drag_actual_zero_stiffness_measurement',actual_gains_ready_s:.16,quiet_start_s:.2,quiet_end_s:1,
+ record_path:'drag-decay-actual.csv',axes:[{joint:'J1',quiet_stability_measured:true,quiet_stability_passed:false,quiet_position_span_rad:.001,
+ quiet_speed_rad_s:.002,release_decay_measured:false,release_decay_passed:false}]};
+context.fixedReference={kind:'hold_parameters',target_source:'completed_taught_anchor_nominal_reference_not_actual_rezero',target_pos:[.2,-.1],entry_actual_pos:[.17,-.15]};
+context.inputSupplement={kind:'purpose_input_supplement_decision',joint:'J1',attempt:1,previous_input_nm:.02,next_input_nm:.03,next_window_planned:true,reason:'measured_unresolved_response_bounded_input_increase',record_path:'gain-purpose-rigid.csv'};
+context.dragInput={kind:'drag_input_plan',joint:'J1',scheduled:true,input_nm:.08,next_input_nm:.12,input_ceiling_nm:.2,torque_quantum_nm:.005,prior_valid:false,prior_input_nm:999,duration_s:1.6,record_path:'drag-decay-actual.csv',reason:'drag_known_unresolved_input_bounded_increase'};
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ for(const kind of ['drag_input_plan','drag_input_window','drag_input_supplement_decision']){
+  context.dragInput.kind=kind;
+  const before=JSON.stringify(context.dragInput),html=vm.runInContext('gainExperimentHtml(dragInput, ["J1"])',context);
+  assert(html.includes(`data-gain-drag-input="${kind}"`)&&html.includes('0.08')&&html.includes('0.005')&&html.includes('drag-decay-actual.csv'));
+  assert(!html.includes('999')&&!html.includes('验收通过')&&!html.includes('>Passed<'),'Invalid prior numbers and unmeasured pass claims stay out of drag plans');
+  assert(html.includes(kind==='drag_input_window'?(language==='en'?'Executed window':'已执行窗口'):kind==='drag_input_plan'?(language==='en'?'Input window scheduled':'已安排输入窗口'):(language==='en'?'Follow-up scheduled':'已安排补测')),'Plans, executed windows and follow-up decisions have separate statuses');
+  assert.equal(JSON.stringify(context.dragInput),before);
+ }
+ context.dragInput.scheduled=false;
+ const skipped=vm.runInContext('gainExperimentHtml(dragInput, ["J1"])',context);
+ assert(!skipped.includes('0.12')&&skipped.includes(language==='en'?'No further window scheduled':'不再安排补测'),'A rejected follow-up cannot show its stale proposed input as scheduled');
+ context.dragInput.scheduled=true;
+}
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const html=vm.runInContext('gainExperimentHtml(inputSupplement,["J1"])',context);
+ assert(html.includes('data-gain-input-supplement')&&html.includes('0.02')&&html.includes('0.03')&&html.includes(language==='en'?'remaining budget':'剩余预算'));
+ assert(!/验收通过|>Passed</.test(html),'An unexecuted supplement plan never becomes a measured pass');
+}
+context.localComparison={kind:'taught_local_complete_group_comparison',kept:false,model_identified:false,source_index_from:80,source_index_to:30,reverse:true,playback_rate:1,tail_s:1.5,feedforward_scope:'gravity',load_scope:'declared_unchanged_task_load',changed_joint:'J1',coordinate:'Kp',previous_kp:[10],previous_kd:[1],proposed_kp:[11],proposed_kd:[1],reason:'empirical_bounded_coordinate_poll_for_measured_static_bias_or_same_direction_lag',baseline_record_path:'gain-trajectory-local-native-baseline.csv',record_path:'gain-trajectory-local-native-candidate-0.csv',baseline_axes:[{complete:true,static_measured:true,rms_error_rad:.02,peak_error_rad:.05,static_error_rad:.01,same_direction_lag_s:.1,comparison_uncertainty_rad:.001}],candidate_axes:[{joint:'J1',complete:true,static_measured:true,rms_error_rad:.03,peak_error_rad:.06,static_error_rad:.02,same_direction_lag_s:.11,comparison_uncertainty_rad:.001}]};
+const localOriginal=JSON.stringify(context.localComparison);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const html=vm.runInContext('gainExperimentHtml(localComparison,["J1"])',context);
+ assert(html.includes('data-gain-taught-local')&&html.includes('data-gain-local-metrics')&&html.includes('baseline.csv')&&html.includes('candidate-0.csv'));
+ assert(html.includes(language==='en'?'Retain the prior complete set':'保留原完整组')&&html.includes(language==='en'?'Not identified; direct comparison':'未辨识，使用直接实测比较'),'A rejected direct comparison neither becomes a fitted model nor a retained gain set');
+ assert(!/验收通过|>Passed</.test(html));
+ const withSaved=vm.runInContext('gainCandidateReviewHtml({...referenceOnly,candidate_comparisons:[localComparison]})',context);
+ assert(withSaved.includes('data-gain-taught-local'),'Persisted local comparison diagnostics remain accessible');
+}
+assert.equal(JSON.stringify(context.localComparison),localOriginal,'Local comparison display never rewrites the measured record');
+context.comparisonContexts=[
+ {kind:'taught_local_comparison_repeat',bounded_repeats:1,raw_metrics_preserved:true,reason:'taught_local_initial_state_not_comparable_retry_same_segment',original_baseline_record_path:'original-baseline.csv',original_candidate_record_path:'original-candidate.csv'},
+ {kind:'drag_damping_comparison_conditions',comparable:false,relative_M_change:.075,max_gravity_change_nm:.03,arrival_error_gate:false,reason:'purpose_comparison_inertia_changed_beyond_experiment_tolerance'},
+ {kind:'drag_damping_comparison_skipped',reason:'complete_reset_comparison_and_exit_do_not_fit_remaining_budget'}
+];
+const contextsBefore=JSON.stringify(context.comparisonContexts);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ context.withComparisonReason={...context.localComparison,comparison_reason:'taught_local_unchanged_axis_entry_bias_requires_matched_repeat'};
+ const local=vm.runInContext('gainExperimentHtml(withComparisonReason,["J1"])',context);
+ assert(local.includes(language==='en'?'Comparison conclusion':'比较结论')&&local.includes(language==='en'?'different offset':'入口偏差不同'),'Actual comparison reasons are separate from proposal directions');
+ const html=vm.runInContext('gainCandidateReviewHtml({...referenceOnly,candidate_comparisons:comparisonContexts})',context);
+ assert((html.match(/data-gain-comparison-context/g)||[]).length===3&&html.includes('original-baseline.csv')&&html.includes('original-candidate.csv'),'Matched-repeat source evidence and actual drag conditions stay accessible');
+ assert(html.includes(language==='en'?'Not comparable':'不可直接比较')&&html.includes('0.075')&&!html.includes('purpose_comparison_inertia_changed_beyond_experiment_tolerance</'));
+}
+assert.equal(JSON.stringify(context.comparisonContexts),contextsBefore);
+context.inputPriors={kind:'purpose_input_prior',record_path:'gain-purpose-native-disturbance.csv',input_priors:[{joint:'J1',valid:true,independent_samples:80,low_speed_pd_samples:12,independent_peak_nm:.12,low_speed_pd_level_nm:.15,seed_nm:.15,source:'gain-trajectory-native-online-0.csv',reason:'measured_known_input_and_low_speed_PD_scale_prior'},{joint:'J2',valid:false,independent_samples:0,low_speed_pd_samples:0,independent_peak_nm:999,low_speed_pd_level_nm:998,seed_nm:997,source:'gain-trajectory-native-online-0.csv',reason:'purpose_input_prior_insufficient_known_samples'}]};
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const html=vm.runInContext('gainExperimentHtml(inputPriors,["J1","J2"])',context);
+ assert(html.includes('data-gain-input-prior')&&html.includes('0.12')&&html.includes('0.15')&&html.includes('gain-trajectory-native-online-0.csv'));
+ assert(!html.includes('999')&&!html.includes('998')&&!html.includes('997'),'Invalid measured scale does not render default or stale numeric evidence');
+ assert(html.includes(language==='en'?'not an identified friction coefficient':'不是已辨识的摩擦系数'));
+}
+const fixedOriginal=JSON.stringify(context.fixedReference);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const html=vm.runInContext('gainFixedReferenceEvidenceHtml(fixedReference,["J1","J2"])',context);
+ assert(html.includes('data-gain-fixed-reference')&&html.includes('1.7189')&&html.includes('2.8648'),'Entry target error is computed from separate recorded positions, not replaced by zero');
+ assert(html.includes(language==='en'?'not an arrival gate':'不作为到位门槛'),'Showing true entry error cannot introduce an alignment gate');
+ assert.equal(vm.runInContext('gainFixedReferenceEvidenceHtml({available:true,completed:true},["J1"])',context),'','Old aggregate results do not acquire an invented nominal target or actual entry');
+ const legacy=vm.runInContext('gainFixedReferenceEvidenceHtml({target_pos:[.2],entry_actual_pos:[.1]},["J1"])',context);
+ assert(!legacy.includes(language==='en'?'retains the emitted':'保留已发送'),'Legacy target source is not upgraded to a nominal taught anchor');
+}
+assert.equal(JSON.stringify(context.fixedReference),fixedOriginal,'Reference diagnostics never rewrite recorded position evidence');
+const directOriginal=JSON.stringify(context.directPulse);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const direct=vm.runInContext('gainDirectDisturbanceScope(directPulse)',context);
+ assert(direct.measured&&direct.modelIdentified===false,'Explicit direct response completion does not require a fitted model or compliant-yield pass');
+ const html=vm.runInContext('gainExperimentHtml(directPulse,["J1"])',context);
+ assert(html.includes('data-gain-direct-disturbance')&&html.includes(language==='en'?'Not fitted in this direct measurement':'本次直接测量不拟合模型')&&html.includes(language==='en'?'Measured':'已测量'));
+ assert(!/闭环模型拟合质量不足|有效证据不足|验收通过|>Passed</.test(html),'Direct pulse evidence never fabricates a failed model fit or a pass');
+ assert.equal(vm.runInContext('gainDirectDisturbanceScope({available:true,completed:true,record_path:"legacy.csv",axes:[{measurement_complete:true}]})',context),null,'Historical aggregate fields never acquire a new direct-input scope');
+ const parameters=vm.runInContext('gainExperimentHtml(pulseParameters,["J1"])',context);
+ assert(parameters.includes('data-gain-pulse-plan')&&parameters.includes(language==='en'?'Sequential single-axis measurements':'逐轴顺序测量')&&parameters.includes(language==='en'?'Negative only':'仅反向'));
+ const drag=vm.runInContext('gainExperimentHtml(actualDrag,["J1"])',context);
+ assert(drag.includes('data-gain-actual-drag')&&drag.includes('data-gain-drag-scopes')&&drag.includes(language==='en'?'Not measured':'未测量'),'Actual quiet drag and unmeasured release remain distinct');
+ assert.equal(vm.runInContext("gainProbeStageLabel('trajectory_frozen')",context),language==='en'?'Final-gain path analysis':'最终参数回放分析');
+ assert.equal(vm.runInContext("gainProbePhaseLabel('native-frozen')",context),language==='en'?'Final-gain path analysis':'最终参数回放分析');
+ const dragPlan=vm.runInContext('gainExperimentHtml({kind:"drag_excitation_parameters",source:"actual_zero_stiffness_then_quiet_then_isolated_known_torque_release",actual_gains_ready_s:.16,quiet_start_s:.16,quiet_end_s:.86,kp:[0],kd:[.2]},["J1"])',context);
+ assert(dragPlan.includes('data-gain-actual-drag')&&dragPlan.includes('0.16')&&!dragPlan.includes('data-gain-drag-scopes'),'Actual transition timings remain visible in the emitted parameter record without inventing unrecorded scope evidence');
+}
+assert.equal(JSON.stringify(context.directPulse),directOriginal,'New direct evidence rendering leaves historical and current records unchanged');
+context.state.language='zh-CN';
+context.sharedSourceCandidate=require('./gain-ui-fixture.cjs').makeCandidate();
+const sharedMissing={method:'isolated_smooth_torque_pulse',model_identified:false,direct_measurement_complete:false,available:false,completed:false,record_path:'shared-purpose.csv',axes:[]};
+Object.assign(context.sharedSourceCandidate.targets.rigid_tracking,{disturbance_verification:{...sharedMissing},hold_disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete','hold_disturbance_measurement_incomplete']});
+Object.assign(context.sharedSourceCandidate.targets.servo_tracking,{disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete']});
+const sharedOriginal=JSON.stringify(context.sharedSourceCandidate);
+const sharedHtml=vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context),sharedText=sharedHtml.replace(/<[^>]+>/g,' ');
+assert.equal((sharedText.match(/抗扰响应待补测/g)||[]).length,1,'One missing shared acquisition is described once across disturbance, hold and reused servo scopes');
+assert(!sharedText.includes('保持扰动测量未完成'),'A hold alias of the same missing record is not shown as a second missing experiment');
+assert.equal(JSON.stringify(context.sharedSourceCandidate),sharedOriginal,'Warning deduplication never rewrites the shared historical source objects');
+context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={shared_with:'disturbance_verification',record_path:'alias-view.csv'};
+assert(!vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'An explicit same-purpose shared_with reference deduplicates its source even when the alias path differs');
+context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={...sharedMissing};
+context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification.record_path='distinct-hold.csv';
+assert(vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'Different source records retain separate missing-scope explanations');
+context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={...sharedMissing,record_path:'alias.csv',shared_source:'shared-purpose.csv'};
+context.sharedSourceCandidate.targets.rigid_tracking.disturbance_verification.shared_source='shared-purpose.csv';
+assert(!vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'An explicit shared source is honored even when aliases use different record paths');
+context.completedDirectCandidate={...context.referenceOnly,disturbance_verification:context.directPulse,hold_disturbance_verification:context.directPulse};
+assert(!vm.runInContext('gainCandidateReviewHtml(completedDirectCandidate)',context).replace(/<[^>]+>/g,' ').includes('独立扰动测量不足'),'New complete direct measurements are not downgraded by legacy model availability=false');
+context.completedDirectCandidate.hold_disturbance_verification={shared_with:'disturbance_verification',method:'isolated_smooth_torque_pulse',available:false,record_path:context.directPulse.record_path};
+assert(!vm.runInContext('gainCandidateReviewHtml(completedDirectCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'The explicit hold alias reuses complete direct evidence without copying or fabricating it');
+assert.equal((vm.runInContext('gainCandidateReviewHtml(completedDirectCandidate)',context).match(/data-gain-direct-disturbance/g)||[]).length,1,'A same-record hold alias renders its actual acquisition once');
+const purposePulseCodes=['purpose_input_prior_not_measured','purpose_input_prior_insufficient_known_samples','measured_known_input_and_low_speed_PD_scale_prior','purpose_pulse_actual_command_or_feedback_timing_invalid','purpose_pulse_resolved_response_opposes_known_input','purpose_pulse_response_below_measured_resolution','purpose_pulse_retry_requires_complete_unlimited_known_input','purpose_pulse_resolved_response_no_input_increase','purpose_pulse_retry_requires_measured_positive_input','purpose_pulse_current_domain_ceiling_no_resolved_response','measured_unresolved_response_bounded_input_increase','purpose_pulse_not_planned','purpose_pulse_model_or_capability_missing','purpose_pulse_invalid_measured_input','purpose_pulse_stiffness_mode_mismatch','purpose_pulse_measured_domain_or_budget_missing','purpose_pulse_demonstrated_room_below_resolution','purpose_pulse_no_representable_input','purpose_pulse_window_does_not_fit_remaining_budget','single_axis_model_noise_and_measured_room_bounded_pulse','purpose_pulse_not_measured','purpose_pulse_plan_or_samples_missing','purpose_pulse_fresh_feedback_missing','purpose_pulse_baseline_plateau_or_release_missing','purpose_pulse_actual_input_unknown','purpose_pulse_actual_input_does_not_match_command_plan','purpose_pulse_input_or_response_limited','purpose_pulse_requires_known_constant_restoring_gains','purpose_pulse_reference_not_fixed','purpose_pulse_input_measurement_incomplete','purpose_pulse_plateau_not_settled','purpose_pulse_yield_below_resolution_or_opposite_direction','purpose_pulse_yield_above_declared_local_envelope','purpose_pulse_unloaded_recovery_incomplete','purpose_pulse_resolved_plateau_yield_and_stable_recovery'];
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ for(const reason of purposePulseCodes){context.reason=reason;assert.notEqual(vm.runInContext('gainWarningLabel(reason)',context),reason,'Direct pulse evidence has a readable label in each language');}
+ for(const reason of ['isolated_purpose_pulse','purpose_direct_input_measured','purpose_direct_measurement_partial','drag_actual_zero_stiffness_handover','quiet_drag_goal_measured','drag_measurement_available_for_review','drag_quiet','drag_input','drag_release']){context.reason=reason;assert.notEqual(vm.runInContext('gainProbeMessageLabel(reason)',context),reason,'Live purpose-measurement progress is readable');}
+}
+context.state.language='zh-CN';
+const dragFields=context.sharedSourceCandidate.targets.compliant_drag;
+dragFields.warnings=['drag_release_decay_unmeasured'];
+context.dragCandidate={...context.sharedSourceCandidate,category:'compliant_drag',...dragFields,joint_names:context.sharedSourceCandidate.joint_names};
+const dragNotes=vm.runInContext('gainPurposeMeasurementWarnings(dragCandidate,"compliant_drag",dragCandidate)',context);
+assert(!dragNotes.includes('drag_release_decay_unmeasured'),'A complete quiet drag result keeps release absence in its separate scope line, not as a second whole-group warning');
+const {makeCandidate}=require('./gain-ui-fixture.cjs');
+context.partialUseResult=makeCandidate();
+context.partialUseResult.termination={kind:'insufficient_measurement',reason:'drag_release_decay_unmeasured:joint1'};
+Object.assign(context.partialUseResult.targets.compliant_tracking,{available:false,native_validation:{completed:false,metrics:[]},warnings:['compliant_measurement_incomplete']});
+const partialBefore=JSON.stringify(context.partialUseResult);
+for(const language of ['zh-CN','en']){
+ context.state.language=language;
+ const summary=vm.runInContext('gainTaskConclusion({phase:"complete"},partialUseResult)',context);
+ assert(summary.title.includes(language==='en'?'some uses need more measurement':'部分用途待补测'));
+ assert(summary.reason.includes(language==='en'?'Compliant need more measurement':'柔性待补测')&&!summary.reason.includes('joint1'),'Usable groups and the missing use lead the result instead of an unrelated optional-release warning');
+ assert.equal(summary.rawReason,'drag_release_decay_unmeasured:joint1','The original end reason remains available in diagnostics');
+}
+assert.equal(JSON.stringify(context.partialUseResult),partialBefore);
+context.state.language='zh-CN';
+context.originCandidate=makeCandidate();
+context.originCandidate.model_initialization.source='urdf_geometry_time_weighted_path_mass_matrix_nominal_response_design_double_diagonalization_diagonal_projection';
+const soft=context.originCandidate.targets.compliant_tracking;
+soft.native_validation.record_path='gain-trajectory-compliant-frozen.csv';
+context.originCandidate.candidate_comparisons=[{kind:'taught_local_complete_group_comparison',purpose:'compliant',kept:false,previous_kp:soft.kp,previous_kd:soft.kd,proposed_kp:soft.kp.map(value=>value*.9),proposed_kd:soft.kd}];
+assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已比较 1 组候选，保留原整组参数'),'A measured rejected candidate is distinct from never attempting adjustment');
+context.originCandidate.candidate_comparisons=[{kind:'online_trajectory_PD_update',source_record_path:'gain-trajectory-compliant-online-0.csv',installed:true,proposed_kp:soft.kp,proposed_kd:soft.kd}];
+assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已在运动中调整，并完成整轨复测'));
+context.originCandidate.candidate_comparisons[0].installed=false;
+assert(!vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已在运动中调整'),'An uninstalled proposal does not become a measured parameter change');
+if(process.env.SERIAL_ARM_GAIN_UI_PARTIAL_RECORD_DIR){
+ const folder=process.env.SERIAL_ARM_GAIN_UI_PARTIAL_RECORD_DIR;
+ context.actualPartialCandidate=JSON.parse(fs.readFileSync(path.join(folder,'gain-candidate.json'),'utf8'));
+ context.actualPartialStatus=JSON.parse(fs.readFileSync(path.join(folder,'result.json'),'utf8'));
+ const before=JSON.stringify([context.actualPartialCandidate,context.actualPartialStatus]);
+ const summary=vm.runInContext('gainTaskConclusion(actualPartialStatus,actualPartialCandidate)',context);
+ assert(summary.review&&!summary.success&&summary.reason.includes('柔性待补测')&&!summary.reason.includes('joint1'));
+ assert.equal(JSON.stringify([context.actualPartialCandidate,context.actualPartialStatus]),before,'Actual user records remain unchanged');
+}
 const backend=spawnSync('python3',[path.join(__dirname,'verify_gain_initialization.py')],{encoding:'utf8'});
 if(backend.status!==0)throw new Error(backend.stdout+'\n'+backend.stderr);
 if(process.env.SERIAL_ARM_GAIN_UI_RENDER==='1'){
@@ -682,3 +901,37 @@ if(process.env.SERIAL_ARM_GAIN_UI_RENDER==='1'){
   console.log(render.stdout.trim());
 }
 console.log('LAUNCHER_ADAPTIVE_GAIN_PASS');
+
+// New live states preserve actual experiment type and its raw evidence.
+context.state.calibrationToolSelected={gain:{directory:'/tmp/gain-current'}};
+context.state.telemetry={model_calibration:{directory:'/tmp/gain-other'}};
+context.dragRelease={available:true,record_path:'/tmp/gain-current/drag-pulse.csv',axes:[{joint:'J1',quiet_stability_measured:true,quiet_position_span_rad:0,quiet_speed_rad_s:0,release_decay_measured:true,decay_s:.3,demonstrated_motion_preparation:true,release_record_path:'drag-taught-release.csv',preparation_motion_observed:true,release_motion_observed:true,reason:'zero_stiffness_release_decay_qualified_no_position_return_required'}]};
+context.directionEvidence={axes:[{joint:'J1',input_measurement_complete:true,direct_response_complete:true,unresolved_input_direction_mask:3,unresolved_both_input_directions_at_ceiling:true,yield_observed:false,measurement_complete:false}]};
+context.responseTrial={kind:'online_trajectory_PD_update',installed:true,previous_kp:[1],proposed_kp:[1.2],previous_kd:[.1],proposed_kd:[.1],models:[{joint:'J1',valid:false,response_establishment_trial:true,measured_error_bias_rad:.03,unresolved_trial_origin_kp:1,unresolved_trial_kp_ceiling:1.3,arx:[98765],predicted_cost_after:87654}],reasons:['online_measured_static_bias_or_same_direction_lag_bounded_P_response_trial_not_identification']};
+context.taughtReleaseEvent={kind:'drag_demonstrated_motion_release',record_path:'/tmp/gain-current/drag-taught-release.csv',preparation_duration_s:2,actual_zero_stiffness_s:2.3,axes:[{joint:'J1',measurement_complete:false,reason:'drag_release_motion_unresolved_quiet_result_remains_available'}]};
+const untouchedEvidence=JSON.stringify([context.dragRelease,context.directionEvidence,context.responseTrial]);
+for(const language of ['zh-CN','en']) {
+ context.state.language=language;
+ for(const reason of ['drag_demonstrated_motion_release','drag_demonstrated_preparation']) {
+  context.reason=reason;
+  assert.notEqual(vm.runInContext('gainProbeMessageLabel(reason)',context),reason);
+  assert.notEqual(translateError(reason,language),reason);
+ }
+ const drag=vm.runInContext('gainDragScopeEvidenceHtml(dragRelease)',context);
+ assert(drag.includes(language==='en'?'Taught-motion release':'示教带动后释放')&&drag.includes('data-gain-evidence-path="/tmp/gain-current/drag-taught-release.csv"')&&drag.includes('/tmp/gain-current/drag-pulse.csv'),'Actual release CSV resolves against its own pulse record rather than a different live task');
+ const event=vm.runInContext('gainExperimentHtml(taughtReleaseEvent)',context);
+ assert(event.includes('data-gain-taught-release')&&event.includes(language==='en'?'Release not resolved':'释放尚未分辨')&&event.includes('/tmp/gain-current/drag-taught-release.csv'));
+ const directions=vm.runInContext('gainCompliantScopeEvidenceHtml(directionEvidence)',context);
+ assert(directions.includes('data-gain-direction-evidence')&&directions.includes(language==='en'?'Both inputs measured at their bounds; displacement unresolved':'两方向输入均测到边界，位移仍未分辨')&&!/达标|>Passed</.test(directions));
+ const trial=vm.runInContext('gainExperimentHtml(responseTrial)',context);
+ assert(trial.includes(language==='en'?'Bounded Kp response trial; Kd retained, model not identified':'有界 Kp 响应试探，Kd 保持；尚未辨识模型')&&trial.includes(language==='en'?'response trial record':'响应试探记录')&&!trial.includes('98765')&&!trial.includes('87654'),'A bounded response trial never claims a successful model or exposes stale prediction results');
+ assert(trial.includes(language==='en'?'Recorded Kd before → proposed':'记录 Kd 原值 → 拟值'));
+ assert(!vm.runInContext('gainEvidenceRecordHtml("ambiguous.csv")',context).includes('data-gain-evidence-path'),'An ambiguous old/live task directory does not produce a wrong raw-record link');
+}
+assert.equal(JSON.stringify([context.dragRelease,context.directionEvidence,context.responseTrial]),untouchedEvidence,'New evidence renderers preserve original records');
+const recordButton={dataset:{gainEvidencePath:'/tmp/gain-current/drag-taught-release.csv'}};
+context.recordRoot={querySelectorAll:selector=>selector==='[data-gain-evidence-path]'?[recordButton]:[]};
+context.operation=fn=>fn();context.api={revealFile:path=>{context.revealedRecord=path;}};
+vm.runInContext('bindGainEvidencePaths(recordRoot)',context);recordButton.onclick();
+assert.equal(context.revealedRecord,'/tmp/gain-current/drag-taught-release.csv','Raw-record action uses the existing desktop reveal command without writing files');
+console.log('New taught-release, directional-input and bounded-response UI checks passed');

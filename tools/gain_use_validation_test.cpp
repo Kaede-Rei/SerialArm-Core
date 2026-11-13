@@ -204,10 +204,12 @@ void compliant_use() {
     check(locked.input_measurement_complete && !locked.measurement_complete && !locked.passed && !locked.yield_observed,
         "an immobile rigid response to known input is not successful compliant yielding");
     const auto softer=compliant_candidate_report({{10},{.2}},{500},{5},{locked});
-    check(softer.changed && std::abs(softer.gains.kp[0]-9.2)<1e-12 && std::abs(softer.gains.kd[0]-.184)<1e-12,
-        "unresolved yielding with quiet measured release must propose a small restoring/damping comparison requiring remeasurement");
+    check(!softer.changed && softer.gains.kp[0]==10 && softer.gains.kd[0]==.2 &&
+        softer.reasons[0]=="known_input_yield_unresolved_increase_measurement_input_before_gain_revision",
+        "unresolved yielding cannot justify blind whole-group softening before an informative input is measured");
     const GainCommandGrid grid{500.0/4095,5.0/4095};
-    const auto low_code=compliant_candidate_report({{3*grid.kp_step},{3*grid.kd_step}},{500},{5},{locked},{grid});
+    const auto resolved_small=assess_compliant_response(compliance(.005),noise,1,req);
+    const auto low_code=compliant_candidate_report({{3*grid.kp_step},{3*grid.kd_step}},{500},{5},{resolved_small},{grid});
     check(low_code.changed && low_code.gains.kp[0]==2*grid.kp_step && low_code.gains.kd[0]==2*grid.kd_step,
         "coarse restoring/damping channels must retain one adjacent positive protocol code rather than erase every softening trial");
     auto unknown=compliance();for(auto& row:unknown)row.independent_disturbance_known=false;
@@ -297,8 +299,8 @@ void compliant_partial_scope_group() {
         Gains previous;previous.kp.assign(n,10);previous.kd.assign(n,.2);
         std::vector<CompliantUseAssessment> old(n,locked),next=old;
         const auto all_unknown=compliant_candidate_report(previous,std::vector<double>(n,500),std::vector<double>(n,5),old);
-        check(all_unknown.changed && all_unknown.gains.kp.front()<10 && all_unknown.gains.kd.front()<.2,
-            "all unresolved axes may receive the original one bounded whole-group experiment to establish response");
+        check(!all_unknown.changed && all_unknown.gains.kp==previous.kp && all_unknown.gains.kd==previous.kd,
+            "all unresolved axes require more informative measured input rather than a blind whole-group gain reduction");
         check(!compliant_use_preferred(next,old,previous,previous,true,true),
             "unchanged unresolved axes alone cannot manufacture an improvement or a purpose pass");
         if(n==1)continue;

@@ -33,7 +33,7 @@ def run(core_build: Path, demonstration: Path | None = None) -> None:
         for name in ('adaptive_gain_offline_test', 'frequency_response_gain_test', 'gain_measurement_center_test', 'gain_motion_guard_test',
                      'gain_trajectory_residual_test', 'gain_damping_progression_test', 'gain_taught_path_following_test',
                      'gain_taught_measurement_schedule_test', 'gain_taught_anchor_visit_test', 'gain_rigid_tuning_test', 'urdf_nominal_gain_design_test', 'gain_frequency_plan_test',
-                     'gain_use_validation_test', 'joint_motion_tracker_test', 'calibration_stop_remap_test', 'gain_endpoint_continuation_test',
+                     'gain_use_validation_test', 'gain_purpose_measurement_test', 'gain_drag_measurement_test', 'gain_taught_local_correction_test', 'joint_motion_tracker_test', 'calibration_stop_remap_test', 'gain_endpoint_continuation_test',
                      'gain_hardware_context_test', 'gain_candidate_admission_test', 'gain_complete_group_poll_test', 'gain_online_trajectory_test', 'gain_offline_optimization_test'):
             algorithm = temporary / name
             libraries = ['-lyaml-cpp'] if name == 'gain_hardware_context_test' else []

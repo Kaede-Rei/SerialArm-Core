@@ -13,8 +13,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT/'apps/launcher/backend'))
 from gain_initialization import model_gain_limits, initialize_profile_gains, protocol_gain_limits, DAMIAO_MODEL_LIMITS
-from artifact_exports import gain_candidate_targets
-from control_parameters import deployment_gain_groups
+from artifact_exports import gain_candidate_targets, export_artifact
+from control_parameters import deployment_gain_groups, gain_selection_report
 from workflow_registry import export_record
 from persistence import load_model_calibration_summary
 from control_parameters import canonical_core, four_mode_control_text
@@ -40,6 +40,47 @@ def urdf(names):
 
 
 class GainInitializationTests(unittest.TestCase):
+    def test_selection_report_keeps_reference_direct_and_shared_measurement_scopes(self):
+        direct={'method':'isolated_smooth_torque_pulse','model_identified':False,
+                'direct_measurement_complete':True,'available':False,'record_path':'gain-purpose-rigid.csv',
+                'axes':[{'input_measurement_complete':True,'direct_response_complete':True}]}
+        hold_alias={'shared_with':'disturbance_verification','method':'isolated_smooth_torque_pulse',
+                    'model_identified':False,'available':False,'record_path':'gain-purpose-rigid.csv'}
+        rigid={'validated':False,'kp':[3.],'kd':[.2],'disturbance_verification':direct,
+               'hold_disturbance_verification':hold_alias}
+        candidate={'reference_only':True,'accuracy_thresholds_enabled':False,
+                   'warnings':['rigid_tracking:disturbance_measurement_incomplete']}
+        groups={'rigid_tracking':rigid}
+        original=deepcopy((candidate,groups))
+        report=gain_selection_report(candidate,groups)
+        self.assertTrue(report['available']);self.assertFalse(report['validated'])
+        self.assertTrue(report['reference_only']);self.assertFalse(report['accuracy_thresholds_enabled'])
+        self.assertEqual(report['warnings'],[], 'A measured direct response and its hold alias do not require a model fit or precision pass')
+        self.assertEqual((candidate,groups),original)
+        direct['direct_measurement_complete']=False;direct['axes'][0]['direct_response_complete']=False
+        groups['servo_tracking']={'validated':False,'disturbance_verification':deepcopy(direct)}
+        report=gain_selection_report(candidate,groups)
+        self.assertEqual(len(report['warnings']),1,'Shared missing direct acquisition is listed once across hold and reused servo evidence')
+        self.assertIn('直接响应尚未测完整',report['warnings'][0])
+        hold_alias['record_path']='alias-view.csv'
+        self.assertEqual(len(gain_selection_report(candidate,groups)['warnings']),1,'An explicit shared_with alias identifies the acquisition independently of its own view path')
+        rigid['hold_disturbance_verification']={'available':False,'record_path':'independent-hold.csv'}
+        self.assertEqual(len(gain_selection_report(candidate,groups)['warnings']),2,'A different missing hold acquisition remains visible')
+        groups={'compliant_drag':{'validated':False,'warnings':['drag_release_decay_unmeasured'],
+                'drag_validation':{'axes':[{'quiet_stability_measured':True,'quiet_stability_passed':False,
+                                          'release_decay_measured':False}]}}}
+        candidate['warnings']=['drag_release_decay_unmeasured:j']
+        report=gain_selection_report(candidate,groups)
+        self.assertEqual(len(report['warnings']),1)
+        self.assertIn('释放衰减未测完整',report['warnings'][0])
+        self.assertNotIn('无外力稳定尚未测完整',' '.join(report['warnings']))
+        legacy={'validated':True,'disturbance_verification':{'available':True,'record_path':'old.csv'},
+                'hold_disturbance_verification':{'available':True,'record_path':'old-hold.csv'}}
+        report=gain_selection_report({}, {'rigid_tracking':legacy})
+        self.assertTrue(report['validated']);self.assertEqual(report['warnings'],[])
+        legacy['validated']=False
+        self.assertIn('未达参考指标',' '.join(gain_selection_report({}, {'rigid_tracking':legacy})['warnings']))
+
     def test_candidate_hardware_alias_and_override_compatibility(self):
         plugin='serial_arm_hardware_damiao'
         with tempfile.TemporaryDirectory(prefix='serialarm-gain-hardware-') as tmp:
@@ -229,19 +270,45 @@ class GainInitializationTests(unittest.TestCase):
 
     def test_full_cycle_and_hold_evidence_survive_raw_export(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root=Path(tmp);record=root/'task';record.mkdir()
-            (record/'metadata.json').write_text(json.dumps({'task_id':'test','joint_names':['j']}))
-            (record/'gain-candidate.json').write_text(json.dumps({'category':'servo_tracking'}))
-            for name in ('gain-hold-baseline.csv','servo-probe-independent.csv','gain-transition-native.csv','frames.csv'):
-                (record/name).write_text('time,accepted_q,actual_q,integrator_freeze\n0,0,0,velocity\n')
+            root=Path(tmp);record=root/'task';record.mkdir();source=record/'source';source.mkdir()
+            cfg=canonical_core(core_for(['j']))
+            (source/'core.yaml').write_text(yaml.safe_dump(cfg))
+            (source/'model.urdf').write_text(urdf(['j']))
+            fingerprint=recorded_file_fingerprint(source/'model.urdf')
+            (record/'metadata.json').write_text(json.dumps({'task_id':'test','joint_names':['j'],
+                'urdf_fingerprint':fingerprint,'core_fingerprint':recorded_file_fingerprint(source/'core.yaml')}))
+            metric={'samples':200,'measurement_samples':200,'rms_error_rad':.01,'peak_error_rad':.02,
+                'velocity_rms_rad_s':.01,'tail_error_rad':.01,'settling_s':.3}
+            candidate={'schema':'serial_arm_gain_candidate','task_id':'test','category':'servo_tracking',
+                'joint_names':['j'],'urdf_fingerprint':fingerprint,'validation_scope':'independent_demonstration_trajectory',
+                'reference_only':True,'accuracy_thresholds_enabled':False,'kp':[3.],'kd':[.2],
+                'available':True,'validated':False,'native_validation':{'independent':True,'completed':True,
+                    'available':True,'duration_s':1,'metrics':[metric]},'admittance_required':False,
+                'admittance_validation':{'required':False,'status':'not_requested'}}
+            (record/'gain-candidate.json').write_text(json.dumps(candidate))
+            evidence_names=('gain-hold-baseline.csv','servo-probe-independent.csv','gain-transition-native.csv',
+                'gain-anchor-rigid-purpose-visit.csv','gain-anchor-rigid-purpose-return.csv',
+                'gain-purpose-rigid-input.csv','gain-purpose-compliant-input.csv','frames.csv')
+            for index,name in enumerate(evidence_names):
+                (record/name).write_text(f'time,accepted_q,actual_q,integrator_freeze\n{index},0,0,velocity\n')
+            original={path.relative_to(record).as_posix():path.read_bytes() for path in record.rglob('*') if path.is_file()}
             summary=load_model_calibration_summary(record)
-            self.assertTrue(summary['files']['gain-hold-baseline.csv'])
-            self.assertTrue(summary['files']['gain-transition-native.csv'])
+            for name in evidence_names:self.assertTrue(summary['files'][name],name)
             exported=export_record(root,record,'gain')
             with zipfile.ZipFile(exported['path']) as archive:
-                self.assertTrue({'gain-hold-baseline.csv','servo-probe-independent.csv','gain-transition-native.csv','frames.csv'} <= set(archive.namelist()))
+                self.assertTrue(set(evidence_names) <= set(archive.namelist()))
                 self.assertIn('integrator_freeze',archive.read('gain-hold-baseline.csv').decode())
-                self.assertEqual(archive.read('gain-transition-native.csv'),(record/'gain-transition-native.csv').read_bytes())
+                for name in evidence_names:self.assertEqual(archive.read(name),(record/name).read_bytes(),name)
+            artifact=export_artifact(root,record,'gain',gain_purposes=['servo_tracking'])
+            self.assertTrue(artifact['reference_only']);self.assertFalse(artifact['validated'])
+            with zipfile.ZipFile(artifact['path']) as archive:
+                self.assertTrue({'evidence/'+name for name in evidence_names} <= set(archive.namelist()))
+                for name in evidence_names:self.assertEqual(archive.read('evidence/'+name),(record/name).read_bytes(),name)
+                self.assertIn('core.yaml',archive.namelist())
+                readme=archive.read('README.txt').decode()
+                self.assertNotIn('未达参考指标',readme,'Reference-only exports do not fabricate a failed accuracy target')
+            self.assertEqual(original,{path.relative_to(record).as_posix():path.read_bytes() for path in record.rglob('*') if path.is_file()},
+                'Listing and both actual ZIP exporters must leave task sources and snapshots unchanged')
 
     def test_fine_result_export_only_selected_use(self):
         row={'samples':200,'rms_error_rad':.01,'peak_error_rad':.02,'velocity_rms_rad_s':.01,'tail_error_rad':.01,'settling_s':.3}

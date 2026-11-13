@@ -165,6 +165,20 @@ int main() {
         check(held.hold_integrator_freeze_reasons.size()==2 && held.hold_integral_torque.size()==2,"integrator must expose per-axis actual state");
         check(held.hold_integrator_freeze_reasons[0]=="integrating" && held.hold_integrator_freeze_reasons[1]=="moving","one moving joint must freeze only its integrator");
         check(held.hold_integral_torque[0]>0 && held.hold_integral_torque[1]==0,"actual per-axis integral compensation must match freeze reason");
+        Fixture offset_hold(true);offset_hold.cycle();offset_hold.bus->state.pos[0]=-.071;
+        auto offset_cfg=offset_hold.robot.get_hold_compensation_cfg();offset_cfg.error_threshold=.01;
+        check(bool(offset_hold.robot.set_hold_compensation_cfg(offset_cfg)),"small integral window setup failed");
+        auto offset_output=offset_hold.cycle();
+        check(offset_output.hold_integrator_freeze_reasons[0]=="outside_error_window" && offset_output.hold_integral_torque[0]==0,
+            "recorded stationary offset must reproduce a non-acting integral trial");
+        offset_cfg.error_threshold=1.25*.071;
+        check(bool(offset_hold.robot.set_hold_compensation_cfg(offset_cfg)),"measured-offset integral trial setup failed");
+        offset_output=offset_hold.cycle();
+        check(offset_output.hold_integrator_freeze_reasons[0]=="integrating" && offset_output.hold_integral_torque[0]>0 &&
+            offset_output.hold_integral_torque[0]<=offset_cfg.max_torque[0],
+            "an admitted measured stationary error must actually integrate under unchanged torque limits");
+        offset_hold.bus->state.vel[0]=.03;offset_output=offset_hold.cycle();
+        check(offset_output.hold_integrator_freeze_reasons[0]=="moving","measured-offset integral trial must preserve motion freezing");
         // Exercise the actual CSV writer/loader with an untagged teaching
         // cycle as well as the historical 6-vector row format
         struct Temporary {std::filesystem::path path;~Temporary(){std::filesystem::remove_all(path);}} temporary{

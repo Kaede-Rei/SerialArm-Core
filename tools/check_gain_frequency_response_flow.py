@@ -182,7 +182,7 @@ def fixture(terminal, directory, deadline, partial):
         assert candidate['available'] and candidate['review_ready'] and not candidate['validated'], candidate
         assert candidate['seed_source'] == candidate['model_initialization']['source'] and not candidate['model_initialization']['measured'], candidate
         assert selected['kp'] == candidate['seed_kp'] and selected['kd'] == candidate['seed_kd'], selected
-        assert candidate['budget_source_duration_s'] == 25 and candidate['target_budget_s'] == 300 and candidate['time_budget_s'] == 375, candidate
+        assert candidate['budget_source_duration_s'] == 25 and candidate['target_budget_s'] == 450 and candidate['time_budget_s'] == 600, candidate
         assert candidate['actual_elapsed_s'] < candidate['time_budget_s'] and not candidate['budget_exhausted'], candidate
         assert not candidate['response_guard_events'], candidate['response_guard_events']
         experiments = candidate['experiments']

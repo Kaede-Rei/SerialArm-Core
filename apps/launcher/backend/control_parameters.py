@@ -240,25 +240,79 @@ def gain_review_ready(candidate):
 
 
 def gain_selection_report(candidate, groups):
-    warnings = [value for value in candidate.get('warnings', []) if isinstance(value, str)]
+    def reference_only(value):
+        return (value.get('reference_only') is True or value.get('accuracy_thresholds_enabled') is False or
+                value.get('acceptance_scope') == 'measured_response_reference_only_v1')
+
+    def measurement(fields, key):
+        recorded = fields.get(key) or {}
+        shared = fields.get(recorded.get('shared_with'))
+        return {'shared_source_record_path': source_key(shared), **shared, **recorded} if (
+            isinstance(shared, dict) and shared is not recorded) else recorded
+
+    def source_key(value):
+        return next((value[key] for key in ('shared_source_record_path', 'shared_record_path', 'shared_source',
+                     'source_record_path', 'record_path') if isinstance(value.get(key), str) and value[key]), '')
+
+    def direct_scope(value):
+        axes = value.get('axes') if isinstance(value.get('axes'), list) else []
+        if not (value.get('method') == 'isolated_smooth_torque_pulse' or 'direct_measurement_complete' in value or
+                any(isinstance(axis, dict) and 'direct_response_complete' in axis for axis in axes)):
+            return None
+        complete = value.get('direct_measurement_complete') if isinstance(value.get('direct_measurement_complete'), bool) else (
+            bool(axes) and all(isinstance(axis, dict) and axis.get('input_measurement_complete') is True and
+                              axis.get('direct_response_complete') is True for axis in axes))
+        return complete and not any(isinstance(axis, dict) and (axis.get('input_measurement_complete') is False or
+                                    axis.get('direct_response_complete') is False) for axis in axes)
+
+    scope_codes = ('disturbance_measurement_incomplete', 'hold_disturbance_measurement_incomplete')
+    warnings, seen_sources = [], set()
+    for value in candidate.get('warnings', []):
+        if isinstance(value, str) and value.rsplit(':', 1)[-1] not in scope_codes:
+            warnings.append(value)
     for purpose, fields in groups.items():
-        warnings.extend(value for value in fields.get('warnings', []) if isinstance(value, str))
-        if fields.get('validated') is not True:
+        drag_axes = (fields.get('drag_validation') or {}).get('axes') or []
+        drag_scope_known = any(isinstance(axis, dict) and ('quiet_stability_measured' in axis or
+                               'release_decay_measured' in axis) for axis in drag_axes)
+        quiet_measured = bool(drag_axes) and all(isinstance(axis, dict) and
+                         axis.get('quiet_stability_measured') is True for axis in drag_axes)
+        warnings.extend(value for value in fields.get('warnings', []) if isinstance(value, str) and
+                        value.rsplit(':', 1)[-1] not in scope_codes and not
+                        (purpose == 'compliant_drag' and quiet_measured and value.startswith('drag_release')))
+        if not (reference_only(candidate) or reference_only(fields)) and fields.get('validated') is not True:
             warnings.append(purpose + ' 未达参考指标，保留实测结果，可应用或导出')
-        disturbance = fields.get('disturbance_verification') or {}
-        if purpose != 'compliant_drag' and (disturbance.get('available') is not True or
-                disturbance.get('completed') is False or not disturbance.get('record_path')):
-            warnings.append(purpose + ' 独立扰动测量不足，尚未完成抗扰验收')
-        hold_disturbance = fields.get('hold_disturbance_verification') or {}
-        if purpose in ('rigid_tracking', 'compliant_tracking') and (hold_disturbance.get('available') is not True or
-                hold_disturbance.get('completed') is False or not hold_disturbance.get('record_path')):
-            warnings.append(purpose + ' 保持扰动测量未完成')
+        scopes = [] if purpose == 'compliant_drag' else [('disturbance_verification', '独立扰动直接响应尚未测完整')]
+        if purpose in ('rigid_tracking', 'compliant_tracking'):
+            scopes.append(('hold_disturbance_verification', '保持扰动测量未完成'))
+        for key, note in scopes:
+            evidence = measurement(fields, key)
+            direct_complete = direct_scope(evidence)
+            complete = direct_complete if direct_complete is not None else (evidence.get('available') is True and
+                       evidence.get('completed') is not False and bool(evidence.get('record_path')))
+            if complete:
+                continue
+            source = source_key(evidence)
+            if source and source in seen_sources:
+                continue
+            if source:
+                seen_sources.add(source)
+            warnings.append(purpose + ' ' + note)
+        if purpose == 'compliant_drag' and drag_scope_known:
+            warnings = [value for value in warnings if not value.startswith(
+                ('drag_release_decay_unmeasured', 'compliant_drag:drag_release_decay_unmeasured'))]
+            if not quiet_measured:
+                warnings.append(purpose + ' 无外力稳定尚未测完整')
+            if any(not isinstance(axis, dict) or axis.get('release_decay_measured') is not True for axis in drag_axes):
+                warnings.append(purpose + ' 释放衰减未测完整，与无外力稳定分项记录')
     rigid, soft = groups.get('rigid_tracking'), groups.get('compliant_tracking')
-    if soft and soft.get('compliant_separation_validated') is not True:
+    if soft and not (reference_only(candidate) or reference_only(soft)) and soft.get('compliant_separation_validated') is not True:
         warnings.append('柔性增益未达刚柔分离参考指标')
     if rigid and soft and any(soft.get('rigid_reference_' + term) != rigid.get(term) for term in ('kp', 'kd')):
         warnings.append('柔性测量时的刚性参考与本次采用的刚性增益不同')
-    return {'available': bool(groups), 'validated': bool(groups) and all(fields.get('validated') is True for fields in groups.values()),
+    for_reference = reference_only(candidate) or any(reference_only(fields) for fields in groups.values())
+    return {'available': bool(groups), 'validated': not for_reference and bool(groups) and
+            all(fields.get('validated') is True for fields in groups.values()),
+            **({'reference_only': True, 'accuracy_thresholds_enabled': False} if for_reference else {}),
             'warnings': list(dict.fromkeys(warnings))}
 
 

@@ -336,15 +336,51 @@ HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰
 
 自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
 
+`model_calibration_gain_plan` 与新任务候选的 `target_budget_s/time_budget_s` 使用同一可信原始 `budget_source_duration_s`：四用途 `gain_mode=all/gain_tuning_mode=quick` 为目标 18T、硬上限 24T，单用途 `gain_tuning_mode=fine` 为目标 12T、硬上限 15T；重定时、导入、补测与局部比较不增加 T，历史候选按原有预算字段读取，不进行倍率迁移
+
+`gain_stage_budget_reservation` 事件保存 `purpose/future_measurements_reserved_s/scope`，说明进入当前用途后仍保留给后续学习、用途比较、固定组测量和退出的成本；预留不等于已经执行或已经测全，实际阶段仍以对应 CSV 和测量结果为准
+
 新增益任务保存 `acceptance_scope=measured_response_reference_only_v1`、`reference_only=true` 和 `accuracy_thresholds_enabled=false`，取消精度／误差验收阈值；过程峰值、RMS、滞后和 `endpoint_*` 最终目标窗数据均为参考指标；旧 `gain_requirements` 误差目标参数兼容读取但不再用于新任务的流程门槛或通过评分；`available` 继续表示实际完整参数测量，新任务 `validated` 与 `endpoint_passed` 等兼容字段固定为 false；历史标志与范围按原记录保留，不将参考分析自动补成通过；新 Profile 初始化凭据保存 `reference_only=true`、`value_role=unmeasured_model_reference` 和 `accuracy_thresholds_enabled=false`，双对角化初值算法不变
 
 运动中整定阶段为 `trajectory_adapting`；`online_trajectory_PD_update` 保存 `time_s/source_record_path`、`previous_kp/kd`、`proposed_kp/kd`、`candidate_generated/admission_allowed/installed`、逐轴模型与原因；`installed` 只表示目标组已交给平滑切换，实时有效增益仍读取 `RobotCycleOutput.joint_cmd.kp/kd`；`native_validation.online_adaptation=false` 才是最终冻结整组测量，变增益学习记录不会提前提升为 `available`；整轨 CSV 新增 `planned_independent_disturbance_nm/independent_input_planned_known`，用以核对已知独立输入是否被实时约束削减，缺少这些列的旧数据按旧格式读取
 
 在线模型另外保存 `fresh_samples/command_samples/resampled_samples`、`feedback_interval_min_s/max_s`、`observed_encoder_step_rad` 与 `fit_attempts/rank_rejections/plausibility_rejections/prediction_rejections`；分别区分原始输出、真实命令和等间隔建模点，以及信息秩、作用方向／动态系数与留出预测问题；尚未执行的训练／留出预测 RMS 为 `null`，不以默认零误差填补缺测；旧事件缺少这些字段时界面显示未知
 
+途中用途测量阶段为 `trajectory_purpose_pass`；`taught_path_purpose_dwell` 保存原路径 `source_index/reverse/reference_rad`、`source_duration_s/source_time_s`、实际 `elapsed_s/pause_begin_s/pause_end_s/measurement_dwell_s`、`resumed/completed` 与主记录路径；`arrival_error_gate=false/exact_anchor_arrival_required=false` 明确新鲜反馈不受精确到位门槛阻断；经过该内点时平滑暂停源时钟，测完后继续原方向，最终固定组测量另行保存
+
+内点记录增加 `nearby_response_motion_score/nearby_reference_span_rad/axis_response_weights`；权重来自本次轨迹实测误差与噪声尺度，行程来自候选附近原始示教参考，不把预测能力写成实际反馈运动
+
+用途回调结束后的 `gain-transition-*-passing-resume.csv` 保留接受参考到原示教内点的实际交接；提交跟踪参考前先恢复对应跟踪模式、用途参数和参考行为，允许回调以保持或拖拽模式返回；固定组最终测量仍以独立完成的全程记录为准
+
+用途测量期间中断时 `completed=false/resumed=false`，`pause_end_s` 与尚未提交到源时钟的 `measurement_dwell_s` 可为0；已有有效 `pause_begin_s` 时，以 `elapsed_s-pause_begin_s` 展示中断前已停留用时，保留部分记录，不显示为停留0秒或已经恢复轨迹
+
+`gain-trajectory-{native|compliant}-passing-purpose.csv` 的 `trajectory_source_time_s` 仅表示示教源进度；`time_s/command_time_s/reference_sample_time_s/feedback_time_s` 保留真实墙钟，单独用途测量期间主轨迹 CSV 保留实际采集间隙，不能跨该间隙假装持续运动；用途输入与保持仍使用各自原始 CSV；新快标计划 `max_path_passes=6`、单用途精调为4，单独拖拽继续沿原路径访问内点而不产生整轨测量
+
 `structure/parameter_count/training_span_rad/validation_error_limit_rad` 保存所选局部模型与训练窗预测尺度；用途成本区分跟踪和柔性；`taught_measurement_anchor_visit` 记录原路径源索引、计划和实际成本、引用角及 CSV，`interior_purpose_measurement_skipped` 说明内点或预算缺项且不默认回端点扰动；`rigid_purpose_local_comparison` 与 `compliant_purpose_local_comparison` 保留整组比较，`kept` 不代表性能认证；共享扰动用 `shared_disturbance_evidence` 引用实际源记录
 
-保持结果的 `hold_evaluation_scope` 区分内点固定目标分析与整轨终点定位；增加 `entry_actual_pos/controls_known/reference_fixed/independent_input_zero`，保持 CSV 的 `kp/kd` 为实际周期值并附 `actual_gains_known`；参数过渡与积分建立期继续保留全过程异常运动记录，最终固定参数窗口单独检查
+`taught_local_correction_plan` 保存同向短示教段的 `source_index_from/to/reverse/playback_rate/duration_s/complete_comparison_cost_s` 与选择依据记录；`taught_local_complete_group_comparison` 保存实际两组完整 P/D、`changed_joint/coordinate`、共同前馈与负载声明、两条原始 CSV、逐轴前后指标及 `kept`；`reason` 表示提出候选的依据，`comparison_reason` 单独说明实测采用或拒绝的原因，旧记录缺少该字段时不从提案原因推测拒绝结论；初态不一致或未改轴入口偏置时，`taught_local_comparison_repeat` 保存原两份记录、`bounded_repeats=1/raw_metrics_preserved=true`；预算允许才补测完整两组，保留原始误差，不扣除静差后宣布改善；两类事件均保持 `model_identified=false`，不把直接实测比较伪装成局部模型成立；原始 CSV 继续使用 `gain-trajectory-local-*.csv`，沿现有轨迹导出入口保存；局部行程计入任务预算但不计整轨趟数，最终冻结整轨另测
+
+用途短测使用逐轴隔离的已知输入，固定完整 P/D、参考中心和前馈条件；逐周期记录保留被激励轴及其他轴的反馈，输入基线、加载与释放分别解释；直接位移／恢复测量的完整性与参数模型有效性分开，模型未知不删除已完成的直接测量，未发生可分辨运动也不补成刚度、频响或释放测量
+
+用途参数事件沿用 `short_experiment_parameters`，以 `waveform=isolated_smooth_pulse`、`isolation=sequential_single_axis` 和 `pulse_axes` 描述已执行的逐轴窗口；每项保存 `axis_index/attempt`，同轴补测独立成项，`start_s/release_s/end_s` 与同一记录时钟对应；未测轴在逐轴直接测量结果中保留缺项原因；`independent_torque_disturbance` 的 `method=isolated_smooth_torque_pulse`、`model_identified=false` 与直接输入／响应字段分别保存；用途结果的 `disturbance_verification.direct_measurement_complete` 要求各轴直接窗口完整且用途响应 `measurement_complete`；仅有完整输入、响应低于分辨能力时该汇总及相应用途 `qualification_complete` 保持 false，完整参数组仍可 `available`；直接响应测全不等同参数模型成立
+
+用途脉冲参数的 `center_source=completed_taught_anchor_nominal_reference_not_actual_rezero`、`center_rad` 与 `entry_actual_rad` 区分名义参考和实际入口；桌面展示两者以及目标减入口的偏差，旧记录没有这些来源字段时不自动声称使用了示教名义目标
+
+`purpose_input_prior` 事件通过 `record_path` 关联本次用途脉冲，以 `input_priors` 逐轴保存 `valid/independent_samples/low_speed_pd_samples/rejected_samples`、`independent_peak_nm/low_speed_pd_level_nm/seed_nm/low_speed_cutoff_rad_s`、`source/reason/interpretation`，另存实际计划 `planned_input_nm/current_domain_input_ceiling_nm`；`input_allowance_source` 明示既有 Robot 独立注入边界来自用户 Safety 力矩限制的 5%，计划、补测和固定输入复测使用同一边界；原始已知输入与低速主机 PD 尺度分列，来源指向实际轨迹 CSV；无有效先验时保留不足原因，界面不显示默认零值为已测成功
+
+`purpose_input_supplement_decision` 保存本轴 `attempt/previous_input_nm/next_input_nm/reason/next_window_planned`；拟安排不代表已经执行，实际输入与起止时刻仍以 `purpose_pulse_window_parameters`、汇总 `pulse_axes` 和逐周期 CSV 为准；各次补测在同一原 T 预算内，不因新增窗口延长任务上限
+
+`gain-purpose-*.csv` 保存同一固定完整组下的所有轴控制周期，`gain-anchor-*.csv` 保存内点访问／返回；两者与 `drag-decay-*.csv`、`drag-taught-release-*.csv`、`gain-trajectory-*-passing-purpose.csv` 一并进入桌面记录文件清单、任务记录 ZIP 和候选成果 ZIP，导出保留原始 CSV 字节，不修改源任务
+
+拖拽安静窗口必须来自实际输出已完成 Kp＝0／Kd 交接且独立输入为零的周期；静置基本参数结果与可选释放证据分别保存，释放未测不清除已完成的安静结果；新的用途测量仍沿用原 T 预算、用途选择、完整参数组应用与恢复语义
+
+`drag_damping_comparison_conditions` 保存比较姿态的 `comparable/reason/relative_M_change/max_gravity_change_nm`，以完整惯量和已执行重力项判断工况是否可比；`arrival_error_gate=false` 不要求回到同一个编码值；工况未知或变化过大则保留原阻尼，预算不足时保存 `drag_damping_comparison_skipped`
+
+拖拽逐轴 `drag_input_plan`、`drag_input_window` 和 `drag_input_supplement_decision` 分别保存计划、实际已执行窗口和补测决定，包含 `joint/reason/scheduled/input_nm/next_input_nm/input_ceiling_nm/torque_quantum_nm/prior_valid/prior_input_nm/prior_source/duration_s`；未安排输入必须保留实际缺项原因，安静结果不覆盖该原因；`scheduled` 与正幅值均不等于已测得物理释放运动，是否可分辨释放仍读取 `release_decay_measured`
+
+`drag_demonstrated_motion_release` 保存附近示教运动释放的 `source_index_from/source_index_release/preparation_duration_s/actual_zero_stiffness_s/elapsed_s/domain_stopped` 和逐轴测量原因；`actual_zero_stiffness_s` 是实际完整 P0／Kd 交接完成时刻，未知时为 `null`；`drag-taught-release-*.csv` 分别保留正刚度准备与零刚度释放周期；拖拽逐轴 `release_record_path` 指向实际采用的释放证据，`demonstrated_motion_preparation` 区别示教运动准备与独立力矩脉冲，不覆盖原始脉冲记录或安静窗口
+
+保持结果的 `hold_evaluation_scope` 区分内点固定目标分析与整轨终点定位；`target_source=completed_taught_anchor_nominal_reference_not_actual_rezero` 表示保留已发送的示教内点，`target_pos` 与 `entry_actual_pos` 分开保存；`hold_parameters` 同样保存这些入口证据，不以到位误差决定能否测量；增加 `controls_known/reference_fixed/independent_input_zero`，保持 CSV 的 `kp/kd` 为实际周期值并附 `actual_gains_known`；参数过渡与积分建立期继续保留全过程异常运动记录，最终固定参数窗口单独检查；积分尝试的误差窗口按已观测保持静差设置并记录，持续冻结且没有补偿输出时可提前结束该尝试，以 `hold_integral_blocked:<原因>` 保留实际参数和冻结记录，不删除已有基本保持结果
 
 机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；新任务基本参数测全为 `measured_reference_complete`，缺项为 `insufficient_measurement`，正常无故障测量阶段为 COMPLETE；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据
 
