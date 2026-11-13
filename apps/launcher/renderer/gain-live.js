@@ -8,6 +8,7 @@ function paintGainMonitor(snapshot=gainSnapshot,now=Date.now()) {
     const text=(zh,enText)=>en?enText:zh;
     const light=s.theme==='light'||(s.theme!=='dark'&&matchMedia('(prefers-color-scheme: light)').matches);
     document.documentElement.classList.toggle('light',light);
+    document.documentElement.dataset.fontLigatures=s.font_ligatures===false?'off':'on';
     document.documentElement.lang=en?'en':'zh-CN';
     document.title=element('gain-live-title').textContent=text('实时执行增益','Live executed gains');
     const age=Number.isFinite(s.received_at)&&Number.isFinite(s.feedback_age_ms)?s.feedback_age_ms+Math.max(0,now-s.received_at):Infinity;

@@ -1,57 +1,100 @@
 'use strict';
-// Same quick spring as AT-System-Integration's StudioMotion: k=900, c=50, m=.7.
-// Retain velocity when a press reverses, without introducing a renderer framework
+// Retarget the current presentation value and velocity; no action waits for motion.
 (() => {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
-    const springs = new Map();
+    const motionReduced = () => reduced.matches || document.documentElement.dataset.reduceMotion === 'true';
+    const motions = new Map(), anchors = new WeakMap();
     let pressed = null, frame = 0, previous = 0;
     function tick(now) {
-        let remaining = Math.min((now - previous) / 1000 || 1 / 60, .032);
+        if (motionReduced()) { resetMotion(); return; }
+        const dt = Math.max(0,Math.min((now - previous) / 1000 || 1 / 60, .032));
         previous = now;
-        while (remaining > 0) {
-            const dt = Math.min(remaining, .004);
-            for (const spring of springs.values()) {
-                spring.velocity += ((900 * (spring.target - spring.value) - 50 * spring.velocity) / .7) * dt;
-                spring.value += spring.velocity * dt;
-            }
-            remaining -= dt;
-        }
-        for (const [button, spring] of springs) {
-            if (!button.isConnected || reduced.matches) { button.style.removeProperty('scale'); springs.delete(button); continue; }
-            button.style.scale = String(spring.value);
-            if (Math.abs(spring.value - spring.target) < .0001 && Math.abs(spring.velocity) < .001) {
-                if (spring.target === 1) button.style.removeProperty('scale');
-                else button.style.scale = String(spring.target);
-                springs.delete(button);
+        for (const [node, motion] of motions) {
+            if (!node.isConnected) { motions.delete(node); continue; }
+            // Exact critically damped step avoids frame-rate dependent overshoot.
+            const omega = 2 * Math.PI / motion.response;
+            const offset = motion.value - motion.target, carry = motion.velocity + omega * offset;
+            const decay = Math.exp(-omega * dt);
+            motion.value = motion.target + (offset + carry * dt) * decay;
+            motion.velocity = (motion.velocity - omega * carry * dt) * decay;
+            const bounded = Math.max(motion.min, Math.min(motion.max, motion.value));
+            if (bounded !== motion.value) { motion.value = bounded; motion.velocity = 0; }
+            motion.apply(motion.value);
+            if (Math.abs(motion.value - motion.target) < .0001 && Math.abs(motion.velocity) < .001) {
+                motion.apply(motion.target); motion.settled?.(motion.target); motions.delete(node);
             }
         }
-        frame = springs.size ? requestAnimationFrame(tick) : 0;
+        frame = motions.size ? requestAnimationFrame(tick) : 0;
+    }
+    function move(node, target, options) {
+        if (motionReduced()) { options.apply(options.staticValue ?? target); options.settled?.(options.staticValue ?? target); return; }
+        const motion = motions.get(node) || {value:options.from,velocity:0};
+        Object.assign(motion, options, {target}); motions.set(node, motion);
+        motion.apply(motion.value);
+        if (frame) cancelAnimationFrame(frame);
+        previous = performance.now(); frame = requestAnimationFrame(tick);
     }
     function respond(button, target) {
-        if (reduced.matches) return;
-        const spring = springs.get(button) || { value: Number(button.style.scale) || 1, velocity: 0 };
-        spring.target = target; springs.set(button, spring);
-        if (!frame) { previous = performance.now(); frame = requestAnimationFrame(tick); }
+        move(button, target, {from:Number(getComputedStyle(button).scale) || 1,response:.18,min:.97,max:1,staticValue:1,
+            apply:value => { button.style.scale = String(value); },
+            settled:value => { if (value === 1) button.style.removeProperty('scale'); }});
     }
     function release() { if (pressed?.isConnected) respond(pressed, 1); pressed = null; }
     function press(event) {
-        if (reduced.matches || event instanceof PointerEvent && event.button !== 0) return;
-        if (event instanceof KeyboardEvent && (event.repeat || ![' ', 'Enter'].includes(event.key))) return;
+        if (motionReduced() || event instanceof PointerEvent && event.button !== 0) return;
+        if (event instanceof KeyboardEvent && (event.isComposing || event.repeat || ![' ', 'Enter'].includes(event.key))) return;
         const button = event.target instanceof Element ? event.target.closest('button') : null;
         if (!button || button.disabled || button.closest('[inert]') || button.dataset.motion === 'none') return;
+        if (!button.matches('.primary,[data-motion="press"]') ||
+            button.hasAttribute('aria-pressed') || button.hasAttribute('aria-current') ||
+            button.matches('.danger,.title-button') ||
+            button.closest('.robot-operation-bar,.task-window-actions,#operation-safety-actions')) return;
         if (event instanceof KeyboardEvent && event.target !== button) return;
-        release(); pressed = button; respond(button, button.clientWidth > 160 ? .993 : .973);
+        release(); pressed = button; respond(button, button.clientWidth > 160 ? .993 : .985);
     }
     document.addEventListener('pointerdown', press, true);
     document.addEventListener('pointerup', release, true);
     document.addEventListener('pointercancel', release, true);
     document.addEventListener('keydown', press, true);
-    document.addEventListener('keyup', event => { if ([' ', 'Enter'].includes(event.key)) release(); }, true);
+    document.addEventListener('keyup', event => { if (!event.isComposing && [' ', 'Enter'].includes(event.key)) release(); }, true);
     window.addEventListener('blur', release);
-    reduced.addEventListener('change', () => {
-        release();
-        if (reduced.matches) { for (const button of springs.keys()) button.style.removeProperty('scale'); springs.clear(); }
-    });
+    function resetMotion() {
+        if (!motionReduced()) return;
+        pressed = null;
+        for (const motion of motions.values()) { const value=motion.staticValue ?? motion.target; motion.apply(value); motion.settled?.(value); }
+        motions.clear(); cancelAnimationFrame(frame); frame = 0;
+    }
+    reduced.addEventListener('change', resetMotion);
+    new MutationObserver(resetMotion).observe(document.documentElement, {attributes:true,attributeFilter:['data-reduce-motion']});
+    function enterPage(page) {
+        const current = motions.get(page);
+        move(page, 1, {from:current?.value ?? .94,response:.16,min:0,max:1,staticValue:1,
+            apply:value => { page.style.opacity = String(value); },
+            settled:() => page.style.removeProperty('opacity')});
+    }
+    function anchorPopover(menu, trigger) {
+        const bound = anchors.get(menu);
+        if (bound) { bound.trigger = trigger; return; }
+        const anchor = {trigger}; anchors.set(menu, anchor);
+        function animate(open) {
+            const source = anchor.trigger.getBoundingClientRect();
+            const left = parseFloat(menu.style.left) || menu.getBoundingClientRect().left;
+            const top = parseFloat(menu.style.top) || menu.getBoundingClientRect().top;
+            const above = top + menu.offsetHeight <= source.top + 1;
+            const origin = Math.max(0,Math.min(menu.offsetWidth,source.left + source.width / 2 - left));
+            menu.style.transformOrigin = `${origin}px ${above ? '100%' : '0%'}`;
+            menu.dataset.motionPlacement = above ? 'above' : 'below';
+            move(menu, open ? 1 : 0, {from:motions.get(menu)?.value ?? (open ? 0 : 1),response:.14,min:0,max:1,
+                apply:value => { menu.style.opacity=String(value); menu.style.transform=motionReduced()?'none':`translateY(${(above ? 4 : -4)*(1-value)}px) scale(${.97+.03*value})`; }});
+        }
+        menu.addEventListener('beforetoggle', event => {
+            const open = event.newState === 'open'; menu.inert = !open;
+            if (open) { menu.style.removeProperty('pointer-events'); menu.style.opacity=String(motions.get(menu)?.value ?? 0); }
+            else { menu.style.pointerEvents='none'; animate(false); if (menu.contains(document.activeElement)) anchor.trigger.focus({preventScroll:true}); }
+        });
+        menu.addEventListener('toggle', event => { if (event.newState === 'open') animate(true); });
+    }
+    window.serialArmStudio = {enterPage,anchorPopover};
 })();
 
 // Progressive enhancement keeps the original selects and their change handlers
@@ -83,6 +126,13 @@
                 if (selectedText.textContent !== text) selectedText.textContent = text;
                 const disabled = select.matches(':disabled');
                 if (trigger.disabled !== disabled) trigger.disabled = disabled;
+                for (const name of ['aria-labelledby', 'aria-describedby', 'aria-invalid']) {
+                    const value = select.getAttribute(name);
+                    if (value !== null) { if (trigger.getAttribute(name) !== value) trigger.setAttribute(name, value); }
+                    else trigger.removeAttribute(name);
+                }
+                if (select.hasAttribute('aria-labelledby')) menu.setAttribute('aria-labelledby', select.getAttribute('aria-labelledby'));
+                else menu.removeAttribute('aria-labelledby');
             };
             function position() {
                 const rect = trigger.getBoundingClientRect();
@@ -138,12 +188,13 @@
                 if (event.newState === 'open') prepareOptions();
             });
             trigger.onkeydown = event => {
-                if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+                if (event.isComposing || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
                 event.preventDefault();
                 if (!menu.matches(':popover-open')) trigger.click();
                 else menu.querySelector('[aria-selected="true"]:not(:disabled),button:not(:disabled)')?.focus();
             };
             menu.onkeydown = event => {
+                if (event.isComposing) return;
                 const options = [...menu.querySelectorAll('[role="option"]')].filter(option => !option.disabled && !option.hidden);
                 const current = options.indexOf(document.activeElement);
                 if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && options.length) {
@@ -161,6 +212,7 @@
                     (menu.querySelector('input') || menu.querySelector('[aria-selected="true"]:not(:disabled)') || menu.querySelector('button:not(:disabled)'))?.focus();
                 } else if (menu.contains(document.activeElement)) trigger.focus();
             });
+            window.serialArmStudio.anchorPopover(menu, trigger);
             select.addEventListener('change', update);
             for (const label of select.labels || []) label.addEventListener('click', event => {
                 if (event.target === label) { event.preventDefault(); trigger.focus(); }
@@ -174,7 +226,7 @@
         if (!relevant || queued) return;
         queued = true; queueMicrotask(() => { queued = false; enhanceSelects(); });
     });
-    observer.observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ['disabled']});
+    observer.observe(document.body, {childList: true, subtree: true, attributes: true, attributeFilter: ['disabled', 'aria-labelledby', 'aria-describedby', 'aria-invalid']});
     const closeMenus = event => {
         for (const menu of document.querySelectorAll('.ros-select-options:popover-open')) {
             if (!menu.contains(event.target)) menu.hidePopover();
@@ -182,5 +234,5 @@
     };
     window.addEventListener('resize', closeMenus);
     document.addEventListener('scroll', closeMenus, true);
-    window.serialArmStudio = {enhanceSelects};
+    window.serialArmStudio = {...window.serialArmStudio,enhanceSelects};
 })();

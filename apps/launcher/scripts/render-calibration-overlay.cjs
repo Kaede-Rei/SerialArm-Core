@@ -1,4 +1,4 @@
-/* Actual calibration overlay restored from read-only task evidence.
+/* Production calibration overlay restored from read-only task evidence.
  * DISPLAY=:1 node_modules/.bin/electron --no-sandbox scripts/render-calibration-overlay.cjs \
  *   --record /path/to/model-calibration-task --clip-audit /path/to/clip-audit.js
  */
@@ -6,7 +6,11 @@ const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs'),path=require('node:path');
 const {buildFixture}=require('./studio-ui-fixture.cjs');
 const args=process.argv.slice(2),arg=(name,fallback)=>{const i=args.indexOf(name);return i<0?fallback:args[i+1];};
-const record=arg('--record','');if(!record)throw Error('--record task directory is required');
+const record=arg('--record','');
+const required=['gain-candidate.json','result.json','metadata.json','frames.csv'];
+if(!record||required.some(name=>!fs.existsSync(path.join(record,name)))){
+ console.error('Calibration layout fixture requires --record containing '+required.join(', '));process.exit(1);
+}
 const readabilityOnly=args.includes('--readability-only');
 const motionDecision=args.includes('--motion-decision');
 const progressFixture=args.includes('--motion-progress-fixture');
@@ -15,18 +19,19 @@ const fixture=buildFixture(path.dirname(out),{record});
 const audit=arg('--clip-audit','')?fs.readFileSync(arg('--clip-audit',''),'utf8'):null;
 const sources=['gain-candidate.json','result.json','metadata.json','frames.csv'].map(name=>({file:path.join(path.resolve(record),name),bytes:fs.readFileSync(path.join(path.resolve(record),name))}));
 app.commandLine.appendSwitch('force-device-scale-factor','1');
-function setupOverlay(theme,initializing=false,preview=true,motion=false){
+app.setPath('userData',path.join(fixture.directory,'electron-userdata'));
+function setupOverlay(theme,initializing=false,preview=true,motion=false,language='zh-CN'){
  const data=window.studioUiData,r=data.overlayRecord,source=r.result,experiment=motion?r.candidate.candidate_comparisons.filter(x=>x.kind==='motion_establishment').at(-1):r.candidate.experiments.find(x=>x.kind==='independent_torque_disturbance')||r.candidate.experiments.filter(x=>x.kind==='reference_tracking').at(-1);
  const measured=r.candidate.experiments.find(x=>x.record_path===experiment.record_path&&Array.isArray(x.kp));
  const diagnostic=structuredClone(experiment);
  if(motion){diagnostic.current_kp??=measured?.kp;diagnostic.current_kd??=measured?.kd;}
- Object.assign(state,{page:'calibration',theme,language:'zh-CN',config:{profile:'tomato_picker（只读阶段还原）',profile_file:'',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),session:{state:'running',mode:'workbench'},calibrationEntry:'gain',calibrationToolSelected:{gain:{directory:r.directory,gain_candidate:structuredClone(r.candidate)}},calibrationRuntimeCandidates:{},modelData:null,admittance:null,tuneDraft:null});
+ Object.assign(state,{page:'calibration',theme,language,config:{profile:(r.metadata.profile||data.info.profile)+'（只读阶段还原）',profile_file:'',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),session:{state:'running',mode:'workbench'},calibrationEntry:'gain',calibrationToolSelected:{gain:{directory:r.directory,gain_candidate:structuredClone(r.candidate)}},calibrationRuntimeCandidates:{},modelData:null,admittance:null,tuneDraft:null});
  const status={...structuredClone(source),phase:'gain_adaptation',error:'',gain_probe_stage:initializing?'model_initialization':motion?'motion_discovery':'disturbance_identification',gain_probe_kind:initializing?'model-initialization':motion?'motion_establishment':'independent_torque_disturbance',gain_probe_message:initializing?'model_seed_unmeasured':motion?'establishing_motion':'known_torque_disturbance',gain_probe_diagnostic:initializing?null:diagnostic,gain_candidate_index:initializing?0:source.gain_adaptation_revisions,gain_probe_kp:measured?.kp?.[0]||0,gain_probe_kd:measured?.kd?.[0]||0};
  const vector=key=>r.candidate.joint_names.map(name=>{const value=Number(r.frame[key+':'+name]);return Number.isFinite(value)?value:0;});
  state.telemetry={robot_state:'ACTIVE',valid:false,joint_names:r.candidate.joint_names,feedback_age_ms:Number(r.frame.feedback_age_ms)||0,model_calibration:status,joint:{pos:vector('q'),nominal_ref_pos:vector('nominal_q'),ref_pos:vector('ref_q')}};
  renderedPage='';shell();updateModelCalibrationTaskOverlay();
  if(!preview){restoreCalibrationTaskPreview();document.querySelector('#model-calibration-task-preview').hidden=true;}
- const note=document.createElement('span');note.className='hint';note.dataset.overlayFixtureNote='true';note.textContent='只读阶段还原；原任务已结束';document.querySelector('.task-window-head > div').append(note);
+ const note=document.createElement('span');note.className='hint';note.dataset.overlayFixtureNote='true';note.textContent=r.metadata.load_description==='offline synthetic fixture'?(language==='en'?'Isolated sample data; layout preview only':'隔离示例数据；仅验证布局'):(language==='en'?'Read-only stage preview; original task has ended':'只读阶段还原；原任务已结束');document.querySelector('.task-window-head > div').append(note);
  return {originalPhase:source.phase,task:source.task_id,experiment:experiment.record_path};
 }
 function measure(){
@@ -49,12 +54,44 @@ function setupSyntheticProgress(blocked){
 app.whenReady().then(async()=>{
  fs.mkdirSync(out,{recursive:true});
  const win=new BrowserWindow({width:1280,height:1000,show:false,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
+ win.webContents.on('render-process-gone',(_event,details)=>{console.error('Overlay renderer exited: '+JSON.stringify(details));app.exit(1);});
  const errors=[];win.webContents.on('console-message',(_e,level,message)=>{if(level>=3){errors.push(message);console.error(message);}});
  const settle=()=>win.webContents.executeJavaScript('new Promise(resolve=>setTimeout(()=>requestAnimationFrame(()=>requestAnimationFrame(resolve)),230))');
  await win.loadFile(fixture.index);win.show();win.focus();win.webContents.focus();await settle();
  await win.webContents.executeJavaScript(`term?.dispose();term=null;fit=null;window.Terminal=undefined;window.overlayFixtureSetup=${setupOverlay};window.overlayFixtureMeasure=${measure};window.overlayFixtureProgress=${setupSyntheticProgress};void 0;`);
  const report={runtime:process.versions.electron,record:path.resolve(record),sources:sources.map(x=>({file:x.file,bytes:x.bytes.length})),description:'Readonly experiment; active stage reconstructed for layout, original terminal phase retained in report',checks:[],renders:[]};
  const assert=(ok,label)=>{if(!ok)throw Error(label);report.checks.push(label);};
+ if(args.includes('--render-only')){
+  const sizes=arg('--sizes','1300x900,1000x720').split(',').map(value=>value.split('x').map(Number));
+  report.mode='read-only record layout preview';report.evidenceDescription=JSON.parse(fs.readFileSync(path.join(record,'metadata.json'),'utf8')).load_description||'not specified';report.findings=[];
+  for(const [width,height] of sizes)for(const theme of arg('--themes','light,dark').split(','))for(const language of arg('--languages','zh-CN,en').split(',')){
+   win.setContentSize(width,height);
+   const source=await win.webContents.executeJavaScript(`window.overlayFixtureSetup(${JSON.stringify(theme)},false,true,false,${JSON.stringify(language)})`);
+   const item={width,height,theme,language,source,states:[]};
+   for(const position of ['default','top','bottom','hover']){
+    await win.webContents.executeJavaScript(`(()=>{document.querySelector('#gain-task-probe .gain-probe-evidence').open=${position!=='default'};const node=document.querySelector('.task-window-content');node.scrollTop=${['default','top'].includes(position)?'0':'node.scrollHeight'};})()`);await settle();
+    if(position==='hover'){
+     const point=await win.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.task-window-actions button:not(:disabled)').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()`);
+     win.webContents.sendInputEvent({type:'mouseMove',...point});await settle();
+    }
+    const metrics=await win.webContents.executeJavaScript('window.overlayFixtureMeasure()');
+    const contained=metrics.window.left>=0&&metrics.window.right<=width&&metrics.window.top>=0&&metrics.window.bottom<=height;
+    const footer=metrics.actions.every(action=>action.left>=metrics.window.left&&action.right<=metrics.window.right&&action.top>=0&&action.bottom<=height);
+    if(!contained||!footer||metrics.body.scrollWidth>metrics.body.clientWidth+1)report.findings.push({width,height,theme,language,position,contained,footer,metrics});
+    const file=path.join(out,`overlay-${width}x${height}-${theme}-${language}-${position}.png`);
+    const clipping=audit?await win.webContents.executeJavaScript(`(${audit})({root:'body',viewport:true})`):null;
+    if(clipping?.cut)report.findings.push({width,height,theme,language,position,clipping});
+    fs.writeFileSync(file,(await win.webContents.capturePage()).toPNG());item.states.push({position,file,metrics,clipping});
+   }
+   report.renders.push(item);
+  }
+  report.apiCalls=await win.webContents.executeJavaScript('window.serialArm.fixtureCalls()');report.consoleErrors=errors;
+  report.sourcesUnchanged=sources.every(item=>fs.readFileSync(item.file).equals(item.bytes));
+  fs.writeFileSync(path.join(out,'report.json'),JSON.stringify(report,null,2));
+  if(!report.sourcesUnchanged||errors.length||report.findings.length)throw Error('Overlay layout findings: '+JSON.stringify({report:path.join(out,'report.json'),findings:report.findings.length,errors}));
+  console.log('CALIBRATION_OVERLAY_LAYOUT_PASS '+JSON.stringify({renders:report.renders.length,report:path.join(out,'report.json')}));win.destroy();app.quit();return;
+ }
+
  const faultCopy=await win.webContents.executeJavaScript(`(()=>{state.language='zh-CN';const zh=describeRuntimeFault({fault:{code:'CALIBRATION_RESPONSE_UNSTABLE'}});state.language='en';const en=describeRuntimeFault({fault:{code:'CALIBRATION_RESPONSE_UNSTABLE'}});return {zh,en};})()`);
  assert(faultCopy.zh.message.includes('非指令要求的持续位置振荡')&&faultCopy.zh.advice.includes('现有流程恢复')&&!faultCopy.zh.message.includes('共振'),'latched instability fault uses measured-position wording and existing recovery');
  assert(faultCopy.en.message.includes('not requested by the reference')&&faultCopy.en.advice.includes('existing fault-recovery flow'),'instability fault includes clear English guidance');

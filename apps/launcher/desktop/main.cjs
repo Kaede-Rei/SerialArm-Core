@@ -38,6 +38,8 @@ function savePrefs(values) {
     }
     if (['system', 'dark', 'light'].includes(values.theme)) next.theme = values.theme;
     if (['zh-CN', 'en'].includes(values.language)) next.language = values.language;
+    if (typeof values.fontLigatures === 'boolean') next.fontLigatures = values.fontLigatures;
+    else if (typeof next.fontLigatures !== 'boolean') next.fontLigatures = true;
     delete next.compact;
     if (values.bounds && Number.isInteger(values.bounds.width) && Number.isInteger(values.bounds.height)) {
         next.bounds = { width: Math.max(1000, Math.min(2400, values.bounds.width)), height: Math.max(720, Math.min(1800, values.bounds.height)) };
@@ -278,7 +280,7 @@ async function start() {
         fs.writeFileSync(result.filePath, JSON.stringify(graphics.status(), null, 2) + '\n', { mode: 0o600 });
         return { canceled: false, path: result.filePath };
     });
-    ipcMain.handle('launcher:prefs', event => { trusted(event); return { ...readPrefs(), language: readPrefs().language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en') }; });
+    ipcMain.handle('launcher:prefs', event => { trusted(event); const prefs = readPrefs(); return { ...prefs, fontLigatures: prefs.fontLigatures !== false, language: prefs.language || (app.getLocale().startsWith('zh') ? 'zh-CN' : 'en') }; });
     ipcMain.handle('launcher:save-prefs', (event, values) => { trusted(event); return savePrefs(values); });
     ipcMain.handle('launcher:select-profile', async event => { trusted(event); const result = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Robot Profiles', extensions: ['yaml', 'yml'] }] }); return result.canceled ? '' : result.filePaths[0]; });
     ipcMain.handle('launcher:select-gain-candidate', async event => { trusted(event); const result = await dialog.showOpenDialog(win, { properties: ['openFile'], filters: [{ name: 'Gain candidate', extensions: ['json'] }] }); return result.canceled ? '' : result.filePaths[0]; });

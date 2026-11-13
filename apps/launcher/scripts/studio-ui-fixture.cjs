@@ -24,6 +24,25 @@ function buildFixture(directory='/tmp/serialarm-studio-ui',options={}){
  const candidate=makeCandidate();
  Object.assign(candidate.model_initialization,{unconstrained_kp:candidate.model_initialization.kp.map(v=>v*4),unconstrained_kd:candidate.model_initialization.kd.map(v=>v*2),pre_modal_kp:candidate.model_initialization.kp.map(v=>v*1.5),pre_modal_kd:candidate.model_initialization.kd.map(v=>v*1.2),modal_adjustments:['sample=0;mode=2;axis=2;stiffness_participation=.85;action=allocate_damping','sample=0;mode=3;axis=3;action=reduce_participating_frequency'],physical_prior:'urdf_geometry_mass_com_inertia',response_demand_source:'checked_demonstration_and_user_acceptance_targets',constraint_role:'execution_guards_not_mechanical_identification'});
  const data={editor,candidate,info:{profile:editor.profile,profile_file:'/offline/robot_profiles.yaml',hardware_plugin:'serial_arm_hardware_damiao',available:{terminal:true,hardware:true,model:true,moveit:false},resources:{core:editor.core_path,hardware:editor.hardware_path},checks:[{name:'core',ok:true,detail:editor.core_path},{name:'description',ok:true,detail:editor.urdf_path},{name:'hardware',ok:true,detail:'serial_arm_hardware_damiao'},{name:'ros2_control',ok:false,detail:'未安装 ROS2 适配层'}]},library:[{id:'fixture-white',profile:'dm_arm_white',source:'builtin',readiness:{state:'configuring'}},{id:'fixture-tomato',profile:'tomato_picker',source:'external',profile_file:'/offline/tomato_picker/robot_profiles.yaml',readiness:{state:'ready'}}]};
+ if(options.model){
+  // Offline model executable only; it constructs dynamics without a MotorBus
+  // or a control session. No request is sent to the production GUI backend.
+  const {developmentBackend}=require('../desktop/native-runtime.cjs');
+  const backend=developmentBackend(repo),manifest=JSON.parse(fs.readFileSync(path.join(repo,'.install/manifest.json'),'utf8'));
+  const probe=path.join(manifest.install_prefix,'bin/serial_arm_model_probe');
+  const native=spawnSync(probe,['--config',editor.core_path],{env:backend.env,encoding:'utf8',timeout:10000});
+  if(native.status!==0)throw Error('Read-only model fixture: '+native.stderr);
+  const parsed=spawnSync(backend.python,['-B','-c',[
+   'import json,sys,pathlib',
+   'root=pathlib.Path(sys.argv[1]);sys.path.insert(0,str(root/"apps/launcher/backend"))',
+   'from profiles import Inspector',
+   'inspector=Inspector(root);native=json.loads(sys.argv[2]);info=json.loads(sys.argv[3])',
+   'config={"profile":info["profile"],"profile_file":info["profile_file"],"resource_paths":""}',
+   'print(json.dumps(inspector.model_payload(config,native,info)))'
+  ].join('\n'),repo,native.stdout,JSON.stringify(data.info)],{env:backend.env,encoding:'utf8',timeout:10000});
+  if(parsed.status!==0)throw Error('Read-only model payload: '+parsed.stderr);
+  data.model=JSON.parse(parsed.stdout);
+ }
  if(options.receipt){data.receipt=JSON.parse(fs.readFileSync(path.resolve(options.receipt),'utf8'));data.receiptLabel=path.basename(data.receipt.runtime_baseline_source||'model-receipt','.yaml')+'（只读回执）';}
  if(options.record){
   const directory=path.resolve(options.record),read=name=>JSON.parse(fs.readFileSync(path.join(directory,name),'utf8'));
@@ -32,7 +51,7 @@ function buildFixture(directory='/tmp/serialarm-studio-ui',options={}){
   data.overlayRecord={directory,candidate:read('gain-candidate.json'),result:read('result.json'),metadata:read('metadata.json'),frame:JSON.parse(frame.stdout)};
  }
  fs.writeFileSync(path.join(out,'data.json'),JSON.stringify(data,null,2));
- fs.writeFileSync(path.join(out,'preload.cjs'),`const {contextBridge}=require('electron');const data=require(${JSON.stringify(path.join(out,'data.json'))});const calls=[];const fail=name=>{throw Error('Offline UI fixture rejects device/write request: '+name);};contextBridge.exposeInMainWorld('studioUiData',data);contextBridge.exposeInMainWorld('serialArm',{prefs:async()=>({theme:'light',language:'zh-CN'}),savePrefs:async()=>({}),request:async(name)=>{calls.push(name);if(name==='status')return {installed:true,prefix:'/offline/install',session:{state:'idle'}};if(name==='logs')return '';if(name==='profile_library')return {profiles:data.library};if(name==='hardware_inspect')return {plugin:'serial_arm_hardware_damiao',drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]};return fail(name);},graphics:{status:async()=>({effectiveMode:'normal',requestedMode:'normal',requiresRestart:false,status:'ready'}),report:async()=>({}),setMode:async()=>fail('graphics.setMode')},onEvent:()=>{},onCloseRequest:()=>{},window:()=>{},clipboard:{write:async()=>{},read:async()=>''},selectProfile:async()=>null,selectProfilePackage:async()=>null,revealFile:async()=>{},fixtureCalls:async()=>calls});`);
+ fs.writeFileSync(path.join(out,'preload.cjs'),`const {contextBridge}=require('electron');const fs=require('node:fs'),path=require('node:path');const data=require(${JSON.stringify(path.join(out,'data.json'))});const calls=[];const fail=name=>{throw Error('Offline UI fixture rejects device/write request: '+name);};contextBridge.exposeInMainWorld('studioUiData',data);contextBridge.exposeInMainWorld('serialArm',{prefs:async()=>({theme:'light',language:'zh-CN'}),savePrefs:async()=>({}),request:async(name)=>{calls.push(name);if(name==='status')return {installed:true,prefix:'/offline/install',session:{state:'idle'}};if(name==='logs')return '';if(name==='profile_library')return {profiles:data.library};if(name==='hardware_inspect')return {plugin:'serial_arm_hardware_damiao',drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]};return fail(name);},graphics:{status:async()=>({effectiveMode:'normal',requestedMode:'normal',requiresRestart:false,status:'ready'}),report:async()=>({}),setMode:async()=>fail('graphics.setMode')},onEvent:()=>{},onCloseRequest:()=>{},window:()=>{},clipboard:{write:async()=>{},read:async()=>''},selectProfile:async()=>null,selectProfilePackage:async()=>null,modelResource:async(file)=>{const resolved=path.resolve(file);if(!data.model?.mesh_files?.includes(resolved))return fail('modelResource outside fixture');const extension=path.extname(resolved).toLowerCase();if(!['.stl','.glb'].includes(extension))return fail('modelResource type');return {path:resolved,extension,data:fs.readFileSync(resolved).toString('base64')};},revealFile:async()=>{},fixtureCalls:async()=>calls});`);
  return {directory:out,preload:path.join(out,'preload.cjs'),index:path.join(launcher,'renderer/index.html')};
 }
 if(require.main===module)console.log(JSON.stringify(buildFixture(process.argv[2])));

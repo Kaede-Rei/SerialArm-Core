@@ -13,7 +13,7 @@ const words = {
     model: ['模型查看', 'Model viewer'], modelDesc: ['查看模型、坐标系与动力学参数', 'Inspect model, frames and dynamics'], terminal: ['Terminal', 'Terminal'], terminalDesc: ['进入 C++ 交互终端，调试机械臂', 'Open the C++ interactive terminal'], hardware: ['Hardware', 'Hardware'], hardwareDesc: ['运行 ros2_control 和 Controllers', 'Run ros2_control and controllers'], moveit: ['MoveIt', 'MoveIt'], moveitDesc: ['启动规划、硬件和 RViz', 'Start planning, hardware and RViz'], offline: ['离线', 'Offline'], real: ['真实硬件', 'Real hardware'],
     launch: ['启动', 'Launch'], stop: ['停止', 'Stop'], force: ['强制结束', 'Force stop'], clear: ['清空显示', 'Clear view'], copyAll: ['复制全部', 'Copy all'], paste: ['粘贴', 'Paste'], logs: ['运行终端', 'Runtime terminal'], terminalHint: ['拖选后 Ctrl+Shift+C 复制，Ctrl+Shift+V 粘贴，右键打开菜单；Ctrl+C 仍用于中断', 'Select text and press Ctrl+Shift+C to copy, Ctrl+Shift+V to paste, or right-click for the menu; Ctrl+C still interrupts'], noSession: ['等待启动会话', 'Waiting for a session'], modeMissing: ['此模式缺少安装组件或 Profile 资源，请查看诊断', 'This mode needs installed components or profile resources; Check diagnostics'], selectedRobot: ['当前机械臂', 'Selected manipulator'],
     diagTitle: ['连接与诊断', 'Connection & diagnostics'], diagDesc: ['连接覆盖参数、环境检查、实时执行器状态和运行日志', 'Connection overrides, environment checks, live actuator state and runtime logs'], checkNow: ['重新检查', 'Check again'], checks: ['检查结果', 'Check results'], checkSub: ['检查配置文件与安装组件', 'Check configuration files and installed components'], pass: ['通过', 'Pass'], fail: ['未通过', 'Failed'], installHelp: ['安装与环境', 'Installation & environment'], installHelpSub: ['从仓库根目录执行', 'Run from the repository root'], installHint: ['安装器会按用途配置组件，GUI 自动加载安装后的环境', 'The installer configures selected components; the GUI loads their environment'], validationHint: ['检查配置与驱动资源，连接后核对真实电机反馈', 'Check configuration and driver resources, then connect to inspect motor feedback'],
-    settingsTitle: ['工作台设置', 'Workspace settings'], settingsDesc: ['偏好会自动保存，不影响正在运行的会话', 'Preferences are saved automatically without restarting an active session'], appearance: ['外观', 'Appearance'], appearanceSub: ['选择工作台主题', 'Choose a workspace theme'], system: ['跟随系统', 'System'], dark: ['深色', 'Dark'], light: ['浅色', 'Light'], language: ['语言', 'Language'], languageSub: ['随时切换界面语言', 'Switch the interface language at any time'], prefsNote: ['语言、主题和窗口偏好会自动保存；机械臂每次从启动入口明确选择', 'Language, theme, and window preferences are saved; choose the robot explicitly from the start workflow each time'],
+    settingsTitle: ['工作台设置', 'Workspace settings'], settingsDesc: ['偏好会自动保存，不影响正在运行的会话', 'Preferences are saved automatically without restarting an active session'], appearance: ['外观', 'Appearance'], appearanceSub: ['选择工作台主题', 'Choose a workspace theme'], system: ['跟随系统', 'System'], dark: ['深色', 'Dark'], light: ['Proof 浅色', 'Proof light'], language: ['语言', 'Language'], languageSub: ['随时切换界面语言', 'Switch the interface language at any time'], prefsNote: ['语言、主题和窗口偏好会自动保存；机械臂每次从启动入口明确选择', 'Language, theme, and window preferences are saved; choose the robot explicitly from the start workflow each time'],
     realTitle: ['启动真机会话', 'Start a hardware session'], realDesc: ['该入口可能连接并驱动真实执行器，请核对下面的运行配置', 'This entry point can connect to and drive real actuators; Review the configuration below'], confirm: ['已检查运动空间，并核对执行器写入状态', 'I have checked the motion area and actuator write state'], cancel: ['取消', 'Cancel'], confirmLaunch: ['确认并启动', 'Confirm and launch'], forceTitle: ['强制结束运行进程', 'Force stop the session'], forceDesc: ['强制结束会中断清理流程，请先支撑机械臂并确认执行器状态', 'Force stop interrupts cleanup; support the arm and check the actuators first'], error: ['操作失败', 'Operation failed'], fileHint: ['选择 robot_profiles.yaml', 'Choose robot_profiles.yaml'], saved: ['已保存', 'Saved'], core: ['Core YAML', 'Core YAML'], description: ['模型文件', 'Model file'], ros2_control: ['ros2_control Xacro', 'ros2_control Xacro'], device: ['设备权限', 'Device access'], backendMissing: ['运行后端不可用', 'Backend unavailable'], backend: ['运行后端', 'Runtime backend'],
     modelTitle: ['模型查看', 'Model viewer'], modelPageDesc: ['查看机械臂结构、坐标系、关节运动与动力学参数', 'Inspect the manipulator structure, frames, joint motion and dynamics'],
     workbenchNav: ['控制工作台', 'Control workspace'], workbenchTitle: ['控制工作台', 'Control workspace'], workbenchDesc: ['运动控制、示教回放、交互调试与运行监视', 'Motion control, teaching playback, interaction tuning and live monitoring'],
@@ -52,8 +52,8 @@ const associationArtwork = (className = '') => `<img class="association-mark ${c
 const icon = name => `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name] || paths.robot}</svg>`;
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const $ = id => document.getElementById(id);
-let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'system', mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationObjective: 'bias_separated', modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'all', gainTuningMode: 'quick', gainFinePurpose: 'rigid', idimReport: null, idimAudit: null, idimScope: 'global', idimLocked: [], idimPreview: true, idimLoadDescription: '', idimEstimator: 'WLS', idimCutoff: 5, idimValidationDirectory: '', idimFixedJointText: '', advancedTarget: 'mass_com', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayBehavior: null, teachGainPurpose: 'RIGID', teachPreviewDirection: null, teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryReplayBehavior: null, geometryGainPurpose: 'RIGID', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { load_description: '', mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
-Object.assign(state, {speedInputRaw:null, speedInputError:'', pendingMotionId:null, modelIdentity:null, calibrationHistoryPages:{}, calibrationCandidateRounds:{}, calibrationCandidateSelection:{}, geometryTcpPreview:null, responseTolerances:{}});
+let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'light', mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, tuneDraft: null, workbenchTargets: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationObjective: 'bias_separated', modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'teaching', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'all', gainTuningMode: 'quick', gainFinePurpose: 'rigid', idimReport: null, idimAudit: null, idimScope: 'global', idimLocked: [], idimPreview: true, idimLoadDescription: '', idimEstimator: 'WLS', idimCutoff: 5, idimValidationDirectory: '', idimFixedJointText: '', advancedTarget: 'mass_com', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayBehavior: null, teachGainPurpose: 'RIGID', teachPreviewDirection: null, teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryReplayBehavior: null, geometryGainPurpose: 'RIGID', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { load_description: '', mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
+Object.assign(state, {fontLigatures:true,speedInputRaw:null, speedInputError:'', pendingMotionId:null, modelIdentity:null, calibrationHistoryPages:{}, calibrationCandidateRounds:{}, calibrationCandidateSelection:{}, geometryTcpPreview:null, responseTolerances:{}});
 Object.assign(state, {driverInspection:null,controlSettingsOpen:true,teachPreviewFraction:0,teachPosePreview:null,readinessSections:{}});
 const profileWorkspaceDefaults = structuredClone(state);
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
@@ -265,9 +265,22 @@ function checkRuntimeAlerts(snapshot) {
         if (!reportedCalibrationErrors.has(key)) { reportedCalibrationErrors.add(key); if (!interruptedByFault(singleCal)) showPriorityError(singleCal.error); }
     }
 }
-const button = (id, key, ico, cls = '') => `<button id="${id}" class="button ${cls}">${ico ? icon(ico) : ''}${t(key)}</button>`;
-const card = (title, sub, ico, body) => `<section class="card"><div class="card-head">${icon(ico)}<div><h3>${t(title)}</h3><p>${t(sub)}</p></div></div><div class="card-body">${body}</div></section>`;
-function pageHead(title, desc, action = '') { return `<header class="page-head"><div class="page-heading"><div class="eyebrow">SERIALARM　WORKSPACE</div><h2>${t(title)}</h2><p>${t(desc)}</p></div>${action ? `<div class="page-head-actions">${action}</div>` : ''}</header>`; }
+const button = (id, key, ico, cls = '') => `<button type="button" id="${id}" class="button ${cls}">${ico ? icon(ico) : ''}${t(key)}</button>`;
+const card = (title, sub, ico, body) => `<section class="card"><div class="card-head">${icon(ico)}<div><h2 class="section-title">${t(title)}</h2>${sub ? `<p>${t(sub)}</p>` : ''}</div></div><div class="card-body">${body}</div></section>`;
+function pageHead(title, desc, action = '') { return `<header class="page-head"><div class="page-heading"><div class="eyebrow">SERIALARM　WORKSPACE</div><h1 class="page-title">${t(title)}</h1>${desc ? `<p>${t(desc)}</p>` : ''}</div>${action ? `<div class="page-head-actions" role="group" aria-label="${esc(busyText('页面操作', 'Page actions'))}">${action}</div>` : ''}</header>`; }
+function showWorkspaceDialog(dialog) {
+    const heading = dialog.querySelector('h1,h2,h3,h4');
+    if (heading) {
+        if (!heading.id) heading.id = `${dialog.id}-title`;
+        dialog.setAttribute('aria-labelledby', heading.id);
+    } else dialog.removeAttribute('aria-labelledby');
+    const description = [...dialog.querySelectorAll('p')].find(node => !node.closest('[hidden]') && node.textContent.trim());
+    if (description) {
+        if (!description.id) description.id = `${dialog.id}-description`;
+        dialog.setAttribute('aria-describedby', description.id);
+    } else dialog.removeAttribute('aria-describedby');
+    dialog.showModal();
+}
 function configField(key, label, placeholder = '') { return `<div class="field"><label for="${key}">${t(label)}</label><input id="${key}" value="${esc(state.config[key])}" placeholder="${esc(placeholder)}" autocomplete="off"></div>`; }
 function active() { return ['running', 'stopping'].includes(state.session.state); }
 function profileSelectionLocked() { return active() || state.runtimeStarting === true; }
@@ -279,15 +292,18 @@ function profileContextCurrent(context) {
     return context.generation === profileLoadGeneration && context.config === JSON.stringify(state.config)
         && context.session === (state.session?.session_id || state.session?.pid || null) && context.starting === (state.runtimeStarting === true);
 }
-async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language }); }
+async function save() { if (api) await api.savePrefs({ ...state.config, mode: state.mode, theme: state.theme, language: state.language, fontLigatures: state.fontLigatures !== false }); }
 function themeIsLight(theme = state.theme) { return theme === 'light' || (theme === 'system' && matchMedia('(prefers-color-scheme: light)').matches); }
+function terminalTheme() {
+    const style = getComputedStyle(document.documentElement);
+    return {background:style.getPropertyValue('--subtle').trim(),foreground:style.getPropertyValue('--text').trim(),cursor:style.getPropertyValue('--accent').trim()};
+}
 function applyTheme() {
     const theme = themeIsLight() ? 'light' : 'dark';
     document.documentElement.className = theme;
     document.documentElement.dataset.theme = theme;
-    if (term) term.options.theme = theme === 'light'
-        ? { background: '#fbfbfc', foreground: '#1a1a2e', cursor: '#d97706' }
-        : { background: '#0c0c12', foreground: '#c9c9d0', cursor: '#f59e0b' };
+    document.documentElement.dataset.fontLigatures = state.fontLigatures === false ? 'off' : 'on';
+    if (term) term.options.theme = terminalTheme();
 }
 async function switchTheme(nextTheme, _event = null, rerender = false) {
     if (!['system', 'dark', 'light'].includes(nextTheme) || nextTheme === state.theme) return;
@@ -323,7 +339,7 @@ async function showProfilePicker() {
     if (dialog.open) return;
     dialog.innerHTML = profileManager(true);
     bindProfileManager(dialog);
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('picker-search')?.focus();
 }
 function shell() {
@@ -332,17 +348,18 @@ function shell() {
     const onboarding = ['start', 'library', 'description'].includes(state.page) || (state.page === 'settings' && !state.config.profile);
     const quickTheme = `<button id="theme-quick" class="title-button" aria-label="${t('appearance')}">${icon('sun')}</button>`;
     const titlebar = `<header class="titlebar"><div class="brand-mini">${associationArtwork()}<strong>SerialArm Studio</strong></div><div class="title-center">${esc(state.config.profile || t('workspace'))}<span class="title-connection" id="title-connection"></span></div><div class="title-actions">${quickTheme}<button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button><div class="window-controls"><button id="win-min" class="title-button" aria-label="${busyText('最小化', 'Minimize')}">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="${busyText('最大化或还原', 'Maximize or restore')}">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="${busyText('关闭窗口', 'Close window')}">${icon('close')}</button></div></div></header>`;
-    const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden"><div class="terminal-head">${icon('terminal')}<b>${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
-    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM　ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><div id="priority-error-evidence" hidden></div><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-action" class="button" hidden></button><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div id="model-calibration-task-kicker" class="operation-kicker">${state.language === 'en' ? 'Calibration task' : '标定任务'}</div><div id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</div></div></div><p id="model-calibration-task-conclusion" class="task-window-conclusion" role="status" hidden></p><div id="model-calibration-task-preview" class="task-preview-slot" hidden></div><div class="task-window-content"><div class="task-progress-track"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><details class="calibration-locks task-joint-values" open><summary>${state.language === 'en' ? 'Joint targets and differences' : '关节目标与偏差'}</summary><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actual')}</th><th>${t('target')}</th><th>${state.language === 'en' ? 'Target − actual' : '目标 − 当前'}</th></tr></thead><tbody id="model-calibration-task-joints"></tbody></table></div></details>${gainProbeStatusHtml({}, 'gain-task-probe')}</div><div class="task-window-actions"><button id="model-calibration-task-gains" class="button">${state.language === 'en' ? 'Live gains in separate window' : '独立窗口查看实时增益'}</button><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button><button id="model-calibration-task-close" class="button primary" hidden>${state.language === 'en' ? 'Close results' : '关闭结果'}</button></div><div id="model-calibration-task-error" class="workspace-error"></div></div></div>`;
+    const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden" aria-labelledby="runtime-panel-title"><div class="terminal-head">${icon('terminal')}<b id="runtime-panel-title">${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
+    const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM　ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><div id="priority-error-evidence" hidden></div><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-action" class="button" hidden></button><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div id="model-calibration-task-kicker" class="operation-kicker">${state.language === 'en' ? 'Calibration task' : '标定任务'}</div><h2 id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</h2></div></div><p id="model-calibration-task-conclusion" class="task-window-conclusion" role="status" hidden></p><div id="model-calibration-task-preview" class="task-preview-slot" hidden></div><div class="task-window-content"><div class="task-progress-track" role="progressbar" aria-label="${esc(busyText('标定任务进度', 'Calibration task progress'))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><details class="calibration-locks task-joint-values" open><summary>${state.language === 'en' ? 'Joint targets and differences' : '关节目标与偏差'}</summary><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actual')}</th><th>${t('target')}</th><th>${state.language === 'en' ? 'Target − actual' : '目标 − 当前'}</th></tr></thead><tbody id="model-calibration-task-joints"></tbody></table></div></details>${gainProbeStatusHtml({}, 'gain-task-probe')}</div><div class="task-window-actions" role="group" aria-label="${esc(busyText('标定任务操作', 'Calibration task actions'))}"><button id="model-calibration-task-gains" class="button">${state.language === 'en' ? 'Live gains in separate window' : '独立窗口查看实时增益'}</button><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button><button id="model-calibration-task-close" class="button primary" hidden>${state.language === 'en' ? 'Close results' : '关闭结果'}</button></div><div id="model-calibration-task-error" class="workspace-error" role="alert"></div></div></div>`;
     const lifecycle = [['lifecycle', 'readiness', 'check'], ['profile_setup', 'profileSetup', 'robot']];
     const expert = [['model', 'model', 'model'], ['geometry', 'geometryNav', 'check'], ['calibration', 'calibrationNav', 'hardware'], ['workbench', 'workbenchNav', 'workbench'], ['run', 'adapterNav', 'run'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
     const nav = ([name, key, ico]) => `<button class="nav-item" data-page="${name}" title="${t(key)}" aria-label="${t(key)}" ${!state.config.profile ? 'disabled' : ''}>${icon(ico)}<span>${state.language === 'en' ? ({ lifecycle: 'Readiness', profile_setup: 'Parameters', model: 'Model viewer', workbench: 'Control', geometry: 'Geometry', calibration: 'Dynamics', run: 'Adapters', diagnostics: 'Diagnostics' }[name] || t(key)) : t(key)}</span></button>`;
     const lifecycleLabel = busyText('机械臂生命周期', 'ROBOT LIFECYCLE');
     const navigation = `<section class="sidebar-nav-group" aria-labelledby="lifecycle-caption"><div class="nav-caption" id="lifecycle-caption">${lifecycleLabel}</div><nav aria-label="${lifecycleLabel}">${lifecycle.map(nav).join('')}</nav></section><section class="sidebar-nav-group" aria-labelledby="expert-caption"><div class="nav-caption" id="expert-caption">${t('expertTools')}</div><nav aria-label="${t('expertTools')}">${expert.map(nav).join('')}</nav></section>`;
     const body = onboarding
-        ? `<div class="onboarding-body"><main class="content onboarding-content"><div class="page" id="page"></div>${runtimePanel}</main></div>`
-        : `<div class="body"><aside class="sidebar"><button id="profile-picker-open" class="sidebar-project project-picker-trigger" aria-label="${t('manageProfiles')}" aria-haspopup="dialog">${robotArtwork()}<span>${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}</span>${icon('chevron')}</button>${navigation}<div class="sidebar-spacer"></div><button id="back-home" class="nav-item" title="${t('backHome')}" aria-label="${t('backHome')}">${icon('folder')}<span>${t('backHome')}</span></button><button id="settings-nav" class="nav-item" data-page="settings" title="${t('settings')}" aria-label="${t('settings')}">${icon('settings')}<span>${t('settings')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></aside><section class="content-wrap"><div class="studio-location top-status"><span class="studio-route breadcrumb" id="breadcrumb"></span><div class="studio-location-end"><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div></div><main class="content"><div class="page" id="page"></div>${runtimePanel}</main></section></div>`;
-    $('app').innerHTML = `<div class="shell app atil-shell ${onboarding ? 'onboarding-shell' : ''}">${titlebar}${body}</div>${overlays}`;
+        ? `<div class="onboarding-body"><main class="content onboarding-content"><div class="page" id="page" tabindex="-1"></div>${runtimePanel}</main></div>`
+        : `<div class="body"><aside class="sidebar"><button id="profile-picker-open" class="sidebar-project project-picker-trigger" aria-label="${t('manageProfiles')}" aria-haspopup="dialog">${robotArtwork()}<span>${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}</span>${icon('chevron')}</button>${navigation}<div class="sidebar-spacer"></div><button id="back-home" class="nav-item" title="${t('backHome')}" aria-label="${t('backHome')}">${icon('folder')}<span>${t('backHome')}</span></button><button id="settings-nav" class="nav-item" data-page="settings" title="${t('settings')}" aria-label="${t('settings')}">${icon('settings')}<span>${t('settings')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></aside><section class="content-wrap"><div class="studio-location top-status"><span class="studio-route breadcrumb" id="breadcrumb"></span><div class="studio-location-end"><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div></div><main class="content"><div class="page" id="page" tabindex="-1"></div>${runtimePanel}</main></section></div>`;
+    $('app').innerHTML = `<div class="shell app atil-shell ${onboarding ? 'onboarding-shell' : ''}"><a class="skip-link" id="skip-to-content" href="#page">${busyText('跳转到页面内容', 'Skip to page content')}</a>${titlebar}${body}</div>${overlays}`;
+    $('skip-to-content').onclick = event => { event.preventDefault(); $('page')?.focus({preventScroll:true}); };
     document.querySelectorAll('[data-page]').forEach(b => b.onclick = () => b.dataset.page === 'settings' ? openSettings() : navigate(b.dataset.page));
     ['min', 'max', 'close'].forEach((n, i) => { const node = $('win-' + n); if (node) node.onclick = () => api.window(['minimize', 'maximize', 'close'][i]); });
     $('settings-quick').onclick = openSettings;
@@ -375,7 +392,7 @@ function shell() {
 }
 function mountTerminal() {
     if (typeof Terminal !== 'undefined') {
-        term?.dispose(); term = new Terminal({ fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--studio-mono-font').trim(), fontSize: 12, scrollback: 5000, convertEol: true, theme: { background: '#0c0c12', foreground: '#c9c9d0', cursor: '#f59e0b' }, allowProposedApi: false });
+        term?.dispose(); term = new Terminal({ fontFamily: getComputedStyle(document.documentElement).getPropertyValue('--studio-mono-font').trim(), fontSize: 12, scrollback: 5000, convertEol: true, theme: terminalTheme(), allowProposedApi: false });
         fit = new FitAddon.FitAddon(); term.loadAddon(fit); term.open($('terminal')); if (outputBuffer) term.write(outputBuffer);
         term.attachCustomKeyEventHandler(terminalKey);
         $('terminal').oncontextmenu = event => { event.preventDefault(); operation(terminalMenu); };
@@ -443,7 +460,7 @@ function statusUI() {
 function resetProfileWorkspaceState() {
     profileLoadGeneration++;
     graphicsState.records.clear(); graphicsState.current = null; graphicsState.ghostKey = '';
-    const preserve = new Set(['page','previousPage','language','theme','mode','source','entryIntent','libraryQuery','libraryFilter','library','libraryPath','activeLibraryId','config','status','profiles','session','busy','blockingBusy','backendError','inspecting','workbenchEpoch']);
+    const preserve = new Set(['page','previousPage','language','theme','fontLigatures','mode','source','entryIntent','libraryQuery','libraryFilter','library','libraryPath','activeLibraryId','config','status','profiles','session','busy','blockingBusy','backendError','inspecting','workbenchEpoch']);
     for (const [key,value] of Object.entries(profileWorkspaceDefaults)) if (!preserve.has(key)) state[key]=structuredClone(value);
     state.profileMissingTarget=null;
     state.workbenchEpoch=(state.workbenchEpoch || 0)+1;
@@ -513,6 +530,7 @@ function bindProfileManager(root) {
         menu.querySelector('[data-library-remove]').disabled = profileSelectionLocked();
         menu.style.left = `${Math.max(8, Math.min(innerWidth - 200, rect.right - 184))}px`;
         menu.style.top = `${Math.min(innerHeight - 64, rect.bottom + 5)}px`;
+        window.serialArmStudio?.anchorPopover(menu, button);
         menu.showPopover(); button.setAttribute('aria-expanded', 'true');
         const closed = event => { if (event.newState === 'closed') { button.setAttribute('aria-expanded', 'false'); menu.removeEventListener('toggle', closed); } };
         menu.addEventListener('toggle', closed);
@@ -529,7 +547,7 @@ function confirmLibraryRemoval(id) {
     const entry = state.library.find(item => item.id === id);
     const dialog = $('confirm-dialog');
     dialog.innerHTML = `<h3>${t('removeFromLibrary')}</h3><p>${t('profileManagedHint')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(entry?.profile || id)}</dd></dl><div class="actions"><button id="remove-cancel" class="button">${t('cancel')}</button><button id="remove-confirm" class="button danger">${t('removeFromLibrary')}</button></div>`;
-    dialog.showModal(); $('remove-cancel').onclick = () => dialog.close();
+    showWorkspaceDialog(dialog); $('remove-cancel').onclick = () => dialog.close();
     $('remove-confirm').onclick = () => { dialog.close(); blockingOperation(busyText('正在从 Profile Library 移除...', 'Removing from Profile Library...'), async () => { await api.request('profile_library_remove', { id }); await refreshLibrary(); render(); }); };
 }
 function readinessStageText(value) { const keys = { description: 'descriptionStage', profile_setup: 'profileSetupStage', model_check: 'modelCheckStage', bringup: 'bringupStage', mapping_calibration: 'mappingStage', geometry_calibration: 'geometryStage', gravity_verification: 'gravityStage', dynamics_calibration: 'dynamicsStage', validation: 'validationStage', ready: 'readyStage' }; return t(keys[value] || 'unknown'); }
@@ -820,7 +838,7 @@ function showReadinessReview(stage) {
     const previous = state.readiness?.evidence?.[stage] || {};
     const recorded = previous.observations || {};
     dialog.innerHTML = `<h3>${esc(readinessReviewText(stage,'title',review.title))}　${busyText('检查记录','Inspection record')}</h3><p class="hint">${busyText('记录本次观察结果与日志位置','Record observations and log locations')}${stage === 'gravity_verification' ? busyText('；已完成的原生验证将另存实测结果','; completed native verification is recorded separately') : ''}</p><div class="readiness-review-items">${review.keys.map(([name, label]) => `<label><input type="checkbox" data-review-key="${name}" ${recorded[name] === true ? 'checked' : ''}>${esc(readinessReviewText(stage,name,label))}</label>`).join('')}</div><label class="field"><span>${busyText('检查记录','Inspection notes')}</span><textarea id="readiness-review-note" rows="3" maxlength="600" placeholder="${busyText('选填，记录观察结果或日志位置','Optional observations or log location')}">${esc(previous.note || '')}</textarea></label><div class="actions"><button class="button" id="readiness-review-cancel">${t('cancel')}</button><button class="button primary" id="readiness-review-submit">${busyText('保存记录','Save record')}</button></div>`;
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('readiness-review-cancel').onclick = () => dialog.close();
     $('readiness-review-submit').onclick = () => {
         const answers = { note: $('readiness-review-note').value };
@@ -950,6 +968,7 @@ function parameterDisplayNumber(value) {
 }
 function profileField(path, value) {
     const id = path.join('.');
+    const fieldId = `profile-field-${encodeURIComponent(JSON.stringify(path))}`;
     let label = id === 'core.capability.admittance.enabled' ? (state.language === 'en' ? 'External observation and interaction calculation' : '外力观测与交互计算') : id === 'core.capability.admittance.reference_behavior' ? (state.language === 'en' ? 'Default control method' : '默认控制方式') : paramLabel(path.at(-1));
     const joint = path.find(part => state.profileEditor?.joint_names?.includes(part));
     const linear = joint && state.profileEditor?.urdf_joint_limits?.[joint]?.type === 'prismatic';
@@ -975,7 +994,10 @@ function profileField(path, value) {
     const missingValue = required && typeof value === 'string' && !value.trim();
     const fieldHint = missingValue ? (state.language === 'en' ? 'Required for a real hardware connection' : '连接真实硬件前填写') : '';
     const err = state.profileFieldErrors?.[id] || (state.profileError?.startsWith(id) ? state.profileError : '');
-    return `<label class="parameter-field ${err || missingValue ? 'invalid' : ''}" title="${esc(id)}"><span>${esc(label)}${required ? `<strong class="parameter-required">${state.language === 'en' ? 'Hardware required' : '实机必填'}</strong>` : ''}</span>${input}${units ? `<small>${esc(units)}</small>` : ''}${fieldHint ? `<em>${fieldHint}</em>` : ''}${err ? `<em data-field-error>${esc(err)}</em>` : ''}</label>`;
+    const descriptions = [units && `${fieldId}-units`, fieldHint && `${fieldId}-hint`, err && `${fieldId}-error`].filter(Boolean);
+    let controlIndex = 0;
+    input = input.replace(/<(input|select)\b/g, tag => `${tag} id="${fieldId}${controlIndex++ ? '-custom' : ''}" aria-labelledby="${fieldId}-label" aria-invalid="${!!(err || missingValue)}"${descriptions.length ? ` aria-describedby="${descriptions.join(' ')}"` : ''}`);
+    return `<label class="parameter-field ${err || missingValue ? 'invalid' : ''}" for="${fieldId}" title="${esc(id)}"><span id="${fieldId}-label">${esc(label)}${required ? `<strong class="parameter-required">${state.language === 'en' ? 'Hardware required' : '实机必填'}</strong>` : ''}</span>${input}${units ? `<small id="${fieldId}-units">${esc(units)}</small>` : ''}${fieldHint ? `<em id="${fieldId}-hint">${fieldHint}</em>` : ''}${err ? `<em id="${fieldId}-error" data-field-error>${esc(err)}</em>` : ''}</label>`;
 }
 function profileTree(value, path, depth = 0) {
     if(path[0]==='core'&&path[1]==='safety_policy'&&['max_kp_override','max_kd_override'].includes(path[2]))return '';
@@ -1043,6 +1065,17 @@ function profileGuidanceData(editor) {
     }
     return { missing, safetyMissing, urdfWarnings, plugin, names };
 }
+const profileGuideDisclosure = new Map();
+function profileGuideDisclosureKey(editor = state.profileEditor) {
+    return JSON.stringify([state.config.profile_file,state.config.profile,editor?.core_path]);
+}
+function bindProfileGuidance() {
+    const guide = document.querySelector('#profile-guide-container > .profile-setup-guide');
+    if (!guide) return;
+    const key = profileGuideDisclosureKey();
+    guide.open = profileGuideDisclosure.get(key) ?? guide.dataset.defaultOpen === 'true';
+    guide.querySelector(':scope > summary').onclick = () => profileGuideDisclosure.set(key, !guide.open);
+}
 function profileGuidanceHtml(editor) {
     const en = state.language === 'en', data = profileGuidanceData(editor), safety = editor.core?.safety_policy || {};
     const connection = readinessConnectionState(editor);
@@ -1051,15 +1084,23 @@ function profileGuidanceHtml(editor) {
     const first = pending[0];
     const text = value => typeof value === 'object' ? Object.entries(value || {}).map(([key,v])=>`${key}: ${typeof v === 'number' ? parameterDisplayNumber(v) : v}`).join('，') : typeof value === 'number' ? parameterDisplayNumber(value) : String(value ?? '—');
     const action = (group,field,label) => setupActionHtml({page:'profile_setup',group,field},label);
-    return `<section class="profile-setup-guide"><div class="profile-guide-head"><div><h3>${first ? busyText('下一步：','Next: ') + esc(first.message) : busyText('必填项已填写，继续核对映射与运行限制','Required fields are present　review mapping and limits')}</h3><p>${busyText('保存后重新检查准备状态，连接工作台读取实际反馈','Save and recheck preparation, then connect to read live feedback')}</p></div><span class="profile-guide-count">${pending.length ? `${pending.length} ${busyText('项待填写','fields to complete')}` : busyText('必填项已填写','Required fields present')}</span></div>
+    const defaultOpen = pending.length > 0;
+    const open = profileGuideDisclosure.get(profileGuideDisclosureKey(editor)) ?? defaultOpen;
+    return `<details class="profile-setup-guide" data-default-open="${defaultOpen}" ${open ? 'open' : ''}><summary class="profile-guide-summary"><span>${first ? esc(first.message) : busyText('必填项已填写','Required fields present')}</span><span class="profile-guide-count">${pending.length ? `${pending.length} ${busyText('项待填写','fields to complete')}` : `${data.names.length} ${busyText('个关节','joints')}`}</span></summary><div class="profile-guide-body"><p class="hint">${busyText('保存后重新检查准备状态，连接工作台读取实际反馈','Save and recheck preparation, then connect to read live feedback')}</p>
       ${pending.length ? `<div class="readiness-todos">${pending.map(item=>`<div><span>${esc(item.message)}</span>${action(item.group,item.path,busyText('配置此项','Configure'))}</div>`).join('')}</div>` : ''}
       ${readinessConnectionHtml(connection)}
       ${connection.basic_calibration_prerequisites.some(item => !item.ready) ? `<div class="profile-calibration-guide"><b>${busyText('开始基础标定前','Before foundation calibration')}</b><p class="hint">${busyText('以下按当前编辑值检查；核对硬件后自行开启写入，保存并重新连接后生效','Checked against the current draft; review hardware before enabling writing, then save and reconnect')}</p>${readinessPrerequisitesHtml(connection,{draft:true})}</div>` : ''}
-      <details class="profile-review-defaults"><summary>${busyText('核对当前值与实机','Review values against hardware')}</summary><div class="profile-guide-grid"><section><b>${busyText('关节映射','Joint mapping')}</b><p>${busyText('逐关节核对电机 ID、方向、比例和零位','Check motor ID, direction, ratios and zero for each joint')}</p>${action('mapping',`core.calibration.joints.${data.names[0] || ''}`,busyText('检查映射','Review mapping'))}</section><section><b>${busyText('运行限制','Runtime limits')}</b><p>${busyText('最大加速度','Maximum acceleration')}　${esc(text(safety.max_acc))}</p><p>${busyText('反馈超时','Feedback timeout')}　${esc(text(safety.state_timeout_s))} s</p>${action('safety','core.safety_policy.max_acc',busyText('检查安全策略','Review safety policy'))}</section><section><b>${busyText('模型限位','Model limits')}</b><p>${data.urdfWarnings.length ? esc(data.urdfWarnings.join('；')) : busyText('位置、速度和力矩限值来自 URDF','Position, velocity and effort bounds come from the URDF')}</p>${setupActionHtml({page:'model',joint:data.names[0]},busyText('查看关节与限位','Inspect joint limits'))}</section></div></details></section>`;
+      <details class="profile-review-defaults"><summary>${busyText('核对当前值与实机','Review values against hardware')}</summary><div class="profile-guide-grid"><section><b>${busyText('关节映射','Joint mapping')}</b><p>${busyText('逐关节核对电机 ID、方向、比例和零位','Check motor ID, direction, ratios and zero for each joint')}</p>${action('mapping',`core.calibration.joints.${data.names[0] || ''}`,busyText('检查映射','Review mapping'))}</section><section><b>${busyText('运行限制','Runtime limits')}</b><p>${busyText('最大加速度','Maximum acceleration')}　${esc(text(safety.max_acc))}</p><p>${busyText('反馈超时','Feedback timeout')}　${esc(text(safety.state_timeout_s))} s</p>${action('safety','core.safety_policy.max_acc',busyText('检查安全策略','Review safety policy'))}</section><section><b>${busyText('模型限位','Model limits')}</b><p>${data.urdfWarnings.length ? esc(data.urdfWarnings.join('；')) : busyText('位置、速度和力矩限值来自 URDF','Position, velocity and effort bounds come from the URDF')}</p>${setupActionHtml({page:'model',joint:data.names[0]},busyText('查看关节与限位','Inspect joint limits'))}</section></div></details></div></details>`;
 }
 function refreshProfileGuidance() {
     const container = document.getElementById('profile-guide-container');
-    if (container && state.profileEditor) { container.innerHTML = profileGuidanceHtml(state.profileEditor); container.querySelectorAll('[data-setup-target]').forEach(button=>button.onclick=()=>operation(()=>openSetupTarget(JSON.parse(button.dataset.setupTarget)))); }
+    if (container && state.profileEditor) {
+        const view = capturePageView(container);
+        view.details = view.details.filter(item => !item.node.classList.contains('profile-setup-guide'));
+        container.innerHTML = profileGuidanceHtml(state.profileEditor);
+        container.querySelectorAll('[data-setup-target]').forEach(button=>button.onclick=()=>operation(()=>openSetupTarget(JSON.parse(button.dataset.setupTarget))));
+        restorePageView(view,container); bindProfileGuidance();
+    }
 }
 function profileUrdfLimitsHtml(editor) {
     const en = state.language === 'en';
@@ -1243,7 +1284,7 @@ function connectionSettingsHtml() {
     const connBody = `${configField('serial_port', 'serial', info?.default_port || t('automatic'))}<datalist id="ports">${ports}</datalist><div class="row">${configField('baudrate', 'baudrate', String(info?.default_baudrate || '921600'))}${configField('bus', 'bus', info?.bus || t('automatic'))}</div><div class="field"><label for="resource_paths">${t('resourcePaths')}</label><div class="input-row"><input id="resource_paths" value="${esc(state.config.resource_paths)}" placeholder="/path/to/workspace">${button('add-root', 'addRoot', 'folder')}</div><div class="hint">${t('rootsHint')}</div></div><div class="actions">${button('inspect-profile', 'inspect', 'diagnostics')}${button('go-run', 'toRun', 'run', 'primary')}</div><div class="hint">${t('overrideHint')}</div>`;
     const summary = `<div class="summary-caption">ROBOT PROFILE</div><div class="summary-name">${esc(info?.profile || state.config.profile || '—')}</div><dl class="kv"><dt>${t('hardwarePlugin')}</dt><dd>${esc(info?.hardware_plugin || '—')}</dd><dt>${t('serial')}</dt><dd>${esc(state.config.serial_port || info?.default_port || '—')}</dd><dt>${t('writeEnabled')}</dt><dd style="color:var(--accent)">${t(info?.write_enabled === true ? 'enabled' : info?.write_enabled === false ? 'disabled' : 'unknown')}</dd><dt>${t('controllers')}</dt><dd>${info?.controllers?.map(name => `<div>${esc(name)}</div>`).join('') || '—'}</dd></dl><div class="callout">${t('validationHint')}</div>`;
     const checks = `<ul class="check-list">${[['installation', !!state.status.installed], ['resources', !!info && info.checks.filter(c => c.name !== 'device').every(c => c.ok)], ['nativeTerminal', !!info?.available?.terminal], ['ros2', !!state.status.ros2]].map(([key, ok]) => `<li><span class="dot ${ok ? 'ready' : ''}"></span>${t(key)}<span class="state">${t(ok ? 'ready' : 'unavailable')}</span></li>`).join('')}</ul>`;
-    return `<div class="grid"><div class="card-stack">${card('profile', 'profileSub', 'robot', profileBody)}<section id="connection-settings">${card('connection', 'connectionSub', 'plug', connBody)}</section></div><div class="card-stack">${card('summary', 'summarySub', 'model', summary)}${card('status', 'statusSub', 'diagnostics', checks)}</div></div>`;
+    return `<div class="grid"><div class="card-stack">${card('profile', '', 'robot', profileBody)}<section id="connection-settings">${card('connection', 'connectionSub', 'plug', connBody)}</section></div><div class="card-stack">${card('summary', '', 'model', summary)}${card('status', 'statusSub', 'diagnostics', checks)}</div></div>`;
 }
 function robotPage() { return pageHead('robotTitle', 'robotDesc') + connectionSettingsHtml(); }
 function vectorText(values, digits = 5) { return Array.isArray(values) ? values.map(v => Number(v).toFixed(digits)).join(', ') : '—'; }
@@ -1626,7 +1667,7 @@ async function showGraphicsDiagnostics() {
         dialog.innerHTML = '<header class="graphics-dialog-head">' + icon('diagnostics') + '<div><h3 id="graphics-diagnostics-title">' + busyText('图形诊断', 'Graphics diagnostics') + '</h3><p>' + busyText('查看渲染结果和图形环境；导出文件保留完整诊断数据', 'Inspect rendering results and the graphics environment; the export includes complete diagnostic data') + '</p></div></header><div class="graphics-dialog-body">' + graphicsDiagnosticsHtml(graphicsState.status) +
             '</div><footer class="graphics-dialog-footer"><button type="button" class="button" data-graphics-export>' + busyText('导出诊断文件', 'Export diagnostic file') +
             '</button><button type="button" class="button primary" data-graphics-close>' + busyText('关闭', 'Close') + '</button></footer>';
-        bindGraphicsActions(dialog); if (!dialog.open) dialog.showModal();
+        bindGraphicsActions(dialog); if (!dialog.open) showWorkspaceDialog(dialog);
     } catch (error) { graphicsState.actionError = error.message; refreshGraphicsPanels(); }
 }
 function bindGraphicsActions(root = document) {
@@ -1715,7 +1756,7 @@ function acceptTelemetrySnapshot(snapshot) {
 function gainLiveSnapshot() {
     const x=state.telemetry||{},status=x.model_calibration||{},names=Array.isArray(x.joint_names)?x.joint_names:[];
     const known=(values,index)=>Number.isFinite(values?.[index])?values[index]:null;
-    return {language:state.language,theme:state.theme,connected:workbenchConnected(),valid:x.valid===true,
+    return {language:state.language,theme:state.theme,font_ligatures:state.fontLigatures !== false,connected:workbenchConnected(),valid:x.valid===true,
         received_at:state.telemetryReceivedAt,feedback_age_ms:x.feedback_age_ms,sequence:x.sequence,
         task_id:status.task_id||'',robot_state:x.robot_state||'',phase:status.phase==='gain_adaptation'?gainProbeStageLabel(status.gain_probe_stage):modelCalibrationPhaseText(status.phase),
         purpose:gainPurposeLabel(status.phase==='gain_adaptation'?status.gain_active_target:x.gain_profile||x.impedance_mode||''),
@@ -1977,7 +2018,7 @@ function bindDamiaoJointCheck() {
 function controlPanelHtml() {
     const en = state.language === 'en', x = state.telemetry || {}, inactive = x.robot_state === 'INACTIVE';
     const purposes = ['RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'];
-    return `<div class="workspace-panel control-workspace"><section class="workspace-section workbench-target-card"><div class="workspace-section-head"><div><h3>${en ? 'Joint target' : '关节目标'}</h3><p class="hint">${en ? 'Preview with the sliders, then select Move to target' : '拖动滑条预览，点击“移动到目标”执行'}</p></div><label>${t('speedScale')}<input id="workbench-speed" class="workspace-number" type="number" min="0.01" max="1" step="0.01" value="${esc(state.speedInputRaw ?? state.speedScale)}" aria-invalid="${!!state.speedInputError}"><small id="workbench-speed-error" role="alert">${esc(state.speedInputError)}</small></label></div><div id="workbench-target-editor">${workbenchJointRows()}</div><p id="target-draft-hint" class="hint"></p><div class="workspace-actions"><button id="target-sync" class="button">${en ? 'Sync actual position' : '同步实际'}</button><button id="target-move" class="button primary" ${workbenchTargetMayMove() ? '' : 'disabled'}>${en ? 'Move to target' : '移动到目标'}</button><span id="target-command-state" class="command-state">${esc(commandStateText(state.commandState))}</span></div><div class="workspace-actions secondary-target-actions"><button id="target-zero" class="button">${en ? 'Zero target draft' : '目标归零（仅草稿）'}</button></div></section><details class="workspace-section control-settings" id="control-settings" ${state.controlSettingsOpen ? 'open' : ''}><summary>${en?'Control parameters':'控制参数'}</summary><div class="control-settings-body">${damiaoJointCheckHtml()}${referenceBehaviorHtml()}<section class="workspace-section"><div class="workspace-section-head"><div><h3>${en ? 'Actuator gain use' : '执行器增益用途'}</h3><p class="hint">${en ? 'Choose one of four gain presets; Hold and Move determine the task. Model admittance uses servo gains; dragging temporarily uses native impedance' : '四种用途对应四组增益，保持与移动决定任务；模型导纳使用伺服跟踪增益，拖拽暂用原生阻抗'}</p></div></div><div class="mode-buttons">${purposes.map(purpose => `<button data-gain-purpose="${purpose}" class="button ${x.gain_profile === purpose ? 'active' : ''}" ${controlGainPurposeMayChange(purpose) ? '' : 'disabled'}>${esc(gainPurposeLabel(purpose))}</button>`).join('')}</div><div id="control-gain-context">${controlGainContextHtml()}</div></section><section class="workspace-section"><h3>${t('modelFeedforward')}</h3><div class="mode-buttons">${['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'].map(mode => `<button data-feedforward-mode="${mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" ${inactive ? '' : 'disabled'}>${esc(profileOptionLabel(mode))}</button>`).join('')}</div></section></div></details></div>`;
+    return `<div class="workspace-panel control-workspace"><section class="workspace-section workbench-target-card"><div class="workspace-section-head"><div><h3>${en ? 'Joint target' : '关节目标'}</h3><p class="hint">${en ? 'Preview with the sliders, then select Move to target' : '拖动滑条预览，点击“移动到目标”执行'}</p></div><label>${t('speedScale')}<input id="workbench-speed" aria-describedby="workbench-speed-error" class="workspace-number" type="number" min="0.01" max="1" step="0.01" value="${esc(state.speedInputRaw ?? state.speedScale)}" aria-invalid="${!!state.speedInputError}"><small id="workbench-speed-error" role="alert">${esc(state.speedInputError)}</small></label></div><div id="workbench-target-editor">${workbenchJointRows()}</div><p id="target-draft-hint" class="hint"></p><div class="workspace-actions"><button id="target-sync" class="button">${en ? 'Sync actual position' : '同步实际'}</button><button id="target-move" class="button primary" ${workbenchTargetMayMove() ? '' : 'disabled'}>${en ? 'Move to target' : '移动到目标'}</button><span id="target-command-state" class="command-state">${esc(commandStateText(state.commandState))}</span></div><div class="workspace-actions secondary-target-actions"><button id="target-zero" class="button">${en ? 'Zero target draft' : '目标归零（仅草稿）'}</button></div></section><details class="workspace-section control-settings" id="control-settings" ${state.controlSettingsOpen ? 'open' : ''}><summary>${en?'Control parameters':'控制参数'}</summary><div class="control-settings-body">${damiaoJointCheckHtml()}${referenceBehaviorHtml()}<section class="workspace-section"><div class="workspace-section-head"><div><h3>${en ? 'Actuator gain use' : '执行器增益用途'}</h3><p class="hint">${en ? 'Choose one of four gain presets; Hold and Move determine the task. Model admittance uses servo gains; dragging temporarily uses native impedance' : '四种用途对应四组增益，保持与移动决定任务；模型导纳使用伺服跟踪增益，拖拽暂用原生阻抗'}</p></div></div><div class="mode-buttons">${purposes.map(purpose => `<button data-gain-purpose="${purpose}" aria-pressed="${x.gain_profile === purpose}" class="button ${x.gain_profile === purpose ? 'active' : ''}" ${controlGainPurposeMayChange(purpose) ? '' : 'disabled'}>${esc(gainPurposeLabel(purpose))}</button>`).join('')}</div><div id="control-gain-context">${controlGainContextHtml()}</div></section><section class="workspace-section"><h3>${t('modelFeedforward')}</h3><div class="mode-buttons">${['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'].map(mode => `<button data-feedforward-mode="${mode}" aria-pressed="${x.model_feedforward_mode === mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" ${inactive ? '' : 'disabled'}>${esc(profileOptionLabel(mode))}</button>`).join('')}</div></section></div></details></div>`;
 }
 function canonicalGainPurpose(purpose) {
     const key = String(purpose || '').toUpperCase();
@@ -2302,7 +2343,7 @@ function drawResponseChart() {
     if (duration <= 0) return;
     const px = sample => 8 + (sample.time_s - samples[0].time_s) / duration * (width - 16);
     const py = value => height - 25 - (value - low + range * 0.05) / (range * 1.1) * (height - 40);
-    for (const [key, color] of [['nominal', '#8a8a92'], ['virtual', '#df7b00'], ['accepted', '#22a4ba'], ['pos', '#9b72d4']]) {
+    for (const [key, color] of [['nominal', '#8a8a92'], ['virtual', getComputedStyle(canvas).getPropertyValue('--accent').trim()], ['accepted', '#22a4ba'], ['pos', '#9b72d4']]) {
         ctx.beginPath(); let open = false;
         for (const sample of samples) { const value = sample[key][index]; if (typeof value !== 'number' || !Number.isFinite(value)) { open = false; continue; } if (open) ctx.lineTo(px(sample), py(value)); else ctx.moveTo(px(sample), py(value)); open = true; }
         ctx.strokeStyle = color; ctx.lineWidth = key === 'pos' ? 2 : 1.25; ctx.stroke();
@@ -4727,7 +4768,7 @@ function calibrationNavigationHtml(entry, locked) {
     const en=state.language==='en';
     const gravityStatus=state.readiness?.checks?.gravity_verification;
     const gravityLabel=gravityStatus==='verified'?(en?'Verified':'已验收'):gravityStatus==='stale'?(en?'Needs review':'需复验'):(en?'Pending verification':'待验证');
-    return `<div class="calibration-entry-stack"><button data-calibration-entry="gravity_verify" type="button" class="calibration-entry calibration-entry-featured ${entry === 'gravity_verify' ? 'selected' : ''}" ${locked && entry !== 'gravity_verify' ? 'disabled' : ''}><span class="calibration-entry-featured-main"><span class="calibration-entry-title">${en ? 'Gravity compensation verification' : '重力补偿验证'}</span><span>${en ? 'Controlled drag, gravity scaling and on-robot acceptance' : '受控拖拽、补偿比例验证与真机验收'}</span></span><span class="readiness-chip ${gravityStatus === 'verified' ? 'ready' : gravityStatus === 'stale' ? 'warning' : 'pending'}">${gravityLabel}</span></button><div class="calibration-entry-grid">${calibrationToolDefinitions.map(([key, zh, enName, zhDesc, enDesc]) => `<button data-calibration-entry="${key}" type="button" class="calibration-entry ${entry === key ? 'selected' : ''}" ${locked && entry !== key ? 'disabled' : ''}><span class="calibration-entry-title">${en ? enName : zh}</span><span>${en ? enDesc : zhDesc}</span></button>`).join('')}</div></div>`;
+    return `<div class="calibration-entry-stack" role="group" aria-label="${esc(busyText('标定工具', 'Calibration tools'))}"><button data-calibration-entry="gravity_verify" type="button" aria-pressed="${entry === 'gravity_verify'}" class="calibration-entry calibration-entry-featured ${entry === 'gravity_verify' ? 'selected' : ''}" ${locked && entry !== 'gravity_verify' ? 'disabled' : ''}><span class="calibration-entry-featured-main"><span class="calibration-entry-title">${en ? 'Gravity compensation verification' : '重力补偿验证'}</span><span>${en ? 'Controlled drag, gravity scaling and on-robot acceptance' : '受控拖拽、补偿比例验证与真机验收'}</span></span><span class="readiness-chip ${gravityStatus === 'verified' ? 'ready' : gravityStatus === 'stale' ? 'warning' : 'pending'}">${gravityLabel}</span></button><div class="calibration-entry-grid">${calibrationToolDefinitions.map(([key, zh, enName, zhDesc, enDesc]) => `<button data-calibration-entry="${key}" type="button" aria-pressed="${entry === key}" class="calibration-entry ${entry === key ? 'selected' : ''}" ${locked && entry !== key ? 'disabled' : ''}><span class="calibration-entry-title">${en ? enName : zh}</span><span>${en ? enDesc : zhDesc}</span></button>`).join('')}</div></div>`;
 }
 function calibrationPanelHtml() {
     const en = state.language === 'en';
@@ -5051,7 +5092,7 @@ function teachNameDialog(title, initial, handler) {
     const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return;
     const tx = (zh, en) => busyText(zh, en);
     dialog.innerHTML = `<h3>${esc(title)}</h3><label>${tx('轨迹名称', 'Trajectory name')}<input id="teach-name-input" maxlength="80" value="${esc(initial || '')}"></label><p class="hint">${tx('轨迹保存在当前 Profile 的 .serialarm/teach-replay/轨迹名-时间戳 目录', 'Saved under this Profile: .serialarm/teach-replay/name-timestamp')}</p><div class="actions"><button id="teach-name-cancel" class="button">${tx('取消', 'Cancel')}</button><button id="teach-name-okay" class="button primary">${tx('确认', 'Confirm')}</button></div>`;
-    dialog.showModal(); $('teach-name-cancel').onclick = () => dialog.close();
+    showWorkspaceDialog(dialog); $('teach-name-cancel').onclick = () => dialog.close();
     $('teach-name-okay').onclick = () => { const name = $('teach-name-input').value.trim(); if (!name) return; dialog.close(); blockingOperation(busyText('正在保存轨迹...', 'Saving trajectory...'), () => handler(name)); };
 }
 function teachSafetyConfirm(direction) {
@@ -5071,7 +5112,7 @@ function teachSafetyConfirm(direction) {
         '<p>'+busyText('回放策略 / 增益用途','Playback strategy / gain use')+'　'+esc(profileOptionLabel(replaySelection('teach').reference_behavior))+' / '+esc(gainPurposeLabel(replaySelection('teach').gain_profile))+'</p>'+
         '<label class="confirmation"><input type="checkbox" id="teach-released"> '+busyText('已确认空间安全，人员离开运动范围且手已松开','The workspace is clear, people are outside the motion area and the robot is released')+'</label>'+
         '<div class="actions"><button class="button" id="teach-confirm-cancel">'+t('cancel')+'</button><button class="button danger" id="teach-confirm-start" disabled>'+busyText('开始执行','Start playback')+'</button></div>';
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     dialog.addEventListener('close',()=>{state.teachPreviewDirection=null;updateStartGhost(true);},{once:true});
     $('teach-confirm-cancel').onclick=()=>{dialog.close();state.teachPreviewDirection=null;updateStartGhost(true);};
     $('teach-released').onchange=()=>{ $('teach-confirm-start').disabled=!$('teach-released').checked||!replayMayStart(direction); };
@@ -5112,7 +5153,7 @@ function wireTeachReplay() {
     call('teach-rename', () => { const x = state.teachTrajectories.find(x => x.id === state.teachSelectedId); if (x) teachNameDialog(busyText('重命名轨迹', 'Rename trajectory'), x.name, async name => { await api.request('trajectory_rename', { config: state.config, id: x.id, name }); await refreshTeachTrajectories(); refreshTeachReplayPanel(); }); });
     call('teach-import', () => operation(async () => { const source = await api.selectTrajectory(); if (!source) return; await blockingOperation(busyText('正在导入示教轨迹...', 'Importing trajectory...'), async () => { const r = await api.request('trajectory_import', { config: state.config, source }); await refreshTeachTrajectories(); state.teachSelectedId = r.id; state.teachLoadedId = ''; state.teachPosePreview=null;state.teachPreviewFraction=0;state.teachLastFilePath = r.directory || ''; refreshTeachReplayPanel();await loadTeachPosePreview(0); }); }));
     call('teach-export', () => artifactExport($('teach-export'), async () => { const r = await api.request('trajectory_export', { config: state.config, id: state.teachSelectedId }); state.teachLastFilePath = r.path || ''; toast(busyText('轨迹已导出至 ', 'Trajectory exported to ') + r.path); refreshTeachReplayPanel(); }));
-    call('teach-delete', () => { const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return; dialog.innerHTML = `<h3>${busyText('删除已保存的轨迹', 'Delete saved trajectory')}</h3><p>${busyText('将删除以下目录内的轨迹数据，该操作无法撤销', 'The trajectory data in this folder will be removed permanently')}</p><code class="teach-file-path">${esc(state.teachTrajectories.find(x => x.id === state.teachSelectedId)?.directory || '')}</code><div class="actions"><button class="button" id="teach-del-cancel">${busyText('取消', 'Cancel')}</button><button class="button danger" id="teach-del-ok">${busyText('确认删除', 'Delete')}</button></div>`; dialog.showModal(); $('teach-del-cancel').onclick = () => dialog.close(); $('teach-del-ok').onclick = () => { dialog.close(); blockingOperation(busyText('正在删除轨迹...', 'Removing trajectory...'), async () => { await api.request('trajectory_remove', { config: state.config, id: state.teachSelectedId }); await refreshTeachTrajectories(); state.teachLoadedId = ''; refreshTeachReplayPanel(); }); }; });
+    call('teach-delete', () => { const dialog = $('confirm-dialog'); if (!dialog || dialog.open) return; dialog.innerHTML = `<h3>${busyText('删除已保存的轨迹', 'Delete saved trajectory')}</h3><p>${busyText('将删除以下目录内的轨迹数据，该操作无法撤销', 'The trajectory data in this folder will be removed permanently')}</p><code class="teach-file-path">${esc(state.teachTrajectories.find(x => x.id === state.teachSelectedId)?.directory || '')}</code><div class="actions"><button class="button" id="teach-del-cancel">${busyText('取消', 'Cancel')}</button><button class="button danger" id="teach-del-ok">${busyText('确认删除', 'Delete')}</button></div>`; showWorkspaceDialog(dialog); $('teach-del-cancel').onclick = () => dialog.close(); $('teach-del-ok').onclick = () => { dialog.close(); blockingOperation(busyText('正在删除轨迹...', 'Removing trajectory...'), async () => { await api.request('trajectory_remove', { config: state.config, id: state.teachSelectedId }); await refreshTeachTrajectories(); state.teachLoadedId = ''; refreshTeachReplayPanel(); }); }; });
     document.querySelectorAll('[data-teach-select]').forEach(button=>button.onclick=()=>blockingOperation(busyText('正在读取轨迹','Reading trajectory'),async()=>{
         const id=button.dataset.teachSelect, epoch=state.workbenchEpoch;
         const metadata=await api.request('trajectory_select',{config:state.config,id});
@@ -5367,7 +5408,7 @@ function workspaceModelNoteHtml() {
     return base + (target ? `<span class="teach-ghost-legend">${busyText('目标草稿　青绿色半透明', 'Target draft　translucent teal')}</span>` : start ? `<span class="teach-ghost-legend">${busyText('起始位姿　青绿色半透明', 'Start pose　translucent teal')}</span>` : '');
 }
 function workbenchPage() {
-    return pageHead('workbenchTitle', 'workbenchDesc', workspaceSessionActionHtml()) + workbenchStatusBar() + `<div id="workspace-recovery-notice">${workbenchRecoveryNotice()}</div><div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div><div class="workbench-model-note">${workspaceModelNoteHtml()}</div></section><section class="workbench-task"><div class="workspace-panel workspace-operation-panel">${robotOperationHtml()}</div><div class="workspace-panel">${workbenchTabs()}</div><div class="workbench-task-content">${workbenchPanelHtml()}</div></section></div>`;
+    return pageHead('workbenchTitle', '', workspaceSessionActionHtml()) + workbenchStatusBar() + `<div id="workspace-recovery-notice">${workbenchRecoveryNotice()}</div><div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div><div class="workbench-model-note">${workspaceModelNoteHtml()}</div></section><section class="workbench-task"><div class="workspace-panel workspace-operation-panel">${robotOperationHtml()}</div><div class="workspace-panel">${workbenchTabs()}</div><div class="workbench-task-content">${workbenchPanelHtml()}</div></section></div>`;
 }
 
 async function geometryCommand(method, params = {}) {
@@ -5630,7 +5671,7 @@ function geometryPage() {
 }
 
 function calibrationPage() {
-    return pageHead('calibrationTitle', 'calibrationDesc', workspaceSessionActionHtml()) + workbenchStatusBar() + `<div id="workspace-recovery-notice">${workbenchRecoveryNotice()}</div><div class="workspace-provenance"><b>${state.language === 'en' ? 'Candidate' : '标定候选'}</b><span>${state.language === 'en' ? 'Task records and exports stay separate from saved Profile parameters. Temporary candidate application does not save core.yaml' : '标定任务记录与成果独立保存，临时应用候选不会修改 core.yaml 中的持久化配置'}</span></div><div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div>${calibrationComOverlayHtml()}<div class="workbench-model-note">${workspaceModelNoteHtml()}</div></section><section class="workbench-task">${calibrationPanelHtml()}</section></div>`;
+    return pageHead('calibrationTitle', '', workspaceSessionActionHtml()) + workbenchStatusBar() + `<div id="workspace-recovery-notice">${workbenchRecoveryNotice()}</div><div class="workspace-provenance"><b>${state.language === 'en' ? 'Candidate' : '标定候选'}</b><span>${state.language === 'en' ? 'Task records and exports stay separate from saved Profile parameters. Temporary candidate application does not save core.yaml' : '标定任务记录与成果独立保存，临时应用候选不会修改 core.yaml 中的持久化配置'}</span></div><div class="workbench-layout"><section class="workbench-model"><div id="workbench-viewport">${state.modelData ? '' : `<div class="empty-state">${t('modelNotLoaded')}</div>`}</div>${calibrationComOverlayHtml()}<div class="workbench-model-note">${workspaceModelNoteHtml()}</div></section><section class="workbench-task">${calibrationPanelHtml()}</section></div>`;
 }
 let workspaceMount = null;
 async function mountWorkbenchView() {
@@ -5710,6 +5751,7 @@ function updateWorkbenchControlState() {
     document.querySelectorAll('[data-gain-purpose]').forEach(button => {
         const purpose=button.dataset.gainPurpose;
         button.classList.toggle('active',x.gain_profile===purpose);button.disabled=!controlGainPurposeMayChange(purpose);
+        button.setAttribute('aria-pressed', String(x.gain_profile === purpose));
         button.title=!button.disabled ? '' : !workbenchConnected() ? busyText('请先连接工作台','Connect first') : x.robot_state!=='ACTIVE' ? busyText('请先使能机械臂','Activate first') : referenceBehavior()==='MODEL_ADMITTANCE' && !['SERVO_TRACKING','DRAG'].includes(purpose) ? busyText('模型导纳使用伺服跟踪增益','Model admittance uses servo gains') : !gainPurposeConfigured(purpose,x.impedance_mode?.endsWith('_TRACKING')) ? busyText('请先配置该用途的增益','Configure gains for this use first') : busyText('请先结束当前任务','Finish the current task first');
     });
     document.querySelectorAll('[data-impedance-mode]').forEach(button => {
@@ -5719,6 +5761,7 @@ function updateWorkbenchControlState() {
     });
     document.querySelectorAll('[data-feedforward-mode]').forEach(button=>{
         button.classList.toggle('active',x.model_feedforward_mode===button.dataset.feedforwardMode);
+        button.setAttribute('aria-pressed', String(x.model_feedforward_mode === button.dataset.feedforwardMode));
         button.disabled=recovering || x.robot_state!=='INACTIVE' || pending.kind==='feedforward' || state.modelReloadPending;
         button.title=button.disabled ? busyText('停放并失能后可修改模型前馈','Park and disable before changing model feedforward') : '';
     });
@@ -5971,6 +6014,7 @@ function updateAuxiliaryCalibrationTaskWindow(task) {
     $('model-calibration-task-title').textContent = recording ? busyText('示教记录中','Recording demonstration') : status.phase === 'fitting' ? busyText('参数拟合中','Fitting parameters') : busyText('沿示教轨迹采集','Collecting along the demonstrated path');
     const bar = $('model-calibration-task-progress-bar');
     bar.parentElement.classList.toggle('is-indeterminate',total <= 0); bar.style.width = total > 0 ? `${progress * 100}%` : '35%';
+    updateCalibrationProgressAccessibility(total > 0 ? progress : null);
     $('model-calibration-task-progress').textContent = total > 0 ? `${busyText('已完成单程','Completed passes')} ${passes} / ${total}` : recording ? busyText('手动示教，结束后检查轨迹','Record manually, then check the trajectory') : busyText('正在等待采集完成','Waiting for acquisition to complete');
     $('model-calibration-task-samples').textContent = `${busyText('轨迹样本','Trajectory samples')} ${status.trajectory_samples ?? status.samples ?? '—'}`;
     $('model-calibration-task-feedback').textContent = `${t('feedbackAge')} ${Number.isFinite(state.telemetry?.feedback_age_ms) ? state.telemetry.feedback_age_ms.toFixed(0) + ' ms' : '—'}`;
@@ -5981,6 +6025,13 @@ function updateAuxiliaryCalibrationTaskWindow(task) {
     $('model-calibration-task-pause').hidden = true; $('model-calibration-task-resume').hidden = true;
     $('model-calibration-task-hold').disabled = state.telemetry?.robot_state !== 'ACTIVE';
     $('model-calibration-task-disable').disabled = state.telemetry?.robot_state === 'INACTIVE';
+}
+function updateCalibrationProgressAccessibility(progress) {
+    const track = $('model-calibration-task-progress-bar')?.parentElement;
+    if (!track) return;
+    track.setAttribute('aria-label', busyText('标定任务进度', 'Calibration task progress'));
+    if (progress === null) track.removeAttribute('aria-valuenow');
+    else track.setAttribute('aria-valuenow', String(Math.round(Math.max(0, Math.min(1, progress)) * 100)));
 }
 function updateModelCalibrationTaskOverlay() {
     const overlay = $('model-calibration-overlay'); if (!overlay) return;
@@ -6017,6 +6068,7 @@ function updateModelCalibrationTaskOverlay() {
     $('model-calibration-task-title').textContent = ended?conclusion.title:modelCalibrationPhaseText(status.phase);
     $('model-calibration-task-progress-bar').parentElement.classList.toggle('is-indeterminate', adapting && !jointPath);
     $('model-calibration-task-progress-bar').style.width = jointPath ? `${Math.round(budgetProgress * 100)}%` : adapting ? '35%' : `${Math.round(progress * 100)}%`;
+    updateCalibrationProgressAccessibility(jointPath ? budgetProgress : adapting ? null : progress);
     $('model-calibration-task-progress').textContent = jointPath
         ? `${busyText('自动阶段用时','Automatic stage elapsed')} ${elapsed.toFixed(1)} / ${budget.toFixed(1)} s　${busyText('剩余','Remaining')} ${Number(status.gain_remaining_s || 0).toFixed(1)} s　${busyText('整轨回放','Full-path pass')} ${Number(status.gain_path_pass_current || 0)} / ${Number(status.gain_path_pass_limit || 0)}　${busyText('增益调整','Gain revisions')} ${revisions}`
         : adapting
@@ -6164,7 +6216,7 @@ function editCalibrationLockedLinks({ onCancel = null } = {}) {
         dialog.onclose = null;
         if (!confirmed && onCancel) onCancel();
     };
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     const inputs = () => [...dialog.querySelectorAll('[data-gravity-locked]')];
     $('cal-link-lock-all').onclick = () => inputs().forEach(x => x.checked = true);
     $('cal-link-unlock-all').onclick = () => inputs().forEach(x => x.checked = false);
@@ -6239,7 +6291,7 @@ async function modelCalibrationReplayConfirm() {
         : `${state.language === 'en' ? 'Plan' : '计算'}：T自动 ≈ 8 × ${oneWay.toFixed(1)} + 2 × 1.15 × ${poses} + 2`;
     const defaultDialog = `<h3>${gainPlan ? (state.language === 'en' ? 'Automatic actuator gain calibration' : '执行器增益自动标定') : t('modelCalibration')}</h3><p>${gainPlan ? (state.language === 'en' ? 'The robot will initialize gains from the model, run bounded short probes, adjust candidates and validate the selected uses along the demonstrated path. All automatic stages share one time budget' : '机械臂将按模型初始化增益，自动进行有界短测、局部修正和示教路径用途验证；全部自动阶段共用同一时间预算') : (state.language === 'en' ? 'Six traversals: reverse/forward static holds, then reverse/forward at half speed and full planned speed' : '六次遍历：双向静态保持，随后半速双向、计划速度双向；控制限幅和取消路径保持启用')}</p>${gainPlan ? `<p class="gain-motion-range">${state.language === 'en' ? `The demonstrated path defines the tracking motion range. Additional drag-release tests stay within ±${motionRange}° per joint of the pose reached after replay, further constrained by Safety limits` : `跟踪测试使用整条示教路径的运动范围；额外拖拽释放测试限制在回放结束姿态附近，每轴最多 ±${motionRange}°，并受 Safety 限制约束`}</p>` : ''}<div class="callout"><b>${state.language === 'en' ? 'Estimated automatic stage' : '预计自动阶段'}：${estimate > 0 ? estimate.toFixed(1) + ' s' : '—'}　${state.language === 'en' ? 'Including teaching' : '加上示教已用'} ${estimate > 0 ? totalEstimate.toFixed(1) : teaching.toFixed(1)} s</b><div>${formula}</div>${gainPlan && gainSchedule.warnings?.length ? `<ul class="gain-quality-warning">${gainSchedule.warnings.map(value=>`<li title="${esc(value)}">${esc(gainWarningLabel(value))}</li>`).join('')}</ul>` : ''}<div>${gainPlan ? (state.language === 'en' ? 'Results are saved for each use; stopping preserves completed measurements' : '各用途结果分别保存，停止后保留已完成的测量') : (state.language === 'en' ? 'Feedback waiting and settling can extend actual duration' : '实际反馈等待与停稳可能延长耗时')}</div></div><label class="confirmation"><input id="model-calibration-released" type="checkbox"><span>${state.language === 'en' ? 'I checked the robot, load, cables, and the entire replay area, and I have fully released the robot' : '我已检查机械臂、负载、线缆和整条回放路径，并已完全松手'}</span></label><div class="actions"><button id="model-calibration-confirm-cancel" class="button">${t('cancel')}</button><button id="model-calibration-confirm-start" class="button danger" disabled>${t('modelCalibrationConfirmReplay')}</button></div>`;
     dialog.innerHTML=gainPlan?gainCalibrationConfirmHtml(plan,gainSchedule,motionRange):defaultDialog;
-    dialog.showModal(); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked || !!graphicsAvailabilityProblem(); $('model-calibration-confirm-cancel').onclick = () => dialog.close();
+    showWorkspaceDialog(dialog); $('model-calibration-released').onchange = () => $('model-calibration-confirm-start').disabled = !$('model-calibration-released').checked || !!graphicsAvailabilityProblem(); $('model-calibration-confirm-cancel').onclick = () => dialog.close();
     $('model-calibration-confirm-start').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); blockingOperation(busyText('正在启动自动采集任务...', 'Starting automatic acquisition...'), async () => { if (gainPlan) { state.calibrationToolSelected.gain = null; state.gainCandidateLoadAttempted = ''; state.gainCandidateLoadError = ''; } const result = await workbenchRequest('model_calibration_start', modelCalibrationTaskParams({ released: true, workflow: gainPlan ? 'gain' : 'gravity', gain_mode: gainMode, gain_tuning_mode: gainTuningMode, ...(gainPlan ? {gain_motion_range_confirmed:true,gain_trajectory_confirmed:true} : {}) })); if (state.telemetry) state.telemetry.model_calibration = result; if(gainPlan&&result?.task_id){calibrationTaskReviewWindow();gainTaskWindowMemory.observed=`${gainTaskWindowMemory.session}:${result.task_id}`;} state.modelCalibrationOffline = null; state.modelCalibrationCandidateSource = 'online'; render(); updateModelCalibrationTaskOverlay(); }); };
 }
 async function resumeModelCalibrationWithConfirmation() {
@@ -6248,12 +6300,12 @@ async function resumeModelCalibrationWithConfirmation() {
         const result = await workbenchRequest('model_calibration_resume', modelCalibrationTaskParams({ confirmed: false })); if (state.telemetry) state.telemetry.model_calibration = result; updateModelCalibrationTaskOverlay(); return result;
     } catch (error) {
         if (!String(error.message).includes('explicit resume confirmation')) { toast(error, true); return null; }
-        const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('resumeTask')}</h3><p>${state.language === 'en' ? 'The robot moved while paused; confirm the current position is safely consistent with the paused path before continuing' : '暂停期间机械臂位置发生变化，请确认当前位置与暂停路径安全一致后继续'}</p><div class="actions"><button id="model-cal-resume-cancel" class="button">${t('cancel')}</button><button id="model-cal-resume-confirm" class="button danger">${state.language === 'en' ? 'Confirm and continue' : '确认继续'}</button></div>`; dialog.showModal(); $('model-cal-resume-cancel').onclick = () => dialog.close(); $('model-cal-resume-confirm').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); modelCalibrationQuick('model_calibration_resume', { confirmed: true }); };
+        const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('resumeTask')}</h3><p>${state.language === 'en' ? 'The robot moved while paused; confirm the current position is safely consistent with the paused path before continuing' : '暂停期间机械臂位置发生变化，请确认当前位置与暂停路径安全一致后继续'}</p><div class="actions"><button id="model-cal-resume-cancel" class="button">${t('cancel')}</button><button id="model-cal-resume-confirm" class="button danger">${state.language === 'en' ? 'Confirm and continue' : '确认继续'}</button></div>`; showWorkspaceDialog(dialog); $('model-cal-resume-cancel').onclick = () => dialog.close(); $('model-cal-resume-confirm').onclick = () => { if (graphicsAvailabilityProblem()) return; dialog.close(); modelCalibrationQuick('model_calibration_resume', { confirmed: true }); };
         return null;
     }
 }
 
-function drawWorkbenchChart() { const canvas = $('workbench-chart'); if (!canvas) return; const ctx = canvas.getContext('2d'); const rect = canvas.getBoundingClientRect(); canvas.width = Math.max(400, Math.floor(rect.width * devicePixelRatio)); canvas.height = Math.floor(180 * devicePixelRatio); ctx.scale(devicePixelRatio, devicePixelRatio); const w = rect.width, h = 180; ctx.clearRect(0, 0, w, h); const data = state.telemetryHistory.slice(-180); if (data.length < 2) return; const values = data.map(x => Number(x.joint?.residual_raw?.[0] ?? 0)); const max = Math.max(0.1, ...values.map(Math.abs)); ctx.beginPath(); values.forEach((v, i) => { const x = i / (values.length - 1) * w, y = h / 2 - v / max * (h * 0.42); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = '#df7b00'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.fillStyle = '#687080'; ctx.fillText('joint1 residual_raw', 8, 16); }
+function drawWorkbenchChart() { const canvas = $('workbench-chart'); if (!canvas) return; const ctx = canvas.getContext('2d'); const rect = canvas.getBoundingClientRect(); canvas.width = Math.max(400, Math.floor(rect.width * devicePixelRatio)); canvas.height = Math.floor(180 * devicePixelRatio); ctx.scale(devicePixelRatio, devicePixelRatio); const w = rect.width, h = 180; ctx.clearRect(0, 0, w, h); const data = state.telemetryHistory.slice(-180); if (data.length < 2) return; const values = data.map(x => Number(x.joint?.residual_raw?.[0] ?? 0)); const max = Math.max(0.1, ...values.map(Math.abs)); ctx.beginPath(); values.forEach((v, i) => { const x = i / (values.length - 1) * w, y = h / 2 - v / max * (h * 0.42); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = getComputedStyle(canvas).getPropertyValue('--accent').trim(); ctx.lineWidth = 1.5; ctx.stroke(); ctx.fillStyle = getComputedStyle(canvas).getPropertyValue('--muted').trim(); ctx.fillText('joint1 residual_raw', 8, 16); }
 
 function runPage() {
     return pageHead('runtimeTitle', 'runtimeDesc') + `<div class="mode-grid mode-grid-three">${['terminal', 'hardware', 'moveit'].map(mode => `<button class="mode-card ${state.mode === mode ? 'active' : ''}" data-mode="${mode}"><span class="mode-type ${state.info?.available?.[mode] ? 'is-ready' : 'is-unavailable'}">${t(state.info?.available?.[mode] ? 'ready' : 'unavailable')}</span>${icon(mode)}<h3>${t(mode)}</h3><p>${t(mode + 'Desc')}</p></button>`).join('')}</div><div class="card launch-panel"><div><h3>${t('selectedRobot')}　${esc(state.config.profile || '—')}</h3><p>${esc(state.info?.available?.[state.mode] ? t('real') : state.info?.unavailable_reasons?.[state.mode] || t('modeMissing'))}</p><div class="launch-command">${esc(state.info?.profile_file || state.config.profile_file || '')}</div></div>${button('launch-session', 'launch', 'run', 'primary')}</div>`;
@@ -6262,11 +6314,11 @@ function diagnosticsPage() {
     const checks = [{ name: 'installation', ok: !!state.status.installed, detail: state.status.prefix || t('notInstalled') }, ...(state.info?.checks || [])];
     const connect = `<div class="workspace-actions">${workspaceSessionActionHtml()}${button('check-now', 'checkNow', 'refresh')}</div>`;
     const snapshot = workbenchConnected() && state.telemetry?.valid ? `<section class="card diagnostic-live"><div class="card-head"><div><h3>${state.language === 'en' ? 'Live actuator diagnostics' : '实时执行器诊断'}</h3><p>${state.language === 'en' ? 'Feedback from the current native session' : '来自当前原生控制会话的反馈'}</p></div></div><div class="card-body">${workbenchStatusBar()}${diagnosticsPanelHtml()}</div></section>` : `<div class="callout">${state.language === 'en' ? 'No live hardware feedback, check installation and connection or connect the workspace explicitly' : '当前没有实时硬件反馈，请检查连接，必要时明确启动控制工作台会话'}</div>`;
-    return pageHead('diagTitle', 'diagDesc', connect) + `<details class="diagnostic-settings" open><summary>${state.language === 'en' ? 'Profile and connection overrides' : 'Profile 与连接覆盖设置'}</summary>${connectionSettingsHtml()}</details>` + `<div class="grid">${card('checks', 'checkSub', 'diagnostics', checks.map(c => `<div class="diag-row"><span class="dot ${c.ok ? 'ready' : 'error'}"></span><span class="name">${t(c.name)}</span><span class="detail">${esc(c.detail)}</span><span class="state ${c.ok ? '' : 'error'}">${t(c.ok ? 'pass' : 'fail')}</span></div>`).join(''))}${card('installHelp', 'installHelpSub', 'terminal', `<p class="hint">${t('installHint')}</p><p>${busyText('独立运行 Core 与图形工作台','Standalone Core and desktop workspace')}</p><pre class="install-command"><code>./install.sh --preset standalone --yes</code></pre><p>${busyText('可选 ROS2 与 MoveIt 适配层','Optional ROS2 and MoveIt adapters')}</p><pre class="install-command"><code>./install.sh --preset ros2 --yes</code></pre><div class="callout">${t('validationHint')}</div>`)}</div>${snapshot}`;
+    return pageHead('diagTitle', '', connect) + `<details class="diagnostic-settings" open><summary>${state.language === 'en' ? 'Profile and connection overrides' : 'Profile 与连接覆盖设置'}</summary>${connectionSettingsHtml()}</details>` + `<div class="grid">${card('checks', '', 'diagnostics', checks.map(c => `<div class="diag-row"><span class="dot ${c.ok ? 'ready' : 'error'}"></span><span class="name">${t(c.name)}</span><span class="detail">${esc(c.detail)}</span><span class="state ${c.ok ? '' : 'error'}">${t(c.ok ? 'pass' : 'fail')}</span></div>`).join(''))}${card('installHelp', 'installHelpSub', 'terminal', `<p class="hint">${t('installHint')}</p><p>${busyText('独立运行 Core 与图形工作台','Standalone Core and desktop workspace')}</p><pre class="install-command"><code>./install.sh --preset standalone --yes</code></pre><p>${busyText('可选 ROS2 与 MoveIt 适配层','Optional ROS2 and MoveIt adapters')}</p><pre class="install-command"><code>./install.sh --preset ros2 --yes</code></pre><div class="callout">${t('validationHint')}</div>`)}</div>${snapshot}`;
 
 }
 function settingsPage() {
-    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid">${card('appearance', 'appearanceSub', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div>`)}${card('language', 'languageSub', 'settings', `<div class="segmented"><button data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}<section class="card graphics-settings"><div class="card-head">${icon('model')}<div><h3>${busyText('三维渲染', '3D rendering')}</h3><p>${busyText('选择模型预览的渲染方式', 'Choose how model previews are rendered')}</p></div></div><div class="card-body" id="graphics-settings-body">${graphicsSettingsBodyHtml()}</div></section></div><div class="callout">${t('prefsNote')}</div>`;
+    return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid">${card('appearance', '', 'sun', `<div class="segmented">${['system', 'dark', 'light'].map(theme => `<button data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div><label class="font-ligature-setting" for="font-ligatures"><input type="checkbox" role="switch" id="font-ligatures" aria-checked="${state.fontLigatures !== false}" ${state.fontLigatures !== false ? 'checked' : ''}><span>${busyText('编程连字','Programming ligatures')}</span><code>!= =&gt; -&gt;</code></label>`)}${card('language', '', 'settings', `<div class="segmented"><button data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div>`)}<section class="card graphics-settings"><div class="card-head">${icon('model')}<div><h3>${busyText('三维渲染', '3D rendering')}</h3></div></div><div class="card-body" id="graphics-settings-body">${graphicsSettingsBodyHtml()}</div></section></div><div class="callout">${t('prefsNote')}</div>`;
 }
 
 async function mountDescriptionView() {
@@ -6306,7 +6358,7 @@ async function importProfileSource(source) {
         selected = await new Promise(resolve => {
             const dialog = $('confirm-dialog');
             dialog.innerHTML = `<h3>${t('importExternalProfile')}</h3><p>${state.language === 'en' ? 'Choose the Profile to register' : '选择要加入 Profile Library 的 Profile'}</p><div class="field"><select id="import-profile-choice">${candidates.map((x, i) => `<option value="${i}">${esc(x.profile)}　${esc(x.profile_file)}</option>`).join('')}</select></div><div class="actions"><button id="import-cancel" class="button">${t('cancel')}</button><button id="import-confirm" class="button primary">${t('addToLibrary')}</button></div>`;
-            dialog.showModal();
+            showWorkspaceDialog(dialog);
             $('import-cancel').onclick = () => { dialog.close(); resolve(null); };
             $('import-confirm').onclick = () => { const choice = candidates[Number($('import-profile-choice').value) || 0]; dialog.close(); resolve(choice); };
         });
@@ -6418,7 +6470,14 @@ function setProfileFieldError(input, message) {
     wrapper?.classList.add('invalid');
     let node = wrapper?.querySelector('[data-field-error]');
     if (!node && wrapper) {node = document.createElement('em');node.dataset.fieldError='';wrapper.append(node);}
-    if (node) node.textContent = message;
+    if (node) {
+        node.id ||= `${wrapper.querySelector('input,select').id}-error`;
+        node.textContent = message;
+        for (const field of wrapper.querySelectorAll('input,select')) {
+            field.setAttribute('aria-invalid', 'true');
+            field.setAttribute('aria-describedby', [...new Set([...(field.getAttribute('aria-describedby') || '').split(' ').filter(Boolean), node.id])].join(' '));
+        }
+    }
 }
 
 function updateProfileSwitch(input) {
@@ -6460,7 +6519,13 @@ function readProfileInput(input) {
     if (state.profileRawInputs) delete state.profileRawInputs[id];
     input.setCustomValidity?.('');
     const wrapper = input.closest('.parameter-field');
-    wrapper?.classList.remove('invalid');wrapper?.querySelector('[data-field-error]')?.remove();
+    const errorNode = wrapper?.querySelector('[data-field-error]');
+    for (const field of wrapper?.querySelectorAll('input,select') || []) {
+        field.setAttribute('aria-invalid', 'false');
+        const describedBy = (field.getAttribute('aria-describedby') || '').split(' ').filter(id => id && id !== errorNode?.id).join(' ');
+        if (describedBy) field.setAttribute('aria-describedby', describedBy); else field.removeAttribute('aria-describedby');
+    }
+    wrapper?.classList.remove('invalid');errorNode?.remove();
     if (state.profileError?.startsWith(id)) state.profileError = '';
     const label = $('profile-dirty-state');
     if (label) label.textContent = state.profileDirty ? busyText('有未保存修改','Unsaved changes') : busyText('已加载默认配置','Saved defaults loaded');
@@ -6521,20 +6586,16 @@ function refreshCalibrationOrDefer() {
     render();
 }
 function queuePreview() { previewDirty = true; if (previewFrame || previewInFlight) return; previewFrame = requestAnimationFrame(async () => { previewFrame = 0; if (previewInFlight) return; previewInFlight = true; previewDirty = false; try { await previewModel(); } catch (error) { toast(error, true); } finally { previewInFlight = false; if (previewDirty) queuePreview(); } }); }
-function reducedMotion() { return matchMedia('(prefers-reduced-motion: reduce)').matches; }
+function reducedMotion() { return matchMedia('(prefers-reduced-motion: reduce)').matches || document.documentElement.dataset.reduceMotion === 'true'; }
 async function pageExit() {
     const page = $('page');
-    if (!page || reducedMotion()) return;
-    page.classList.remove('page-transition-in');
-    page.classList.add('page-transition-out');
-    await new Promise(resolve => setTimeout(resolve, 70));
+    if (page) page.classList.remove('page-transition-out', 'page-transition-in');
 }
 function pageEnter(pageChanged = true) {
     const page = $('page');
-    if (!page || reducedMotion() || !pageChanged) return;
+    if (!page) return;
     page.classList.remove('page-transition-out', 'page-transition-in');
-    void page.offsetWidth;
-    page.classList.add('page-transition-in');
+    if (pageChanged) window.serialArmStudio?.enterPage(page);
 }
 let workspaceRenderHost = null, workspaceRenderModel = null, workspaceRenderSubview = '';
 function refreshWorkspacePanel(resetScroll = false) {
@@ -6554,7 +6615,7 @@ function refreshWorkspacePanel(resetScroll = false) {
         if (details.has(key)) item.open = details.get(key);
     }
     const head = $('page')?.querySelector('.page-head');
-    if (head) head.outerHTML = pageHead(state.page === 'calibration' ? 'calibrationTitle' : 'workbenchTitle', state.page === 'calibration' ? 'calibrationDesc' : 'workbenchDesc', workspaceSessionActionHtml());
+    if (head) head.outerHTML = pageHead(state.page === 'calibration' ? 'calibrationTitle' : 'workbenchTitle', '', workspaceSessionActionHtml());
     const status = document.querySelector('.workspace-status'); if (status) status.outerHTML = workbenchStatusBar();
     const recovery = $('workspace-recovery-notice'); if (recovery) recovery.innerHTML = workbenchRecoveryNotice();
     const left = document.querySelector('.workbench-model'), overlay = left?.querySelector('.calibration-com-overlay');
@@ -6609,6 +6670,7 @@ function render(options = {}) {
     }
     const main = page.closest('.content');
     main.classList.toggle('studio-content', studio);
+    main.setAttribute('aria-label', pageLabel());
     document.querySelector('.shell').dataset.page = state.page;
     pageEnter(pageChanged);
     renderedPage = state.page;
@@ -6629,6 +6691,7 @@ function render(options = {}) {
     window.serialArmStudio?.enhanceSelects();
     if (state.page === 'profile_setup') restoreProfileFields();
     if(view)restorePageView(view);else if(!sameView)main.scrollTop=0;
+    if (state.page === 'profile_setup') bindProfileGuidance();
     if (state.setupFocus?.page === state.page) focusSetupTarget();
     if ($('priority-error-ack')) $('priority-error-ack').onclick = acknowledgePriorityError;
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
@@ -6724,15 +6787,20 @@ async function inspect(options = {}) {
     state.status = status; await save(); statusUI();
     return true;
 }
+let navigationGeneration = 0;
 async function navigate(page) {
     if (page === state.page) return;
+    const generation = ++navigationGeneration;
     if (state.page === 'profile_setup' && profileHasUnsavedChanges() && !await safetyConfirmation(state.language === 'en' ? 'Discard changes' : '放弃未保存的参数', state.language === 'en' ? 'Leaving this page discards unsaved changes' : '离开当前页面将放弃未保存的修改', '', [], 'general')) return;
-    capture(); await operation(save); await pageExit();
+    if (generation !== navigationGeneration) return;
+    capture(); await operation(save);
+    if (generation !== navigationGeneration) return;
+    await pageExit();
     if (state.page === 'profile_setup') state.createdProfileWizard = false;
     const previousPage = state.page;
     state.page = page;
     const context = profileRequestContext(), config = { ...state.config };
-    const current = () => state.page === page && profileContextCurrent(context);
+    const current = () => generation === navigationGeneration && state.page === page && profileContextCurrent(context);
     try {
         if (page === 'lifecycle' && state.config.profile) {
             const readiness = await api.request('readiness', { config }); if (!current()) return;
@@ -6763,11 +6831,13 @@ async function navigate(page) {
             catch (error) { state.capabilityProfileError = error.message || String(error); }
         }
         if (['model', 'workbench', 'geometry', 'calibration'].includes(page) && !state.modelData && state.info?.available?.model) await operation(() => loadModelData());
+        if (!current()) return;
         if (previousPage === 'profile_setup') {
             state.profileDirty = false; state.profileEditor = null; state.profileInteractionGoal = null; clearProfileFormState();
         }
         render();
     } catch (error) {
+        if (!current()) return;
         // Restore the previous page even if an IPC request failed during entry.
         // Otherwise pageExit() leaves the content faded out and navigation appears blank.
         state.page = previousPage;
@@ -7291,7 +7361,7 @@ function bindPage() {
         if ($('model-calibration-alignment-begin')) $('model-calibration-alignment-begin').onclick = () => {
             const dialog = $('confirm-dialog');
             dialog.innerHTML = `<h3>${state.language === 'en' ? 'Supervised manual alignment' : '人工引导返回回放起点'}</h3><p>${state.language === 'en' ? 'The arm will enter manual drag and may sag under gravity. Support it, check the load and cables, and keep the motion area clear' : '即将进入人工拖拽，请支撑机械臂，检查负载、线缆并清空运动范围；重力可能使关节下垂'}</p><label class="confirmation"><input type="checkbox" id="model-cal-alignment-supported"><span>${state.language === 'en' ? 'Arm is supported and manual dragging is safe in this area' : '机械臂已被支撑，周围允许安全地人工拖拽'}</span></label><div class="actions"><button id="model-cal-alignment-cancel" class="button">${t('cancel')}</button><button id="model-cal-alignment-accept" class="button danger" disabled>${state.language === 'en' ? 'Enter manual drag' : '确认拖拽定位'}</button></div>`;
-            dialog.showModal();
+            showWorkspaceDialog(dialog);
             $('model-cal-alignment-supported').onchange = () => { $('model-cal-alignment-accept').disabled = !$('model-cal-alignment-supported').checked; };
             $('model-cal-alignment-cancel').onclick = () => dialog.close();
             $('model-cal-alignment-accept').onclick = () => { dialog.close(); blockingOperation(busyText('正在进入引导拖拽...', 'Entering guided drag...'), async () => { const result = await workbenchRequest('model_calibration_alignment_begin', modelCalibrationTaskParams({ supported: true })); if (state.telemetry) state.telemetry.model_calibration = result; render(); }); };
@@ -7333,6 +7403,10 @@ function bindPage() {
     if (profileSelectionLocked()) document.querySelectorAll([...Object.keys(state.config).map(key => '#' + key), '#profile-select','#source-builtin','#source-external','#browse-profile','#refresh-profiles','#add-root'].join(',')).forEach(e => e.disabled = true);
     if ($('launch-session')) { $('launch-session').disabled = state.busy || active() || !state.info?.available?.[state.mode]; $('launch-session').onclick = () => blockingOperation(busyText('正在检查启动条件...', 'Checking launch conditions...'), async () => { await inspect(); if (!state.info?.available?.[state.mode]) throw new Error(t('modeMissing')); hardwareConfirm(); }); }
     if ($('check-now')) $('check-now').onclick = () => blockingOperation(busyText('正在检查环境与资源...', 'Checking environment and resources...'), async () => { await inspect(); render(); });
+    if ($('font-ligatures')) $('font-ligatures').onchange = async event => {
+        state.fontLigatures = event.target.checked; event.target.setAttribute('aria-checked', String(event.target.checked));
+        applyTheme(); publishGainLiveSnapshot(); await operation(save);
+    };
     document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
 }
@@ -7376,7 +7450,7 @@ function confirmCalibrationPark(action) {
     if (!dialog || dialog.open) return true;
     const en = state.language === 'en';
     dialog.innerHTML = `<h3>${en ? 'Park during calibration' : '标定过程中停放机械臂'}</h3><p>${en ? 'Parking may interrupt the current capture or cancel pending playback. Saved task files are retained. Check robot support, cables and the surrounding area first' : '停放可能中断当前采集或取消待执行回放，已经保存的任务文件不会删除，请先确认机械臂支撑、线缆和周围空间安全'}</p><div class="actions"><button class="button" id="calibration-park-cancel">${t('cancel')}</button><button class="button danger" id="calibration-park-confirm">${t('parkRobot')}</button></div>`;
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('calibration-park-cancel').onclick = () => dialog.close();
     $('calibration-park-confirm').onclick = () => {
         dialog.close();
@@ -7398,7 +7472,7 @@ function confirmUnresponsiveDisconnect() {
     if (!dialog || dialog.open) return;
     const en = state.language === 'en';
     dialog.innerHTML = `<h3>${en ? 'Force disconnect control session' : '确认强制断开控制会话'}</h3><p>${en ? 'Hardware communication failed or shutdown could not be confirmed. This action stops the control process but cannot verify motor disable, safe parking, or temporary candidate restoration' : '硬件通信故障或正常退出未能确认完成，强制断连只能终止控制进程，无法确认电机已失能、机械臂已停放或临时参数已正常撤销'}</p><p>${en ? 'First physically secure the robot and cut actuator power if necessary. Do not rely on software controls. Reconnect only after hardware power and wiring are verified' : '请先确认机械臂获得可靠支撑，必要时通过硬件急停或断电确保安全，不要依赖失去响应的软件控制，检查供电和线缆后再重新连接'}</p><div class="actions"><button class="button" id="cancel-unresponsive-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-unresponsive-disconnect">${en ? 'I secured hardware, disconnect' : '已确认硬件安全，强制断连'}</button></div>`;
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('cancel-unresponsive-disconnect').onclick = () => dialog.close();
     $('confirm-unresponsive-disconnect').onclick = () => {
         dialog.close(); operation(async () => {
@@ -7424,7 +7498,7 @@ function confirmWorkbenchDisconnect() {
     if (!dialog || dialog.open) return;
     const names = kinds.map(kind => ({ gain: en ? 'gain' : '增益', gravity: en ? 'gravity' : '重力', dynamics: en ? 'dynamics' : '动力学' }[kind]));
     dialog.innerHTML = `<h3>${en ? 'Disconnect and remove temporary candidates' : '断连后撤销临时应用'}</h3><p>${en ? 'The following temporary runtime candidates are active' : '以下临时参数目前正在生效'}：<strong>${esc(names.join(' / '))}</strong></p><p>${en ? 'The robot must already be INACTIVE; the original runtime parameters will be restored before disconnecting. Saved YAML / URDF files do not change' : '请先在机械支撑下使机械臂处于 INACTIVE，断连仅恢复临时覆盖并结束会话，不修改 YAML 或 URDF'}</p><p>${en ? 'If safe parking or restoration fails, the session stays connected and you must inspect the robot state' : '如果安全停放或参数恢复失败，将保留工作台连接，请先排查机械臂状态'}</p><div class="actions"><button class="button" id="cancel-disconnect">${t('cancel')}</button><button class="button danger" id="confirm-disconnect">${en ? 'Restore and disconnect' : '撤销临时参数并断连'}</button></div>`;
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('cancel-disconnect').onclick = () => dialog.close();
     $('confirm-disconnect').onclick = () => {
         dialog.close(); blockingOperation(busyText('正在撤销临时参数并断连...', 'Restoring temporary candidates and disconnecting...'), async () => {
@@ -7465,7 +7539,7 @@ function workbenchConfirm() {
     const info = state.info, dialog = $('confirm-dialog');
     if (!info || !dialog || dialog.open) return;
     dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3>${t('workbenchTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd>${t(info.write_enabled === true ? 'enabled' : 'unknown')}</dd></dl><p class="hint">${state.language === 'en' ? 'Connecting does not activate motors. Before enabling, check Safety acceleration, URDF position and velocity limits, joint mapping and mechanical support' : '连接不会使能电机，使能前请核对 Safety 加速度、URDF 位置及速度限制、电机映射和机械支撑'}</p><label class="confirmation"><input id="workspace-confirmed" type="checkbox"><span>${t('confirm')}</span></label>${robotReminderCheckbox()}<div class="actions"><button id="workspace-cancel" class="button">${t('cancel')}</button><button id="workspace-connect" class="button primary" disabled>${t('startWorkbench')}</button></div>`;
-    dialog.showModal();
+    showWorkspaceDialog(dialog);
     $('workspace-confirmed').onchange = () => $('workspace-connect').disabled = !$('workspace-confirmed').checked;
     $('workspace-cancel').onclick = () => dialog.close();
     $('workspace-connect').onclick = () => {
@@ -7492,7 +7566,7 @@ function safetyConfirmation(title, message, details = '', acknowledgements = [],
         dialog.querySelectorAll('[data-safety-ack]').forEach(box => box.onchange = () => {
             $('safety-accept').disabled = ![...dialog.querySelectorAll('[data-safety-ack]')].every(item => item.checked);
         });
-        dialog.showModal();
+        showWorkspaceDialog(dialog);
     });
 }
 function safetySettingsDetails() {
@@ -7569,15 +7643,15 @@ async function applyTuning() {
     refreshTuningInputs();
 }
 async function finishCalibrationStage() { const before = state.calibrationFlow; await workbenchRequest('calibration_finish'); if (before === 'static') { state.calibrationFlow = 'validation'; await workbenchRequest('calibration_begin', { kind: 'validation' }); } else if (before === 'validation') { state.calibrationFlow = 'friction-ready'; } state.admittance = await workbenchRequest('get_admittance'); state.tuneDraft = structuredClone(state.admittance); render(); }
-function frictionConfirm() { const problem = frictionReplayProblem(); if (problem) { toast(problem,true); return; } const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('frictionCalibration')}</h3><p>${state.language === 'en' ? 'The robot will replay the demonstration path in reverse and forward directions; confirm people, cables, and surrounding space are safe, and fully release the robot' : '机械臂将反向和正向回放示教轨迹，请确认人员、线缆和周围空间安全，并确认已完全松手'}</p><div class="actions"><button id="friction-cancel-dialog" class="button">${t('cancel')}</button><button id="friction-confirm-replay" class="button danger">${t('startReplay')}</button></div>`; dialog.showModal(); $('friction-cancel-dialog').onclick = () => dialog.close(); $('friction-confirm-replay').onclick = () => { const problem = frictionReplayProblem(); if (problem) { toast(problem,true); return; } dialog.close(); blockingOperation(busyText('正在启动双向摩擦回放...', 'Starting bidirectional friction replay...'), () => workbenchRequest('friction_replay_start')); }; }
+function frictionConfirm() { const problem = frictionReplayProblem(); if (problem) { toast(problem,true); return; } const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('frictionCalibration')}</h3><p>${state.language === 'en' ? 'The robot will replay the demonstration path in reverse and forward directions; confirm people, cables, and surrounding space are safe, and fully release the robot' : '机械臂将反向和正向回放示教轨迹，请确认人员、线缆和周围空间安全，并确认已完全松手'}</p><div class="actions"><button id="friction-cancel-dialog" class="button">${t('cancel')}</button><button id="friction-confirm-replay" class="button danger">${t('startReplay')}</button></div>`; showWorkspaceDialog(dialog); $('friction-cancel-dialog').onclick = () => dialog.close(); $('friction-confirm-replay').onclick = () => { const problem = frictionReplayProblem(); if (problem) { toast(problem,true); return; } dialog.close(); blockingOperation(busyText('正在启动双向摩擦回放...', 'Starting bidirectional friction replay...'), () => workbenchRequest('friction_replay_start')); }; }
 async function launch(confirmed) { if (profileSelectionLocked()) return; const config = { ...state.config }; state.runtimeStarting = true; state.busy = true; render(); try { state.session = await api.request('start', { mode: state.mode, config, confirmed, fingerprint: state.info?.fingerprint }); } finally { state.runtimeStarting = false; state.busy = false; render(); setTimeout(() => fit?.fit(), 50); } }
 function hardwareConfirm() {
     const info = state.info; const dialog = $('confirm-dialog');
     dialog.innerHTML = `<div class="eyebrow">${t('real')}</div><h3 style="margin-top:10px">${t('realTitle')}</h3><p>${t('realDesc')}</p><dl class="kv"><dt>${t('profileName')}</dt><dd>${esc(info.profile)}</dd><dt>${t('serial')}</dt><dd>${esc(info.devices.join(', ') || '—')}</dd><dt>${t('writeEnabled')}</dt><dd style="color:var(--accent)">${t(info.write_enabled === true ? 'enabled' : info.write_enabled === false ? 'disabled' : 'unknown')}</dd><dt>${t('controllers')}</dt><dd>${esc(info.controllers.join(', '))}</dd></dl><label class="confirmation"><input id="hardware-confirmed" type="checkbox"><span>${t('confirm')}</span></label><div class="actions">${button('cancel-launch', 'cancel', '')}${button('confirm-launch', 'confirmLaunch', 'run', 'primary')}</div>`;
-    dialog.showModal(); $('confirm-launch').disabled = true; $('hardware-confirmed').onchange = () => $('confirm-launch').disabled = !$('hardware-confirmed').checked;
+    showWorkspaceDialog(dialog); $('confirm-launch').disabled = true; $('hardware-confirmed').onchange = () => $('confirm-launch').disabled = !$('hardware-confirmed').checked;
     $('cancel-launch').onclick = () => dialog.close(); $('confirm-launch').onclick = () => { dialog.close(); blockingOperation(busyText('正在启动运行会话...', 'Starting runtime session...'), () => launch(true)); };
 }
-function forceConfirm() { const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('forceTitle')}</h3><p>${t('forceDesc')}</p><div class="actions">${button('cancel-force', 'cancel', '')}${button('confirm-force', 'force', '', 'danger')}</div>`; dialog.showModal(); $('cancel-force').onclick = () => dialog.close(); $('confirm-force').onclick = () => { dialog.close(); blockingOperation(busyText('正在强制结束运行...', 'Force stopping runtime...'), () => api.request('stop', { force: true })); }; }
+function forceConfirm() { const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('forceTitle')}</h3><p>${t('forceDesc')}</p><div class="actions">${button('cancel-force', 'cancel', '')}${button('confirm-force', 'force', '', 'danger')}</div>`; showWorkspaceDialog(dialog); $('cancel-force').onclick = () => dialog.close(); $('confirm-force').onclick = () => { dialog.close(); blockingOperation(busyText('正在强制结束运行...', 'Force stopping runtime...'), () => api.request('stop', { force: true })); }; }
 function onEvent(event) {
     if (event.event === 'output') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'native_log') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
@@ -7617,7 +7691,7 @@ async function boot() {
     if (!api) { $('app').innerHTML = '<div class="empty-state">请通过 ./launch.sh 启动桌面应用 / Start the desktop application using ./launch.sh</div>'; return; }
     api.onCloseRequest(() => ({dirty:profileHasUnsavedChanges()}));
     try {
-        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'system'; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
+        const prefs = await api.prefs(); state.language = prefs.language || 'zh-CN'; state.theme = prefs.theme || 'light'; state.fontLigatures = prefs.fontLigatures !== false; state.mode = ['terminal', 'hardware', 'moveit'].includes(prefs.mode) ? prefs.mode : 'terminal';
         state.config = { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }; state.source = 'builtin'; state.page = 'start';
         await refreshGraphicsStatus();
         applyTheme(); document.documentElement.lang = state.language; shell();

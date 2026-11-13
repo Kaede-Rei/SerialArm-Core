@@ -39,28 +39,43 @@ app.whenReady().then(async()=>{
   assert.equal(await read("document.querySelector('#gain-live-rows tr td').textContent"),'1.250','Disconnected clearing retains the last actual gain snapshot');
   await monitor.open(next);assert.equal(monitor.window,child,'Repeated open focuses the same child');
   const out='/tmp/serialarm-gain-live-ui';fs.mkdirSync(out,{recursive:true});
+  const layouts=[];
   const auditSource=process.env.SERIAL_ARM_CLIP_AUDIT?fs.readFileSync(process.env.SERIAL_ARM_CLIP_AUDIT,'utf8'):null;
-  for(const [width,height,theme] of [[1280,720,'light'],[375,760,'light'],[880,620,'dark']]){
+  for(const [width,height,theme] of [[1280,720,'light'],[375,760,'light'],[880,620,'dark'],[480,360,'light'],[480,360,'dark']]){
     child.setMinimumSize(320,360);child.setContentSize(width,height);
     monitor.update({...next,theme,received_at:Date.now()});await read('window.gainMonitor.current().then(paintGainMonitor)');
+    await read('document.querySelector(".gain-live-shell").scrollTop=0');
     await new Promise(resolve=>setTimeout(resolve,100));
-    const layout=await read(`(()=>({width:innerWidth,documentWidth:document.documentElement.scrollWidth,
+    const layout=await read(`(()=>({width:innerWidth,height:innerHeight,documentWidth:document.documentElement.scrollWidth,
+        footerBottom:document.querySelector('footer').getBoundingClientRect().bottom,
+        tableHeight:document.querySelector('.gain-live-table-wrap').getBoundingClientRect().height,
         visible:['header','.gain-live-meta','.gain-live-table-wrap'].every(selector=>{
             const rect=document.querySelector(selector).getBoundingClientRect();return rect.width>0&&rect.left>=0&&rect.right<=innerWidth;
         }),tableRows:document.querySelectorAll('#gain-live-rows tr').length}))()`);
     assert.equal(layout.width,width,'The actual content viewport matches the tested width');
     assert(layout.documentWidth<=width&&layout.visible,'Page and primary sections fit; wide data scrolls inside its table');
+    assert(layout.tableHeight>0,'The table retains a scroll viewport');
+    if(height>480)assert(layout.footerBottom<=height,'Footer remains visible at ordinary window heights');
     assert.equal(layout.tableRows,next.rows.length,'Every runtime axis remains available at each viewport size');
     if(auditSource){const audit=await read('('+auditSource+')({viewport:true})');assert.equal(audit.cut,0);}
     const image=await child.webContents.capturePage();assert(!image.isEmpty(),'Rendered evidence is nonempty');
     fs.writeFileSync(path.join(out,`gain-${width}-${theme}.png`),image.toPNG());
+    if(height<=480){
+        const reached=await read(`(()=>{const shell=document.querySelector('.gain-live-shell');shell.scrollTop=shell.scrollHeight;
+            const footer=document.querySelector('footer').getBoundingClientRect();return {scrollTop:shell.scrollTop,top:footer.top,bottom:footer.bottom};})()`);
+        assert(reached.top>=0&&reached.bottom<=height,'Footer remains reachable by native scrolling at the minimum window height');
+        layout.footerAfterScroll=reached;
+        fs.writeFileSync(path.join(out,`gain-${width}-${theme}-bottom.png`),(await child.webContents.capturePage()).toPNG());
+    }
     if(width===375){
         const reached=await read(`(()=>{const wrapper=document.querySelector('.gain-live-table-wrap');wrapper.scrollLeft=wrapper.scrollWidth;
             const last=document.querySelector('#gain-live-rows tr').lastElementChild.getBoundingClientRect(),bounds=wrapper.getBoundingClientRect();
             return last.right<=bounds.right+1&&last.left>=bounds.left;})()`);
         assert(reached,'The last telemetry column is reachable by native table scrolling');
     }
+    layouts.push({theme,...layout});
   }
+  fs.writeFileSync(path.join(out,'report.json'),JSON.stringify({layouts},null,2));
   await new Promise(resolve=>{child.once('closed',resolve);child.close();});assert.equal(monitor.window,null);assert(!owner.isDestroyed(),'Closing monitor does not close the owner');
   await monitor.open({...next,active:false,phase:'标定已结束'});const reopened=monitor.window;
   await reopened.webContents.executeJavaScript('window.gainMonitor.current().then(paintGainMonitor)');

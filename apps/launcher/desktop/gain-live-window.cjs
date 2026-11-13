@@ -33,7 +33,7 @@ class GainLiveWindow {
     }
     update(snapshot) {
         if(snapshot?.connected===false && !snapshot.rows?.length && this.snapshot?.rows?.length) {
-            snapshot={...this.snapshot,connected:false,valid:false,language:snapshot.language,theme:snapshot.theme};
+            snapshot={...this.snapshot,connected:false,valid:false,language:snapshot.language,theme:snapshot.theme,font_ligatures:snapshot.font_ligatures ?? this.snapshot.font_ligatures};
         }
         this.snapshot=snapshot;
         if(this.window&&!this.window.isDestroyed())this.window.webContents.send('launcher:gain-live-snapshot',snapshot);

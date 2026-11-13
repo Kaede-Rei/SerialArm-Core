@@ -4,6 +4,9 @@ const root = path.resolve(__dirname, '..');
 for (const f of ['desktop/main.cjs', 'desktop/gain-live-window.cjs', 'desktop/gain-live-preload.cjs', 'renderer/gain-live.html', 'renderer/gain-live.js', 'renderer/gain-live.css', 'desktop/preload.cjs', 'desktop/bridge.cjs', 'desktop/resources.cjs', 'desktop/graphics.cjs', 'backend/bridge.py', 'backend/gain_context.py', 'backend/profiles.py', 'backend/runtime.py', 'backend/pty_child.py', 'backend/machine.py', 'renderer/index.html', 'renderer/app.js', 'renderer/capability-response.js', 'renderer/motion-goals.js', 'renderer/model-view.js', 'renderer/model-geometry-worker.mjs', 'renderer/model-camera-zoom.mjs', 'renderer/model-camera-transition.mjs', 'renderer/styles.css', 'renderer/studio.css', 'renderer/studio-motion.js', 'renderer/brand/arm.png', 'renderer/brand/association.png', 'scripts/vendor-three.cjs', 'node_modules/@xterm/xterm/lib/xterm.js', 'node_modules/@xterm/addon-fit/lib/addon-fit.js', 'node_modules/three/build/three.module.js', 'renderer/vendor/three/build/three.module.js', 'renderer/vendor/three/jsm/controls/OrbitControls.js', 'renderer/vendor/three/jsm/loaders/STLLoader.js', 'renderer/vendor/three/jsm/loaders/GLTFLoader.js']) {
   if (!fs.statSync(path.join(root, f)).isFile()) throw new Error('Missing launcher file: ' + f);
 }
+for (const name of ['maple-mono-cn-italic.woff2', 'maple-mono-cn-medium-italic.woff2', 'maple-mono-cn-semibold-italic.woff2', 'OFL.txt']) {
+  if (!fs.statSync(path.join(root, 'renderer/fonts', name)).isFile()) throw new Error('Missing bundled font resource: ' + name);
+}
 // The file:// model view owns this local module worker; no CDN or alternate
 // geometry implementation is required to prepare a truthful target preview.
 const modelViewSource=fs.readFileSync(path.join(root,'renderer/model-view.js'),'utf8');
