@@ -1,0 +1,140 @@
+/* Shared robot workspaces: one model surface, one task surface, persistent controls. */
+.studio-workspace-controls {
+  margin: 0 0 20px;
+  padding: 0;
+  border-block: .5px solid var(--line);
+  background: var(--header);
+  border-radius: 0;
+  box-shadow: none;
+}
+.studio-workspace-controls .robot-operation-bar {
+  padding: 12px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.robot-operation-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 20px; }
+.robot-operation-toolbar .robot-operation-state { flex-wrap: wrap; gap: 8px; }
+.robot-operation-toolbar .robot-operation-state strong { color: var(--muted); font-weight: 400; }
+.robot-operation-toolbar .robot-operation-main { margin-inline-start: auto; }
+.robot-operation-bar .robot-operation-actions { align-items: center; gap: 8px 20px; margin-top: 8px; }
+.robot-operation-bar .robot-operation-recovery { padding: 0; border: 0; }
+.robot-operation-bar .robot-operation-group > .button { min-height: 34px; padding: 6px 12px; font-size: 14px; white-space: nowrap; }
+.robot-operation-bar .robot-operation-actions .hint { flex: 1 1 180px; margin: 0; font-size: 12px; }
+.studio-workspace-layout {
+  grid-template-columns: minmax(260px,.82fr) minmax(360px,1.18fr);
+  align-items: start;
+  gap: 24px;
+}
+.studio-workspace-layout .studio-workspace-preview {
+  top: calc(var(--robot-controls-top,0px) + 156px);
+  height: clamp(340px,calc(100dvh - 340px),640px);
+  border: .5px solid var(--line);
+  border-radius: 14px;
+  background: var(--subtle);
+}
+.studio-workspace-layout .studio-workspace-task {
+  min-width: 0;
+  padding: 20px;
+  border: .5px solid var(--line);
+  border-radius: 14px;
+  background: var(--card);
+  box-shadow: none;
+}
+.studio-workspace-task .workspace-panel { min-width: 0; padding: 0; gap: 0; background: transparent; }
+.studio-workspace-task .workspace-section {
+  min-width: 0;
+  margin: 0;
+  padding: 20px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.studio-workspace-task .workspace-section + .workspace-section,
+.studio-workspace-task .geometry-task-flow > .geometry-card + .geometry-card,
+.studio-workspace-task .control-settings { border-top: .5px solid var(--line); }
+.studio-workspace-task .workspace-section .workspace-section { padding: 16px 0; border-radius: 0; background: transparent; box-shadow: none; }
+.studio-workspace-task .workspace-section-head { gap: 12px; margin-bottom: 16px; }
+.studio-workspace-task :is(h3,h4) { text-wrap: balance; }
+.studio-workspace-task .workspace-section-head h3 { margin-bottom: 4px; }
+.studio-workspace-task .hint { margin-block: 8px; }
+.studio-workspace-task :is(.hint,.workspace-error):empty { display: none; }
+.studio-workspace-task .workspace-context-note { margin: 0 0 16px; padding: 0 0 12px; border-bottom: .5px solid var(--line); color: var(--muted); font-size: 12px; }
+.workspace-context-note > summary { width: fit-content; cursor: pointer; }
+.workspace-context-note .hint { max-width: 60ch; font-size: 12px; }
+
+/* Navigation names the task once; descriptions remain available on hover. */
+.studio-workspace-task .workspace-task-navigation {
+  display: flex;
+  gap: 3px;
+  margin: 0;
+  padding: 3px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--subtle);
+}
+.studio-workspace-task .workspace-task-navigation .workspace-task-tab {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px;
+  border: .5px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  text-align: center;
+  box-shadow: none;
+}
+#page .workspace-task-navigation .workspace-task-tab .calibration-entry-title { display: inline; color: var(--muted); font-size: 14px; font-weight: 500; }
+.studio-workspace-task .workspace-task-navigation .workspace-task-tab.selected { border-color: var(--line); background: var(--card); box-shadow: none; }
+#page .workspace-task-navigation .workspace-task-tab.selected .calibration-entry-title { color: var(--text); }
+.studio-workspace-task .workspace-task-tab:hover { background: var(--hover); }
+.studio-workspace-task .control-target-head { align-items: center; }
+.control-speed-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.control-speed-field #workbench-speed { width: 70px; font-size: 14px; }
+.control-speed-field #workbench-speed-error { flex-basis: 100%; }
+.workspace-target-actions { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; }
+.workspace-target-actions .command-state { margin: 0; }
+.target-execute-actions { margin-inline-start: auto; }
+.studio-workspace-task .control-settings { padding: 0; }
+.studio-workspace-task .control-settings > summary { padding: 16px 0; color: var(--text); }
+.studio-workspace-task .control-settings-body { gap: 0; padding: 0; border-radius: 0; background: transparent; }
+.studio-workspace-task .control-gain-context { margin-block: 16px 0; }
+.studio-workspace-task .control-settings-body > .workspace-section:first-child { padding-top: 0; }
+.studio-workspace-task .control-settings-body > details { border: 0; border-top: .5px solid var(--line); border-radius: 0; background: transparent; }
+
+/* Calibration and geometry share compact task selection and document-like sections. */
+.studio-workspace-task .calibration-entry-stack { gap: 8px; margin-bottom: 4px; }
+.studio-workspace-task .calibration-entry-grid { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+.studio-workspace-task .calibration-entry-stack .calibration-entry,
+.studio-workspace-task .geometry-panel > .calibration-entry-grid .calibration-entry { min-height: 38px; padding: 9px 10px; border: .5px solid transparent; border-radius: 7px; background: var(--subtle); box-shadow: none; }
+.studio-workspace-task .calibration-entry-stack .calibration-entry.selected,
+.studio-workspace-task .geometry-panel > .calibration-entry-grid .calibration-entry.selected { border-color: var(--line-strong,var(--line)); background: var(--card); }
+.studio-workspace-task .calibration-entry-featured-main > span:last-child,
+.studio-workspace-task .calibration-entry-grid > .calibration-entry > span:last-child:not(.calibration-entry-title) { display: none; }
+#page .studio-workspace-task .calibration-entry-title { font-size: 14px; font-weight: 500; line-height: 1.5; }
+.studio-workspace-task .calibration-standalone-card { gap: 12px; }
+.studio-workspace-task .calibration-standalone-card .workspace-section-head { margin: 0; }
+.studio-workspace-task .calibration-standalone-card .workspace-section-head h3 { font-size: 16px; }
+.studio-workspace-task .geometry-task-flow { gap: 0; }
+.studio-workspace-task .geometry-card { gap: 12px; }
+.studio-workspace-task .geometry-step { margin: 4px 0 0; padding: 16px 0 0; border: 0; border-top: .5px solid var(--line); border-radius: 0; background: transparent; }
+.studio-workspace-task .geometry-stats { gap: 12px; padding: 0; background: transparent; }
+.studio-workspace-task .geometry-stats > div { padding: 0; border: 0; border-radius: 0; background: transparent; }
+.studio-workspace-task :is(.teach-storage-location,.teach-trajectory-list,.geometry-fields) { min-width: 0; }
+.studio-workspace-task .teach-trajectory-item { box-shadow: none; }
+.studio-workspace-task :is(.table-scroll,.diff-box,.mono-block,pre) { max-width: 100%; }
+
+@container studio-workspace (max-width:700px) {
+  .studio-workspace-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
+  .studio-workspace-layout .studio-workspace-preview { position: relative; top: auto; height: clamp(280px,40dvh,400px); }
+  .studio-workspace-layout .studio-workspace-task { padding: 16px; }
+}
+@media (max-height:700px) {
+  .studio-workspace-controls .robot-operation-bar { padding-block: 8px; }
+  .robot-operation-bar .robot-operation-actions { margin-top: 6px; }
+}

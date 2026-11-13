@@ -14,6 +14,10 @@
   --motion-feedback: 120ms;
   --motion-change: 180ms;
   --motion-ease: cubic-bezier(.2,0,.2,1);
+  --control-height:36px;
+  --control-radius:8px;
+  --panel-radius:14px;
+  --section-gap:24px;
 }
 body { min-width: 320px; }
 button, input, select, textarea { max-width: 100%; }
@@ -103,7 +107,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .studio-route strong { font-weight: 500; color: var(--text); }
 .studio-location-end { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .top-status .pill { padding: 3px 7px; border: 0; background: none; font-size:12px; }
-.content { padding: 24px; scroll-behavior: auto; }
+.content { padding:var(--section-gap); scroll-behavior:auto; }
 .page { max-width: min(100%,1480px); min-width: 0; width: 100%; animation: none; transform-origin: center; }
 .page-head { margin-bottom: 22px; gap: 18px; }
 .page > .page-head { position:sticky; top:0; z-index:10; background:var(--header); backdrop-filter:blur(14px); }
@@ -115,7 +119,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .page-head .eyebrow { display: none; }
 .page-head :is(h2,.page-title) { font-size:24px; font-weight: 600; line-height: 1.4; letter-spacing: -.02em; margin: 0 0 6px; }
 .page-head p { font-size:14px; }
-.card { border-radius:14px; box-shadow:var(--shadow-panel); }
+.card { border-radius:var(--panel-radius); box-shadow:var(--shadow-panel); }
 .card-head { padding: 16px 18px; }
 .card-body { padding: 18px; }
 .card-head :is(h3,.section-title) { font-size:14px; font-weight: 600; margin: 0 0 4px; }
@@ -126,7 +130,7 @@ input, select, textarea { font-size:14px; border-radius: 6px; line-height: 1.5; 
 .field input, .field select, .profile-edit-table input { height: 36px; border-radius: 6px; border-color: var(--line-strong); font-size:14px; }
 input[type=checkbox], input[type=radio] { accent-color: var(--accent-text); }
 textarea { font-family: inherit; }
-.button { min-height:36px; padding:7px 13px; border-radius:8px; font-size:14px; font-weight:500; background:var(--input); border-color:var(--line-strong); }
+.button { min-height:var(--control-height); padding:7px 13px; border-radius:var(--control-radius); font-size:14px; font-weight:500; line-height:1.45; background:var(--input); border-color:var(--line-strong); }
 .button.primary,.light .button.primary { color:var(--primary-on); background:var(--primary); border-color:transparent; font-weight:600; }
 .button:not(:disabled):hover { border-color:var(--line-strong); background:var(--selected); }
 .button.primary:not(:disabled):hover { background:var(--primary-hover); border-color:transparent; }
@@ -165,6 +169,8 @@ summary:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page { flex: 1 0 auto; overflow: visible; }
 .studio-content:has(#runtime-panel:not(.is-hidden)) .studio-page-body { overflow: visible; }
 .studio-content > .terminal-card { flex: none; margin: 0 22px 18px; }
+.studio-page-body > .terminal-card { flex:none; margin:24px 0 0; }
+.terminal-head { flex-wrap:wrap; gap:8px 12px; }
 /* Workspaces have one page scroller, shared with the optional runtime panel */
 .studio-content:has(.workbench-layout) { scroll-behavior: auto; }
 .studio-page:has(.workbench-layout) { flex: 1 0 auto; overflow: visible; }
@@ -227,26 +233,41 @@ summary:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3
 .robot-row-menu button:hover { background: var(--hover); }
 .robot-row-menu button svg { width: 15px; height: 15px; }
 /* Native dialogs preserve modal focus and all existing hardware confirmations */
-.studio-dialog { width: min(520px,calc(100vw - 40px)); max-height: calc(100dvh - 48px); margin: auto; overflow: auto; box-shadow: var(--shadow-popover); }
+.studio-dialog { width:min(560px,calc(100vw - 40px)); max-height:calc(100dvh - 48px); margin:auto; padding:24px; overflow:auto; border:.5px solid var(--line-strong); border-radius:18px; background:var(--overlay-solid); color:var(--text); box-shadow:var(--shadow-popover); scrollbar-gutter:stable; }
 .studio-dialog::backdrop, .priority-error-overlay[open] { background: var(--overlay-backdrop); backdrop-filter: none; }
-.studio-dialog h3, .priority-error-card h3 { font-size:16px; font-weight: 600; line-height: 1.5; margin: 9px 0 12px; }
+.studio-dialog h3, .priority-error-card h3 { font-size:18px; font-weight:600; line-height:1.5; margin:0 0 16px; letter-spacing:-.01em; }
 .studio-dialog p, .priority-error-card p { font-size:14px; line-height: 1.8; }
-.studio-dialog .actions, .priority-error-card .actions { gap: 8px; margin-top: 22px; }
+.studio-dialog .actions, .priority-error-card .actions { justify-content:flex-end; gap:8px; margin-top:24px; padding-top:16px; border-top:.5px solid var(--line); }
 .studio-dialog .actions .button, .priority-error-card .actions .button { min-height: 34px; border-radius: 8px; padding: 7px 13px; font-size:14px; }
 .project-sheet { max-width: 680px; width: calc(100vw - 64px); max-height: calc(100dvh - 64px); padding: 0; border-radius: 18px; background: var(--bg); box-shadow: var(--shadow-popover); overflow: hidden; }
 .project-sheet::backdrop { background: var(--overlay-backdrop); backdrop-filter: none; }
-.priority-error-card { width: min(520px,calc(100vw - 40px)); border-color: var(--line); box-shadow: var(--shadow-popover); }
+.priority-error-card { width:min(560px,calc(100vw - 40px)); padding:24px; border-color:var(--line); border-radius:18px; background:var(--overlay-solid); box-shadow:var(--shadow-popover); }
 .priority-error-card:has(#priority-error-evidence:not([hidden])) { width: min(980px,calc(100vw - 40px)); }
 #priority-error-evidence > .calibration-step { margin-top: 14px; }
 .priority-error-kicker { color: var(--red); font-size:12px; font-weight: 450; letter-spacing: normal; }
 .priority-error-card .error-technical { margin: 16px 0; }
 .priority-error-card .error-technical summary { font-size:12px; color: var(--muted); }
 .priority-error-card .error-technical pre { max-height: 34vh; overflow: auto; }
-/* The reference uses short fades and restrained panel motion */
+/* Native dialogs reverse from the current presentation; closing never locks input. */
 .page.page-transition-out { animation:none; }
 .page.page-transition-in { animation:none; }
-dialog[open]:not(.priority-error-overlay), .priority-error-overlay[open] .priority-error-card,
-.operation-progress, .model-calibration-task-window { animation: studio-panel-in 180ms cubic-bezier(.1,.9,.2,1) both; }
+.studio-dialog,.project-sheet {
+  opacity:0; transform:translateY(6px) scale(.99);
+  transition:opacity 160ms var(--motion-ease),transform 180ms var(--motion-ease),display 180ms allow-discrete,overlay 180ms allow-discrete;
+}
+.studio-dialog[open],.project-sheet[open] { opacity:1; transform:none; }
+.studio-dialog:not([open]),.project-sheet:not([open]) { pointer-events:none; }
+.studio-dialog::backdrop,.project-sheet::backdrop {
+  opacity:0; transition:opacity 160ms var(--motion-ease),display 180ms allow-discrete,overlay 180ms allow-discrete;
+}
+.studio-dialog[open]::backdrop,.project-sheet[open]::backdrop { opacity:1; }
+.studio-dialog:not([open])::backdrop,.project-sheet:not([open])::backdrop { pointer-events:none; }
+@starting-style {
+  .studio-dialog[open],.project-sheet[open] { opacity:0; transform:translateY(6px) scale(.99); }
+  .studio-dialog[open]::backdrop,.project-sheet[open]::backdrop { opacity:0; }
+}
+.priority-error-overlay[open] .priority-error-card { animation:none; }
+.operation-progress,.model-calibration-task-window { animation:studio-panel-in 160ms var(--motion-ease) both; }
 .toast { animation: studio-fade-in 140ms var(--motion-ease) both; }
 @keyframes studio-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes studio-fade-out { to { opacity: 0; } }
@@ -313,6 +334,7 @@ dialog[open]:not(.priority-error-overlay), .priority-error-overlay[open] .priori
 }
 @media(prefers-reduced-motion:reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; }
+  .studio-dialog,.project-sheet,.studio-dialog::backdrop,.project-sheet::backdrop { transition:none !important; }
   button, input, select, textarea { transition: none !important; }
   .page, .page.page-transition-in, .page.page-transition-out, dialog[open],
   .priority-error-overlay[open] .priority-error-card, .operation-progress,
@@ -837,7 +859,7 @@ code,pre,.mono-block,.path-chip,.launch-command,.joint-number,.summary-name,
   grid-template-columns: minmax(0,1fr);
   grid-template-areas: "head" "conclusion" "preview" "content" "actions" "error";
   grid-template-rows: auto auto auto minmax(0,1fr) auto auto;
-  padding: 20px;
+  padding: 24px;
   gap: 16px;
   border: .5px solid var(--line-strong,var(--line));
   border-radius:16px;
@@ -877,7 +899,7 @@ code,pre,.mono-block,.path-chip,.launch-command,.joint-number,.summary-name,
 .model-calibration-task-window [id$="-diagnostic"] .table-scroll th:last-child,
 .model-calibration-task-window [id$="-diagnostic"] .table-scroll td:last-child { min-width: 16ch; max-width: 24ch; white-space: normal; overflow-wrap: anywhere; }
 .model-calibration-task-window .table-scroll :is(th,td):first-child { min-width: 6ch; white-space: nowrap; overflow-wrap: normal; }
-.model-calibration-task-window .task-window-actions { min-width: 0; gap: 8px; padding-top: 12px; border-top: .5px solid var(--line); }
+.model-calibration-task-window .task-window-actions { min-width:0; gap:8px; padding-top:16px; border-top:.5px solid var(--line); }
 .model-calibration-task-window .task-window-actions .button { max-width: 100%; min-height: 34px; padding: 6px 12px; font-size:14px; white-space: normal; }
 .model-calibration-task-window .task-preview-slot { height: clamp(140px,20dvh,200px); border-radius: 7px; background: var(--subtle); }
 .model-calibration-task-window .task-preview-slot .workbench-model { height: 100%; }
@@ -892,7 +914,9 @@ code,pre,.mono-block,.path-chip,.launch-command,.joint-number,.summary-name,
 .model-calibration-task-window .gain-probe-evidence-grid dt,
 .model-calibration-task-window .gain-probe-evidence-grid dd { font-size:12px; line-height: 1.6; }
 .model-calibration-task-window .task-live-grid span { font-family: var(--studio-mono-font); }
-.model-calibration-task-window .operation-message { font-size:14px; }
+.model-calibration-task-window .operation-message { font-size:18px; line-height:1.5; }
+.model-calibration-task-window .task-live-grid { gap:12px 20px; padding:12px 0; border-block:.5px solid var(--line); }
+.model-calibration-task-window .task-live-grid > span { padding:0; border:0; border-radius:0; background:transparent; }
 .model-calibration-task-window #model-calibration-task-error:empty { display: none; }
 @media(min-width:960px) {
   .model-calibration-task-window .table-scroll > table { width: 100%; min-width: 780px; table-layout: auto; }
