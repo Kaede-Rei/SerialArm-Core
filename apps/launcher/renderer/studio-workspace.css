@@ -14,16 +14,14 @@
   background: transparent;
   box-shadow: none;
 }
-.robot-operation-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; }
-.robot-operation-toolbar .robot-operation-state { flex-wrap: wrap; gap: 8px; }
-.robot-operation-toolbar .robot-operation-state strong { color: var(--muted); font-weight: 400; }
-.robot-operation-bar .robot-operation-actions { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 12px; }
-.robot-operation-bar .robot-operation-group { justify-content: center; gap: 8px; max-width: 100%; }
-.robot-operation-bar .robot-operation-main { margin-inline: auto; }
-.robot-operation-bar .robot-operation-recovery { padding: 0; border: 0; }
+.robot-operation-bar { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); grid-template-areas: "state power" "recovery guidance"; align-items: center; gap: 12px 16px; }
+.robot-operation-bar .robot-operation-state { grid-area: state; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.robot-operation-bar .robot-operation-state strong { color: var(--muted); font-weight: 400; }
+.robot-operation-bar .robot-operation-group { gap: 8px; max-width: 100%; min-width: 0; }
+.robot-operation-bar .robot-operation-main { grid-area: power; justify-self: end; justify-content: flex-end; flex-wrap: wrap; margin: 0; }
+.robot-operation-bar .robot-operation-recovery { grid-area: recovery; justify-self: start; justify-content: flex-start; padding: 0; border: 0; }
 .robot-operation-bar .robot-operation-group .button { min-height: 34px; padding: 6px 12px; font-size: 14px; white-space: nowrap; }
-.robot-operation-enable { display: flex; align-items: center; gap: 10px; max-width: 100%; }
-.robot-operation-guidance { display: flex; align-items: center; gap: 8px; max-width: 320px; text-align: start; }
+.robot-operation-guidance { grid-area: guidance; display: flex; align-items: center; justify-self: end; justify-content: flex-end; gap: 8px; min-width: 0; max-width: 100%; text-align: end; }
 .robot-operation-guidance:has(#control-operation-hint:empty):has(#control-operation-next:empty) { display: none; }
 .robot-operation-bar .robot-operation-guidance .hint { flex: 1 1 auto; margin: 0; font-size: 12px; line-height: 1.5; }
 .robot-operation-guidance #control-operation-next { flex: none; }
@@ -67,7 +65,7 @@
 .studio-workspace-task .workspace-section-head h3 { margin-bottom: 4px; }
 .studio-workspace-task .hint { margin-block: 8px; }
 .studio-workspace-task :is(.hint,.workspace-error):empty { display: none; }
-.studio-workspace-task .workspace-context-note { margin: 0 0 16px; padding: 0 0 12px; border-bottom: .5px solid var(--line); color: var(--muted); font-size: 12px; }
+.studio-workspace-task .workspace-context-note { margin: 16px 0 0; padding: 12px 0 0; border-top: .5px solid var(--line); color: var(--muted); font-size: 12px; }
 .workspace-context-note > summary { width: fit-content; cursor: pointer; }
 .workspace-context-note .hint { max-width: 60ch; font-size: 12px; }
 
@@ -126,6 +124,25 @@
 .studio-workspace-task .control-gain-context { margin-block: 16px 0; }
 .studio-workspace-task .control-settings-body > .workspace-section:first-child { padding-top: 0; }
 .studio-workspace-task .control-settings-body > details { border: 0; border-top: .5px solid var(--line); border-radius: 0; background: transparent; }
+.studio-workspace-task .workspace-settings-list > .workspace-setting { padding: 18px 0; }
+.studio-workspace-task .workspace-setting .workspace-section-head { margin-bottom: 12px; }
+.studio-workspace-task .workspace-setting .workspace-section-head h3 { margin: 0; font-size: 14px; }
+.studio-workspace-task .workspace-choice-group { display: flex; width: 100%; min-width: 0; gap: 3px; padding: 3px; border: .5px solid var(--line); border-radius: 9px; background: var(--subtle); }
+.studio-workspace-task .workspace-choice-group > .button { display: flex; flex: 1 1 0; align-items: center; justify-content: center; min-width: 0; min-height: 40px; padding: 8px 6px; border: 0; border-radius: 6px; background: transparent; font-size: 14px; font-weight: 400; line-height: 1.5; white-space: normal; overflow-wrap: normal; word-break: normal; text-align: center; box-shadow: none; }
+.studio-workspace-task .workspace-choice-group > .button[aria-pressed="true"] { color: var(--accent-text,var(--accent)); font-weight: 600; }
+.studio-workspace-task .workspace-setting-details { margin-top: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; }
+.studio-workspace-task .workspace-setting-details > summary { width: fit-content; padding: 6px 0; color: var(--muted); font-size: 12px; }
+.studio-workspace-task .workspace-setting-details .control-gain-context { margin: 12px 0 0; }
+.workspace-selection-status { display: grid; grid-template-columns: minmax(76px,auto) minmax(0,1fr); gap: 6px 12px; margin: 12px 0; font-size: 12px; line-height: 1.6; }
+.workspace-selection-status dt { margin: 0; color: var(--muted); }
+.workspace-selection-status dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.studio-workspace-task .workspace-section > .workspace-actions { justify-content: flex-end; }
+.studio-workspace-task .geometry-step:not(details) { display: flex; flex-direction: column; gap: 10px; }
+.studio-workspace-task .geometry-step > .button { display: flex; align-self: flex-end; width: fit-content; max-width: 100%; margin-inline-start: auto; }
+.studio-workspace-task .geometry-card > .button { align-self: flex-end; }
+.studio-workspace-task .geometry-step > .workspace-actions { justify-content: flex-end; }
+#page .workbench-task-content > .workspace-panel > .workspace-section:first-child > .workspace-section-head h3,
+#page .workspace-subpage-content > .geometry-task-flow > .geometry-card > .workspace-section-head h3 { font-size: 16px; }
 
 /* Geometry and calibration content keep the same document-like section rhythm. */
 #page .studio-workspace-task .calibration-entry-title { font-size: 14px; font-weight: 500; line-height: 1.5; }
@@ -145,9 +162,7 @@
   .studio-workspace-layout { grid-template-columns: minmax(0,1fr); gap: 16px; }
   .studio-workspace-layout .studio-workspace-preview { position: relative; top: auto; height: clamp(280px,40dvh,400px); }
   .studio-workspace-layout .studio-workspace-task { padding: 16px; }
-  .robot-operation-guidance { max-width: 260px; }
 }
 @media (max-height:700px) {
   .studio-workspace-controls .robot-operation-bar { padding-block: 8px; }
-  .robot-operation-bar .robot-operation-actions { margin-top: 6px; }
 }

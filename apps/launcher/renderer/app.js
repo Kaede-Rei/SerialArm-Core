@@ -1341,8 +1341,7 @@ function connectionSettingsHtml() {
     const info = state.info;
     const selectOptions = `<option value="">${t('noProfile')}</option>` + state.profiles.map(p => `<option value="${esc(p.name)}" ${p.name === state.config.profile ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
     const profileBody = `<div class="field"><label>${t('source')}</label><div class="segmented"><button id="source-builtin" class="${state.source === 'builtin' ? 'active' : ''}">${t('builtin')}</button><button id="source-external" class="${state.source === 'external' ? 'active' : ''}">${t('external')}</button></div></div>${state.source === 'external' ? `<div class="field"><label for="profile_file">${t('profileFile')}</label><div class="input-row"><input id="profile_file" value="${esc(state.config.profile_file)}" placeholder="${t('fileHint')}">${button('browse-profile', 'browse', 'folder')}</div></div>` : ''}<div class="field"><label for="profile-select">${t('profileName')}</label><div class="input-row"><select id="profile-select">${selectOptions}</select>${button('refresh-profiles', 'refresh', 'refresh')}</div></div>`;
-    const ports = (state.status.devices || []).map(p => `<option value="${esc(p)}">`).join('');
-    const connBody = `${configField('serial_port', 'serial', info?.default_port || t('automatic'))}<datalist id="ports">${ports}</datalist><div class="row">${configField('baudrate', 'baudrate', String(info?.default_baudrate || '921600'))}${configField('bus', 'bus', info?.bus || t('automatic'))}</div><div class="field"><label for="resource_paths">${t('resourcePaths')}</label><div class="input-row"><input id="resource_paths" value="${esc(state.config.resource_paths)}" placeholder="/path/to/workspace">${button('add-root', 'addRoot', 'folder')}</div><div class="hint">${t('rootsHint')}</div></div><div class="actions">${button('inspect-profile', 'inspect', 'diagnostics')}${button('go-run', 'toRun', 'run', 'primary')}</div><div class="hint">${t('overrideHint')}</div>`;
+    const connBody = `${configField('serial_port', 'serial', info?.default_port || t('automatic'))}<p class="hint">${busyText('可手动填写路径，或在顶部扫描并选择串口；留空使用 Profile 默认值', 'Enter a path manually or scan and select a port above; leave blank to use the Profile default')}</p><div class="row">${configField('baudrate', 'baudrate', String(info?.default_baudrate || '921600'))}${configField('bus', 'bus', info?.bus || t('automatic'))}</div><div class="field"><label for="resource_paths">${t('resourcePaths')}</label><div class="input-row"><input id="resource_paths" value="${esc(state.config.resource_paths)}" placeholder="/path/to/workspace">${button('add-root', 'addRoot', 'folder')}</div><div class="hint">${t('rootsHint')}</div></div><div class="actions">${button('inspect-profile', 'inspect', 'diagnostics')}${button('go-run', 'toRun', 'run', 'primary')}</div><div class="hint">${t('overrideHint')}</div>`;
     const summary = `<div class="summary-caption">ROBOT PROFILE</div><div class="summary-name">${esc(info?.profile || state.config.profile || '—')}</div><dl class="kv"><dt>${t('hardwarePlugin')}</dt><dd>${esc(info?.hardware_plugin || '—')}</dd><dt>${t('serial')}</dt><dd>${esc(state.config.serial_port || info?.default_port || '—')}</dd><dt>${t('writeEnabled')}</dt><dd style="color:var(--accent)">${t(info?.write_enabled === true ? 'enabled' : info?.write_enabled === false ? 'disabled' : 'unknown')}</dd><dt>${t('controllers')}</dt><dd>${info?.controllers?.map(name => `<div>${esc(name)}</div>`).join('') || '—'}</dd></dl><div class="callout">${t('validationHint')}</div>`;
     const checks = `<ul class="check-list">${[['installation', !!state.status.installed], ['resources', !!info && info.checks.filter(c => c.name !== 'device').every(c => c.ok)], ['nativeTerminal', !!info?.available?.terminal], ['ros2', !!state.status.ros2]].map(([key, ok]) => `<li><span class="dot ${ok ? 'ready' : ''}"></span>${t(key)}<span class="state">${t(ok ? 'ready' : 'unavailable')}</span></li>`).join('')}</ul>`;
     return `<div class="grid"><div class="card-stack">${card('profile', '', 'robot', profileBody)}<section id="connection-settings">${card('connection', 'connectionSub', 'plug', connBody)}</section></div><div class="card-stack">${card('summary', '', 'model', summary)}${card('status', 'statusSub', 'diagnostics', checks)}</div></div>`;
@@ -1522,13 +1521,13 @@ function refreshGraphicsDependentActions() {
 }
 function graphicsActionsHtml() {
     const descriptions = {
-        normal: busyText('使用显卡绘制，日常使用首选', 'Use the GPU for everyday model previews'),
-        compatibility: busyText('使用 CPU 软件绘制，适合显卡预览异常时使用；画质与刷新率较低', 'Use CPU software rendering if GPU previews fail, at lower resolution and frame rate'),
-        rescue: busyText('关闭三维预览，继续配置、查看数值和导出记录', 'Turn off 3D previews and keep configuration, numeric status and record export')
+        normal: busyText('使用显卡绘制，推荐日常使用', 'GPU rendering for everyday use'),
+        compatibility: busyText('显卡预览异常时使用 CPU 绘制；画质与刷新率较低', 'CPU rendering when GPU previews fail; lower resolution and frame rate'),
+        rescue: busyText('关闭三维预览，保留配置、数值和记录导出', 'Disable 3D previews; keep configuration, numeric status and record export')
     };
     return '<div class="graphics-mode-options" role="group" aria-label="' + busyText('选择三维渲染方式', 'Choose a 3D rendering mode') + '">' +
         ['normal', 'compatibility', 'rescue'].map(mode => '<button type="button" class="graphics-mode-option' + (graphicsState.requestedMode === mode ? ' active' : '') + '" data-graphics-mode="' + mode + '" aria-pressed="' + (graphicsState.requestedMode === mode) + '"><span class="graphics-mode-title"><strong>' + graphicsModeLabel(mode) + '</strong><span class="graphics-mode-check">' + icon('check') + '</span></span><span class="graphics-mode-description">' + descriptions[mode] + '</span></button>').join('') + '</div>' +
-        '<p class="hint graphics-security-note">' + busyText('兼容三维需确认软件 WebGL 的安全降级，渲染器沙箱仍保留；更换图形后端需要重启应用', 'Compatibility 3D requires confirmation of reduced software WebGL security; the renderer sandbox stays enabled. Changing the graphics backend requires an app restart') + '</p>' +
+        '<p class="hint graphics-security-note">' + busyText('更换图形后端后，重启应用生效', 'Restart the app after changing the graphics backend') + '</p>' +
         (graphicsState.requiresRestart ? '<div class="graphics-pending" role="status"><div><strong>' + busyText('待重启生效', 'Restart required') + '　' + graphicsModeLabel(graphicsState.requestedMode) + '</strong><p class="hint">' + busyText('当前仍使用', 'Still using') + ' ' + graphicsModeLabel(graphicsState.effectiveMode) + busyText('；请先结束运行会话，再手动重启应用', '; end the runtime session before restarting the app') + '</p></div><button type="button" class="button primary" data-graphics-restart ' + (active() || state.blockingBusy ? 'disabled' : '') + '>' + busyText('重启并使用', 'Restart with') + ' ' + graphicsModeLabel(graphicsState.requestedMode) + '</button></div>' : '') +
         (graphicsState.actionError ? '<p class="parameter-error" role="alert">' + esc(graphicsState.actionError) + '</p>' : '');
 }
@@ -1540,7 +1539,7 @@ function graphicsFailureHtml(record) {
     const detail = [record?.fault?.message || busyText('当前不创建三维渲染器', 'The 3D renderer is disabled'),
         ...resources.map(item => [item.link, item.layer, item.resource, item.message].filter(Boolean).join('　'))].join('\n');
     return '<section class="graphics-failure" data-graphics-panel role="region" aria-label="' + title + '"><h3>' + title + '</h3><p>' +
-        busyText('配置、数值状态、记录和导出仍可使用；需要目标或路径预览的执行确认，请先恢复三维', 'Configuration, numeric status, records and exports remain available. Restore 3D before confirming motions that require a target or path preview') +
+        busyText('可继续配置、查看数值和导出记录；确认运动目标或路径前，请恢复三维预览', 'Continue configuration, numeric inspection and record export; restore 3D before confirming motion targets or paths') +
         '</p><details><summary>' + busyText('错误详情', 'Error details') + '</summary><pre>' + esc(detail) + '</pre></details>' +
         '<div class="workspace-actions"><button type="button" class="button" data-graphics-retry>' + (modelFailure ? busyText('重新加载模型', 'Reload model') : busyText('重试三维预览', 'Retry 3D preview')) + '</button><button type="button" class="button" data-graphics-diagnostics>' + busyText('查看图形诊断', 'View graphics diagnostics') +
         '</button><button type="button" class="button" data-graphics-export>' + busyText('导出诊断', 'Export diagnostics') + '</button></div>' + graphicsActionsHtml() + '</section>';
@@ -1997,11 +1996,10 @@ function robotOperationHtml() {
         return `<button type="button" data-workbench-action="${action}" class="button ${action === 'deactivate' ? 'danger' : action === 'activate' ? 'primary' : ''}" ${reason ? 'disabled' : ''} ${action === 'activate' ? 'aria-describedby="control-operation-hint"' : ''} title="${esc(reason)}">${title}</button>`;
     }).join('');
     return `<section class="workspace-section robot-operation-bar" id="robot-operation" aria-label="${en ? 'Robot controls' : '机械臂控制'}">
-      <div class="robot-operation-toolbar">
-      <div class="robot-operation-state"><span class="robot-operation-dot ${robotState === 'ACTIVE' ? 'on' : 'off'}" aria-hidden="true"></span><strong>${en ? 'Robot state' : '机械臂状态'}</strong><span id="control-task-state">${esc(robotState)}</span><button type="button" class="button robot-operation-connect" data-robot-connect ${workbenchConnected() ? 'hidden' : ''}>${t('startWorkbench')}</button></div>
-      </div>
-      <div class="robot-operation-actions"><div class="robot-operation-group robot-operation-main" role="group" aria-label="${en ? 'Power and stop' : '使能与停放'}"><div class="robot-operation-enable">${actions([['activate', t('activateRobot')]])}<div class="robot-operation-guidance"><p id="control-operation-hint" class="hint"></p><div id="control-operation-next"></div></div></div>${actions([['park', t('parkRobot')], ['deactivate', t('deactivateRobot')]])}</div>
-      <div class="robot-operation-group robot-operation-recovery" role="group" aria-label="${en ? 'Hold and recovery' : '保持与恢复'}">${actions([['rigid_hold', en ? 'Rigid hold here' : '当前位置刚性保持'], ['fault_compliant', t('compliantRecovery')], ['clear_fault', t('clearFault')]])}</div></div>
+      <div class="robot-operation-state"><span class="robot-operation-dot ${robotState === 'ACTIVE' ? 'on' : 'off'}" aria-hidden="true"></span><strong>${en ? 'Robot state' : '机械臂状态'}</strong><span id="control-task-state">${esc(robotState)}</span></div>
+      <div class="robot-operation-group robot-operation-main" role="group" aria-label="${en ? 'Power and stop' : '使能与停放'}">${actions([['activate', t('activateRobot')], ['park', t('parkRobot')], ['deactivate', t('deactivateRobot')]])}</div>
+      <div class="robot-operation-group robot-operation-recovery" role="group" aria-label="${en ? 'Hold and recovery' : '保持与恢复'}">${actions([['rigid_hold', en ? 'Rigid hold here' : '当前位置刚性保持'], ['fault_compliant', t('compliantRecovery')], ['clear_fault', t('clearFault')]])}</div>
+      <div class="robot-operation-guidance"><p id="control-operation-hint" class="hint"></p><div id="control-operation-next"></div></div>
     </section>`;
 }
 let robotOperationHeaderObserver = null;
@@ -2092,10 +2090,10 @@ function controlPanelHtml() {
         <div id="workbench-target-editor">${workbenchJointRows()}</div><p id="target-draft-hint" class="hint"></p>
         <div class="workspace-target-actions"><div class="workspace-actions target-draft-actions"><button id="target-sync" class="button">${en ? 'Sync actual' : '同步实际'}</button><button id="target-zero" class="button">${en ? 'Zero draft' : '草稿归零'}</button></div><div class="workspace-actions target-execute-actions"><span id="target-command-state" class="command-state" role="status">${esc(commandStateText(state.commandState))}</span><button id="target-move" class="button primary" ${workbenchTargetMayMove() ? '' : 'disabled'}>${en ? 'Move to target' : '移动到目标'}</button></div></div>
       </section>
-      <details class="workspace-section control-settings" id="control-settings" ${state.controlSettingsOpen ? 'open' : ''}><summary>${en?'Control parameters':'控制参数'}</summary><div class="control-settings-body">
-        <section class="workspace-section control-gain-settings"><div class="workspace-section-head"><h3>${en ? 'Gain use' : '增益用途'}</h3></div><div class="mode-buttons">${purposes.map(purpose => `<button data-gain-purpose="${purpose}" aria-pressed="${x.gain_profile === purpose}" class="button ${x.gain_profile === purpose ? 'active' : ''}" ${controlGainPurposeMayChange(purpose) ? '' : 'disabled'}>${esc(gainPurposeLabel(purpose))}</button>`).join('')}</div><div id="control-gain-context">${controlGainContextHtml()}</div></section>
+      <details class="workspace-section control-settings" id="control-settings" ${state.controlSettingsOpen ? 'open' : ''}><summary>${en?'Control parameters':'控制参数'}</summary><div class="control-settings-body workspace-settings-list">
+        <section class="workspace-section workspace-setting control-gain-settings" aria-labelledby="control-gain-title"><div class="workspace-section-head"><h3 id="control-gain-title">${en ? 'Gain use' : '增益用途'}</h3></div><div class="segmented workspace-choice-group" role="group" aria-labelledby="control-gain-title">${purposes.map(purpose => `<button type="button" data-gain-purpose="${purpose}" aria-pressed="${x.gain_profile === purpose}" class="button ${x.gain_profile === purpose ? 'active' : ''}" ${controlGainPurposeMayChange(purpose) ? '' : 'disabled'}>${esc(gainPurposeLabel(purpose))}</button>`).join('')}</div><details class="workspace-setting-details" id="control-runtime-details"><summary>${en?'Current parameters':'当前参数'}</summary><div id="control-gain-context">${controlGainContextHtml()}</div></details></section>
         ${referenceBehaviorHtml()}
-        <section class="workspace-section"><h3>${t('modelFeedforward')}</h3><div class="mode-buttons">${['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'].map(mode => `<button data-feedforward-mode="${mode}" aria-pressed="${x.model_feedforward_mode === mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" ${inactive ? '' : 'disabled'}>${esc(profileOptionLabel(mode))}</button>`).join('')}</div></section>
+        <section class="workspace-section workspace-setting control-feedforward-settings" aria-labelledby="control-feedforward-title"><div class="workspace-section-head"><h3 id="control-feedforward-title">${t('modelFeedforward')}</h3></div><div class="segmented workspace-choice-group" role="group" aria-labelledby="control-feedforward-title">${['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'].map(mode => `<button type="button" data-feedforward-mode="${mode}" aria-pressed="${x.model_feedforward_mode === mode}" class="button ${x.model_feedforward_mode === mode ? 'active' : ''}" title="${esc(profileOptionLabel(mode))}" ${inactive ? '' : 'disabled'}>${({NONE:en?'Off':'关闭',GRAVITY:en?'Gravity':'重力',FULL_INVERSE_DYNAMICS:en?'Inverse dynamics':'逆动力学'})[mode]}</button>`).join('')}</div><p class="hint">${en?'Park and disable before changing feedforward':'停放并失能后可修改前馈'}</p></section>
         ${damiaoJointCheckHtml()}
       </div></details>
     </div>`;
@@ -2111,7 +2109,7 @@ function gainPurposeLabel(purpose) {
 function controlGainContextHtml() {
     const en = state.language === 'en', x = state.telemetry || {};
     const vector = key => Array.isArray(x[key]) ? x[key].map((value,index) => key === 'hold_target_pos' ? jointDisplayValue(value,x.joint_names?.[index]) : key === 'hold_integral_torque' ? jointDisplayValue(value,x.joint_names?.[index],'effort') : capabilityNumber(value,3)).join(' / ') : '—';
-    return `<dl class="kv control-gain-context"><dt>${en ? 'Task state' : '任务状态'}</dt><dd>${esc(taskStateLabel(x.impedance_mode))}</dd><dt>${en ? 'Gain use' : '增益用途'}</dt><dd>${esc(gainPurposeLabel(x.gain_profile))}</dd><dt>${en ? 'Gain source' : '增益来源'}</dt><dd>${esc(gainSourceLabel(x.gain_source))}</dd><dt>${en ? 'Scope' : '适用范围'}</dt><dd>${x.reference_behavior === 'MODEL_ADMITTANCE' ? (en ? 'Servo gains track the virtual reference; M/D/K defines interaction response' : '伺服增益跟踪虚拟参考，M/D/K 决定交互响应') : (en ? 'Native actuator PD follows the nominal reference' : '执行器原生 PD 跟踪名义参考')}</dd><dt>${en ? 'Effective Kp / Kd' : '实际 Kp / Kd'}</dt><dd class="mono-block">${esc(vector('effective_kp'))}<br>${esc(vector('effective_kd'))}</dd>${x.impedance_mode?.endsWith('_HOLD') ? `<dt>${en ? 'Fixed hold target' : '固定保持目标'}</dt><dd class="mono-block">${esc(vector('hold_target_pos'))}</dd><dt>${en ? 'Hold integral torque' : '保持积分力矩'}</dt><dd class="mono-block">${esc(vector('hold_integral_torque'))}</dd>` : ''}</dl>`;
+    return `<dl class="kv control-gain-context"><dt>${en ? 'Task' : '任务'}</dt><dd>${esc(taskStateLabel(x.impedance_mode))}</dd><dt>${en ? 'Gain use' : '增益用途'}</dt><dd>${esc(gainPurposeLabel(x.gain_profile))}</dd><dt>${en ? 'Source' : '来源'}</dt><dd>${esc(gainSourceLabel(x.gain_source))}</dd><dt>${en ? 'Reference tracking' : '参考执行'}</dt><dd>${x.reference_behavior === 'MODEL_ADMITTANCE' ? (en ? 'Servo gains track the virtual reference; M/D/K defines interaction response' : '伺服增益跟踪虚拟参考，M/D/K 决定交互响应') : (en ? 'Native actuator PD follows the nominal reference' : '执行器原生 PD 跟踪名义参考')}</dd><dt>${en ? 'Effective Kp' : '实际 Kp'}</dt><dd class="mono-block">${esc(vector('effective_kp'))}</dd><dt>${en ? 'Effective Kd' : '实际 Kd'}</dt><dd class="mono-block">${esc(vector('effective_kd'))}</dd>${x.impedance_mode?.endsWith('_HOLD') ? `<dt>${en ? 'Hold target' : '保持目标'}</dt><dd class="mono-block">${esc(vector('hold_target_pos'))}</dd><dt>${en ? 'Hold integral torque' : '保持积分力矩'}</dt><dd class="mono-block">${esc(vector('hold_integral_torque'))}</dd>` : ''}</dl>`;
 }
 // Offline capability configuration is read from the selected Profile
 // Runtime values are taken only from the active Machine session
@@ -2307,10 +2305,10 @@ function referenceBehaviorHtml() {
     const can = referenceBehaviorMayChange();
     const available = state.admittance?.enabled === true && currentAdmittanceProfile()?.enabled === true;
     const choices = [
-        ['NATIVE_IMPEDANCE', en ? 'Native motor impedance' : '原生阻抗', en ? 'Kp / Kd follow the nominal reference; no model admittance offset' : '直接跟踪目标，使用所选用途的 Kp / Kd'],
-        ['MODEL_ADMITTANCE', en ? 'Model reference admittance' : '模型导纳', en ? 'The observer drives virtual q / v / a; safety accepts the final reference and total torque' : '根据外力估计生成退让运动，由伺服跟踪执行'],
+        ['NATIVE_IMPEDANCE', en ? 'Native impedance' : '原生阻抗', en ? 'Actuator PD tracks the target reference' : '直接跟踪目标，使用所选用途的 Kp / Kd'],
+        ['MODEL_ADMITTANCE', en ? 'Model admittance' : '模型导纳', en ? 'External-force estimates drive virtual q / v / a; Safety checks the final reference and torque' : '根据外力估计生成退让运动，由伺服跟踪执行'],
     ];
-    return `<section class="workspace-section capability-behavior"><div class="workspace-section-head"><div><h3>${en ? 'Control method' : '控制方式'}</h3><p class="hint">${en ? 'Choose how a mode produces its reference; impedance mode and model feedforward are separate settings' : '选择当前会话的控制方式'}</p></div><span class="result-badge neutral" id="reference-behavior-current">${esc(profileOptionLabel(behavior))}</span></div><p class="hint">${en ? 'Effective control method' : '当前生效'}　<b id="reference-behavior-effective">${esc(workbenchConnected() ? profileOptionLabel(state.telemetry?.reference_behavior) : '—')}</b></p><div class="calibration-entry-grid">${choices.map(([key, title, description]) => `<button type="button" class="calibration-entry ${behavior === key ? 'selected' : ''}" data-reference-behavior="${key}" aria-pressed="${behavior === key}" ${can && (key === 'NATIVE_IMPEDANCE' || available) ? '' : 'disabled'}><span class="calibration-entry-title">${title}</span><span>${description}</span></button>`).join('')}</div><p class="hint">${en ? 'Park and disable before changing behavior. Model admittance also requires the capability enabled in Profile' : '停放并失能后可切换策略，模型导纳还需在 Profile 启用能力'}</p></section>`;
+    return `<section class="workspace-section workspace-setting capability-behavior" aria-labelledby="control-behavior-title"><div class="workspace-section-head"><h3 id="control-behavior-title">${en ? 'Control method' : '控制方式'}</h3></div><div class="segmented workspace-choice-group" role="group" aria-labelledby="control-behavior-title">${choices.map(([key, title, description]) => `<button type="button" class="button ${behavior === key ? 'selected' : ''}" data-reference-behavior="${key}" aria-pressed="${behavior === key}" title="${esc(description)}" ${can && (key === 'NATIVE_IMPEDANCE' || available) ? '' : 'disabled'}>${title}</button>`).join('')}</div><dl class="workspace-selection-status"><dt>${en?'Selected':'当前选择'}</dt><dd id="reference-behavior-current">${esc(profileOptionLabel(behavior))}</dd><dt>${en?'Effective':'实际生效'}</dt><dd id="reference-behavior-effective">${esc(workbenchConnected() ? profileOptionLabel(state.telemetry?.reference_behavior) : '—')}</dd></dl><p class="hint">${en ? 'Park and disable to switch; enable model admittance in Profile before using it' : '停放并失能后可切换；模型导纳需先在 Profile 启用'}</p></section>`;
 }
 function capabilityNumber(value, digits = 4) {
     if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
@@ -4773,7 +4771,6 @@ function calibrationTaskGuidance(kind) {
     return `<div class="calibration-empty-guidance" role="status">${labels[kind] || ''}</div>`;
 }
 function wireCalibrationQuickControls() {
-    document.querySelectorAll('[data-robot-connect]').forEach(button => button.onclick = () => startWorkbench());
     document.querySelectorAll('[data-workbench-action]').forEach(button => button.onclick = () => {
         const action = button.dataset.workbenchAction;
         if (controlOperationProblem(action)) return;
@@ -5500,8 +5497,6 @@ function refreshConnectionPortControls() {
     if (select) { select.innerHTML = connectionPortOptionsHtml(); select.disabled = profileSelectionLocked(); }
     const scan = $('workspace-scan-ports');
     if (scan) { scan.disabled = !!connectionPortScanPending; scan.setAttribute('aria-busy', String(!!connectionPortScanPending)); }
-    const list = $('ports');
-    if (list) list.innerHTML = (state.status.devices || []).map(port => `<option value="${esc(port)}">`).join('');
     window.serialArmStudio?.enhanceSelects();
 }
 async function scanConnectionPorts() {
@@ -5566,7 +5561,7 @@ function workspaceContextNoteHtml(kind) {
     return `<details class="workspace-context-note"><summary>${title}</summary><p class="hint">${description}</p></details>`;
 }
 function workspaceTaskPresentationHtml() {
-    if (state.page === 'calibration') return workspaceContextNoteHtml('calibration') + calibrationPanelHtml(false);
+    if (state.page === 'calibration') return calibrationPanelHtml(false) + workspaceContextNoteHtml('calibration');
     return workbenchTabs() + `<div class="workbench-task-content" id="workbench-task-panel" data-studio-subpage-panel="workbench" data-studio-subpage-key="${esc(state.workbenchTab)}">${workbenchPanelHtml()}</div>`;
 }
 
@@ -5824,7 +5819,7 @@ function refreshGeometryPanel(resetScroll = false) {
 }
 function geometryPage() {
     return pageHead('geometryTitle', 'geometryDesc', workspaceSessionActionHtml()) + workspaceControlsHtml()
-        + workspaceLayoutHtml(workspaceContextNoteHtml('geometry') + `<div class="workspace-panel calibration-panel geometry-panel">${geometryPanelHtml(false)}</div>`, '', t(workbenchConnected() ? 'actualTelemetry' : 'offlineWaiting'));
+        + workspaceLayoutHtml(`<div class="workspace-panel calibration-panel geometry-panel">${geometryPanelHtml(false)}</div>` + workspaceContextNoteHtml('geometry'), '', t(workbenchConnected() ? 'actualTelemetry' : 'offlineWaiting'));
 }
 
 function calibrationPage() {
@@ -5894,7 +5889,6 @@ function updateWorkbenchControlState() {
     if ($('control-task-state')) $('control-task-state').textContent = robotState;
     const dot = document.querySelector('.robot-operation-dot');
     if (dot) dot.className = 'robot-operation-dot' + (robotState === 'ACTIVE' ? ' on' : ' off');
-    document.querySelectorAll('[data-robot-connect]').forEach(button => button.hidden = workbenchConnected() || !!$('start-workbench'));
     document.querySelectorAll('[data-workbench-action]').forEach(button => {
         const action = button.dataset.workbenchAction, reason = controlOperationProblem(action);
         button.disabled = !!reason; button.title = reason;
@@ -6478,7 +6472,7 @@ function diagnosticsPage() {
     return pageHead('diagTitle', '', connect) + `<div class="studio-shell-diagnostics"><div class="studio-shell-diagnostic-overview">${card('checks', '', 'diagnostics', checkRows)}${snapshot}</div><details class="diagnostic-settings studio-shell-diagnostic-details"><summary>${busyText('Profile 与连接覆盖设置', 'Profile and connection overrides')}</summary><div class="studio-shell-details-body">${connectionSettingsHtml()}</div></details><details class="studio-shell-diagnostic-details"><summary>${t('installHelp')}</summary><div class="studio-shell-details-body studio-shell-install-help"><p class="hint">${t('installHelpSub')}</p><p>${t('installHint')}</p><div><h3>${busyText('独立运行 Core 与图形工作台','Standalone Core and desktop workspace')}</h3><pre class="install-command"><code>./install.sh --preset standalone --yes</code></pre></div><div><h3>${busyText('可选 ROS2 与 MoveIt 适配层','Optional ROS2 and MoveIt adapters')}</h3><pre class="install-command"><code>./install.sh --preset ros2 --yes</code></pre></div><p class="hint">${t('validationHint')}</p></div></details></div>`;
 }
 function settingsPage() {
-    const appearance = `<section class="card studio-shell-setting-section"><div class="card-head">${icon('sun')}<h2 class="section-title">${t('appearance')}</h2></div><div class="card-body"><div class="segmented" role="group" aria-label="${t('appearance')}">${['system', 'dark', 'light'].map(theme => `<button type="button" data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div><label class="font-ligature-setting" for="font-ligatures"><input type="checkbox" role="switch" id="font-ligatures" aria-checked="${state.fontLigatures !== false}" ${state.fontLigatures !== false ? 'checked' : ''}><span>${busyText('编程连字','Programming ligatures')}</span><code>!= =&gt; -&gt;</code></label></div></section>`;
+    const appearance = `<section class="card studio-shell-setting-section"><div class="card-head">${icon('sun')}<h2 class="section-title">${t('appearance')}</h2></div><div class="card-body"><div class="segmented" role="group" aria-label="${t('appearance')}">${['system', 'dark', 'light'].map(theme => `<button type="button" data-theme="${theme}" aria-pressed="${theme === state.theme}" class="${theme === state.theme ? 'active' : ''}">${t(theme)}</button>`).join('')}</div><div class="font-ligature-setting"><label class="compact-checkbox" for="font-ligatures"><input type="checkbox" role="switch" id="font-ligatures" aria-checked="${state.fontLigatures !== false}" ${state.fontLigatures !== false ? 'checked' : ''}><span>${busyText('编程连字','Programming ligatures')}</span></label><code aria-label="${busyText('连字示例','Ligature sample')}">!= =&gt; -&gt;</code></div></div></section>`;
     const language = `<section class="card studio-shell-setting-section"><div class="card-head">${icon('settings')}<h2 class="section-title">${t('language')}</h2></div><div class="card-body"><div class="segmented" role="group" aria-label="${t('language')}"><button type="button" data-language="zh-CN" aria-pressed="${state.language === 'zh-CN'}" class="${state.language === 'zh-CN' ? 'active' : ''}">简体中文</button><button type="button" data-language="en" aria-pressed="${state.language === 'en'}" class="${state.language === 'en' ? 'active' : ''}">English</button></div></div></section>`;
     return pageHead('settingsTitle', 'settingsDesc', `<button id="settings-back" class="button">${busyText('返回', 'Back')}</button>`) + `<div class="grid settings-grid studio-shell-settings">${appearance}${language}<section class="card graphics-settings studio-shell-setting-section"><div class="card-head">${icon('model')}<h2 class="section-title">${busyText('三维渲染', '3D rendering')}</h2></div><div class="card-body" id="graphics-settings-body">${graphicsSettingsBodyHtml()}</div></section></div><p class="studio-shell-settings-note">${t('prefsNote')}</p>`;
 }
@@ -7184,7 +7178,6 @@ function bindPage() {
     for (const key of Object.keys(state.config)) {
         const element = $(key); if (element) element.onchange = () => { if (!capture()) return; state.info = null; refreshConnectionPortControls(); operation(save); };
     }
-    if ($('serial_port')) $('serial_port').setAttribute('list', 'ports');
     if ($('source-builtin')) {
         $('source-builtin').onclick = () => operation(async () => { if (!capture()) return; state.source = 'builtin'; state.config.profile_file = ''; await refreshProfiles(); });
         $('source-external').onclick = () => { if (!capture()) return; profileLoadGeneration++; state.source = 'external'; state.info = null; state.profiles = []; state.config.profile = ''; render(); };

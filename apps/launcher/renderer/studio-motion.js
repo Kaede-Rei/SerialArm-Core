@@ -15,6 +15,7 @@
         previous = now;
         for (const [key, motion] of motions) {
             if (!motion.node.isConnected) { motions.delete(key); continue; }
+            if (motion.measureTarget) { motion.target=motion.measureTarget(); motion.staticValue=motion.target; motion.max=Math.max(motion.value,motion.target); }
             // Exact critically damped step avoids frame-rate dependent overshoot.
             const omega = 2 * Math.PI / motion.response;
             const offset = motion.value - motion.target, carry = motion.velocity + omega * offset;
@@ -35,6 +36,9 @@
         if (motionReduced()) { motions.delete(key); options.apply(options.staticValue ?? target); options.settled?.(options.staticValue ?? target); return; }
         const motion = motions.get(key) || {value:options.from,velocity:0};
         Object.assign(motion, options, {target,node}); motions.set(key, motion);
+        if (Math.abs(motion.value-target)<(motion.positionEpsilon ?? .0001) && Math.abs(motion.velocity)<(motion.velocityEpsilon ?? .001)) {
+            motion.apply(target); motion.settled?.(target); motions.delete(key); return;
+        }
         motion.apply(motion.value);
         if (!frame) { previous = performance.now(); frame = requestAnimationFrame(tick); }
     }
@@ -106,7 +110,8 @@
     function rememberDisclosure(node) {
         let record = disclosures.get(node);
         if (!record) {
-            record = {open:node.open,height:node.getBoundingClientRect().height,summaryGap:parseFloat(getComputedStyle(node.firstElementChild).marginBottom) || 0,inert:new Map()};
+            const height=node.getBoundingClientRect().height;
+            record = {open:node.open,height,openHeight:node.open?height:0,closedHeight:node.open?null:height,progress:node.open?1:0,progressChannel:{},summaryGap:parseFloat(getComputedStyle(node.firstElementChild).marginBottom) || 0,inert:new Map()};
             disclosures.set(node, record); node.dataset.studioDisclosure = 'true';
         }
         return record;
@@ -128,10 +133,16 @@
         node.style.removeProperty('--studio-disclosure-height'); node.style.removeProperty('--studio-disclosure-gap');
         const target = node.getBoundingClientRect().height;
         if (open) record.openHeight = target; else record.closedHeight = target;
+        const chrome = target - (parseFloat(getComputedStyle(node,'::details-content').blockSize) || 0);
         record.summaryGap = parseFloat(getComputedStyle(summary).marginBottom) || 0;
         node.dataset.studioDisclosureAnimating = 'true';
         if (!open) node.style.setProperty('--studio-disclosure-gap',`${gap}px`);
+        move(node,open?1:0,{channel:record.progressChannel,from:record.progress,response:quickResponse,min:0,max:1,staticValue:open?1:0,
+            apply:value=>{record.progress=value;node.style.setProperty('--studio-disclosure-progress',String(value));},settled:()=>node.style.removeProperty('--studio-disclosure-progress')});
         move(node,target,{from,response:panelResponse,min:record.closedHeight ?? Math.min(from,target),max:Math.max(record.openHeight ?? 0,from,target),staticValue:target,positionEpsilon:.1,velocityEpsilon:.5,
+            // The anonymous content remains naturally sized during height motion.
+            // Follow nested disclosures/live rows instead of freezing an old end height.
+            measureTarget:open?()=>chrome+(parseFloat(getComputedStyle(node,'::details-content').blockSize)||0):null,
             apply:value => node.style.setProperty('--studio-disclosure-height',`${value}px`),
             settled:() => {
                 delete node.dataset.studioDisclosureAnimating;
@@ -149,34 +160,73 @@
         event.preventDefault(); animateDisclosure(node,!node.open,node.getBoundingClientRect().height);
     });
     const segments = new Map(), subpages = new Map();
-    const segmentSelector = '.segmented,.workspace-tabs,.manager-filters,[data-studio-subpage-nav]';
-    function segmentKey(group, buttons) {
-        if (group.dataset.studioSubpageNav) return `subpage:${group.dataset.studioSubpageNav}`;
-        return `${group.matches('.manager-filters')?'library':group.matches('.workspace-tabs')?'tabs':'segments'}:${buttons.map(button => [...button.attributes].filter(attribute=>attribute.name.startsWith('data-')).map(attribute=>`${attribute.name}=${attribute.value}`).join(',') || button.textContent.trim()).join('|')}`;
+    const segmentSelector = '.segmented,.workspace-tabs,.manager-filters,[data-studio-subpage-nav],.sidebar,.parameter-groups,.mode-buttons,.parameter-switch,.inertia-source-options,.graphics-mode-options,.mode-grid,[data-studio-switch-group]';
+    function selectionItems(group) {
+        if (group.matches('.sidebar')) return [...group.querySelectorAll('.nav-item[data-page]')];
+        if (group.matches('.parameter-switch')) return [...group.querySelectorAll(':scope > .switch-value')];
+        return [...group.children].filter(node=>node instanceof HTMLButtonElement || node.tagName==='LABEL'&&node.querySelector('input[type=radio]'));
+    }
+    function itemKey(node) {
+        const input=node.querySelector('input[type=radio]');
+        return input ? `${input.name}=${input.value}` : [...node.attributes].filter(attribute=>attribute.name.startsWith('data-')&&!attribute.name.startsWith('data-studio-')&&!attribute.name.startsWith('data-fixture-')).map(attribute=>`${attribute.name}=${attribute.value}`).join(',') || node.id || node.textContent.trim();
+    }
+    function segmentKey(group, items) {
+        const profile=document.querySelector('.studio-shell-profile strong')?.textContent || '';
+        if (group.matches('.parameter-switch')) return `${profile}:switch:${group.querySelector('input').dataset.profileField}`;
+        // Optional actions may appear beside the choices after selection; they
+        // must not replace the group's presentation state mid-flight.
+        return `${profile}:${group.dataset.studioSubpageNav || group.matches('.sidebar') ? 'nav:'+ (group.dataset.studioSubpageNav||'sidebar') : group.classList[0]}:${itemKey(items[0])}`;
+    }
+    function selectedItem(group, items) {
+        if (group.matches('.parameter-switch')) return items[group.querySelector('input').checked?0:1];
+        return items.find(item=>item.matches('[aria-pressed="true"],[aria-selected="true"],[aria-current],.active,.selected') || item.querySelector('input[type=radio]:checked'));
     }
     function updateSegments() {
         for (const group of document.querySelectorAll(segmentSelector)) {
-            const buttons = [...group.children].filter(node=>node instanceof HTMLButtonElement);
-            const active = buttons.find(button=>button.matches('[aria-pressed="true"],[aria-selected="true"],[aria-current],.active'));
-            if (!active || buttons.length < 2 || !group.getClientRects().length) continue;
-            const key = segmentKey(group,buttons), bounds = group.getBoundingClientRect(), selected = active.getBoundingClientRect();
-            const x = selected.left - bounds.left - group.clientLeft + group.scrollLeft, width = selected.width;
-            let record = segments.get(key);
-            if (!record) { record = {x,width,xChannel:{},widthChannel:{}}; segments.set(key,record); }
-            let indicator = group.querySelector(':scope > .studio-segment-indicator');
-            if (!indicator) { indicator=document.createElement('span'); indicator.className='studio-segment-indicator'; indicator.setAttribute('aria-hidden','true'); group.append(indicator); }
-            group.dataset.studioSegmented = 'true';
-            if (!group.dataset.studioSubpageNav) { indicator.style.top=`${selected.top - bounds.top - group.clientTop + group.scrollTop}px`; indicator.style.height=`${selected.height}px`; }
-            move(indicator,x,{channel:record.xChannel,from:record.x,response:quickResponse,min:0,max:Math.max(group.scrollWidth,x),positionEpsilon:.1,velocityEpsilon:.5,
-                apply:value => { record.x=value; indicator.style.transform=`translateX(${value}px)`; }});
-            move(indicator,width,{channel:record.widthChannel,from:record.width,response:quickResponse,min:0,max:Math.max(group.scrollWidth,width),positionEpsilon:.1,velocityEpsilon:.5,
-                apply:value => { record.width=value; indicator.style.width=`${value}px`; }});
+            const items=selectionItems(group),active=selectedItem(group,items);
+            if (!active || items.length<2 || !group.getClientRects().length) continue;
+            const key=segmentKey(group,items);
+            let record=segments.get(key);
+            if (!record) { record={channels:{},values:{},surfaces:new Map()};segments.set(key,record); }
+            if (group.matches('.graphics-mode-options,.mode-grid')) {
+                // Large cards crossfade their own surfaces; moving a solid panel
+                // away from already-white selected text would make it unreadable.
+                for (const item of items) {
+                    const id=itemKey(item),target=item===active?1:0;
+                    let surface=record.surfaces.get(id);
+                    if (!surface) { surface={value:target,channel:{}};record.surfaces.set(id,surface); }
+                    item.dataset.studioSelection='true';
+                    move(item,target,{channel:surface.channel,from:surface.value,response:quickResponse,min:0,max:1,staticValue:target,
+                        apply:value=>{surface.value=value;item.style.setProperty('--studio-selection',String(value));}});
+                }
+                continue;
+            }
+            const bounds=group.getBoundingClientRect(),selected=active.getBoundingClientRect(),style=getComputedStyle(group);
+            const values={x:selected.left-bounds.left-parseFloat(style.borderLeftWidth||0)+group.scrollLeft,
+                y:selected.top-bounds.top-parseFloat(style.borderTopWidth||0)+group.scrollTop,width:selected.width,height:selected.height};
+            let indicator=group.querySelector(':scope > .studio-segment-indicator');
+            if (!indicator) { indicator=document.createElement('span');indicator.className='studio-segment-indicator';indicator.setAttribute('aria-hidden','true');group.append(indicator); }
+            group.dataset.studioSegmented='true';
+            const underline=!!group.dataset.studioSubpageNav;
+            for (const [axis,target] of Object.entries(values)) {
+                if (underline&&(axis==='y'||axis==='height')) continue;
+                record.channels[axis] ||= {};record.values[axis] ??=target;
+                move(indicator,target,{channel:record.channels[axis],from:record.values[axis],response:quickResponse,min:0,max:Math.max(axis==='height'||axis==='y'?group.scrollHeight:group.scrollWidth,target),positionEpsilon:.1,velocityEpsilon:.5,
+                    apply:value=>{record.values[axis]=value;if(axis==='x'||axis==='y')indicator.style.transform=`translate(${record.values.x||0}px,${underline?0:record.values.y||0}px)`;else indicator.style[axis]=`${value}px`;}});
+            }
             if (group.dataset.studioSubpageNav) {
-                const name = group.dataset.studioSubpageNav, panel = [...document.querySelectorAll('[data-studio-subpage-panel]')].find(node=>node.dataset.studioSubpagePanel === name);
-                const selection = panel?.dataset.studioSubpageKey || active.dataset.studioSubpageKey;
-                if (panel && subpages.has(name) && subpages.get(name) !== selection) enterPage(panel);
+                const name=group.dataset.studioSubpageNav,panel=[...document.querySelectorAll('[data-studio-subpage-panel]')].find(node=>node.dataset.studioSubpagePanel===name);
+                const selection=panel?.dataset.studioSubpageKey || active.dataset.studioSubpageKey;
+                if(panel&&subpages.has(name)&&subpages.get(name)!==selection)enterPage(panel);
                 subpages.set(name,selection);
             }
+        }
+        for(const input of document.querySelectorAll('input[role=switch]:not(.parameter-switch input)')) {
+            const key=`switch:${input.id||input.getAttribute('aria-label')}`,target=input.checked?1:0;
+            let record=segments.get(key);if(!record){record={value:target,channel:{}};segments.set(key,record);}
+            input.dataset.studioSwitch='true';
+            move(input,target,{channel:record.channel,from:record.value,response:quickResponse,min:0,max:1,staticValue:target,
+                apply:value=>{record.value=value;input.style.setProperty('--studio-switch-progress',String(value));}});
         }
     }
     function enhanceInteractiveMotion() {
@@ -186,7 +236,7 @@
             if (record.open !== node.open && motions.has(node)) animateDisclosure(node,node.open);
             // Programmatic reveal for a field/anchor stays synchronous; render
             // and telemetry refreshes do not replay disclosure entrance motion.
-            else if (record.open !== node.open) { record.open=node.open; record.height=node.getBoundingClientRect().height; restoreDisclosureChildren(record); }
+            else if (record.open !== node.open) { record.open=node.open; record.progress=node.open?1:0; record.height=node.getBoundingClientRect().height; restoreDisclosureChildren(record); }
             else if (!motions.has(node)) { record.height=node.getBoundingClientRect().height; record.summaryGap=parseFloat(getComputedStyle(node.firstElementChild).marginBottom)||0; }
         }
         updateSegments();
@@ -199,7 +249,8 @@
     new MutationObserver(records => {
         if (records.some(record=>record.type==='attributes' ? record.target instanceof HTMLDetailsElement || record.target.closest(segmentSelector)
             : [...record.addedNodes].some(node=>node instanceof Element && (node.matches(`details,${segmentSelector}`) || node.querySelector(`details,${segmentSelector}`))))) refreshMotion();
-    }).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','class','aria-pressed','aria-selected','aria-current']});
+    }).observe(document.body,{childList:true,subtree:true,attributes:true,attributeFilter:['open','class','aria-pressed','aria-selected','aria-current','aria-checked','checked']});
+    document.addEventListener('change',event=>{if(event.target.matches('input[type=radio],input[role=switch]'))refreshMotion();});
     window.addEventListener('resize',refreshMotion);
     document.fonts.ready.then(refreshMotion); enhanceInteractiveMotion();
     window.serialArmStudio = {enterPage,anchorPopover};
@@ -229,6 +280,8 @@
             trigger.setAttribute('aria-controls', menu.id);
             select.before(wrapper); wrapper.append(select, trigger, menu);
             select.classList.add('studio-native-select'); select.tabIndex = -1; select.setAttribute('aria-hidden', 'true');
+            select.addEventListener('click',event=>event.preventDefault());
+            select.addEventListener('focus',()=>trigger.focus({preventScroll:true}));
             const update = () => {
                 const text = select.selectedOptions[0]?.textContent || '';
                 if (selectedText.textContent !== text) selectedText.textContent = text;
@@ -244,13 +297,14 @@
             };
             function position() {
                 const rect = trigger.getBoundingClientRect();
-                const height = Math.min(360, innerHeight - 24);
-                const below = innerHeight - rect.bottom - 8, above = rect.top - 8;
-                const room = below >= Math.min(height, menu.scrollHeight) || below >= above ? below : above;
                 menu.style.width = `${Math.min(Math.max(rect.width, 250), innerWidth - 16)}px`;
-                menu.style.maxHeight = `${Math.max(70, Math.min(height, room))}px`;
+                const height = Math.min(360, innerHeight - 16);
+                menu.style.maxHeight = `${height}px`;
+                const below = Math.max(0,innerHeight - rect.bottom - 8), above = Math.max(0,rect.top - 8);
+                const useBelow = below >= Math.min(height,menu.scrollHeight) || below >= above;
+                menu.style.maxHeight = `${Math.min(height,useBelow?below:above)}px`;
                 menu.style.left = `${Math.max(8, Math.min(rect.left, innerWidth - menu.offsetWidth - 8))}px`;
-                menu.style.top = below >= Math.min(height, menu.scrollHeight) || below >= above
+                menu.style.top = useBelow
                     ? `${rect.bottom + 5}px` : `${Math.max(8, rect.top - menu.offsetHeight - 5)}px`;
             }
             function prepareOptions() {
@@ -286,19 +340,21 @@
                 }
                 if (search) search.oninput = () => {
                     for (const option of scroll.children) option.hidden = !option.textContent.toLowerCase().includes(search.value.toLowerCase());
+                    position();
                 };
             }
             // The browser treats the invoker as part of its popover. A manual
             // onclick toggle races auto light-dismiss on a second pointer click
             trigger.popoverTargetElement = menu;
             trigger.popoverTargetAction = 'toggle';
+            let openingKey = '';
             menu.addEventListener('beforetoggle', event => {
                 if (event.newState === 'open') prepareOptions();
             });
             trigger.onkeydown = event => {
                 if (event.isComposing || !['ArrowDown', 'ArrowUp'].includes(event.key)) return;
                 event.preventDefault();
-                if (!menu.matches(':popover-open')) trigger.click();
+                if (!menu.matches(':popover-open')) { openingKey=event.key; trigger.click(); }
                 else menu.querySelector('[aria-selected="true"]:not(:disabled),button:not(:disabled)')?.focus();
             };
             menu.onkeydown = event => {
@@ -307,7 +363,7 @@
                 const current = options.indexOf(document.activeElement);
                 if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key) && options.length) {
                     event.preventDefault();
-                    const index = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1
+                    const index = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 : current < 0 ? (event.key==='ArrowUp'?options.length-1:0)
                         : (current + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
                     options[index].focus();
                 }
@@ -317,13 +373,16 @@
                 trigger.setAttribute('aria-expanded', String(open));
                 if (open) {
                     position();
-                    (menu.querySelector('input') || menu.querySelector('[aria-selected="true"]:not(:disabled)') || menu.querySelector('button:not(:disabled)'))?.focus();
+                    const options=[...menu.querySelectorAll('[role=option]:not(:disabled)')];
+                    (openingKey==='ArrowUp'?options.at(-1):openingKey?menu.querySelector('[aria-selected="true"]:not(:disabled)')||options[0]:menu.querySelector('input')||menu.querySelector('[aria-selected="true"]:not(:disabled)')||options[0])?.focus();
+                    openingKey='';
                 } else if (menu.contains(document.activeElement)) trigger.focus();
             });
             window.serialArmStudio.anchorPopover(menu, trigger);
             select.addEventListener('change', update);
             for (const label of select.labels || []) label.addEventListener('click', event => {
-                if (event.target === label) { event.preventDefault(); trigger.focus(); }
+                const interactive=event.target instanceof Element?event.target.closest('button,input,a,textarea,[contenteditable]'):null;
+                if (!interactive || interactive===select) { event.preventDefault(); trigger.focus({preventScroll:true}); }
             });
             enhanced.set(select, {update}); update();
         });
