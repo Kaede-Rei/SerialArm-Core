@@ -9,6 +9,12 @@ namespace serial_arm::calibration_replay_supervisor {
 // remain unchanged.  Soft limits are strictly BELOW the historical following
 // tolerance.  Do not interpret these as general-purpose collision safety
 enum class State { FOLLOWING, PAUSE_FOR_FEEDBACK };
+// Acquisition already owns a smooth source-time governor. A second, pointwise
+// catch-up loop would freeze that reference at an unattainable PD/load bias and
+// turn a soft diagnostic into a timeout. Other consumers keep their bounded
+// catch-up behavior; invalid feedback and the hard following boundary always
+// prohibit progress under either policy.
+enum class SoftFollowingPolicy { BOUNDED_CATCHUP, CONTINUOUS_GOVERNED_PATH };
 struct Assessment {
     State state{State::PAUSE_FOR_FEEDBACK};
     bool valid{false};
@@ -82,10 +88,19 @@ inline Assessment evaluate_reference_layers(const std::vector<double>& requested
         State::PAUSE_FOR_FEEDBACK:State::FOLLOWING;
     return result;
 }
+inline bool should_pause_for_feedback(const Assessment& assessment,
+    SoftFollowingPolicy policy=SoftFollowingPolicy::BOUNDED_CATCHUP) noexcept {
+    return !assessment.valid || assessment.hard_violation ||
+        (policy==SoftFollowingPolicy::BOUNDED_CATCHUP && assessment.state==State::PAUSE_FOR_FEEDBACK);
+}
+inline bool reference_progress_allowed(const Assessment& assessment,
+    SoftFollowingPolicy policy=SoftFollowingPolicy::BOUNDED_CATCHUP) noexcept {
+    return assessment.valid && !assessment.hard_violation && !should_pause_for_feedback(assessment,policy);
+}
 // Slow the SEARCH trajectory before the soft following limit is reached
 // This governor does not run during frozen validation and cannot relax limits
 inline double search_progress_scale(const Assessment& assessment) noexcept {
-    if(!assessment.valid || assessment.soft_limit.empty())return 0.0;
+    if(!assessment.valid || assessment.hard_violation || assessment.soft_limit.empty())return 0.0;
     const double soft=assessment.soft_limit[assessment.worst_joint];
     if(!std::isfinite(soft) || soft<=0.0)return 0.0;
     const double ratio=assessment.max_error/soft;

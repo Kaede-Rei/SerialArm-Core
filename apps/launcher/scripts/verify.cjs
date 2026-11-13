@@ -57,5 +57,6 @@ for (const method of literalMethods) {
   if (method === 'logs' || method === 'calibration_candidate_' || dynamicGroups.has(method)) continue;
   if (!allowed.has(method)) throw new Error('Renderer request not allowed by Electron: ' + method);
 }
+require('./verify-native-runtime.cjs');
 require('./verify-gain-calibration.cjs');
 console.log('LAUNCHER_STATIC_PASS');

@@ -3240,15 +3240,25 @@ private:
                                           const serial_arm::calibration_replay_supervisor::CompliantBounds* compliant_limits=nullptr,
                                           bool standalone_replay=false,
                                           bool compliant_replay=false) {
-        // Keep the demonstrated path.  Supervise EACH replay point using live
-        // feedback; when catching up, position reference is frozen AND target
-        // velocity becomes ZERO.  Holding a nonzero target velocity was able to
-        // drive a Damiao MIT motor beyond a frozen position reference
+        // Keep the demonstrated path and supervise every point with live
+        // feedback. Bounded catch-up freezes position AND sets velocity zero;
+        // continuous gravity acquisition keeps its existing smooth governor.
+        // A frozen position must never retain a nonzero MIT velocity target.
         using serial_arm::calibration_reference_watchdog::Heartbeat;
         using serial_arm::calibration_replay_supervisor::evaluate;
         using serial_arm::calibration_replay_supervisor::State;
+        using serial_arm::calibration_replay_supervisor::SoftFollowingPolicy;
+        using serial_arm::calibration_replay_supervisor::should_pause_for_feedback;
+        using serial_arm::calibration_replay_supervisor::reference_progress_allowed;
         Heartbeat heartbeat(Robot::Clock::now());
-        // Search and gravity acquisition pause at the soft follow threshold.
+        // Gravity acquisition already advances through a continuous, slew-
+        // limited feedback governor. A second per-knot frozen-reference wait
+        // cannot remove a static load/friction bias and used to time out at
+        // the frozen-verification deadline despite healthy feedback. Keep its
+        // existing hard following guard and transport watchdog independent.
+        const auto following_policy=!standalone_replay && !metrics && model_calibration_workflow_kind_=="gravity"?
+            SoftFollowingPolicy::CONTINUOUS_GOVERNED_PATH:SoftFollowingPolicy::BOUNDED_CATCHUP;
+        // Bounded replay pauses at its soft following threshold.
         // A frozen gain verification has a DIFFERENT instant-error acceptance
         // criterion. Keep the pause threshold consistent with that criterion
         // while the independent hard following guard always remains active
@@ -3298,7 +3308,7 @@ private:
                 follow_error=(standalone_replay ? "trajectory replay initial reference exceeds hard following limit" : "calibration replay initial reference exceeds hard following limit");
                 return false;
             }
-            if(first.state==State::PAUSE_FOR_FEEDBACK) {
+            if(should_pause_for_feedback(first,following_policy)) {
                 braking=true;
                 heartbeat.begin_catchup(Robot::Clock::now());
                 if(metrics)++metrics->pauses;
@@ -3350,7 +3360,7 @@ private:
                 // Search revises gains on a measurable rising error BEFORE
                 // reaching the pause threshold, not only after a full stop
                 const double error_ratio=status.max_error/status.soft_limit[status.worst_joint];
-                if(status.state!=State::FOLLOWING && !braking) {
+                if(should_pause_for_feedback(status,following_policy) && !braking) {
                     braking=true;
                     heartbeat.begin_catchup(now);
                     if(metrics)++metrics->pauses;
@@ -3358,7 +3368,7 @@ private:
                     // MIT velocity setpoint. Brake immediately at the SAME q
                     if(!issue_reference(true))return false;
                 }
-                if(braking && status.state==State::FOLLOWING &&
+                if(braking && reference_progress_allowed(status,following_policy) &&
                    status.peak_velocity<=status.recovery_velocity_limit) return true;
                 if(!model_calibration_active_tracking_gains_) {
                     follow_error=(standalone_replay ? "trajectory replay tracking gains are unavailable" : "automatic calibration replay gains are unavailable");
@@ -3394,7 +3404,7 @@ private:
                     }
                     model_calibration_last_replay_gain_revision_=now;
                 }
-                if(status.state==State::FOLLOWING && !braking)return true;
+                if(reference_progress_allowed(status,following_policy) && !braking)return true;
                 if(heartbeat.catchup_expired(now,allow_gain_revision || (standalone_replay && compliant_replay))) {
                     std::ostringstream diagnostic;
                     diagnostic<<std::fixed<<std::setprecision(4)

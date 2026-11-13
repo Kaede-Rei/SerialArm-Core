@@ -108,6 +108,33 @@ def standalone_env(env):
     return env
 
 
+def native_python_paths(prefix, library_paths, python, env=None):
+    """Expose only this interpreter's ABI from Core and native dependency roots."""
+    environment = standalone_env(env or os.environ)
+    result = subprocess.run([str(python), '-I', '-c',
+        'import sys; print(str(sys.version_info.major)+"."+str(sys.version_info.minor))'],
+        env=environment, capture_output=True, text=True, timeout=5)
+    abi = result.stdout.strip()
+    if result.returncode or len(abi.split('.')) != 2 or not all(x.isdigit() for x in abi.split('.')):
+        raise InstallError(f'无法读取后端 Python ABI：{python}\n{result.stderr.strip()}')
+    ros_prefixes = [Path(value) for key in ('AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH')
+                    for value in (env or os.environ).get(key, '').split(os.pathsep) if value]
+    def ros_path(folder):
+        return str(folder).startswith('/opt/ros/') or any(folder == base or base in folder.parents for base in ros_prefixes)
+    roots = [Path(prefix) / folder for folder in ('lib', 'lib64', 'local/lib', 'python-venv/lib')] if prefix else []
+    for value in library_paths:
+        folder = Path(value)
+        if ros_path(folder):
+            continue
+        roots.append(folder)
+        for parent in (folder, *folder.parents):
+            if parent.name in ('lib', 'lib64'):
+                roots.append(parent)
+                break
+    modules = [folder / ('python' + abi) / site for folder in roots for site in ('site-packages', 'dist-packages')]
+    return list(dict.fromkeys(folder for folder in modules if folder.is_dir()))
+
+
 class Runner:
     def __init__(self, plan):
         self.plan = plan
@@ -495,12 +522,13 @@ class Runner:
         if not self.plan.ros2:
             # The standalone bootstrap also records a Conan dependency runtime
             lines.append("source " + shlex.quote(str(self.setup)) + " || return")
+        dependencies = self.dependency_library_paths()
+        python_modules = native_python_paths(self.prefix, dependencies, self.python or sys.executable, self.env)
         for key, values in (
             ("PATH", [self.prefix / "bin"]),
-            ("LD_LIBRARY_PATH", [self.prefix / "lib", self.prefix / "lib64", *self.dependency_library_paths()]),
+            ("LD_LIBRARY_PATH", [self.prefix / "lib", self.prefix / "lib64", *dependencies]),
             ("SERIAL_ARM_RESOURCE_PATH", [self.prefix]),
-            ("PYTHONPATH", [p for folder in ("lib", "lib64", "local/lib", "python-venv/lib")
-                            for p in (self.prefix / folder).glob("python*/*-packages") if p.is_dir()]),
+            ("PYTHONPATH", python_modules),
         ):
             if values:
                 lines.append("export " + key + "=" + shlex.quote(os.pathsep.join(map(str, values)))
@@ -640,9 +668,10 @@ exec "$@"
     def refresh_runtime_entries(self, manifest):
         """Upgrade existing installations without rebuilding any native code"""
         if not manifest.get('install_prefix'): return
-        original = (self.plan, self.prefix, self.build, self.setup, self.ros_setup)
+        original = (self.plan, self.prefix, self.build, self.setup, self.ros_setup, self.python)
         try:
             self.plan = SimpleNamespace(ros2=bool(manifest.get('ros2')), python=bool(manifest.get('python')))
+            self.python = Path(manifest['python_executable']) if manifest.get('python_executable') else None
             self.prefix = Path(manifest['install_prefix'])
             self.build = Path(manifest.get('build_dir') or self.build)
             self.setup = Path(manifest.get('backend_setup') or self.prefix / 'setup.bash')
@@ -663,7 +692,7 @@ exec "$@"
                 'else source "$(dirname "${BASH_SOURCE[0]}")/setup.bash"; fi\nexec "$@"\n')
             run.chmod(0o755)
         finally:
-            self.plan, self.prefix, self.build, self.setup, self.ros_setup = original
+            self.plan, self.prefix, self.build, self.setup, self.ros_setup, self.python = original
 
     def entry_text(self, key="workspace_setup"):
         # Python prints one trusted path; shell quotes it as data, never evals it

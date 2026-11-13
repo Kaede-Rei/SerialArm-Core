@@ -4,11 +4,14 @@
 #include "serial_arm/dynamics/adaptive_gain_tuning.hpp"
 #include "serial_arm/dynamics/gravity_calibration.hpp"
 #include "serial_arm/runtime/control_runtime.hpp"
+#include "serial_arm/dynamics/calibration_replay_supervisor.hpp"
+#include "serial_arm/dynamics/calibration_reference_watchdog.hpp"
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <thread>
 using namespace serial_arm;
@@ -17,7 +20,7 @@ class MemoryBus final:public MotorBus {
 public:
     HardwareCapabilities caps{{"a",-2,2,2,1,100,5,"a"},{"b",-2,2,2,1,100,5,"b"}};
     ActuatorState state{{0,0},{0,0},{0,0},{1,1},{1,1},{0,0},{},{1,1}};
-    ActuatorCtrlCmd last;std::size_t writes=0,stops=0;
+    ActuatorCtrlCmd last;std::size_t writes=0,stops=0;bool read_failed{false};
     tl::expected<void,MotorBusErr> configure(const std::string&) override{return {};}
     tl::expected<void,MotorBusErr> connect()override{return {};}
     tl::expected<void,MotorBusErr> activate()override{return {};}
@@ -25,6 +28,7 @@ public:
     tl::expected<void,MotorBusErr> stop()override{++stops;return {};}
     tl::expected<void,MotorBusErr> recover()override{return {};}
     tl::expected<ActuatorState,MotorBusErr> read()override {
+        if(read_failed)return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
         const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count();
         state.feedback_received_ns.assign(2,ns);return state;
     }
@@ -101,6 +105,68 @@ int main() {
         runtime.step(assessment.robot);
         for(unsigned i=0;i<30 && assessment.robot.get_state()==RobotState::ACTIVE;++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));runtime.step(assessment.robot);}
         check(assessment.robot.get_state()==RobotState::FAULT && assessment.robot.get_last_fault()->safety_fault.code==SafetyErr::CMD_TIMEOUT,"ordinary command loss must still produce CMD_TIMEOUT");
+
+        // Model-data acquisition keeps progressing with the user's actual
+        // fixed PD when a healthy response settles just above the soft line.
+        // This is the same shared policy, runtime reference API and heartbeat
+        // used by the native gravity traversal, with a memory-only bus.
+        {
+            namespace replay=serial_arm::calibration_replay_supervisor;
+            using Heartbeat=serial_arm::calibration_reference_watchdog::Heartbeat;
+            constexpr auto policy=replay::SoftFollowingPolicy::CONTINUOUS_GOVERNED_PATH;
+            Fixture acquisition;ControlRuntime acquisition_runtime;
+            const JointImpedanceGains fixed{{4.761904761904762,4.761904761904762},{.12087912087912088,.12087912087912088}};
+            check(bool(acquisition_runtime.set_impedance_mode(acquisition.robot,JointImpedanceMode::RIGID_TRACKING)),"gravity acquisition tracking setup failed");
+            check(acquisition.robot.set_calibration_tracking_gains(fixed,JointImpedanceMode::RIGID_TRACKING),"gravity acquisition fixed PD setup failed");
+            // Establish the existing finite gain transition before examining
+            // fixed-PD data; a gain ramp is not a new adaptive revision.
+            for(unsigned i=0;i<75;++i) {
+                check(bool(acquisition_runtime.submit_reference(acquisition.robot,JointPosVelCmd{{0,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION)),"gravity setup reference rejected");
+                check(acquisition_runtime.step(acquisition.robot).cycle.has_value(),"gravity setup cycle failed");
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            const auto began=Robot::Clock::now();Heartbeat heartbeat(began),old_catchup(began);old_catchup.begin_catchup(began);
+            double source_progress=0;unsigned samples=0;replay::Assessment observed;
+            while(Robot::Clock::now()-began<std::chrono::milliseconds(1400)) {
+                const auto now=Robot::Clock::now();
+                // Every axis uses one common rule, independent of name,
+                // inertia or index; the offset reproduces the recorded
+                // 0.058884 rad plateau below the unchanged 0.14 rad hard guard.
+                for(std::size_t i=0;i<acquisition.bus->state.pos.size();++i) {
+                    acquisition.bus->state.pos[i]=source_progress-.058884;
+                    acquisition.bus->state.vel[i]=-.0073261260986328125;
+                }
+                check(bool(acquisition_runtime.submit_reference(acquisition.robot,JointPosVelCmd{{source_progress,source_progress},{.001,.001}},now,MotionSource::CALIBRATION)),"gravity progressing reference rejected");
+                heartbeat.command_sent(now);
+                const auto step=acquisition_runtime.step(acquisition.robot);
+                check(step.cycle.has_value() && step.state==RobotState::ACTIVE,"gravity acquisition lost a healthy runtime cycle");
+                heartbeat.control_cycle_received(Robot::Clock::now());
+                observed=replay::evaluate(step.cycle->joint_cmd.pos,step.cycle->joint_state.pos,step.cycle->joint_state.vel,{2,2});
+                check(observed.valid && !observed.hard_violation && observed.state==replay::State::PAUSE_FOR_FEEDBACK,"gravity fixture did not exercise the soft-only departure");
+                check(!replay::should_pause_for_feedback(observed,policy) && replay::reference_progress_allowed(observed,policy),"gravity acquisition incorrectly became point catch-up validation");
+                if(replay::should_pause_for_feedback(observed,policy))heartbeat.begin_catchup(Robot::Clock::now());
+                check(!heartbeat.catchup_expired(Robot::Clock::now(),false) && !heartbeat.feedback_stalled(Robot::Clock::now()),"healthy gravity traversal expired its reference heartbeat");
+                for(std::size_t i=0;i<fixed.kp.size();++i)
+                    check(std::abs(step.cycle->joint_cmd.kp[i]-fixed.kp[i])<1e-9 && std::abs(step.cycle->joint_cmd.kd[i]-fixed.kd[i])<1e-9,"gravity traversal grew PD in response to static lag");
+                source_progress+=.005*.001*replay::search_progress_scale(observed);++samples;
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            check(samples>=200 && source_progress>0 && old_catchup.catchup_expired(Robot::Clock::now(),false),"gravity acquisition did not progress beyond the old 1.2 second catch-up timeout");
+            check(replay::should_pause_for_feedback(observed,replay::SoftFollowingPolicy::BOUNDED_CATCHUP),"ordinary replay unexpectedly lost its bounded soft catch-up");
+            const auto hard=replay::evaluate({0,0},{-.14001,-.14001},{0,0},{2,2});
+            check(hard.hard_violation && !replay::reference_progress_allowed(hard,policy),"gravity acquisition weakened the unchanged hard following guard");
+            const auto invalid=replay::evaluate({0,0},{std::numeric_limits<double>::quiet_NaN(),0},{0,0},{2,2});
+            check(!invalid.valid && !replay::reference_progress_allowed(invalid,policy),"gravity acquisition allowed invalid feedback to advance");
+            acquisition.bus->read_failed=true;
+            const auto lost=acquisition_runtime.step(acquisition.robot);
+            check(!lost.cycle && lost.state==RobotState::FAULT,"failed real bus feedback did not stop gravity acquisition");
+            check(!acquisition_runtime.submit_reference(acquisition.robot,JointPosVelCmd{{0,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION),"gravity reference continued after actual feedback failure");
+            Fixture stopped;ControlRuntime stopped_runtime;
+            check(bool(stopped_runtime.set_impedance_mode(stopped.robot,JointImpedanceMode::RIGID_TRACKING)),"gravity stop setup failed");
+            check(bool(stopped.robot.deactivate()),"gravity user-stop lifecycle failed");
+            check(!stopped_runtime.submit_reference(stopped.robot,JointPosVelCmd{{0,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION),"gravity reference continued after user stop");
+            std::cout<<"gravity continuous acquisition: "<<samples<<" actual memory-bus cycles, fixed PD, soft offset preserved, hard/feedback/stop guards retained\n";
+        }
         for(double amplitude:{.0015,.002}) {
         Fixture guarded;
         check(guarded.robot.set_calibration_tracking_gains({{10,10},{.2,.2}},JointImpedanceMode::RIGID_HOLD),"guard candidate setup failed");
