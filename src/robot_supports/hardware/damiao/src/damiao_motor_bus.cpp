@@ -207,6 +207,9 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const DamiaoBusCfg& cf
         capability.kp_resolution = 500.0 / 4095.0;
         capability.kd_resolution = 5.0 / 4095.0;
         capability.effort_resolution = 2.0 * static_cast<double>(limit.tau_max) / 4095.0;
+        // Position/velocity mode uses the standard Damiao 0x100 protocol.
+        // Firmware must support online CTRL_MODE switching; activation confirms it.
+        capability.supports_csp = true;
         capabilities_.push_back(std::move(capability));
     }
     configured_ = true;
@@ -399,11 +402,37 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read() {
  * @brief 激活 DamiaoMotorBus
  * @return 如果激活成功，则返回空的 tl::expected，否则返回错误码
  */
+tl::expected<void, MotorBusErr> DamiaoMotorBus::select_control_path(ControlPath path, const ActuatorVector& position_speed_limit) {
+    if(active_) return tl::make_unexpected(MotorBusErr::INVALID_STATE);
+    if(!configured_) return tl::make_unexpected(MotorBusErr::NOT_CONFIGURED);
+    if(path != ControlPath::MIT && path != ControlPath::CSP)
+        return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+    for(const auto& capability : capabilities_) {
+        if((path == ControlPath::MIT && !capability.supports_mit) ||
+           (path == ControlPath::CSP && !capability.supports_csp))
+            return tl::make_unexpected(MotorBusErr::MODE_SWITCH_FAILED);
+    }
+    if(path == ControlPath::CSP) {
+        if(position_speed_limit.size() != capabilities_.size() || !finite_vector(position_speed_limit))
+            return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+        for(std::size_t i = 0; i < capabilities_.size(); ++i)
+            if(position_speed_limit[i] <= 0.0 || position_speed_limit[i] > capabilities_[i].max_vel)
+                return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+    }
+    path_ = path;
+    selected_position_speed_limit_ = position_speed_limit;
+    last_position_speed_limit_ = position_speed_limit;
+    return {};
+}
+
 tl::expected<void, MotorBusErr> DamiaoMotorBus::activate() {
     if(!connected_ || !motor_ctrl_ || !can_channel_) {
         return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
     }
     if(active_) return {};
+    if(path_ == ControlPath::CSP && (selected_position_speed_limit_.size() != motors_.size() ||
+        !finite_vector(selected_position_speed_limit_)))
+        return tl::make_unexpected(MotorBusErr::INVALID_CMD);
 
     try {
         if(can_channel_) can_channel_->flush();
@@ -481,16 +510,18 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::write(const ActuatorCtrlCmd& cmd
 
     try {
         for(std::size_t i = 0; i < motors_.size(); ++i) {
-            if(!motor_ctrl_->control_mit(*motors_[i],
-                static_cast<float>(cmd.kp[i]),
-                static_cast<float>(cmd.kd[i]),
-                static_cast<float>(cmd.pos[i]),
-                static_cast<float>(cmd.vel[i]),
-                static_cast<float>(cmd.tor[i]),
-                false)) {
+            const bool sent = path_ == ControlPath::MIT ?
+                motor_ctrl_->control_mit(*motors_[i],
+                    static_cast<float>(cmd.kp[i]), static_cast<float>(cmd.kd[i]),
+                    static_cast<float>(cmd.pos[i]), static_cast<float>(cmd.vel[i]),
+                    static_cast<float>(cmd.tor[i]), false) :
+                motor_ctrl_->control_pos_vel(*motors_[i],
+                    static_cast<float>(cmd.pos[i]), static_cast<float>(cmd.position_speed_limit[i]), false);
+            if(!sent) {
                 return tl::make_unexpected(MotorBusErr::WRITE_FAILED);
             }
         }
+        if(path_ == ControlPath::CSP) last_position_speed_limit_ = cmd.position_speed_limit;
         return {};
     }
     catch(...) {
@@ -504,17 +535,26 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::write(const ActuatorCtrlCmd& cmd
  */
 tl::expected<void, MotorBusErr> DamiaoMotorBus::stop() {
     if(!active_) return tl::make_unexpected(MotorBusErr::NOT_ACTIVE);
-    if(last_state_.pos.size() != motors_.size() || !finite_vector(last_state_.pos)) {
-        auto state = read_impl(true);
-        if(!state) return tl::make_unexpected(state.error());
-    }
+    // The transport receiver can already have newer feedback queued when a
+    // stop arrives between control cycles. Anchor to that observation rather
+    // than the position cached by the previous read; this remains nonblocking.
+    const auto current = read_impl(false);
+    if(!current) return tl::make_unexpected(current.error());
+    if(std::any_of(online_.begin(), online_.end(), [](std::uint8_t value) { return value == 0; }))
+        return tl::make_unexpected(MotorBusErr::ACTUATOR_OFFLINE);
 
     ActuatorCtrlCmd stop_cmd;
+    stop_cmd.path = path_;
     stop_cmd.pos = last_state_.pos;
     stop_cmd.vel.assign(motors_.size(), 0.0);
+    if(path_ == ControlPath::CSP) {
+        stop_cmd.position_speed_limit = last_position_speed_limit_;
+        if(stop_cmd.position_speed_limit.size() != motors_.size())
+            return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+    }
     stop_cmd.tor.assign(motors_.size(), 0.0);
-    stop_cmd.kp.assign(motors_.size(), cfg_.stop_kp);
-    stop_cmd.kd.assign(motors_.size(), cfg_.stop_kd);
+    stop_cmd.kp.assign(motors_.size(), path_ == ControlPath::MIT ? cfg_.stop_kp : 0.0);
+    stop_cmd.kd.assign(motors_.size(), path_ == ControlPath::MIT ? cfg_.stop_kd : 0.0);
 
     for(std::size_t cycle = 0; cycle < cfg_.stop_cycles; ++cycle) {
         auto result = write(stop_cmd);
@@ -658,21 +698,39 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index
             continue;
         }
 
+        // Disabled feedback is the most recent confirmed actuator position.
+        // The first position command follows enable without the SDK settling
+        // delay; the driver does not specify whether disabled commands latch.
+        const float anchor = motors_[index]->get_position();
+        if(path_ == ControlPath::CSP && !std::isfinite(anchor))
+            return tl::make_unexpected(MotorBusErr::READ_FAILED);
+        const auto mode = path_ == ControlPath::MIT ? damiao::MIT_MODE : damiao::POS_VEL_MODE;
+        if(!motor_ctrl_->switch_control_mode(*motors_[index], mode)) {
+            last_error = MotorBusErr::MODE_SWITCH_FAILED;
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            continue;
+        }
+
         previous_seq = motors_[index]->get_state_seq();
-        if(!motor_ctrl_->enable(*motors_[index]) || !confirm_motor_status(index, 1, previous_seq)) {
+        bool sent_enable = false;
+        if(path_ == ControlPath::CSP) {
+            sent_enable = motor_ctrl_->enable_immediate(*motors_[index]);
+            if(sent_enable && !motor_ctrl_->control_pos_vel(*motors_[index], anchor,
+                    static_cast<float>(selected_position_speed_limit_[index]), false)) {
+                (void)motor_ctrl_->disable(*motors_[index]);
+                return tl::make_unexpected(MotorBusErr::WRITE_FAILED);
+            }
+        } else {
+            sent_enable = motor_ctrl_->enable(*motors_[index]);
+        }
+        if(!sent_enable || !confirm_motor_status(index, 1, previous_seq)) {
             last_error = motors_[index]->get_status() > 1 && motors_[index]->get_status() != 0xFF ?
                 MotorBusErr::ACTUATOR_FAULT : MotorBusErr::ENABLE_FAILED;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
 
-        if(motor_ctrl_->switch_control_mode(*motors_[index], damiao::MIT_MODE)) return {};
-
-        last_error = MotorBusErr::MODE_SWITCH_FAILED;
-        previous_seq = motors_[index]->get_state_seq();
-        (void)motor_ctrl_->disable(*motors_[index]);
-        (void)confirm_motor_status(index, 0, previous_seq);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        return {};
     }
 
     return tl::make_unexpected(last_error);
@@ -731,6 +789,10 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cfg(const DamiaoBusCfg&
  */
 tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cmd(const ActuatorCtrlCmd& cmd) const {
     const std::size_t n = motors_.size();
+    if(cmd.path != path_) return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+    if(path_ == ControlPath::CSP && (selected_position_speed_limit_.size() != n ||
+        cmd.position_speed_limit.size() != n || !finite_vector(cmd.position_speed_limit)))
+        return tl::make_unexpected(MotorBusErr::INVALID_CMD);
     if(cmd.pos.size() != n || cmd.vel.size() != n || cmd.tor.size() != n ||
         cmd.kp.size() != n || cmd.kd.size() != n ||
         !finite_vector(cmd.pos) || !finite_vector(cmd.vel) || !finite_vector(cmd.tor) ||
@@ -741,7 +803,9 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cmd(const ActuatorCtrlC
     constexpr double epsilon = 1e-9;
     for(std::size_t i = 0; i < n; ++i) {
         const auto limit = motors_[i]->get_limit_param();
-        if(cmd.kp[i] < 0.0 || cmd.kp[i] > 500.0 + epsilon ||
+        if((path_ == ControlPath::CSP && (cmd.kp[i] != 0.0 || cmd.kd[i] != 0.0 || cmd.tor[i] != 0.0 ||
+            cmd.position_speed_limit[i] <= 0.0 || cmd.position_speed_limit[i] > selected_position_speed_limit_[i] + epsilon)) ||
+            cmd.kp[i] < 0.0 || cmd.kp[i] > 500.0 + epsilon ||
             cmd.kd[i] < 0.0 || cmd.kd[i] > 5.0 + epsilon ||
             std::abs(cmd.pos[i]) > static_cast<double>(limit.q_max) + epsilon ||
             std::abs(cmd.vel[i]) > static_cast<double>(limit.dq_max) + epsilon ||
@@ -810,10 +874,13 @@ void DamiaoMotorBus::release_connection_noexcept(bool keep_config) noexcept {
     has_feedback_.clear();
     last_feedback_time_.clear();
     last_state_ = ActuatorState{};
+    selected_position_speed_limit_.clear();
+    last_position_speed_limit_.clear();
     connected_ = false;
     active_ = false;
     if(!keep_config) {
         cfg_ = DamiaoBusCfg{};
+        path_ = ControlPath::MIT;
         actuator_info_.clear();
         configured_ = false;
     }

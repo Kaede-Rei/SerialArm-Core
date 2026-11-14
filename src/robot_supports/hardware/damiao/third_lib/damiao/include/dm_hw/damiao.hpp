@@ -370,6 +370,12 @@ public:
      * @brief 使能电机
      * @param motor 电机对象
      */
+    // Send enable without the normal 100 ms settling delay so a position
+    // hold can follow immediately; callers must confirm status separately.
+    bool enable_immediate(const Motor& motor) {
+        return control_cmd(motor.get_slave_id(), 0xFC);
+    }
+
     bool enable(const Motor& motor) {
         const bool sent = control_cmd(motor.get_slave_id(), 0xFC);
         usleep(100000); // 100ms
@@ -480,7 +486,7 @@ public:
      * @param pos 位置
      * @param vel 速度
      */
-    void control_pos_vel(Motor& motor, float pos, float vel) {
+    bool control_pos_vel(Motor& motor, float pos, float vel, bool receive_feedback = true) {
         MotorId id = motor.get_slave_id();
         if(motors_by_slave_id_.find(id) == motors_by_slave_id_.end()) {
             throw std::runtime_error("POS_VEL ERROR : MotorControl id not found");
@@ -489,8 +495,9 @@ public:
         memcpy(data_buf.data(), &pos, sizeof(float));
         memcpy(data_buf.data() + 4, &vel, sizeof(float));
         id += POS_MODE;
-        (void)send_frame(id, data_buf);
-        this->receive();
+        const bool sent = send_frame(id, data_buf);
+        if(receive_feedback) this->receive();
+        return sent;
     }
 
     /**

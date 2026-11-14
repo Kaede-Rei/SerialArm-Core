@@ -2,7 +2,8 @@
 """Hardware-free installed Python binding check"""
 
 import numpy as np
-from serial_arm import ActuatorInfo, ActuatorState, DynamicsState, JointCtrlCmd, JointState, RobotCycleOutput, RobotSessionSnapshot
+from serial_arm import (ActuatorCtrlCmd, ActuatorInfo, ActuatorState, AdmittanceCapabilityCfg, ControlPath, DynamicsState, JointCtrlCmd,
+                        JointImpedanceMode, JointState, RobotCycleOutput, RobotSessionSnapshot)
 
 
 def check_vector(owner, field, values):
@@ -21,6 +22,14 @@ def check_vector(owner, field, values):
 
 
 def main():
+    admittance = AdmittanceCapabilityCfg()
+    assert admittance.enabled is False
+    try:
+        admittance.enabled = True
+    except AttributeError:
+        pass
+    else:
+        raise AssertionError('admittance.enabled must remain read-only derived capability')
     motion=RobotSessionSnapshot().motion
     assert motion.target_reached is False and len(motion.position_error)==0
     assert motion.reference_complete is False and motion.state=='idle'
@@ -33,6 +42,7 @@ def main():
             raise AssertionError(f'motion.{field} must remain read-only measured status')
     capability=ActuatorInfo()
     assert capability.effort_resolution == 0.0
+    assert capability.supports_mit is True and capability.supports_csp is False
     try:
         capability.effort_resolution = 0.1
     except AttributeError:
@@ -45,6 +55,10 @@ def main():
     assert feedback.feedback_received_ns==[12345678901234567]
     assert feedback.feedback_timing_valid==[1]
     cycle=RobotCycleOutput()
+    assert cycle.interaction_mode == JointImpedanceMode.RIGID
+    assert cycle.control_path == ControlPath.MIT
+    assert set(JointImpedanceMode.__members__) == {'RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'}
+    assert set(ControlPath.__members__) == {'MIT', 'CSP'}
     assert hasattr(cycle,'joint_acc_valid') and hasattr(cycle,'feedback_age_ms')
     assert cycle.command_written_ns == 0
     assert cycle.hold_integrator_freeze_reasons == []
@@ -68,6 +82,12 @@ def main():
         check_vector(ActuatorState(), field, np.arange(begin, begin + 6, dtype=np.float64))
 
     ctrl = JointCtrlCmd()
+    assert ctrl.path == ControlPath.MIT
+    ctrl.path = ControlPath.CSP
+    check_vector(ctrl, 'position_speed_limit', [0.1, 0.2])
+    actuator = ActuatorCtrlCmd()
+    actuator.path = ControlPath.CSP
+    check_vector(actuator, 'position_speed_limit', [0.3, 0.4])
     for field, begin in (('pos', 61), ('vel', 71), ('tor', 81), ('kp', 91), ('kd', 101)):
         check_vector(ctrl, field, np.arange(begin, begin + 6, dtype=np.float64))
 

@@ -28,6 +28,11 @@ public:
     void close() noexcept override {}
     bool is_open() const noexcept override { return true; }
     tl::expected<void,CanErr> send(const CanFrame& frame) override {
+        sent_frames.push_back(frame);
+        if(fail_send || (fail_next_position && frame.id == 0x101)) {
+            fail_next_position = false;
+            return tl::make_unexpected(CanErr::WRITE_FAILED);
+        }
         if(frame.id==0x7ff && frame.data[2]==damiao::PARAM_READ_CMD) {
             auto reply=frame;reply.id=frame.data[0];
             const float value=frame.data[3]==damiao::PMAX?12.5f:
@@ -38,7 +43,11 @@ public:
         } else if(frame.id==0x7ff && frame.data[2]==damiao::PARAM_WRITE_CMD) {
             auto reply=frame;reply.id=frame.data[0];reply.received_ns=clock_ns();reply.receive_timing_valid=true;
             frames.push_back(reply);
-            if(frame.data[3]==damiao::CTRL_MODE)++mode_writes;
+            if(frame.data[3]==damiao::CTRL_MODE) {
+                ++mode_writes;
+                last_mode = frame.data[4];
+                mode_write_while_enabled |= statuses[frame.data[0]] != 0;
+            }
         } else if(frame.id==0x7ff && frame.data[2]==0xcc) {
             ++refresh_requests;feedback(frame.data[0],32768,2048,2048,statuses[frame.data[0]]);
         } else if(frame.data[7]==0xfc || frame.data[7]==0xfd) {
@@ -65,6 +74,9 @@ public:
     void reset_counts() { polls=blocking_polls=0; }
     std::size_t polls=0,blocking_polls=0;
     std::size_t mode_writes=0,refresh_requests=0;
+    std::uint8_t last_mode=0;
+    bool mode_write_while_enabled=false, fail_send=false, fail_next_position=false;
+    std::vector<CanFrame> sent_frames;
     std::deque<CanFrame> frames;
     std::map<std::uint32_t,std::uint8_t> statuses;
     std::map<std::uint32_t,float> torque_limits;
@@ -93,8 +105,12 @@ void check_joint_quantum_mapping(const HardwareCapabilities& capabilities) {
     }
     JointActuatorMapper mapper;
     require(bool(mapper.configure(map)),"nonunit torque mapping configuration failed");
+    command.path=ControlPath::CSP;
+    command.position_speed_limit.assign(map.joints_count,0.5);
     const auto actuator=mapper.to_actuator_cmd(command);
     require(bool(actuator),"joint torque quantum mapping failed");
+    require(actuator->path==ControlPath::CSP,"mapper lost the selected control path");
+    require(std::abs(actuator->position_speed_limit.front()-map.pos_ratio.front()*0.5)<1e-14,"POS_VEL speed limit mapping changed");
     for(std::size_t i=0;i<map.joints_count;++i)
         require(std::abs(actuator->tor[i]-map.direction[i]*(*ordered)[i].effort_resolution)<1e-14,
             "one joint torque code must map to one motor torque code independent of pos_ratio");
@@ -113,6 +129,20 @@ void check_axis_count(std::size_t count) {
         "damiao_usb2can|baudrate="+std::to_string(cfg.baudrate),tty_ownership_key(cfg.serial_port)};
     auto registration=acquire_can_channel(cfg.bus,resource,[&]{return physical;});
     require(bool(registration),"fake physical bus registration failed");
+    if(count==1) {
+        damiao::Motor motor(damiao::DMJH11,1,0);
+        damiao::MotorControl sdk(*registration);
+        sdk.add_motor(&motor);
+        require(sdk.control_pos_vel(motor,1.25f,0.5f,false),"POS_VEL send failed");
+        const auto frame=physical->sent_frames.back();
+        float pos=0,vel=0;
+        std::memcpy(&pos,frame.data.data(),sizeof(pos));
+        std::memcpy(&vel,frame.data.data()+4,sizeof(vel));
+        require(frame.id==0x101 && pos==1.25f && vel==0.5f,"POS_VEL frame encoding changed");
+        physical->fail_send=true;
+        require(!sdk.control_pos_vel(motor,1.25f,0.5f,false),"POS_VEL send failure was swallowed");
+        physical->fail_send=false;
+    }
     DamiaoMotorBus bus;
     require(bool(bus.configure(cfg)),"hardware configuration failed");
     for(std::size_t i=0;i<count;++i) {
@@ -121,6 +151,10 @@ void check_axis_count(std::size_t count) {
             "configured model torque quantum was not exposed");
     }
     require(bool(bus.connect()),"hardware parameter handshake failed");
+    require(bus.capabilities().front().supports_csp,"position mode capability missing");
+    require(!bus.select_control_path(ControlPath::CSP),"missing speed limit must be rejected");
+    require(bool(bus.select_control_path(ControlPath::CSP, ActuatorVector(count, 0.5))),"position mode selection failed");
+    require(bool(bus.select_control_path(ControlPath::MIT)),"MIT selection failed");
     require(bus.capabilities().front().max_vel==10.0,"confirmed register range was not used");
     for(std::size_t i=0;i<count;++i) {
         const auto& cap=bus.capabilities()[i];const double confirmed_tau=10.0+i;
@@ -164,9 +198,60 @@ void check_axis_count(std::size_t count) {
     if(count==1) {
         require(bool(bus.activate()),"explicit activation or MIT mode handshake changed");
         require(physical->mode_writes==1,"activation skipped MIT mode confirmation");
+        require(!physical->mode_write_while_enabled,"mode switched while enabled");
+        require(!bus.select_control_path(ControlPath::MIT),"active path change must be rejected");
         physical->reset_counts();
         require(bool(bus.read()) && physical->blocking_polls==0,"first read after startup blocked");
         require(bool(bus.deactivate()),"explicit disable/status confirmation changed");
+        require(bool(bus.select_control_path(ControlPath::CSP, ActuatorVector(count, 0.5))),"position path selection failed");
+        const auto before_activation=physical->sent_frames.size();
+        require(bool(bus.activate()),"position mode activation failed");
+        const auto& frames=physical->sent_frames;
+        auto enable_it=std::find_if(frames.begin()+before_activation,frames.end(),[](const auto& f) {
+            return f.id==1 && f.data[7]==0xfc;
+        });
+        require(enable_it!=frames.end() && std::next(enable_it)!=frames.end() && std::next(enable_it)->id==0x101,
+            "position hold must immediately follow enable");
+        float anchor=0;std::memcpy(&anchor,std::next(enable_it)->data.data(),sizeof(anchor));
+        require(std::abs(anchor-(32768.0*25.0/65535.0-12.5))<2e-6,"hold was not anchored to disabled feedback");
+        float anchor_speed=0;std::memcpy(&anchor_speed,std::next(enable_it)->data.data()+4,sizeof(anchor_speed));
+        require(anchor_speed==0.5f,"initial hold exceeded selected position speed limit");
+        require(physical->mode_writes==2 && physical->last_mode==damiao::POS_VEL_MODE && !physical->mode_write_while_enabled,"position mode was not selected while disabled");
+        ActuatorCtrlCmd position;
+        position.path=ControlPath::CSP;
+        position.pos={0.25};position.vel={0.0};position.kp={0.0};position.kd={0.0};position.tor={0.0};
+        position.position_speed_limit={0.5};
+        physical->reset_counts();
+        require(bool(bus.write(position)),"position command failed");
+        require(physical->sent_frames.back().id==0x101 && physical->polls==0,"position frame or asynchronous send changed");
+        physical->fail_send=true;
+        require(!bus.write(position),"position transport error was swallowed");
+        physical->fail_send=false;
+        physical->feedback(1,34000,2048,2048);
+        require(bool(bus.stop()),"position stop failed");
+        require(physical->sent_frames.back().id==0x101,"position stop used the wrong protocol");
+        float stopped_at=0;
+        std::memcpy(&stopped_at,physical->sent_frames.back().data.data(),sizeof(stopped_at));
+        require(std::abs(stopped_at-(34000.0*25.0/65535.0-12.5))<2e-6,
+            "position stop ignored the latest queued feedback");
+        std::this_thread::sleep_for(std::chrono::milliseconds(60));
+        const auto before_stale_stop=physical->sent_frames.size();
+        require(!bus.stop(),"stale feedback must not be used as a hold position");
+        require(physical->sent_frames.size()==before_stale_stop,"stale position hold was transmitted");
+        (void)bus.deactivate();
+        require(physical->statuses[1]==0,"deactivation with stale feedback failed to disable");
+        const auto before_failed_activation=physical->sent_frames.size();
+        physical->fail_next_position=true;
+        require(!bus.activate(),"failed initial position hold must abort activation");
+        require(physical->statuses[1]==0,"failed initial position hold must disable the motor");
+        const auto& failed_frames=physical->sent_frames;
+        auto failed_enable=std::find_if(failed_frames.begin()+before_failed_activation,failed_frames.end(),[](const auto& f) {
+            return f.id==1 && f.data[7]==0xfc;
+        });
+        require(failed_enable!=failed_frames.end() && std::next(failed_enable)!=failed_frames.end() &&
+            std::next(failed_enable)->id==0x101 && std::next(failed_enable,2)!=failed_frames.end() &&
+            std::next(failed_enable,2)->id==1 && std::next(failed_enable,2)->data[7]==0xfd,
+            "failed first hold must immediately send disable");
         cfg.refresh_state_in_read=true;
         require(bool(bus.configure(cfg)) && bool(bus.connect()),"explicit-refresh configuration failed");
         const auto requests=physical->refresh_requests;

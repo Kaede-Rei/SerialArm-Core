@@ -180,6 +180,11 @@ public:
         return bus_->read();
     }
 
+    tl::expected<void, MotorBusErr> select_control_path(
+        ControlPath path, const ActuatorVector& position_speed_limit = {}) override {
+        return bus_->select_control_path(path, position_speed_limit);
+    }
+
     tl::expected<void, MotorBusErr> activate() override {
         return bus_->activate();
     }

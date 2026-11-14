@@ -91,8 +91,7 @@ GravityCorrectionPackage load_gravity_correction_package(
 tl::expected<void, DynamicsErr> configure_robot_dynamics(RobotCfg& cfg, Dynamics& dynamics) {
     try {
         if(!cfg.dynamics.gravity_correction_path.empty()) {
-            if(cfg.runtime.model_feedforward_mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS ||
-                cfg.capability.admittance.observer.mode == AdmittanceObserverMode::FULL_ID)
+            if(cfg.runtime.model_feedforward_mode == ModelFeedforwardMode::FULL_INVERSE_DYNAMICS)
                 return tl::make_unexpected(DynamicsErr::INVALID_CFG);
             const auto package = load_gravity_correction_package(
                 cfg.dynamics.gravity_correction_path, cfg.joint_names, cfg.dynamics.urdf_path);

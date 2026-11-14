@@ -42,15 +42,17 @@ RobotCfg configuration(bool integral=false) {
     c.shutdown.park_before_disable=false;c.shutdown.park_pos={0,0};
     c.ctrller.joints_count=2;
     const JointImpedanceGains g{{2,2},{.2,.2}};
-    c.ctrller.rigid_hold_gains=c.ctrller.rigid_tracking_gains=c.ctrller.compliant_hold_gains=
-        c.ctrller.compliant_tracking_gains=c.ctrller.servo_tracking_gains=g;
-    c.ctrller.compliant_drag_gains={{0,0},{.2,.2}};
+    c.ctrller.rigid_gains=c.ctrller.compliant_gains=g;
+    c.ctrller.drag_gains={{0,0},{.2,.2}};
     c.mapper={2,{1,1},{1,1},{1,1},{0,0},{0,0}};
     c.safety.joints_count=2;c.safety.max_dt_s=.2;c.safety.state_timeout_s=.5;
-    c.safety.limits={{1,1},{-2,-2},{2,2},{2,2},{100,100},{1,1},{100,100},{5,5},{.01,.01},{},{}};
+    c.safety.limits.has_position_limit={1,1};
+    c.safety.limits.min_pos={-2,-2}; c.safety.limits.max_pos={2,2};
+    c.safety.limits.max_vel={2,2}; c.safety.limits.max_acc={100,100};
+    c.safety.limits.max_effort={1,1}; c.safety.limits.max_kp={100,100};
+    c.safety.limits.max_kd={5,5}; c.safety.limits.pos_margin={.01,.01};
     c.safety.fault_recovery.compliant_recovery={{.1,.1},{.1,.1},{.1,.1},.5};
     c.dynamics.urdf_path="memory-only-not-loaded.urdf";c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1,1};
-    c.capability.admittance.reference_behavior=ReferenceBehavior::NATIVE_IMPEDANCE;
     if(integral) {
         c.hold_compensation={true,{1,1},{.1,.1},{1,1},{.2,.2},.02,.03};
         auto& a=c.capability.admittance;a.joint_enabled={1,1};a.observer.momentum_gain={5,5};
@@ -86,21 +88,34 @@ int main() {
         // abandoned tracking command still trips the unchanged command timeout.
         Fixture assessment;
         ControlRuntime runtime;
-        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID_TRACKING)),"assessment tracking setup failed");
-        check(bool(runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION)),"assessment input rejected");
+        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID)),"assessment tracking setup failed");
+        check(bool(runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::POINT)),"assessment input rejected");
         check(runtime.step(assessment.robot).cycle.has_value(),"assessment tracking cycle failed");
-        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID_HOLD)),"analysis HOLD failed");
-        const auto hold_reference=runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION);
-        check(!hold_reference && hold_reference.error().ctrller_err==JointCtrllerErr::CMD_NOT_ALLOWED_IN_MODE,
-              "HOLD must still reject the tracking-reference interface");
+        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID)),"analysis HOLD failed");
+        const auto hold_reference=runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::POINT);
+        check(bool(hold_reference), "interaction mode must accept motion references");
+        for(unsigned i=0;i<30;++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            check(bool(runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::POINT)), "assessment reference refresh failed");
+            check(runtime.step(assessment.robot).cycle.has_value(), "assessment reference handover failed");
+        }
         check(bool(assessment.robot.set_calibration_disturbance({.03,0})),"HOLD must accept the bounded independent disturbance channel");
         const auto hold_disturbed=runtime.step(assessment.robot);
         check(hold_disturbed.cycle && std::abs(hold_disturbed.cycle->calibration_disturbance[0]-.03)<1e-12 &&
-              std::abs(hold_disturbed.cycle->joint_cmd.pos[0]-.002)<1e-12,"independent HOLD input must preserve the nominal hold target");
+              std::abs(hold_disturbed.cycle->nominal_ref_pos[0]-.002)<1e-12,"independent HOLD input must preserve the nominal hold target");
         assessment.robot.clear_calibration_disturbance();
-        for(unsigned i=0;i<30;++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));check(runtime.step(assessment.robot).state==RobotState::ACTIVE,"stationary analysis HOLD must not expire a streaming command");}
+        for(unsigned i=0;i<30;++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));check(runtime.step(assessment.robot).state==RobotState::ACTIVE,"completed point target must not expire");}
         check(std::abs(assessment.robot.get_hold_target()[0]-.002)<1e-12,"analysis HOLD must preserve final nominal reference");
-        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID_TRACKING)),"stream timeout setup failed");
+        const auto final_reference = runtime.step(assessment.robot);
+        check(final_reference.cycle.has_value(),"final accepted reference missing");
+        const auto accepted = final_reference.cycle->accepted_ref_pos;
+        for(unsigned i=0;i<5;++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            const auto held = runtime.step(assessment.robot);
+            check(held.cycle && std::abs(held.cycle->accepted_ref_pos[0]-accepted[0])<1e-9,
+                "completed reference must retain its accepted position");
+        }
+        check(bool(runtime.set_impedance_mode(assessment.robot,JointImpedanceMode::RIGID)),"stream timeout setup failed");
         check(bool(runtime.submit_reference(assessment.robot,JointPosVelCmd{{.002,0},{0,0}},Robot::Clock::now(),MotionSource::STREAM)),"stream input rejected");
         runtime.step(assessment.robot);
         for(unsigned i=0;i<30 && assessment.robot.get_state()==RobotState::ACTIVE;++i){std::this_thread::sleep_for(std::chrono::milliseconds(5));runtime.step(assessment.robot);}
@@ -116,8 +131,8 @@ int main() {
             constexpr auto policy=replay::SoftFollowingPolicy::CONTINUOUS_GOVERNED_PATH;
             Fixture acquisition;ControlRuntime acquisition_runtime;
             const JointImpedanceGains fixed{{4.761904761904762,4.761904761904762},{.12087912087912088,.12087912087912088}};
-            check(bool(acquisition_runtime.set_impedance_mode(acquisition.robot,JointImpedanceMode::RIGID_TRACKING)),"gravity acquisition tracking setup failed");
-            check(acquisition.robot.set_calibration_tracking_gains(fixed,JointImpedanceMode::RIGID_TRACKING),"gravity acquisition fixed PD setup failed");
+            check(bool(acquisition_runtime.set_impedance_mode(acquisition.robot,JointImpedanceMode::RIGID)),"gravity acquisition tracking setup failed");
+            check(acquisition.robot.set_calibration_tracking_gains(fixed,JointImpedanceMode::RIGID),"gravity acquisition fixed PD setup failed");
             // Establish the existing finite gain transition before examining
             // fixed-PD data; a gain ramp is not a new adaptive revision.
             for(unsigned i=0;i<75;++i) {
@@ -162,14 +177,14 @@ int main() {
             check(!lost.cycle && lost.state==RobotState::FAULT,"failed real bus feedback did not stop gravity acquisition");
             check(!acquisition_runtime.submit_reference(acquisition.robot,JointPosVelCmd{{0,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION),"gravity reference continued after actual feedback failure");
             Fixture stopped;ControlRuntime stopped_runtime;
-            check(bool(stopped_runtime.set_impedance_mode(stopped.robot,JointImpedanceMode::RIGID_TRACKING)),"gravity stop setup failed");
+            check(bool(stopped_runtime.set_impedance_mode(stopped.robot,JointImpedanceMode::RIGID)),"gravity stop setup failed");
             check(bool(stopped.robot.deactivate()),"gravity user-stop lifecycle failed");
             check(!stopped_runtime.submit_reference(stopped.robot,JointPosVelCmd{{0,0},{0,0}},Robot::Clock::now(),MotionSource::CALIBRATION),"gravity reference continued after user stop");
             std::cout<<"gravity continuous acquisition: "<<samples<<" actual memory-bus cycles, fixed PD, soft offset preserved, hard/feedback/stop guards retained\n";
         }
         for(double amplitude:{.0015,.002}) {
         Fixture guarded;
-        check(guarded.robot.set_calibration_tracking_gains({{10,10},{.2,.2}},JointImpedanceMode::RIGID_HOLD),"guard candidate setup failed");
+        check(guarded.robot.set_calibration_tracking_gains({{10,10},{.2,.2}},JointImpedanceMode::RIGID),"guard candidate setup failed");
         servo_tuning::NoiseEstimate guard_noise;guard_noise.encoder_step_rad=.0001;
         servo_tuning::CommandConditionedMotionGuard response_guard({},guard_noise);
         bool tripped=false;
@@ -252,7 +267,7 @@ int main() {
         ModelCalibrationMetadata metadata;metadata.task_id="memory-record-test";metadata.joint_names={"a","b"};
         ModelCalibrationRecorder recorder(128);check(bool(recorder.start(temporary.path,metadata)),"temporary recorder start failed");
         ModelCalibrationFrame frame;frame.monotonic_ns=1;frame.cycle=1;frame.phase="teaching";frame.direction="none";frame.speed_tier="none";
-        frame.acceleration_source="test";frame.impedance_mode="RIGID_HOLD";frame.feedback_age_ms=0;frame.valid=true;
+        frame.acceleration_source="test";frame.impedance_mode="RIGID";frame.feedback_age_ms=0;frame.valid=true;
         frame.position=frame.velocity=frame.torque=frame.acceleration=frame.reference_position=frame.reference_velocity={0,0};
         frame.requested_kp={.083,12.4};frame.requested_kd={.017,1};
         frame.command_kp={500.0/4095,101*500.0/4095};frame.command_kd={14*5.0/4095,819*5.0/4095};

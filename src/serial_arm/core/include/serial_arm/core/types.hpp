@@ -15,12 +15,13 @@ using ActuatorVector = std::vector<double>;
  * @brief 关节阻抗模式
  */
 enum class JointImpedanceMode {
-    RIGID_HOLD,             ///< 刚性保持模式
-    RIGID_TRACKING,         ///< 刚性跟踪模式
-    COMPLIANT_HOLD,         ///< 柔性保持模式
-    COMPLIANT_DRAG,         ///< 柔性拖拽模式
-    COMPLIANT_TRACKING,     ///< 柔性跟踪模式
+    RIGID,
+    COMPLIANT,
+    DRAG,
+    SERVO_TRACKING,
 };
+
+enum class ControlPath { MIT, CSP };
 
 enum class JointGainProfile { RIGID, COMPLIANT, DRAG, SERVO_TRACKING };
 enum class GainSource { CONFIGURED, CALIBRATION_OVERRIDE, PARK_OVERRIDE, FULL_COMMAND, TRANSITION };
@@ -129,14 +130,16 @@ struct JointCtrlCmd {
     JointVector tor;    ///< 关节前馈力矩
     JointVector kp;     ///< 关节比例增益
     JointVector kd;     ///< 关节阻尼增益
+    ControlPath path{ControlPath::MIT};
+    JointVector position_speed_limit; ///< CSP 每轴速度上限，rad/s
 };
 
 /**
  * @brief 执行器控制命令
  *
- * 该命令已经完成关节侧到执行器侧的映射；Hardware Backend 必须按
- * Core 定义的 pos / vel / tor / kp / kd MIT 控制语义解释，并转换为厂商协议、
- * 厂商单位、电流或其他底层量
+ * 该命令已经完成关节侧到执行器侧的映射；Hardware Backend 按 path 选择协议
+ * MIT 使用 pos / vel / tor / kp / kd；CSP 使用周期位置 pos 与
+ * position_speed_limit，vel 保留参考运动学信息，tor / kp / kd 必须为零
  * - pos: rad
  * - vel: rad/s
  * - tor: N·m
@@ -149,6 +152,8 @@ struct ActuatorCtrlCmd {
     ActuatorVector tor;    ///< 执行器侧前馈/目标力矩，单位 N·m
     ActuatorVector kp;     ///< 执行器侧等效位置刚度，单位 N·m/rad
     ActuatorVector kd;     ///< 执行器侧等效速度阻尼，单位 N·m·s/rad
+    ControlPath path{ControlPath::MIT};
+    ActuatorVector position_speed_limit; ///< CSP 执行器速度上限，rad/s
 };
 
 } // namespace serial_arm

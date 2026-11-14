@@ -26,8 +26,8 @@ def core_for(names):
     return {'model': {'joint_names': names},
             'calibration': {'joints': {name: {'pos_ratio': 1., 'tor_ratio': 1., 'direction': 1,
                 'joint_zero_offset': 0., 'actuator_zero_offset': 0.} for name in names}},
-            'control': {'controller': {name: {'kp': {j: 20 for j in names}, 'kd': {j: .5 for j in names}}
-                for name in ('rigid_hold','rigid_tracking','servo_tracking','compliant_hold','compliant_tracking','compliant_drag')}},
+            'control': {'controller': {'allow_full_cmd': False, **{name: {'kp': {j: (0 if name=='drag' else 20) for j in names}, 'kd': {j: .5 for j in names}}
+                for name in ('rigid','compliant','drag')}}},
             'safety_policy': {'position_margin': .01, 'cmd_vel_scale': .25,
                 'max_acc': {name: 2 for name in names}, 'max_kp_override': {name: 50 for name in names},
                 'max_kd_override': {name: 2 for name in names},
@@ -50,7 +50,7 @@ class GainInitializationTests(unittest.TestCase):
                'hold_disturbance_verification':hold_alias}
         candidate={'reference_only':True,'accuracy_thresholds_enabled':False,
                    'warnings':['rigid_tracking:disturbance_measurement_incomplete']}
-        groups={'rigid_tracking':rigid}
+        groups={'rigid':rigid}
         original=deepcopy((candidate,groups))
         report=gain_selection_report(candidate,groups)
         self.assertTrue(report['available']);self.assertFalse(report['validated'])
@@ -58,7 +58,7 @@ class GainInitializationTests(unittest.TestCase):
         self.assertEqual(report['warnings'],[], 'A measured direct response and its hold alias do not require a model fit or precision pass')
         self.assertEqual((candidate,groups),original)
         direct['direct_measurement_complete']=False;direct['axes'][0]['direct_response_complete']=False
-        groups['servo_tracking']={'validated':False,'disturbance_verification':deepcopy(direct)}
+        groups['compliant']={'validated':False,'disturbance_verification':deepcopy(direct),'hold_disturbance_verification':deepcopy(hold_alias)}
         report=gain_selection_report(candidate,groups)
         self.assertEqual(len(report['warnings']),1,'Shared missing direct acquisition is listed once across hold and reused servo evidence')
         self.assertIn('直接响应尚未测完整',report['warnings'][0])
@@ -66,7 +66,7 @@ class GainInitializationTests(unittest.TestCase):
         self.assertEqual(len(gain_selection_report(candidate,groups)['warnings']),1,'An explicit shared_with alias identifies the acquisition independently of its own view path')
         rigid['hold_disturbance_verification']={'available':False,'record_path':'independent-hold.csv'}
         self.assertEqual(len(gain_selection_report(candidate,groups)['warnings']),2,'A different missing hold acquisition remains visible')
-        groups={'compliant_drag':{'validated':False,'warnings':['drag_release_decay_unmeasured'],
+        groups={'drag':{'validated':False,'warnings':['drag_release_decay_unmeasured'],
                 'drag_validation':{'axes':[{'quiet_stability_measured':True,'quiet_stability_passed':False,
                                           'release_decay_measured':False}]}}}
         candidate['warnings']=['drag_release_decay_unmeasured:j']
@@ -76,10 +76,10 @@ class GainInitializationTests(unittest.TestCase):
         self.assertNotIn('无外力稳定尚未测完整',' '.join(report['warnings']))
         legacy={'validated':True,'disturbance_verification':{'available':True,'record_path':'old.csv'},
                 'hold_disturbance_verification':{'available':True,'record_path':'old-hold.csv'}}
-        report=gain_selection_report({}, {'rigid_tracking':legacy})
+        report=gain_selection_report({}, {'rigid':legacy})
         self.assertTrue(report['validated']);self.assertEqual(report['warnings'],[])
         legacy['validated']=False
-        self.assertIn('未达参考指标',' '.join(gain_selection_report({}, {'rigid_tracking':legacy})['warnings']))
+        self.assertIn('未达参考指标',' '.join(gain_selection_report({}, {'rigid':legacy})['warnings']))
 
     def test_candidate_hardware_alias_and_override_compatibility(self):
         plugin='serial_arm_hardware_damiao'
@@ -204,14 +204,14 @@ class GainInitializationTests(unittest.TestCase):
         self.assertTrue(saved.startswith('# source comment\n'));self.assertTrue(saved.endswith('# trailing comment\n'))
         self.assertEqual(canonical_core(yaml.safe_load(saved)),canonical_core(modern))
         row={'samples':200,'rms_error_rad':.01,'peak_error_rad':.02,'velocity_rms_rad_s':.01,'tail_error_rad':.01,'settling_s':.3}
-        candidate={'category':'servo_tracking','joint_names':['j'],'validation_scope':'independent_demonstration_trajectory',
-            'kp':[90.],'kd':[3.],'available':True,'validated':False,
+        candidate={'category':'rigid','joint_names':['j'],'validation_scope':'independent_demonstration_trajectory',
+            'gains':{'kp':[90.],'kd':[3.]},'hold_verification':{'completed':True,'available':True,'samples':10,'worst_error_rad':0,'worst_velocity_rad_s':0},'available':True,'validated':False,
             'native_validation':{'independent':True,'duration_s':1,'metrics':[row]},
             'disturbance_verification':{'available':True,'completed':True,'record_path':'disturbance.csv'},
             'admittance_required':False,'admittance_validation':{'required':False,'status':'not_requested'}}
         hardware={'damiao':{'actuators':{'j':{'motor_type':'DM4310'}}}}
         self.assertTrue(gain_candidate_targets(candidate,cfg,['j'],hardware=hardware)[0])
-        candidate['kp']=[501.]
+        candidate['gains']['kp']=[501.]
         with self.assertRaisesRegex(ValueError,'硬件协议范围'):
             gain_candidate_targets(candidate,cfg,['j'],hardware=hardware)
 
@@ -234,8 +234,8 @@ class GainInitializationTests(unittest.TestCase):
 
     def test_source_independent_of_old_gains_and_hardware_mapping(self):
         names=['wrist','shoulder'];a=core_for(names);b=deepcopy(a)
-        b['control']['controller']['servo_tracking']={'kp':{'wrist':1,'shoulder':49},'kd':{'wrist':.01,'shoulder':1.9}}
-        b['control']['controller']['rigid_tracking']=deepcopy(b['control']['controller']['servo_tracking'])
+        b['control']['controller']['rigid']={'kp':{'wrist':1,'shoulder':49},'kd':{'wrist':.01,'shoulder':1.9}}
+        b['control']['controller']['rigid']=deepcopy(b['control']['controller']['rigid'])
         with tempfile.TemporaryDirectory() as tmp:
             model=Path(tmp)/'model.urdf';model.write_text(urdf(names))
             hw={'damiao':{'actuators':{name:{'motor_type':'DMH3510'} for name in names}}}
@@ -279,9 +279,9 @@ class GainInitializationTests(unittest.TestCase):
                 'urdf_fingerprint':fingerprint,'core_fingerprint':recorded_file_fingerprint(source/'core.yaml')}))
             metric={'samples':200,'measurement_samples':200,'rms_error_rad':.01,'peak_error_rad':.02,
                 'velocity_rms_rad_s':.01,'tail_error_rad':.01,'settling_s':.3}
-            candidate={'schema':'serial_arm_gain_candidate','task_id':'test','category':'servo_tracking',
+            candidate={'schema':'serial_arm_gain_candidate','task_id':'test','category':'rigid',
                 'joint_names':['j'],'urdf_fingerprint':fingerprint,'validation_scope':'independent_demonstration_trajectory',
-                'reference_only':True,'accuracy_thresholds_enabled':False,'kp':[3.],'kd':[.2],
+                'reference_only':True,'accuracy_thresholds_enabled':False,'gains':{'kp':[3.],'kd':[.2]},'hold_verification':{'completed':True,'available':True,'samples':10,'worst_error_rad':0,'worst_velocity_rad_s':0},
                 'available':True,'validated':False,'native_validation':{'independent':True,'completed':True,
                     'available':True,'duration_s':1,'metrics':[metric]},'admittance_required':False,
                 'admittance_validation':{'required':False,'status':'not_requested'}}
@@ -299,7 +299,7 @@ class GainInitializationTests(unittest.TestCase):
                 self.assertTrue(set(evidence_names) <= set(archive.namelist()))
                 self.assertIn('integrator_freeze',archive.read('gain-hold-baseline.csv').decode())
                 for name in evidence_names:self.assertEqual(archive.read(name),(record/name).read_bytes(),name)
-            artifact=export_artifact(root,record,'gain',gain_purposes=['servo_tracking'])
+            artifact=export_artifact(root,record,'gain',gain_purposes=['rigid'])
             self.assertTrue(artifact['reference_only']);self.assertFalse(artifact['validated'])
             with zipfile.ZipFile(artifact['path']) as archive:
                 self.assertTrue({'evidence/'+name for name in evidence_names} <= set(archive.namelist()))
@@ -312,16 +312,16 @@ class GainInitializationTests(unittest.TestCase):
 
     def test_fine_result_export_only_selected_use(self):
         row={'samples':200,'rms_error_rad':.01,'peak_error_rad':.02,'velocity_rms_rad_s':.01,'tail_error_rad':.01,'settling_s':.3}
-        candidate={'category':'servo_tracking','joint_names':['j'],'validation_scope':'independent_demonstration_trajectory',
-            'kp':[3.],'kd':[.2],'available':True,'validated':False,
+        candidate={'category':'rigid','joint_names':['j'],'validation_scope':'independent_demonstration_trajectory',
+            'gains':{'kp':[3.],'kd':[.2]},'hold_verification':{'completed':True,'available':True,'samples':10,'worst_error_rad':0,'worst_velocity_rad_s':0},'available':True,'validated':False,
             'native_validation':{'independent':True,'duration_s':1,'metrics':[row]},
             'disturbance_verification':{'available':True,'completed':True,'record_path':'disturbance.csv'},
             'admittance_required':False,'admittance_validation':{'required':False,'status':'not_requested'}}
         cfg=core_for(['j'])
-        self.assertEqual(list(deployment_gain_groups(candidate)),['servo_tracking'])
+        self.assertEqual(list(deployment_gain_groups(candidate)),['rigid'])
         leaves,_=gain_candidate_targets(candidate,cfg,['j'])
         self.assertTrue(leaves)
-        self.assertTrue(all(path[2]=='servo_tracking' for path in leaves))
+        self.assertTrue(all(path[2]=='rigid' for path in leaves if path[:2]==('control','controller')))
         candidate['native_validation']['completed']=False
         with self.assertRaises(ValueError):deployment_gain_groups(candidate)
 
@@ -330,13 +330,13 @@ class GainInitializationTests(unittest.TestCase):
               'quiet_position_span_rad':.0001,'quiet_speed_rad_s':.0002,
               'release_decay_measured':False,'release_decay_passed':False,
               'initial_velocity_rad_s':None,'decay_s':None}
-        candidate={'category':'compliant_drag','joint_names':['j'],
+        candidate={'category':'drag','joint_names':['j'],
                    'validation_scope':'independent_demonstration_trajectory',
-                   'kp':[0.],'kd':[.2],'available':True,'validated':True,
+                   'gains':{'kp':[0.],'kd':[.2]},'available':True,'validated':True,
                    'drag_validation':{'available':True,'completed':True,'samples':100,'axes':[axis]}}
-        self.assertEqual(list(deployment_gain_groups(candidate)),['compliant_drag'])
+        self.assertEqual(list(deployment_gain_groups(candidate)),['drag'])
         candidate['validated']=False;axis['quiet_stability_passed']=False
-        self.assertEqual(list(deployment_gain_groups(candidate)),['compliant_drag'])
+        self.assertEqual(list(deployment_gain_groups(candidate)),['drag'])
         axis['quiet_stability_measured']=False
         with self.assertRaises(ValueError):deployment_gain_groups(candidate)
 
@@ -345,28 +345,29 @@ class GainInitializationTests(unittest.TestCase):
         path={'independent':True,'completed':True,'duration_s':1,'metrics':[row]}
         hold={'completed':True,'available':True,'samples':100,'worst_error_rad':.01,'worst_velocity_rad_s':.01}
         disturbance={'completed':True,'available':True,'record_path':'disturbance.csv'}
-        fields={'kp':[3.],'kd':[.2],'available':True,'validated':False,'qualification_complete':True,
-                'native_validation':path,'hold_gains':{'kp':[3.],'kd':[.2]},'hold_verification':hold,
+        fields={'gains':{'kp':[3.],'kd':[.2]},'hold_verification':{'completed':True,'available':True,'samples':10,'worst_error_rad':0,'worst_velocity_rad_s':0},'available':True,'validated':False,'qualification_complete':True,
+                'native_validation':path,'hold_verification':hold,
                 'disturbance_verification':disturbance,'hold_disturbance_verification':disturbance}
-        groups={purpose:deepcopy(fields) for purpose in ('rigid_tracking','compliant_tracking','compliant_drag','servo_tracking')}
-        groups['compliant_tracking'].update(tested_speed_fraction=.65,rigid_reference_kp=[3.],rigid_reference_kd=[.2])
-        groups['servo_tracking'].update(admittance_required=False,admittance_validation={'required':False,'status':'not_requested'})
-        groups['compliant_drag'].update(kp=[0.],drag_validation={'available':True,'completed':True,'samples':100,
+        groups={purpose:deepcopy(fields) for purpose in ('rigid','compliant','drag')}
+        groups['compliant'].update(tested_speed_fraction=.65,rigid_reference_kp=[3.],rigid_reference_kd=[.2])
+
+        groups['drag']['gains']['kp']=[0.]
+        groups['drag'].update(drag_validation={'available':True,'completed':True,'samples':100,
             'axes':[{'samples':100,'initial_velocity_rad_s':.02,'peak_velocity_rad_s':.03,'final_velocity_rad_s':.001,'decay_s':.8}]})
         candidate={'category':'all','joint_names':['j'],'validation_scope':'independent_demonstration_trajectory','targets':groups}
-        self.assertEqual(len(deployment_gain_groups(candidate)),4)
-        groups['compliant_drag']['drag_validation']['available']=False
-        self.assertEqual(list(deployment_gain_groups(candidate,['servo_tracking'])),['servo_tracking'])
         self.assertEqual(len(deployment_gain_groups(candidate)),3)
-        with self.assertRaises(ValueError):deployment_gain_groups(candidate,['compliant_drag'])
-        groups['compliant_drag']['drag_validation']['available']=True
-        groups['rigid_tracking']['hold_disturbance_verification']={'available':False}
+        groups['drag']['drag_validation']['available']=False
+        self.assertEqual(list(deployment_gain_groups(candidate,['rigid'])),['rigid'])
+        self.assertEqual(len(deployment_gain_groups(candidate)),2)
+        with self.assertRaises(ValueError):deployment_gain_groups(candidate,['drag'])
+        groups['drag']['drag_validation']['available']=True
+        groups['rigid']['hold_disturbance_verification']={'available':False}
         candidate.update(review_ready=False,measurement_complete=False,qualification_complete=False)
-        groups['rigid_tracking']['qualification_complete']=False
-        self.assertEqual(list(deployment_gain_groups(candidate,['rigid_tracking'])),['rigid_tracking'])
-        self.assertFalse(groups['rigid_tracking']['validated'])
-        groups['rigid_tracking']['hold_verification']['completed']=False
-        with self.assertRaises(ValueError):deployment_gain_groups(candidate,['rigid_tracking'])
+        groups['rigid']['qualification_complete']=False
+        self.assertEqual(list(deployment_gain_groups(candidate,['rigid'])),['rigid'])
+        self.assertFalse(groups['rigid']['validated'])
+        groups['rigid']['hold_verification']['completed']=False
+        with self.assertRaises(ValueError):deployment_gain_groups(candidate,['rigid'])
 
 
 @unittest.skipUnless(os.environ.get('SERIAL_ARM_GAIN_TEST_PROBE'), 'set SERIAL_ARM_GAIN_TEST_PROBE for compiled model integration')
@@ -420,32 +421,33 @@ class NativeProfileInitializationTests(unittest.TestCase):
             self.assertIn('双对角化模型，仅供参考',config.read_text())
             from control_parameters import canonical_core
             core=canonical_core(yaml.safe_load(config.read_text()))
+            self.assertNotIn('enabled', core['capability']['admittance'])
             self.assertNotIn('max_kp_override',core['safety_policy'])
-            self.assertEqual(core['control']['controller']['servo_tracking']['kp'],{axis['joint']:axis['kp'] for axis in initial['axes']})
-            self.assertTrue(all(value==0 for value in core['control']['controller']['compliant_drag']['kp'].values()))
+            self.assertEqual(core['control']['controller']['rigid']['kp'],{axis['joint']:axis['kp'] for axis in initial['axes']})
+            self.assertTrue(all(value==0 for value in core['control']['controller']['drag']['kp'].values()))
             purposes=initial['purpose_suggestions']
-            self.assertEqual(purposes['compliant_hold']['design_frequency_hz'],1)
-            self.assertEqual(purposes['servo_tracking']['design_frequency_hz'],2)
+            self.assertEqual(purposes['compliant']['design_frequency_hz'],1)
+            self.assertEqual(purposes['rigid']['design_frequency_hz'],2)
             for name in ['j2','j1']:
-                self.assertAlmostEqual(core['control']['controller']['compliant_tracking']['kp'][name],
-                    core['control']['controller']['servo_tracking']['kp'][name]/4)
-                self.assertAlmostEqual(core['control']['controller']['compliant_tracking']['kd'][name],
-                    core['control']['controller']['servo_tracking']['kd'][name]/2)
-                self.assertEqual(core['control']['controller']['compliant_drag']['kd'][name],
-                    core['control']['controller']['servo_tracking']['kd'][name])
+                self.assertAlmostEqual(core['control']['controller']['compliant']['kp'][name],
+                    core['control']['controller']['rigid']['kp'][name]/4)
+                self.assertAlmostEqual(core['control']['controller']['compliant']['kd'][name],
+                    core['control']['controller']['rigid']['kd'][name]/2)
+                self.assertEqual(core['control']['controller']['drag']['kd'][name],
+                    core['control']['controller']['rigid']['kd'][name])
             self.assertTrue(all(not value['measured'] and not value['validated'] for value in purposes.values()))
             self.assertTrue(all(value['reference_only'] and not value['accuracy_thresholds_enabled']
                 and all(axis['reference_only'] for axis in value['axes']) for value in purposes.values()))
             for purpose in purposes.values():
                 self.assertEqual(purpose['damping_design_method'],initial['damping_design_method'])
                 self.assertEqual(purpose['damping_stiffness_basis'],
-                    initial['unconstrained_kp'] if purpose['design_frequency_hz']==2 else purposes['compliant_hold']['unconstrained_kp'])
+                    initial['unconstrained_kp'] if purpose['design_frequency_hz']==2 else purposes['compliant']['unconstrained_kp'])
                 for index,axis in enumerate(purpose['axes']):
                     self.assertAlmostEqual(axis['unconstrained_kd'],purpose['full_damping_matrix'][index][index])
             original=deepcopy(core['control']['controller'])
             for role,parameters in original.items():
                 if isinstance(parameters,dict) and 'kp' in parameters:
-                    core['control']['controller'][role]['kp']={name:0 if role=='compliant_drag' else 1 for name in ['j2','j1']}
+                    core['control']['controller'][role]['kp']={name:0 if role=='drag' else 1 for name in ['j2','j1']}
                     core['control']['controller'][role]['kd']={name:.01 for name in ['j2','j1']}
             config.write_text(yaml.safe_dump(core))
             rerun=initialize_profile_gains(ProbeInspector(ROOT),config,core,source/'model.urdf',{})
@@ -473,7 +475,7 @@ class NativeProfileInitializationTests(unittest.TestCase):
                 'stop_kp':10.,'stop_kd':.15,'stop_cycles':5,'actuators':{name:{'name':'actuator'+str(index+1),'motor_id':index+1,'master_id':0,'motor_type':'DM4310'} for index,name in enumerate(['j2','j1'])}}}
             editor['hardware_imported']=True
             saved_editor=library.profile_editor_save(created['config'],editor)
-            self.assertTrue(all(value>0 for value in saved_editor['core']['control']['controller']['servo_tracking']['kp'].values()))
+            self.assertTrue(all(value>0 for value in saved_editor['core']['control']['controller']['rigid']['kp'].values()))
             receipt=json.loads((config.parent/'gain-initialization.json').read_text())
             self.assertTrue(receipt['configuration_applied']);self.assertFalse(receipt['measured'])
             self.assertTrue(receipt['reference_only']);self.assertFalse(receipt['accuracy_thresholds_enabled'])
@@ -495,11 +497,11 @@ class NativeProfileInitializationTests(unittest.TestCase):
             # suggestions separately; only disposable copied output is modified.
             authored=source/'config/core/authored.yaml';authored.parent.mkdir(parents=True)
             core['control']['controller']=original
-            core['control']['controller']['servo_tracking']['kp']={'j2':7,'j1':8}
+            core['control']['controller']['rigid']['kp']={'j2':7,'j1':8}
             authored.write_text(yaml.safe_dump(core));before=authored.read_bytes()
             saved=library.create_profile({**options,'profile':'authored'})
             copied=Path(saved['package'])/'fixture/config/core/authored.yaml'
-            self.assertEqual(canonical_core(yaml.safe_load(copied.read_text()))['control']['controller']['servo_tracking']['kp'],{'j2':7,'j1':8})
+            self.assertEqual(canonical_core(yaml.safe_load(copied.read_text()))['control']['controller']['rigid']['kp'],{'j2':7,'j1':8})
             self.assertEqual(authored.read_bytes(),before)
             self.assertTrue(saved['gain_initialization']['existing_configuration_preserved'])
             self.assertTrue(saved['gain_initialization']['reference_only'])
@@ -508,6 +510,93 @@ class NativeProfileInitializationTests(unittest.TestCase):
                 untouched=deepcopy(core)
                 initialize_profile_gains(ProbeInspector(ROOT),config,core,source/'model.urdf',hardware,driver)
                 self.assertEqual(core,untouched,'model inspection must preserve all operational and fault recovery parameters')
+            # Save and reload the generated Profile through the same backend
+            # entry points as the editor; all writes stay inside this temp dir.
+            loaded=library.profile_editor_load(created['config'])
+            self.assertNotIn('enabled',loaded['core']['capability']['admittance'])
+            before=config.read_bytes()
+            invalid=deepcopy(loaded)
+            invalid['core']['capability']['admittance']['enabled']=False
+            with self.assertRaisesRegex(ValueError,'enabled'):
+                library.profile_editor_save(created['config'],invalid)
+            self.assertEqual(config.read_bytes(),before)
+            csp=deepcopy(loaded)
+            csp['core']['control']['runtime']['control_path']='CSP'
+            issues=library._setup_issues(csp['core'],csp['hardware'],csp['profile_entry'])
+            tracking=[item for item in issues if 'max_tracking_error' in item['path']]
+            self.assertEqual({item['path'] for item in tracking},
+                {'core.safety_policy.max_tracking_error.'+name for name in ['j2','j1']})
+            self.assertTrue(all(item['action']['group']=='safety' and item['action']['field']==item['path'] for item in tracking))
+            with self.assertRaisesRegex(ValueError,'safety_policy.max_tracking_error'):
+                library.profile_editor_save(created['config'],csp)
+            self.assertEqual(config.read_bytes(),before)
+            csp['core']['safety_policy']['max_tracking_error']={'j2':.2,'j1':.2}
+            for role in ('rigid','compliant','drag'):
+                for term in ('kp','kd'):
+                    csp['core']['control']['controller'][role][term]={'j2':0.,'j1':0.}
+            saved_csp=library.profile_editor_save(created['config'],csp)
+            self.assertEqual(saved_csp['core']['control']['runtime']['control_path'],'CSP')
+            self.assertNotIn('enabled',yaml.safe_load(config.read_text())['capability']['admittance'])
+            from bridge import verify_machine_admission
+            from types import SimpleNamespace
+            class Feedback:
+                def __init__(self,path):self.path=path;self.state='INACTIVE'
+                def request(self,method,params,timeout):
+                    if method=='get_admittance':return {'enabled':True}
+                    assert method=='status',method
+                    return {'control_path':self.path,'robot_state':self.state,'valid':True,'sequence':1,
+                            'feedback_age_ms':0,'fault':{'code':'NONE'}}
+            def check_admission(readiness):
+                self.assertTrue(readiness['control_available'],readiness.get('reason'))
+                self.assertEqual(readiness['modes_by_path']['MIT']['RIGID'],'unconfigured')
+                self.assertTrue(all(value=='configured' for value in readiness['modes_by_path']['CSP'].values()))
+                admitted=deepcopy(readiness);admitted['info']['write_enabled']=True
+                view=SimpleNamespace(_readiness=lambda config:admitted)
+                feedback=Feedback('CSP')
+                verify_machine_admission(view,{},'activate',{},feedback)
+                verify_machine_admission(view,{},'set_control_path',{'path':'CSP'},feedback)
+                feedback.state='ACTIVE'
+                verify_machine_admission(view,{},'park',{},feedback)
+                for mode in ('RIGID','COMPLIANT','DRAG','SERVO_TRACKING'):
+                    verify_machine_admission(view,{},'set_impedance_mode',{'mode':mode},feedback)
+                feedback.path='MIT';feedback.state='INACTIVE'
+                with self.assertRaisesRegex(ValueError,'启动保持增益'):
+                    verify_machine_admission(view,{},'activate',{},feedback)
+                feedback.state='ACTIVE'
+                for mode in ('RIGID','DRAG','SERVO_TRACKING'):
+                    with self.assertRaisesRegex(ValueError,'目标交互模式参数'):
+                        verify_machine_admission(view,{},'set_impedance_mode',{'mode':mode},feedback)
+            check_admission(library._readiness(created['config']))
+            saved_csp['core']['control']['runtime']['control_path']='MIT'
+            loaded=library.profile_editor_save(created['config'],saved_csp)
+            check_admission(library._readiness(created['config']))
+            from artifact_exports import gain_candidate_targets
+            from persistence import preview, save, sha256_file
+            candidate={'category':'rigid','joint_names':['j2','j1'],'gains':{'kp':[1.5,2.5],'kd':[.05,.06]},
+                'validated':True,'hold_verification':{'validated':True}}
+            targets,compensation=gain_candidate_targets(candidate,loaded['core'],['j2','j1'],hardware=loaded['hardware'])
+            self.assertEqual(set(path[2] for path in targets if path[:2]==('control','controller')),{'rigid'})
+            def native_values(value):
+                if isinstance(value,dict):
+                    if set(value)=={'j2','j1'}:return [value[name] for name in ['j2','j1']]
+                    return {key:native_values(item) for key,item in value.items()}
+                return value
+            admittance=loaded['core']['capability']['admittance']
+            runtime={'enabled':True,'joint_enabled':native_values(admittance['joint_enabled']),
+                **native_values(admittance['observer']),**native_values(admittance['calibration']),
+                **native_values(admittance['controller']),'execution_gains':{'rigid':candidate['gains']}}
+            scales=native_values(loaded['core']['model']['gravity_scale'])
+            pending=preview(config,['j2','j1'],runtime,scales)
+            self.assertTrue(pending['changed'])
+            self.assertEqual(sha256_file(config),pending['sha256'])
+            persisted=save(config,pending['sha256'],['j2','j1'],runtime,scales,storage_home=Path(created['package']))
+            self.assertTrue(persisted['changed']);self.assertTrue(Path(persisted['backup']).is_file())
+            final=library.profile_editor_load(created['config'])['core']
+            self.assertEqual(final['control']['controller']['rigid'],{'kp':{'j2':1.5,'j1':2.5},'kd':{'j2':.05,'j1':.06}})
+            self.assertEqual(final['control']['controller']['compliant'],loaded['core']['control']['controller']['compliant'])
+            self.assertNotIn('enabled',final['capability']['admittance'])
+            with self.assertRaisesRegex(ValueError,'reload before saving'):
+                save(config,pending['sha256'],['j2','j1'],runtime,scales,storage_home=Path(created['package']))
 
 
 if __name__=='__main__':unittest.main()

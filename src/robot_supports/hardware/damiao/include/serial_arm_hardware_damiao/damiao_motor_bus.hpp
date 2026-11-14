@@ -95,6 +95,7 @@ public:
      * @brief 激活 DamiaoMotorBus
      * @return 如果激活成功，则返回空的 tl::expected，否则返回错误码
      */
+    tl::expected<void, MotorBusErr> select_control_path(ControlPath path, const ActuatorVector& position_speed_limit = {}) override;
     tl::expected<void, MotorBusErr> activate() override;
     /**
      * @brief 写入 DamiaoMotorBus 的命令
@@ -205,6 +206,9 @@ private:
     std::vector<DamiaoActuatorInfo> actuator_info_;  ///< 达妙执行器静态信息
     HardwareCapabilities capabilities_;      ///< Core 所需执行器能力
 
+    ControlPath path_{ ControlPath::MIT }; ///< 失能状态选定的执行路径
+    ActuatorVector selected_position_speed_limit_; ///< 选择路径时配置的执行器侧限速
+    ActuatorVector last_position_speed_limit_; ///< 已接受的执行器侧位置模式速度上限
     bool configured_{ false };      ///< 是否已配置 DamiaoMotorBus
     bool connected_{ false };       ///< 是否已连接 DamiaoMotorBus
     bool active_{ false };          ///< 是否已激活 DamiaoMotorBus

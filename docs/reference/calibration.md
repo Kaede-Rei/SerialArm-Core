@@ -283,7 +283,7 @@ URDF 几何和惯性不能提供实机的静摩擦、死区或低速负载尺度
 
 快标与精调使用相同的参考指标定义，差别在有效测量充分度与更新深度；单用途精调只更新所选用途及其必要结果，其他用途保留原值；共享数据不自动补成每个用途都测量完整
 
-机器接口使用 `gain_tuning_mode=quick` 配合 `gain_mode=all`，或使用 `gain_tuning_mode=fine` 配合一个 `gain_mode`：`rigid`、`compliant`、`drag`、`servo_tracking`；计划与启动沿用 `model_calibration_gain_plan`、`model_calibration_start`，停止沿用原任务取消／保持入口；`gain-trajectory-*-discovery.csv` 保存连续发现，冻结整轨 CSV 保存独立固定参数测量，`servo-probe-*.csv` 保存实际执行的局部短测，`frames.csv` 保存逐周期完整执行证据
+机器接口使用 `gain_tuning_mode=quick` 配合 `gain_mode=all`，或使用 `gain_tuning_mode=fine` 配合一个 `gain_mode`：`rigid`、`compliant`、`drag`；伺服跟踪复用刚性参数，标定仅在 MIT 路径执行；计划与启动沿用 `model_calibration_gain_plan`、`model_calibration_start`，停止沿用原任务取消／保持入口；`gain-trajectory-*-discovery.csv` 保存连续发现，冻结整轨 CSV 保存独立固定参数测量，`servo-probe-*.csv` 保存实际执行的局部短测，`frames.csv` 保存逐周期完整执行证据
 
 新 `frames.csv` 追加逐轴 `requested_kp/requested_kd` 与 `cmd_kp_code/cmd_kd_code`；协议码未知时为 `-1`，不能当作 0 码；短测和整轨 CSV 同时保存 `actual_kp`、`actual_kd`、`actual_gains_known`，固定参数实验中实际增益仍变化时以 `changing_feedback_gains/stable_executed_gain_window` 说明证据不足；在线适应数据另保留实际增益随时间变化，不按恒定 PD 解释；原有四种历史 frames CSV 格式继续可读，缺少新证据的旧记录不自动补成通过
 

@@ -109,7 +109,6 @@ def prepare_config(directory: Path, old_gain_scale: float = 1) -> tuple[Path, li
     config = yaml.safe_load(EXAMPLE.read_text())
     config['model']['urdf_path'] = str((EXAMPLE.parent / config['model']['urdf_path']).resolve())
     config['control']['runtime']['write_enabled'] = False
-    config['capability']['admittance']['enabled'] = False
     config['shutdown']['park_before_disable'] = False
     def scale_gains(value):
         if not isinstance(value, dict):
@@ -162,19 +161,20 @@ def assert_budget(plan: dict, tuning_mode: str):
 
 
 def application_fixture(folder: Path, meta: dict, original_gains: dict, names: list[str]) -> tuple[Path, dict]:
-    gains = copy.deepcopy(original_gains['servo_tracking'])
+    gains = copy.deepcopy(original_gains['rigid'])
     gains['kp'] = [value * .8 for value in gains['kp']]
     gains['kd'] = [value * .9 for value in gains['kd']]
     metric = {'samples': 100, 'measurement_samples': 100, 'rms_error_rad': .02,
               'peak_error_rad': .04, 'velocity_rms_rad_s': .02, 'settling_s': 1, 'tail_error_rad': .01}
     data = {'schema': 'serial_arm_gain_candidate', 'task_id': meta['task_id'],
             'urdf_fingerprint': meta['urdf_fingerprint'], 'joint_names': names,
-            'category': 'servo_tracking', 'available': False, 'validated': False,
+            'category': 'rigid', 'available': False, 'validated': False,
             'validation_scope': 'independent_demonstration_trajectory',
             'review_ready': False, 'measurement_complete': False, 'qualification_complete': False,
             'warnings': ['synthetic_application_compatibility_fixture_not_a_physical_measurement'],
-            'kp': gains['kp'], 'kd': gains['kd'], 'admittance_required': False,
-            'admittance_validation': {'required': False, 'status': 'not_requested', 'validated': False},
+            'gains': gains,
+            'hold_verification': {'available': True, 'completed': True, 'samples': 100,
+                                  'worst_error_rad': .01, 'worst_velocity_rad_s': .01},
             'native_validation': {'completed': True, 'available': True, 'validated': False,
                                   'independent': True, 'duration_s': 1, 'measured_duration_s': 1,
                                   'metrics': [copy.deepcopy(metric) for _ in names]},
@@ -203,10 +203,10 @@ def run(terminal: Path) -> dict:
             native.ready()
             imported = native.request('model_calibration_import_trajectory', {'directory': str(source), 'pose_budget': 5})
             quick = native.request('model_calibration_gain_plan', {'gain_mode': 'all', 'gain_tuning_mode': 'quick'})
-            fine = native.request('model_calibration_gain_plan', {'gain_mode': 'servo_tracking', 'gain_tuning_mode': 'fine'})
+            fine = native.request('model_calibration_gain_plan', {'gain_mode': 'rigid', 'gain_tuning_mode': 'fine'})
             assert_budget(quick, 'quick')
             assert_budget(fine, 'fine')
-            checks.append('four_use_18T_target_24T_hard_and_single_use_12T_target_15T_hard')
+            checks.append('three_use_18T_target_24T_hard_and_single_use_12T_target_15T_hard')
             assert quick['budget_source'] == 'original_recorded_samples', quick
             assert quick['budget_source_task_id'] == 'offline-original-25s', quick
             assert not math.isclose(quick['trajectory_duration_s'], 25, abs_tol=.01), quick
@@ -223,7 +223,7 @@ def run(terminal: Path) -> dict:
             # a synthetic Mock to claim physical tuning success.
             native.ready()
             native.request('model_calibration_start', {
-                'task_id': repeated['task_id'], 'workflow': 'gain', 'gain_mode': 'servo_tracking',
+                'task_id': repeated['task_id'], 'workflow': 'gain', 'gain_mode': 'rigid',
                 'gain_tuning_mode': 'fine', 'released': True, 'gain_trajectory_confirmed': True,
                 'gain_motion_range_confirmed': True,
                 'gain_requirements': {'peak_error_rad': -100, 'rms_error_rad': 'obsolete target',
@@ -246,13 +246,13 @@ def run(terminal: Path) -> dict:
             native.request('deactivate')
             original_meta = json.loads((recorded / 'metadata.json').read_text())
             candidate, selected = application_fixture(recorded, original_meta, before, names)
-            applied = native.request('candidate_gain_apply', {'path': str(candidate), 'gain_purposes': ['servo_tracking']})
-            assert applied['gain_purposes'] == ['servo_tracking'], applied
+            applied = native.request('candidate_gain_apply', {'path': str(candidate), 'gain_purposes': ['rigid']})
+            assert applied['gain_purposes'] == ['rigid'], applied
             after = native.request('get_admittance')['execution_gains']
-            assert after['servo_tracking'] == selected, after
-            assert {k: v for k, v in before.items() if k != 'servo_tracking'} == {
-                k: v for k, v in after.items() if k != 'servo_tracking'}, after
-            checks.append('available_warning_single_servo_application_preserves_other_five_gain_groups')
+            assert after['rigid'] == selected, after
+            assert {k: v for k, v in before.items() if k != 'rigid'} == {
+                k: v for k, v in after.items() if k != 'rigid'}, after
+            checks.append('available_warning_single_rigid_application_preserves_other_gain_groups')
             checks.append('complete_tracking_parameters_apply_with_missing_disturbance_and_historical_aggregate_flags')
             native.request('candidate_gain_restore')
             assert native.request('get_admittance')['execution_gains'] == before

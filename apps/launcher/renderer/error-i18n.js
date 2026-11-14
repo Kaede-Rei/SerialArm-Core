@@ -43,6 +43,7 @@
 
         [/\bCALIBRATION_RESPONSE_UNSTABLE\b/i, '参考未要求的位置持续往复触发了标定响应保护，本轮已停止；请检查增益与响应记录，再按现有流程恢复'],
         [/model calibration stopped by safety fault/i, '标定已被控制故障或响应保护中断；请查看具体故障，关闭提示不会自动重新使能或继续运动'],
+        [/\bMODE_SWITCH_FAILED\b/i, '执行器控制模式切换失败，请检查所选 MIT/CSP 执行路径、硬件驱动和模式确认结果；处理后清除启动故障，再重新使能'],
         [/MOTOR_BUS_ACTIVATE_FAILED|ENABLE_FAILED|ACTUATOR_OFFLINE/i, '执行器使能失败或电机离线，请检查供电、急停、通信连接和电机状态；恢复供电与通信后，清除启动故障再使能'],
         [/MOTOR_BUS_CONNECT_FAILED|OPEN_FAILED|NOT_CONNECTED/i, '执行器通信连接失败，请检查设备路径、访问权限、线缆和供电'],
         [/MOTOR_BUS_READ_FAILED|READ_FAILED/i, '执行器反馈读取失败 请检查通信链路和电机供电'],
@@ -190,7 +191,7 @@
         set_model_feedforward_mode: '切换模型前馈模式',
         set_reference_behavior: '切换控制方式', set_admittance: '调整导纳参数',
     };
-    const codePattern = /\b(?:CALIBRATION_RESPONSE_UNSTABLE|MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|REFERENCE_GOVERNOR_FAILED|INFEASIBLE|INVALID_INPUT|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
+    const codePattern = /\b(?:CALIBRATION_RESPONSE_UNSTABLE|MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|REFERENCE_GOVERNOR_FAILED|INFEASIBLE|INVALID_INPUT|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|MODE_SWITCH_FAILED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
     function trajectoryRangeMessage(clean, lang) {
         const match=clean.match(/trajectory_range_violation:([^\r\n]*)/i);
         if(!match)return null;
@@ -206,7 +207,7 @@
             const label=recorded?'Recorded position':command?'Playback reference position':'Trajectory position';
             const margin=recorded?'recording-check margin':command?'user Safety margin':'check margin';
             const source=recorded?'Recording validity uses the hard-range intersection of URDF limits and mapped driver position capability; the user Safety command margin is checked separately for playback.':`The interval is the intersection of URDF limits and mapped driver position capability, narrowed by the ${command?'user Safety':'reported check'} margin.`;
-            return `${label} check failed at ${fields.joint}, sample index ${fields.sample}; position ${position(fields.value)}, effective interval ${interval}, ${margin} ${position(fields.margin)}. ${source} Check physical travel, joint mapping and the demonstrated path.`;
+            return `${label} check failed at ${fields.joint}, sample index ${fields.sample}; position ${position(fields.value)}, effective interval ${interval}, ${margin} ${position(fields.margin)}. ${source} Check physical travel, joint mapping and the demonstrated path`;
         }
         const label=recorded?'录制位置':command?'回放参考位置':'轨迹位置',margin=recorded?'本次录制校验留量':command?'用户 Safety 留量':'本次检查留量';
         const source=recorded?'录制有效性按 URDF 与映射后驱动位置能力的有效硬范围检查；用户 Safety 命令留量另用于回放参考检查':`范围来自 URDF 与映射后驱动位置能力的交集，再按${command?'用户 Safety':'本次检查'}留量向内收缩`;

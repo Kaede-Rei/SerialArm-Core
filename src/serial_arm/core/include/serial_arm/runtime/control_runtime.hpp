@@ -9,7 +9,7 @@
 
 namespace serial_arm {
 
-enum class MotionSource { NONE, EXTERNAL, STREAM, REPLAY, CALIBRATION, PARK };
+enum class MotionSource { NONE, POINT, EXTERNAL, STREAM, REPLAY, CALIBRATION, PARK };
 
 struct RuntimeSnapshot {
     std::uint64_t sequence{0};
@@ -39,7 +39,7 @@ public:
 
     tl::expected<void, RobotFault> submit_reference(
         Robot& robot, JointCmd command, Robot::TimePoint received_at,
-        MotionSource source = MotionSource::EXTERNAL);
+        MotionSource source = MotionSource::POINT);
     tl::expected<void, RobotFault> set_impedance_mode(
         Robot& robot, JointImpedanceMode mode, Robot::TimePoint now = Robot::Clock::now(), HoldTargetPolicy target_policy=HoldTargetPolicy::PRESERVE_NOMINAL);
     void clear_commands();
@@ -51,7 +51,6 @@ private:
     mutable std::mutex command_mutex_;
     std::optional<PendingReference> pending_;
     MotionSource source_{MotionSource::NONE};
-    std::optional<bool> drag_suspension_;
     mutable std::mutex snapshot_mutex_;
     RuntimeSnapshot snapshot_;
     std::atomic<bool> executing_{false};

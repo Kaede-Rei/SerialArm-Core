@@ -31,7 +31,8 @@ async function rendererChecks(win) {
     const names = ['active','profileSelectionLocked','profileRequestContext','profileContextCurrent','capture',
         'inspect','refreshProfiles','adoptInspectionInfo','openLibraryEntry','collectProfileEditor',
         'profileHasUnsavedChanges','updateMotionCompletion','updateTargetDraftState','editWorkbenchTarget',
-        'fillReplayEndpointDraft','workbenchTargetMayMove','synchronizeWorkbenchSession','connectWorkbench','readinessConnectionState'];
+        'fillReplayEndpointDraft','workbenchTargetMayMove','synchronizeWorkbenchSession','connectWorkbench','readinessConnectionState',
+        'refreshConnectionPortControls'];
     const targetStart = renderer.indexOf("        document.querySelectorAll('[data-target-joint]')");
     const targetEnd = renderer.indexOf('        setTimeout(() => refreshWorkbenchTargetFields(true)', targetStart);
     assert(targetStart >= 0 && targetEnd > targetStart);
@@ -45,13 +46,14 @@ async function rendererChecks(win) {
         const $=id=>document.getElementById(id), busyText=(zh,en)=>en, t=x=>x;
         const render=()=>{}, save=async()=>{}, statusUI=()=>{}, shell=()=>{}, clearProfileFormState=()=>{};
         const disposeModelPreview=()=>{}, resetProfileWorkspaceState=()=>{profileLoadGeneration++;};
+        const preloadAvailableProfileModel=async()=>'',refreshConnectionPortScanNotice=()=>{};
         const refreshWorkbenchTargetFields=()=>{}, queueWorkbenchTargetGhost=()=>{}, jointInputToNative=(_name,x)=>Number(x);
         const commandStateText=x=>x,workbenchTargetFeedbackReady=()=>true,workbenchTargetProblem=()=>'',graphicsAvailabilityProblem=()=>'';
         const workbenchRecoveryRequired=()=>false,modelCalibrationActive=()=>false,gainModeConfigured=()=>true;
         const workbenchConnected=()=>state.session.state==='running'&&state.session.mode==='workbench';
         const refreshTeachTrajectories=async()=>{},loadAdmittance=async()=>{},refreshGeometryRepeatStatus=async()=>{};
         let replayPose=[.3,.4], workbenchRequest=async()=>({motion:{id:99,state:'running'}});
-        const replayStartPose=()=>replayPose,updateWorkbenchSpeed=()=>{},blockingOperation=async(_message,fn)=>fn();
+        const replayStartPose=()=>replayPose,updateWorkbenchSpeed=()=>{},blockingOperation=async(_message,fn)=>{if(state.blockingBusy)return null;state.blockingBusy=true;try{return await fn();}finally{state.blockingBusy=false;}};
         let reads=0;const readProfileInput=input=>{reads++;if(input.value!=='unchanged'){state.profileEditor.core.value=Number(input.value);state.profileDirty=true;}};
         const profileGroupForField=()=>'',setTimeout=()=>{};
         ${names.map(name=>extract(renderer,name)).join('\n')}
@@ -85,7 +87,7 @@ async function rendererChecks(win) {
         const connecting=connectWorkbench(false);check('connection locks before readiness reply',profileSelectionLocked());
         $('profile-select').value='A';capture();check('pending connection retains selected Profile',state.config.profile==='B');resolveStart({});await connecting;
         check('connection leaves session bound and clears starting flag',state.session.session_id==='start'&&!state.runtimeStarting);
-        state.telemetry={sequence:1,joint_names:['j1','j2'],joint:{pos:[.1,.2]},robot_state:'ACTIVE',impedance_mode:'RIGID_TRACKING'};
+        state.telemetry={sequence:1,joint_names:['j1','j2'],joint:{pos:[.1,.2]},robot_state:'ACTIVE',impedance_mode:'RIGID'};
         state.workbenchTargets=[1,2];state.teachTrajectories=[];state.pendingMotionId=7;state.pendingTarget=[.7,.8];state.commandState='running';
         ${renderer.slice(targetStart,targetEnd)}
         $('target-sync').click();check('sync keeps executing motion',state.pendingMotionId===7&&state.pendingTarget[0]===.7&&state.commandState==='running');
@@ -102,6 +104,7 @@ async function rendererChecks(win) {
         state.pendingMotionId=7;state.pendingTarget=[.7,.8];state.commandState='running';
         updateMotionCompletion({motion:{id:7,state:'completed',target_reached:true,reason:'target_reached'}});
         check('measured target arrival remains distinct from a position offset',state.commandState==='complete'&&state.pendingMotionId===null);
+        for(const mode of ['RIGID','COMPLIANT','DRAG','SERVO_TRACKING']){state.telemetry.impedance_mode=mode;check('unified '+mode+' accepts a target reference',workbenchTargetMayMove());}
         for(const [terminal,expected] of [['completed','complete'],['failed','failed'],['interrupted','interrupted']]){
             state.pendingMotionId=7;state.pendingTarget=[.7,.8];state.commandState='running';editWorkbenchTarget(0,'1.6');
             updateMotionCompletion({motion:{id:7,state:terminal}});
@@ -113,8 +116,8 @@ async function rendererChecks(win) {
         document.body.innerHTML='<input data-profile-field="core.value" value="3.5">';
         state.page='profile_setup';state.profileEditor={core:{value:1}};state.profileDirty=false;state.profileFieldErrors={};
         check('close flush sees focused unsaved input',profileHasUnsavedChanges()&&reads===1&&state.profileEditor.core.value===3.5);
-        const legacy={joint_names:['j1'],core:{model:{gravity:[0,0,-9.81],gravity_scale:{j1:1}},control:{runtime:{write_enabled:true},controller:{rigid_hold:{kp:{j1:10},kd:{j1:1}},compliant_drag:{kd:{j1:1}}}},safety_policy:{max_kp_override:{j1:.01},max_kd_override:{j1:.01}}}};
-        check('legacy PD user caps do not affect readiness',readinessConnectionState(legacy).basic_calibration_prerequisites.find(x=>x.id==='hold_gains').ready);
+        const profile={joint_names:['j1'],core:{model:{gravity:[0,0,-9.81],gravity_scale:{j1:1}},control:{runtime:{write_enabled:true},controller:{rigid:{kp:{j1:10},kd:{j1:1}},drag:{kd:{j1:1}}}},safety_policy:{max_kp_override:{j1:.01},max_kd_override:{j1:.01}}}};
+        check('legacy PD user caps do not affect readiness',readinessConnectionState(profile).basic_calibration_prerequisites.find(x=>x.id==='hold_gains').ready);
         return checks;
     })().catch(error=>({fixture_error:String(error.stack||error)}))`);
     if (!Array.isArray(result)) throw Error(result.fixture_error || JSON.stringify(result));

@@ -42,6 +42,7 @@ function setScene(scene,theme,language='zh-CN'){
  if(scene==='start'||scene==='library')state.config.profile='';
  if(data.receipt){state.readiness.gain_initialization=structuredClone(data.receipt);state.config.profile=data.receiptLabel;}
  renderedPage='';shell();
+ if(scene==='parameters-csp'){state.profileEditor.core.control.runtime.control_path='CSP';state.profileGroup='motion';render();}
  if(scene==='parameters-motion')document.querySelector('[data-gain-purpose="RIGID"]').open=true;
 }
 function snapshot(){
@@ -78,10 +79,29 @@ function testParameters(){
  gain.value='1.123457';gain.dispatchEvent(new Event('input',{bubbles:true}));
  assert(state.profileEditor.core.model.gravity_scale.joint1===1.123457,'编辑后还原为短展示值按用户输入保存');
  const group=document.querySelector('[data-profile-group="motion"]');group.click();
- assert(document.querySelectorAll('[data-gain-purpose]').length===4,'真实参数分组切换显示四用途');
+ assert(document.querySelectorAll('[data-gain-purpose]').length===3&&document.querySelector('.profile-mode-note').textContent.includes('伺服跟踪'),'三组独立增益与伺服共享说明');
  const detail=document.querySelector('[data-gain-purpose="RIGID"]');detail.open=true;
- assert(detail.querySelectorAll('.profile-gain-table tbody tr').length===12,'保持与跟踪参数按关节表格展示');
+ assert(detail.querySelectorAll('.profile-gain-table tbody tr').length===6,'统一增益每个关节只展示一行');
+ const field=path=>document.querySelector('[data-profile-field='+JSON.stringify(JSON.stringify(path))+']');
+ const execution=field(['core','control','runtime','control_path']);
+ assert(document.querySelectorAll('[data-profile-field]').length===new Set([...document.querySelectorAll('[data-profile-field]')].map(n=>n.dataset.profileField)).size,'配置参数无重复编辑入口');
+ execution.value='CSP';execution.dispatchEvent(new Event('change',{bubbles:true}));
+ assert(!document.querySelector('[data-gain-purpose]')&&!!field(['core','capability','admittance','controller','mass','joint1']),'切换CSP显示MDK并隐藏MIT增益');
+ assert(!field(['core','control','runtime','model_feedforward_mode'])&&!field(['core','capability','admittance','enabled']),'CSP不展示MIT前馈或废弃导纳开关');
+ assert(!!document.querySelector('#profile-add-tracking-error')&&!state.profileEditor.core.safety_policy.max_tracking_error,'未配置的跟踪上限明确提示且不生成安全值');
+ document.querySelector('[data-profile-group=observation]').click();
+ assert(!!field(['core','capability','admittance','observer','momentum_gain','joint1']),'外力估计拥有独立参数分组');
+ const observer=field(['core','capability','admittance','observer','momentum_gain','joint1']);observer.value='30';observer.dispatchEvent(new Event('input',{bubbles:true}));
+ document.querySelector('[data-profile-group=motion]').click();
+ assert(state.profileEditor.core.capability.admittance.observer.momentum_gain.joint1===30,'切换分组保留实际参数草稿');
+ const back=field(['core','control','runtime','control_path']);back.value='MIT';back.dispatchEvent(new Event('change',{bubbles:true}));
+ assert(!!document.querySelector('[data-gain-purpose=RIGID]')&&!field(['core','capability','admittance','controller','mass','joint1']),'切回MIT恢复独立增益编辑');
  assert(document.querySelectorAll('.parameter-key').length===0,'参数表不重复显示配置键');
+ state.session={state:'running',mode:'workbench'};state.workbenchPending={kind:''};state.blockingBusy=false;
+ state.telemetry={robot_state:'ACTIVE',control_path:'CSP',impedance_mode:'SERVO_TRACKING'};
+ state.readiness={modes:{RIGID:'unconfigured'},modes_by_path:{MIT:{RIGID:'unconfigured',SERVO_TRACKING:'unconfigured'},CSP:{RIGID:'configured',SERVO_TRACKING:'configured'}}};
+ assert(gainModeConfigured('RIGID')&&controlGainPurposeMayChange('SERVO_TRACKING'),'当前CSP准入不依赖MIT增益或已保存路径');
+ state.telemetry.control_path='MIT';assert(!gainModeConfigured('RIGID'),'切回MIT仍检查MIT增益资格');
  setScene('calibration-gain','light');
  document.querySelector('#gain-tuning-mode').value='fine';document.querySelector('#gain-tuning-mode').dispatchEvent(new Event('change',{bubbles:true}));
  assert(!!document.querySelector('#gain-target')&&state.gainTuningMode==='fine','全应用内快标和精调切换生效');

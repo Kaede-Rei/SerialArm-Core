@@ -175,7 +175,7 @@ def fixture(terminal, directory, deadline, partial):
         assert status['phase'] == 'cancelled' and candidate['termination']['kind'] == 'cancelled', status
         assert candidate['termination']['reason'] == 'stop_requested', candidate['termination']
         baseline_evidence(folder, names, baseline_digest)
-        selected = candidate.get('targets', {}).get('servo_tracking', candidate)
+        selected = candidate.get('targets', {}).get('rigid', candidate)
         validation = selected['native_validation']
         assert validation['completed'] and validation['available'] and validation['independent'], validation
         assert validation['record_path'] == 'gain-trajectory-native-frozen.csv' and validation['playback_rate'] == 1, validation

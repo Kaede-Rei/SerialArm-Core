@@ -12,6 +12,7 @@
 #include "serial_arm/hardware/motor_bus.hpp"
 #include "serial_arm/interaction/runtime/interaction_state.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
+#include "serial_arm/interaction/runtime/feedback_aligner.hpp"
 
 #include <chrono>
 #include <functional>
@@ -111,6 +112,8 @@ struct RobotCycleOutput {
     double dt{ 0.0 };                 ///< 本周期使用的时间步长
     std::uint64_t command_written_ns{0}; ///< Successful bus write completion, host steady clock
 
+    JointImpedanceMode interaction_mode{JointImpedanceMode::RIGID};
+    ControlPath control_path{ControlPath::MIT};
     JointGainProfile gain_profile{JointGainProfile::RIGID};
     GainSource gain_source{GainSource::CONFIGURED};
     JointVector effective_kp,effective_kd,hold_target_pos,hold_integral_torque;
@@ -118,9 +121,10 @@ struct RobotCycleOutput {
     bool hold_integrator_frozen{true};
     std::vector<std::string> hold_integrator_freeze_reasons;
     JointVector calibration_disturbance;
-    ReferenceBehavior reference_behavior{ ReferenceBehavior::NATIVE_IMPEDANCE };
     double parameter_update_progress{ 1.0 };
     bool observer_valid{ false };
+    JointState observer_state; ///< 新测量时各轴插值到同一时间的关节状态
+    std::uint64_t observer_timestamp_ns{0};
     bool new_measurement{ false };
     double measurement_dt{ 0.0 };
     double feedback_skew_ms{ std::numeric_limits<double>::quiet_NaN() };
@@ -207,9 +211,10 @@ public:
      * @param now 当前时间点
      * @return 成功返回空 expected，失败返回 RobotFault
      */
-    tl::expected<void, RobotFault> set_cmd(const JointCmd& cmd, TimePoint now = Clock::now());
+    tl::expected<void, RobotFault> set_cmd(const JointCmd& cmd, TimePoint now = Clock::now(), bool continuous = false);
+    void finish_continuous_reference() noexcept { if(!full_command_active_) continuous_cmd_=false; }
     /**
-     * @brief 设置完整 Joint 控制命令
+     * @brief 设置需要持续刷新的完整 Joint 控制命令
      * @param cmd 完整关节控制命令
      * @param now 当前时间点
      * @return 成功返回空 expected，失败返回 RobotFault
@@ -223,9 +228,6 @@ public:
      */
     tl::expected<void, RobotFault> set_impedance_mode(JointImpedanceMode mode, TimePoint now = Clock::now(), HoldTargetPolicy target_policy=HoldTargetPolicy::PRESERVE_NOMINAL);
     // FAULT permits validated configuration restoration only, without execution
-    tl::expected<void,RobotFault> set_servo_tracking_gains(const JointImpedanceGains& gains);
-    tl::expected<void,RobotFault> set_calibration_reference_behavior(ReferenceBehavior behavior);
-    void clear_calibration_reference_behavior();
     tl::expected<void,RobotFault> set_calibration_model_feedforward_mode(ModelFeedforwardMode mode);
     void clear_calibration_model_feedforward_mode();
     // Short calibration-only additive torque, before the normal governor and
@@ -237,18 +239,16 @@ public:
     tl::expected<void,RobotFault> set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
     const HoldCompensationCfg& get_hold_compensation_cfg() const noexcept;
     JointGainProfile get_gain_profile() const noexcept;
-    tl::expected<void,RobotFault> set_execution_gain_profile(JointGainProfile profile);
-    void clear_execution_gain_profile();
     /** Temporary hold gains used only by automatic static model identification.
      * They never modify the robot configuration or other impedance modes.
-     * The override is cleared on leaving RIGID_HOLD and on deactivation
+     * The override is cleared on leaving RIGID and on deactivation
      */
     bool begin_calibration_hold(const JointImpedanceGains& gains);
     bool set_calibration_hold_gains(const JointImpedanceGains& gains);
     void clear_calibration_hold_gains() noexcept;
     // Temporary ramped gains for trajectory tracking or independent hold
     // verification. Active only in the matching impedance mode and never saved
-    bool set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode=JointImpedanceMode::RIGID_TRACKING);
+    bool set_calibration_tracking_gains(const JointImpedanceGains& gains, JointImpedanceMode mode=JointImpedanceMode::RIGID);
     // Explicit temporary runtime gains; only accepted while motors are INACTIVE
     bool set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpedanceGains& gains);
     void clear_calibration_tracking_gains() noexcept;
@@ -271,21 +271,12 @@ public:
      * @brief 更新导纳配置；ACTIVE 仅允许同策略调参，M/D/K 连续过渡并保留已接受虚拟状态
      */
     tl::expected<void, RobotFault> set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
-    tl::expected<void, RobotFault> set_reference_behavior(ReferenceBehavior behavior);
-    ReferenceBehavior get_reference_behavior() const noexcept;
+    tl::expected<void, RobotFault> set_control_path(ControlPath path);
+    ControlPath get_control_path() const noexcept { return cfg_.runtime.control_path; }
     /**
      * @brief 获取当前进程正在使用的导纳能力配置
      */
     const AdmittanceCapabilityCfg& get_admittance_cfg() const noexcept;
-    /**
-     * @brief 临时挂起/恢复导纳运行时修正并重锚到已接受参考，不改变配置
-     * @param suspended true 时整条导纳修正旁路并清空 observer/delta 状态
-     */
-    void set_admittance_suspended(bool suspended);
-    /**
-     * @brief 查询当前是否临时挂起导纳运行时修正
-     */
-    bool is_admittance_suspended() const noexcept;
     /**
      * @brief 执行一次完整控制周期
      * @param now 当前时间点
@@ -318,7 +309,7 @@ public:
      */
     tl::expected<void, RobotFault> return_to_fault_rigid_hold();
     /**
-     * @brief 清除 FAULT 并以当前实测位置进入 ACTIVE + RIGID_HOLD
+     * @brief 清除 FAULT 并以当前实测位置进入 ACTIVE + RIGID
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> clear_fault();
@@ -525,7 +516,6 @@ private:
      * @brief 判断当前控制模式是否属于跟踪模式
         * @return 当前是否处于跟踪模式
      */
-    bool is_tracking_mode() const noexcept;
     void apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now);
 
     /**
@@ -566,6 +556,8 @@ private:
 
     bool has_state_{ false };                       ///< 是否已有合法状态
     bool has_completed_cycle_{ false };             ///< 是否已经完成至少一个周期
+    bool continuous_cmd_{ false };
+    bool drag_reference_received_{ false };         ///< 拖拽期间收到新的运动参考
     bool has_external_cmd_{ false };                ///< 跟踪模式是否收到过外部命令
     bool has_last_joint_cmd_{ false };              ///< 是否已有合法关节控制命令
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令
@@ -573,12 +565,12 @@ private:
     std::optional<JointImpedanceGains> calibration_hold_source_;
     std::optional<JointImpedanceGains> calibration_tracking_gains_;
     std::optional<JointImpedanceGains> calibration_tracking_source_;
-    JointImpedanceMode calibration_tracking_mode_{JointImpedanceMode::RIGID_TRACKING};
+    JointImpedanceMode calibration_tracking_mode_{JointImpedanceMode::RIGID};
     std::optional<TimePoint> park_rigid_ramp_started_;
     double park_rigid_ramp_duration_s_{0.65};
     TimePoint calibration_tracking_started_{};
     TimePoint calibration_hold_started_{};
-    std::vector<std::uint64_t> observer_received_ns_;
+    FeedbackAligner feedback_aligner_;
     std::uint64_t observer_sample_ns_{ 0 };
     JointVector last_nominal_velocity_;
     JointCtrlCmd accepted_nominal_cmd_;
@@ -588,15 +580,12 @@ private:
     std::vector<std::string> hold_integrator_freeze_reasons_;
     JointVector calibration_disturbance_;
     TimePoint calibration_disturbance_at_{};
-    std::optional<ReferenceBehavior> calibration_reference_behavior_;
     std::optional<ModelFeedforwardMode> calibration_feedforward_mode_;
-    std::optional<JointGainProfile> execution_gain_profile_;
     std::optional<JointImpedanceGains> handover_source_gains_;
     JointCtrlCmd handover_source_cmd_;
     TimePoint handover_started_{};
     bool full_command_active_{false};
     GainSource gain_source_{GainSource::CONFIGURED};
-    bool admittance_suspended_{ false };            ///< 运行时临时挂起导纳，不改变静态配置
     FaultHoldMode fault_hold_mode_{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 内部保持模式
     DtOverrunWatchdog dt_overrun_watchdog_;        ///< 三次连续过长周期触发 FAULT
     std::size_t clear_fault_valid_cycles_{ 0 };      ///< 清故障前连续有效周期数

@@ -57,12 +57,6 @@ def gain_hardware_context(hardware, plugin, overrides=None):
     return result
 
 
-def _purpose_name(purpose):
-    return {'RIGID_TRACKING': 'RIGID', 'RIGID_HOLD': 'RIGID',
-            'COMPLIANT_TRACKING': 'COMPLIANT', 'COMPLIANT_HOLD': 'COMPLIANT',
-            'COMPLIANT_DRAG': 'DRAG'}.get(str(purpose).upper(), str(purpose).upper())
-
-
 def _joint_context(value, names, field=''):
     """Read native ordered vectors and GUI joint maps as the same parameters"""
     if isinstance(value, list):
@@ -75,11 +69,8 @@ def _joint_context(value, names, field=''):
 
 
 def gain_interaction_context(core, purpose, *, compensation=False):
-    purpose = _purpose_name(purpose)
+    purpose = str(purpose).upper()
     admittance = ((core.get('capability') or {}).get('admittance') or {})
-    if purpose == 'SERVO_TRACKING':
-        keys = ('enabled', 'joint_enabled', 'observer', 'calibration', 'controller') if admittance.get('enabled') is True else ('enabled',)
-        return {key: admittance.get(key, False if key == 'enabled' else None) for key in keys}
     if purpose == 'RIGID' and compensation:
         return {key: admittance.get(key) for key in ('observer', 'calibration')}
     return None
@@ -116,7 +107,8 @@ def recorded_gain_core(core, metadata, candidate):
                                else _joint_context(value, names, key))
             return result
         original.setdefault('capability', {})['admittance'] = overlay(
-            (original.get('capability') or {}).get('admittance'), context['admittance'])
+            (original.get('capability') or {}).get('admittance'),
+            {key: value for key, value in context['admittance'].items() if key != 'enabled'})
     return original
 
 
@@ -180,11 +172,11 @@ def verify_gain_context(folder, info, core, hardware, purposes):
         raise ValueError('当前 URDF 与增益标定时不同，请选择当前模型的标定任务')
     before_runtime = (original.get('control') or {}).get('runtime') or {}
     current_runtime = (core.get('control') or {}).get('runtime') or {}
-    for field in ('write_enabled', 'model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha'):
+    for field in ('write_enabled', 'control_path', 'model_feedforward_mode', 'ctrl_frequency_hz', 'joint_acc_filter_alpha'):
         default = .2 if field == 'joint_acc_filter_alpha' else None
         if before_runtime.get(field, default) != current_runtime.get(field, default):
             raise ValueError('core.control.runtime.' + field + ' 与增益标定时不同，请重新验证当前控制设置')
-    rigid = (candidate.get('targets') or {}).get('rigid_tracking') if candidate.get('category') == 'all' else candidate
+    rigid = (candidate.get('targets') or {}).get('rigid') if candidate.get('category') == 'all' else candidate
     compensation = bool(((rigid or {}).get('hold_compensation') or {}).get('enabled'))
     for purpose in purposes:
         expected = gain_interaction_context(original, purpose, compensation=compensation)

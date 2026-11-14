@@ -7,7 +7,6 @@
 #include "serial_arm/core/safety.hpp"
 #include "serial_arm/hardware/hardware_capability.hpp"
 #include "serial_arm/interaction/friction_residual_model.hpp"
-#include "serial_arm/interaction/admittance_observer_mode.hpp"
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 #include "serial_arm/config/limit_resolver.hpp"
 
@@ -32,14 +31,7 @@ struct RuntimeCfg {
     ModelFeedforwardMode model_feedforward_mode{       ///< 模型前馈策略
         ModelFeedforwardMode::NONE
     };
-    JointImpedanceMode tracking_impedance_mode{    ///< 跟踪阻抗模式
-        JointImpedanceMode::RIGID_TRACKING
-    };
-    std::optional<JointGainProfile> tracking_gain_profile; ///< ROS 默认增益用途；未设置时兼容 tracking_impedance_mode
-    JointGainProfile native_tracking_gain_profile() const noexcept {
-        return tracking_gain_profile.value_or(tracking_impedance_mode==JointImpedanceMode::COMPLIANT_TRACKING ?
-            JointGainProfile::COMPLIANT : JointGainProfile::RIGID);
-    }
+    ControlPath control_path{ControlPath::MIT};
 };
 
 struct HoldCompensationCfg {
@@ -56,7 +48,6 @@ struct HoldCompensationCfg {
  * @brief 导纳外力估计配置
  */
 struct AdmittanceObserverCfg {
-    AdmittanceObserverMode mode{ AdmittanceObserverMode::FULL_ID }; ///< FULL_ID 或 MOMENTUM 外力估计模式
     JointVector momentum_gain;                  ///< momentum observer 一阶增益 s^-1
 };
 
@@ -86,18 +77,8 @@ struct AdmittanceControllerCfg {
 /**
  * @brief 关节空间导纳能力的公开配置
  */
-enum class ReferenceBehavior {
-    NATIVE_IMPEDANCE,
-    MODEL_ADMITTANCE,
-};
-
-inline JointGainProfile resolve_tracking_gain_profile(const RuntimeCfg& runtime,ReferenceBehavior behavior) noexcept {
-    return behavior==ReferenceBehavior::MODEL_ADMITTANCE ? JointGainProfile::SERVO_TRACKING : runtime.native_tracking_gain_profile();
-}
-
 struct AdmittanceCapabilityCfg {
-    bool enabled{ false };                       ///< 导纳能力总开关
-    ReferenceBehavior reference_behavior{ ReferenceBehavior::MODEL_ADMITTANCE };
+    bool enabled{ false };                       ///< 完整导纳配置存在时由加载器派生，不是公开配置开关
     std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
     AdmittanceObserverCfg observer;              ///< 外力估计
     AdmittanceCalibrationCfg calibration;        ///< 本机标定结果

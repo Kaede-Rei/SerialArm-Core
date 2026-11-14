@@ -191,9 +191,25 @@ tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd_impl(
         return tl::make_unexpected(fault(SafetyErr::NON_FINITE_CMD));
     }
 
+    if(cmd.path == ControlPath::CSP && (cfg_.limits.max_tracking_error.size() != cfg_.joints_count ||
+        cmd.position_speed_limit.size() != cfg_.joints_count || !is_finite_vector(cmd.position_speed_limit)))
+        return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
+
     JointCtrlCmd safe_cmd = cmd;
 
     for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
+        if(cmd.path == ControlPath::CSP) {
+            if(cmd.tor[i] != 0.0 || cmd.kp[i] != 0.0 || cmd.kd[i] != 0.0)
+                return tl::make_unexpected(fault(SafetyErr::CMD_EFFORT_LIMIT, i, cmd.tor[i], 0.0));
+            if(!std::isfinite(state.tor[i])) return tl::make_unexpected(fault(SafetyErr::NON_FINITE_JOINT_STATE));
+            if(std::abs(state.tor[i]) > cfg_.limits.max_effort[i] + cfg_.numeric_tolerance)
+                return tl::make_unexpected(fault(SafetyErr::JOINT_EFFORT_LIMIT, i, state.tor[i], cfg_.limits.max_effort[i]));
+            const double error = cmd.pos[i] - state.pos[i];
+            if(std::abs(error) > cfg_.limits.max_tracking_error[i] + cfg_.numeric_tolerance)
+                return tl::make_unexpected(fault(SafetyErr::CMD_TRACKING_ERROR, i, error, cfg_.limits.max_tracking_error[i]));
+            if(cmd.position_speed_limit[i] <= 0.0 || cmd.position_speed_limit[i] > cfg_.limits.max_vel[i] + cfg_.numeric_tolerance)
+                return tl::make_unexpected(fault(SafetyErr::CMD_VEL_LIMIT, i, cmd.position_speed_limit[i], cfg_.limits.max_vel[i]));
+        }
         if(enforce_position_limits && cfg_.limits.has_position_limit[i] != 0) {
             const double cmd_min_pos = cfg_.limits.min_pos[i] + cfg_.limits.pos_margin[i];
             const double cmd_max_pos = cfg_.limits.max_pos[i] - cfg_.limits.pos_margin[i];
@@ -217,12 +233,12 @@ tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd_impl(
         }
     }
 
-    if(cfg_.require_continuous_cmd) {
+    if(cfg_.require_continuous_cmd || safe_cmd.path == ControlPath::CSP) {
         const JointVector& reference_pos = has_last_accepted_cmd_ ? last_accepted_cmd_.pos : state.pos;
         const JointVector& reference_vel = has_last_accepted_cmd_ ? last_accepted_cmd_.vel : state.vel;
 
         for(std::size_t i = 0; i < cfg_.joints_count; ++i) {
-            if(enforce_position_limits && safe_cmd.kp[i] > cfg_.numeric_tolerance) {
+            if(enforce_position_limits && (safe_cmd.path==ControlPath::CSP || safe_cmd.kp[i] > cfg_.numeric_tolerance)) {
                 const double max_pos_delta = cfg_.limits.max_vel[i] * dt + 0.5 * cfg_.limits.max_acc[i] * dt * dt;
                 const double pos_delta = safe_cmd.pos[i] - reference_pos[i];
                 if(std::abs(pos_delta) > max_pos_delta + cfg_.numeric_tolerance) {
@@ -230,7 +246,7 @@ tl::expected<JointCtrlCmd, SafetyFault> Safety::check_joint_cmd_impl(
                 }
             }
 
-            if(safe_cmd.kd[i] > cfg_.numeric_tolerance) {
+            if(safe_cmd.path==ControlPath::CSP || safe_cmd.kd[i] > cfg_.numeric_tolerance) {
                 const double max_vel_delta = cfg_.limits.max_acc[i] * dt;
                 const double vel_delta = safe_cmd.vel[i] - reference_vel[i];
                 if(std::abs(vel_delta) > max_vel_delta + cfg_.numeric_tolerance) {
@@ -298,12 +314,14 @@ SafetyAction Safety::action_for(SafetyErr err) const noexcept {
         case SafetyErr::CMD_KD_LIMIT:
         case SafetyErr::CMD_POS_STEP_LIMIT:
         case SafetyErr::CMD_VEL_STEP_LIMIT:
+        case SafetyErr::CMD_TRACKING_ERROR:
         case SafetyErr::JOINT_VEL_LIMIT:
         case SafetyErr::STATE_TIMEOUT:
         case SafetyErr::JOINT_POS_LIMIT:
         case SafetyErr::ACTUATOR_OFFLINE:
             return SafetyAction::STOP_HOLD;
 
+        case SafetyErr::JOINT_EFFORT_LIMIT:
         case SafetyErr::NOT_CONFIGURED:
         case SafetyErr::INVALID_CFG:
         case SafetyErr::INVALID_STATE_AGE:
@@ -356,6 +374,11 @@ tl::expected<void, SafetyFault> Safety::validate_cfg(const SafetyCfg& cfg) const
         !size_is_n(cfg.limits.max_kp) || !size_is_n(cfg.limits.max_kd) || !size_is_n(cfg.limits.pos_margin)) {
         return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
     }
+
+    if(!cfg.limits.max_tracking_error.empty() && (!size_is_n(cfg.limits.max_tracking_error) ||
+        !is_finite_vector(cfg.limits.max_tracking_error) ||
+        std::any_of(cfg.limits.max_tracking_error.begin(), cfg.limits.max_tracking_error.end(), [](double v){ return v <= 0.0; })))
+        return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
 
     const auto& recovery = cfg.fault_recovery.compliant_recovery;
     if(cfg.fault_recovery.default_mode != FaultHoldMode::RIGID_HOLD ||

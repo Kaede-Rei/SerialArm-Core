@@ -289,11 +289,11 @@ std::string nominal_gain_design_json(const serial_arm::DynamicsCfg& cfg,serial_a
     const auto soft=serial_arm::servo_tuning::nominal_urdf_gain_design(matrix,1,.7);
     out<<",\"purpose_nominal_gain_designs\":{";
     bool first=true;
-    for(const auto& role:std::vector<std::string>{"rigid_hold","rigid_tracking","compliant_hold","compliant_tracking","servo_tracking","compliant_drag"}) {
+    for(const auto& role:std::vector<std::string>{"rigid","compliant","drag"}) {
         if(!first)out<<',';
         first=false;print_string(out,role);out<<':';
-        const auto& purpose=role=="compliant_hold" || role=="compliant_tracking"?soft:design;
-        const bool drag=role=="compliant_drag";
+        const auto& purpose=role=="compliant"?soft:design;
+        const bool drag=role=="drag";
         out<<"{\"measured\":false,\"validated\":false,\"design_frequency_hz\":"<<purpose.design_frequency_hz
            <<",\"damping_ratio\":"<<purpose.damping_ratio<<",\"design_frequency_role\":\""
            <<(drag?"damping_design_coefficient_only_zero_stiffness_has_no_restoring_frequency":

@@ -3,7 +3,6 @@
 #include <tl/expected.hpp>
 
 #include "serial_arm/core/types.hpp"
-#include "serial_arm/interaction/admittance_observer_mode.hpp"
 #include "serial_arm/interaction/estimators/external_torque_observer.hpp"
 #include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
@@ -24,8 +23,6 @@ enum class InteractionControllerErr {
 
 struct InteractionControllerCfg {
     bool enabled{ false };
-    AdmittanceObserverMode observer_mode{ AdmittanceObserverMode::FULL_ID };
-    TorqueResidualObserverCfg residual;
     GeneralizedMomentumObserverCfg momentum;
     ExternalTorqueObserverCfg external_torque;
     JointAdmittanceControllerCfg admittance;
@@ -47,6 +44,7 @@ struct InteractionInput {
     bool observation_valid{ true };
     double measurement_dt{ 0.0 };
     bool apply_admittance{ true };
+    bool drag{ false };
 };
 
 struct InteractionOutput {
@@ -79,7 +77,6 @@ public:
     double parameter_update_progress() const noexcept;
 
 private:
-    TorqueResidualObserver residual_observer_;
     GeneralizedMomentumObserver momentum_observer_;
     GeneralizedMomentumObserver raw_momentum_observer_;
     ExternalTorqueObserver net_external_torque_observer_;

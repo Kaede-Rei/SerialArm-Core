@@ -34,76 +34,44 @@ calibration:
 control:
   runtime:
     ctrl_frequency_hz: 200.0                            # Robot::cycle() 目标控制频率 Hz
-    joint_acc_filter_alpha: 0.2                         # 实测关节加速度低通系数；FULL_ID 对 qdd 敏感，MOMENTUM 不显式使用 qdd
+    joint_acc_filter_alpha: 0.2                         # 实测关节加速度低通系数
     write_enabled: true                                 # 是否允许向真实执行器写入控制命令；White 真机确认前保持 false
     model_feedforward_mode: GRAVITY                     # 模型前馈模式：NONE / GRAVITY / FULL_INVERSE_DYNAMICS
-    tracking_gain_profile: COMPLIANT                   # ROS 原生跟踪默认增益：RIGID / COMPLIANT / SERVO_TRACKING；模型导纳固定使用伺服增益
+    control_path: MIT  # 执行路径：MIT 或 CSP
   controller:
     allow_full_cmd: false
-    # 刚性用途：保持与跟踪分别保存任务参数
+    # 刚性用途：静止与运动共用参数
     rigid:
-      hold:
-        kp:
-          joint1: 80.0
-          joint2: 200.0
-          joint3: 120.0
-          joint4: 50.0
-          joint5: 30.0
-          joint6: 10.0
-        kd:
-          joint1: 0.8
-          joint2: 2.0
-          joint3: 1.2
-          joint4: 0.5
-          joint5: 0.3
-          joint6: 0.1
-      tracking:
-        kp:
-          joint1: 80.0
-          joint2: 200.0
-          joint3: 120.0
-          joint4: 50.0
-          joint5: 30.0
-          joint6: 10.0
-        kd:
-          joint1: 0.8
-          joint2: 2.0
-          joint3: 1.2
-          joint4: 0.5
-          joint5: 0.3
-          joint6: 0.1
-    # 柔性用途：保持与跟踪分别保存任务参数
+      kp:
+        joint1: 80.0
+        joint2: 200.0
+        joint3: 120.0
+        joint4: 50.0
+        joint5: 30.0
+        joint6: 10.0
+      kd:
+        joint1: 0.8
+        joint2: 2.0
+        joint3: 1.2
+        joint4: 0.5
+        joint5: 0.3
+        joint6: 0.1
+    # 柔性用途：静止与运动共用参数
     compliant:
-      hold:
-        kp:
-          joint1: 8.0
-          joint2: 20.0
-          joint3: 12.0
-          joint4: 5.0
-          joint5: 3.0
-          joint6: 1.0
-        kd:
-          joint1: 0.08
-          joint2: 0.2
-          joint3: 0.12
-          joint4: 0.05
-          joint5: 0.03
-          joint6: 0.01
-      tracking:
-        kp:
-          joint1: 8.0
-          joint2: 20.0
-          joint3: 12.0
-          joint4: 5.0
-          joint5: 3.0
-          joint6: 1.0
-        kd:
-          joint1: 0.08
-          joint2: 0.2
-          joint3: 0.12
-          joint4: 0.05
-          joint5: 0.03
-          joint6: 0.01
+      kp:
+        joint1: 8.0
+        joint2: 20.0
+        joint3: 12.0
+        joint4: 5.0
+        joint5: 3.0
+        joint6: 1.0
+      kd:
+        joint1: 0.08
+        joint2: 0.2
+        joint3: 0.12
+        joint4: 0.05
+        joint5: 0.03
+        joint6: 0.01
     # 拖拽用途：kp=0，仅用 kd 抑制过快运动
     drag:
       kp:
@@ -120,23 +88,6 @@ control:
         joint4: 0.05
         joint5: 0.03
         joint6: 0.01
-    # 伺服跟踪用途：辨识与模型导纳共用
-    servo_tracking:
-      kp:
-        joint1: 80.0
-        joint2: 200.0
-        joint3: 120.0
-        joint4: 50.0
-        joint5: 30.0
-        joint6: 10.0
-      kd:
-        joint1: 0.8
-        joint2: 2.0
-        joint3: 1.2
-        joint4: 0.5
-        joint5: 0.3
-        joint6: 0.1
-
 # 04 safety_policy
 safety_policy:
   position_margin: 0.0                              # 命令位置距离 URDF 硬限位的额外边距 rad
@@ -181,16 +132,13 @@ shutdown:
 # 06 capability
 capability:
   admittance:
-    # 启用外力观测与模型交互计算；实际控制方式由 reference_behavior 选择
-    enabled: true
-    reference_behavior: MODEL_ADMITTANCE
+    # 本节提供外力观测参数；导纳参与由 control_path 与交互模式决定
     # 指定每个关节是否参与导纳位置退让
     joint_enabled: {joint1: true, joint2: true, joint3: true, joint4: true, joint5: true, joint6: true}
 
     observer:
-      # MOMENTUM 推荐真机且不显式使用 qdd；FULL_ID 使用 qdd 和完整逆动力学 residual
-      mode: FULL_ID
-      # MOMENTUM observer 收敛增益 rad/s，FULL_ID 下保留但不参与计算
+      # 广义动量观测器
+      # 广义动量观测器收敛增益 s^-1
       momentum_gain: {joint1: 25.0, joint2: 25.0, joint3: 25.0, joint4: 25.0, joint5: 25.0, joint6: 25.0}
 
     calibration:

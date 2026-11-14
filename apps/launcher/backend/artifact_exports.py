@@ -21,13 +21,7 @@ from control_parameters import (canonical_core, canonical_control_text, four_mod
                                 deployment_gain_groups, gain_measurement_available, gain_selection_report)
 from gain_context import recorded_gain_core, verify_gain_context
 
-GAIN_FIELDS = {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking', 'identification_tracking', 'all'}
-GAIN_DESTINATIONS = {
-    'rigid_tracking': ('rigid_tracking',),
-    'compliant_tracking': ('compliant_tracking',),
-    'compliant_drag': ('compliant_drag',),
-    'servo_tracking': ('servo_tracking',),
-}
+GAIN_FIELDS = {'rigid', 'compliant', 'drag', 'all'}
 
 
 def _read_json(path):
@@ -112,28 +106,14 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None, hardware=None)
     hold_compensation = None
     for item, fields in groups.items():
         for term in ('kp', 'kd'):
-            values = fields.get(term)
+            values = (fields.get('gains') or {}).get(term)
             if not isinstance(values, list):
                 raise ValueError('增益候选参数不完整')
             gain_map = _gain_map(joints, values, gain_limits.get(term), '映射后的硬件协议范围')
-            for destination in GAIN_DESTINATIONS[item]:
-                targets[('control', 'controller', destination, term)] = gain_map
-        if item in ('rigid_tracking', 'compliant_tracking'):
-            hold = fields.get('hold_gains')
-            verification = ('hold_compensation_verification'
-                            if item == 'rigid_tracking' and
-                            (fields.get('hold_compensation') or {}).get('enabled') is True
-                            else 'hold_verification')
-            measured = (gain_measurement_available(fields.get(verification), len(joints), 'hold') or
-                        (fields.get(verification) or {}).get('validated') is True)
-            if isinstance(hold, dict) and measured:
-                for term in ('kp', 'kd'):
-                    values = hold.get(term)
-                    if not isinstance(values, list): raise ValueError('保持验收缺少对应增益')
-                    targets[('control', 'controller', item.replace('_tracking', '_hold'), term)] = _gain_map(
-                        joints, values, gain_limits.get(term), '映射后的硬件协议范围')
+            targets[('control', 'controller', item, term)] = gain_map
+        if item == 'rigid':
             compensation = fields.get('hold_compensation')
-            if item == 'rigid_tracking':
+            if item == 'rigid':
                 # Older baseline candidates were also tested with compensation
                 # disabled; missing metadata must never revive an old trim
                 if compensation is None:
@@ -185,7 +165,6 @@ def _gain_export(record, dest, gain_purposes=None):
             source_text = yaml.safe_dump(measured, allow_unicode=True, sort_keys=False)
             cfg = measured
     category = gain.get('category')
-    if category == 'identification_tracking': category = 'servo_tracking'
     if category not in GAIN_FIELDS:
         raise ValueError('未知增益标定目标')
     joints = metadata['joint_names']

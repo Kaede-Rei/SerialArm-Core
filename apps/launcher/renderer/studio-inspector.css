@@ -165,3 +165,27 @@
   .model-review .model-tree { max-height: 220px; border-right: 0; border-bottom: 1px solid var(--line); }
   .model-pose-joints .model-joint-row { padding: 12px; gap: 10px; }
 }
+
+/* Joint parameter tables share one row and one source per axis. */
+.setup-main .profile-control-table { width:100%; table-layout:auto; margin:12px 0; }
+.setup-main .profile-control-table th:first-child { min-width:96px; width:20%; }
+.setup-main .profile-control-table th,
+.setup-main .profile-control-table td { padding:6px 12px; vertical-align:middle; text-align:left; }
+.setup-main .profile-control-table th { white-space:normal; line-height:1.6; }
+/* Header text follows the input's text inset, not the far edge of its column. */
+.setup-main .profile-control-table thead th:not(:first-child) { padding-inline:22px; }
+/* Hidden labels stay inside their field's scroller instead of extending the root page. */
+.setup-main .profile-control-table .parameter-field { position:relative; min-width:96px; gap:0; }
+.setup-main .profile-control-table .parameter-field > span:first-child { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+.setup-main .profile-control-table .parameter-field > input { width:100%; min-width:0; text-align:left; }
+.setup-main .profile-control-table .parameter-switch { justify-content:flex-start; }
+.setup-main .profile-control-table .parameter-field em { max-width:180px; white-space:normal; }
+.setup-main .profile-mode-note { margin:12px 0 0; }
+.setup-main .profile-tracking-limits .parameter-empty { margin-top:12px; }
+.setup-main .profile-motion-control > .calibration-step > .parameter-fields { margin:12px 0; }
+.setup-main .profile-gain-task { margin-top:0; }
+.setup-main .profile-gain-task .profile-control-table { margin:0; }
+.setup-main .profile-gain-purpose-grid { grid-template-columns:minmax(0,1fr); }
+
+.setup-main .profile-control-table tbody th { position:static; background:transparent; }
+.setup-main .profile-control-table tbody tr:last-child > :is(th,td) { border-bottom:0; }

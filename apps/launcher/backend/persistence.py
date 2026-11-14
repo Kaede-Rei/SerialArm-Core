@@ -36,7 +36,6 @@ def _targets(joints, runtime, gravity_scale):
     friction = runtime.get('friction') or {}
     targets = {
         ('model', 'gravity_scale'): _map(joints, gravity_scale),
-        ('capability', 'admittance', 'observer', 'mode'): str(runtime['observer_mode']),
         ('capability', 'admittance', 'observer', 'momentum_gain'): _map(joints, runtime['momentum_gain']),
         ('capability', 'admittance', 'calibration', 'torque_bias'): _map(joints, runtime['torque_bias']),
         ('capability', 'admittance', 'calibration', 'torque_threshold'): _map(joints, runtime['torque_threshold']),
@@ -52,13 +51,6 @@ def _targets(joints, runtime, gravity_scale):
         ('capability', 'admittance', 'controller', 'max_delta_q'): _map(joints, runtime['max_delta_q']),
         ('capability', 'admittance', 'controller', 'max_delta_q_dot'): _map(joints, runtime['max_delta_q_dot']),
     }
-    if 'reference_behavior' in runtime:
-        if runtime['reference_behavior'] not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
-            raise ValueError('无效的参考运动策略')
-        targets[('capability', 'admittance', 'reference_behavior')] = runtime['reference_behavior']
-    if 'enabled' in runtime:
-        if not isinstance(runtime['enabled'], bool): raise ValueError('能力开关必须为布尔值')
-        targets[('capability', 'admittance', 'enabled')] = 'true' if runtime['enabled'] else 'false'
     if 'joint_enabled' in runtime:
         flags = runtime['joint_enabled']
         if len(flags) != len(joints) or any(value not in (0, 1, False, True) for value in flags):
@@ -66,8 +58,7 @@ def _targets(joints, runtime, gravity_scale):
         targets[('capability', 'admittance', 'joint_enabled')] = yaml.safe_dump(
             dict(zip(joints, map(bool, flags))), default_flow_style=True).strip()
     for purpose, gains in (runtime.get('execution_gains') or {}).items():
-        if purpose not in ('rigid_hold', 'rigid_tracking', 'compliant_hold', 'compliant_tracking',
-                            'compliant_drag', 'servo_tracking'):
+        if purpose not in ('rigid', 'compliant', 'drag'):
             raise ValueError('未知执行增益用途: ' + purpose)
         for term in ('kp', 'kd'):
             values = gains.get(term)
@@ -107,13 +98,7 @@ def _runtime_text(text, joints, runtime, gravity_scale):
             text = add_mapping_value(text, (), 'capability', {'admittance': defaults})
         else:
             text = add_mapping_value(text, ('capability',), 'admittance', defaults)
-    servo_values = (runtime.get('execution_gains') or {}).get('servo_tracking')
-    servo = ({term: dict(zip(joints, servo_values[term])) for term in ('kp', 'kd')}
-             if servo_values is not None else None)
-    text = canonical_control_text(text, servo)
-    if 'reference_behavior' in runtime:
-        text = add_mapping_value(text, ('capability', 'admittance'), 'reference_behavior',
-                                 runtime['reference_behavior'])
+    text = canonical_control_text(text)
     if 'hold_compensation' in runtime:
         hold = runtime['hold_compensation']
         value = {key: dict(zip(joints, item)) if isinstance(item, list) else item

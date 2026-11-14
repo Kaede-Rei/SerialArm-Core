@@ -14,24 +14,21 @@ InteractionController::configure(const InteractionControllerCfg& cfg) {
         return {};
     }
 
-    TorqueResidualObserver residual_observer;
     GeneralizedMomentumObserver momentum_observer;
     GeneralizedMomentumObserver raw_momentum_observer;
     ExternalTorqueObserver net_external_torque_observer;
     ExternalTorqueObserver external_torque_observer;
     JointAdmittanceController admittance_controller;
 
-    if(!residual_observer.configure(cfg.residual) ||
-        !external_torque_observer.configure(cfg.external_torque) ||
+    if(!external_torque_observer.configure(cfg.external_torque) ||
         !admittance_controller.configure(cfg.admittance)) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     }
-    if(cfg.observer_mode == AdmittanceObserverMode::MOMENTUM &&
-        !momentum_observer.configure([&]{auto c=cfg.momentum;c.initial_residual.assign(c.joints_count,0.0);return c;}())) {
+    if(!momentum_observer.configure([&]{auto c=cfg.momentum;c.initial_residual.assign(c.joints_count,0.0);return c;}())) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     }
 
-    if(cfg.observer_mode==AdmittanceObserverMode::MOMENTUM) {
+    {
         auto net_cfg=cfg.external_torque;
         net_cfg.torque_bias.assign(net_cfg.joints_count,0.0);
         net_cfg.friction.enabled=false;
@@ -41,7 +38,6 @@ InteractionController::configure(const InteractionControllerCfg& cfg) {
     cfg_ = cfg;
     raw_momentum_observer_=std::move(raw_momentum_observer);
     net_external_torque_observer_=std::move(net_external_torque_observer);
-    residual_observer_ = std::move(residual_observer);
     momentum_observer_ = std::move(momentum_observer);
     external_torque_observer_ = std::move(external_torque_observer);
     admittance_controller_ = std::move(admittance_controller);
@@ -58,8 +54,7 @@ InteractionController::update(const InteractionInput& input) {
     output.state.valid = false;
     if(!cfg_.enabled) return output;
 
-    const bool usable = input.observation_valid &&
-        (cfg_.observer_mode!=AdmittanceObserverMode::FULL_ID || input.full_id_acceleration_valid);
+    const bool usable = input.observation_valid;
     if(!usable || (!input.new_measurement && !observation_initialized_)) {
         // Missing measurement authority never becomes an estimated zero interaction
         if(!usable) { momentum_observer_.reset(); raw_momentum_observer_.reset(); observation_initialized_=false; }
@@ -89,42 +84,31 @@ InteractionController::update(const InteractionInput& input) {
         }
         JointVector measured_velocity=input.measured_velocity;
         if(measured_velocity.empty()) measured_velocity.assign(cfg_.external_torque.joints_count,0.0);
-        JointVector net_residual;
-        if(cfg_.observer_mode==AdmittanceObserverMode::MOMENTUM) {
-            const auto n=cfg_.external_torque.joints_count;
-            TorqueResidualEstimate zero;zero.residual.assign(n,0.0);
-            auto correction=external_torque_observer_.update(zero,measured_velocity);
-            if(!correction) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
-            auto momentum_input=input.momentum_input;
-            momentum_input.dt=input.measurement_dt>0?input.measurement_dt:input.dt;
-            momentum_input.known_residual.resize(n);
-            for(std::size_t i=0;i<n;++i) momentum_input.known_residual[i]=
-                (cfg_.external_torque.torque_bias.empty()?0.0:cfg_.external_torque.torque_bias[i])+
-                correction->friction_residual_hat[i];
-            auto momentum=momentum_observer_.update(momentum_input);
-            if(!momentum) return tl::make_unexpected(InteractionControllerErr::MOMENTUM_FAILED);
-            auto raw_input=momentum_input;
-            raw_input.known_residual.clear();
-            auto raw=raw_momentum_observer_.update(raw_input);
-            if(!raw) return tl::make_unexpected(InteractionControllerErr::MOMENTUM_FAILED);
-            // Preserve genuine uncompensated momentum residual for calibration
-            output.residual.residual=raw->tau_ext_hat;
-            output.residual.residual_filtered=output.residual.residual;
-            net_residual=momentum->tau_ext_hat;
-        } else {
-            auto residual=residual_observer_.update(input.measured_torque,input.full_id_model_torque);
-            if(!residual) return tl::make_unexpected(InteractionControllerErr::OBSERVER_FAILED);
-            output.residual=std::move(residual.value());
-        }
+        const auto n=cfg_.external_torque.joints_count;
+        TorqueResidualEstimate zero;zero.residual.assign(n,0.0);
+        auto correction=external_torque_observer_.update(zero,measured_velocity);
+        if(!correction) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
+        auto momentum_input=input.momentum_input;
+        momentum_input.dt=input.measurement_dt>0?input.measurement_dt:input.dt;
+        momentum_input.known_residual.resize(n);
+        for(std::size_t i=0;i<n;++i) momentum_input.known_residual[i]=
+            (cfg_.external_torque.torque_bias.empty()?0.0:cfg_.external_torque.torque_bias[i])+
+            correction->friction_residual_hat[i];
+        auto momentum=momentum_observer_.update(momentum_input);
+        if(!momentum) return tl::make_unexpected(InteractionControllerErr::MOMENTUM_FAILED);
+        auto raw_input=momentum_input;
+        raw_input.known_residual.clear();
+        auto raw=raw_momentum_observer_.update(raw_input);
+        if(!raw) return tl::make_unexpected(InteractionControllerErr::MOMENTUM_FAILED);
+        output.residual.residual=raw->tau_ext_hat;
+        output.residual.residual_filtered=output.residual.residual;
         auto estimated=external_torque_observer_.update(output.residual,measured_velocity);
-        if(cfg_.observer_mode==AdmittanceObserverMode::MOMENTUM) {
-            TorqueResidualEstimate cleaned;cleaned.residual=net_residual;
-            auto thresholded=net_external_torque_observer_.update(cleaned,measured_velocity);
-            if(!thresholded || !estimated) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
-            estimated->friction_compensated=net_residual;
-            estimated->tau_ext_hat=std::move(thresholded->tau_ext_hat);
-            estimated->threshold_active=std::move(thresholded->threshold_active);
-        }
+        TorqueResidualEstimate cleaned;cleaned.residual=momentum->tau_ext_hat;
+        auto thresholded=net_external_torque_observer_.update(cleaned,measured_velocity);
+        if(!thresholded || !estimated) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
+        estimated->friction_compensated=momentum->tau_ext_hat;
+        estimated->tau_ext_hat=std::move(thresholded->tau_ext_hat);
+        estimated->threshold_active=std::move(thresholded->threshold_active);
         if(!estimated) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
         output.bias_compensated=std::move(estimated->bias_compensated);
         output.friction_residual_hat=std::move(estimated->friction_residual_hat);
@@ -162,6 +146,7 @@ InteractionController::update(const InteractionInput& input) {
         input.max_delta_q,
         input.min_delta_q_dot,
         input.max_delta_q_dot,
+        input.drag,
     });
     if(!admittance) return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
     if(output.corrected_cmd.pos.size() != admittance->delta_q.size() ||
@@ -194,8 +179,7 @@ InteractionController::reconfigure(const InteractionControllerCfg& cfg) {
     auto valid=validated.configure(cfg);
     if(!valid) return valid;
     if(!cfg_.enabled || !cfg.enabled) { *this=std::move(validated); return {}; }
-    const bool observer_changed=cfg_.observer_mode!=cfg.observer_mode ||
-        cfg_.momentum.gain!=cfg.momentum.gain ||
+    const bool observer_changed=cfg_.momentum.gain!=cfg.momentum.gain ||
         cfg_.external_torque.torque_bias!=cfg.external_torque.torque_bias ||
         cfg_.external_torque.torque_threshold!=cfg.external_torque.torque_threshold ||
         cfg_.external_torque.friction.enabled!=cfg.external_torque.friction.enabled ||
@@ -207,7 +191,6 @@ InteractionController::reconfigure(const InteractionControllerCfg& cfg) {
     if(!admittance_controller_.reconfigure(cfg.admittance))
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     if(observer_changed) {
-        residual_observer_=std::move(validated.residual_observer_);
         momentum_observer_=std::move(validated.momentum_observer_);
         raw_momentum_observer_=std::move(validated.raw_momentum_observer_);
         net_external_torque_observer_=std::move(validated.net_external_torque_observer_);
@@ -231,7 +214,6 @@ void InteractionController::reset_reference() {
 
 void InteractionController::reset() {
     if(!is_configured_ || !cfg_.enabled) return;
-    residual_observer_.reset();
     momentum_observer_.reset();
     raw_momentum_observer_.reset();
     external_torque_observer_.reset();

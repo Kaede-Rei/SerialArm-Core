@@ -92,9 +92,9 @@ def displaced_zero_stiffness_terminal(terminal, directory):
                     JointImpedanceGains damping=gains;std::fill(damping.kp.begin(),damping.kp.end(),0);
                     {
                         std::unique_lock<std::mutex> guard(mutex_);
-                        if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::COMPLIANT_DRAG) ||
+                        if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::DRAG) ||
                            !robot_.set_execution_gain_profile(JointGainProfile::DRAG) ||
-                           !robot_.set_calibration_tracking_gains(damping,JointImpedanceMode::COMPLIANT_DRAG))
+                           !robot_.set_calibration_tracking_gains(damping,JointImpedanceMode::DRAG))
                             throw std::runtime_error("fixture_P0_setup_failed");
                         const auto until=Robot::Clock::now()+std::chrono::seconds(2);
                         while(Robot::Clock::now()<until) {
@@ -208,7 +208,7 @@ def assert_isolated_pulses(rows, names, plans, kp, kd):
 def assert_drag_zero_stiffness(folder, selected, names, candidate=None):
     validation = selected['drag_validation']
     assert validation['completed'] and validation['available'], validation
-    assert all(value == 0 for value in selected['kp'])
+    assert all(value == 0 for value in selected['gains']['kp'])
     parameters = next(item for item in (candidate or selected)['experiments']
                       if item.get('kind') == 'drag_excitation_parameters'
                       and Path(item['record_path']).name == Path(validation['record_path']).name)
@@ -227,7 +227,7 @@ def assert_drag_zero_stiffness(folder, selected, names, candidate=None):
         quiet_end = max(quiet_end, float(quiet[-1]['time_s']))
         actual_zero = [row for row in values if row['phase'] in ('quiet', 'input', 'release')]
         assert actual_zero, (names[axis], 'No actual damping-only measurement')
-        assert all(abs(float(row['actual_kp'])) < 1e-10 and math.isclose(float(row['actual_kd']), selected['kd'][axis], abs_tol=1e-6)
+        assert all(abs(float(row['actual_kp'])) < 1e-10 and math.isclose(float(row['actual_kd']), selected['gains']['kd'][axis], abs_tol=1e-6)
                    for row in actual_zero), 'Drag scope started while a positive-P handover was still executing'
         for row in values:
             if abs(float(row['independent_disturbance_nm'])) > 1e-10:
@@ -616,7 +616,7 @@ def assert_anchor_visits(folder, candidate, names, partial):
         assert all(set(pair) == {'out','in'} for pair in approaches.values()), 'A matched approach did not return to its nominal anchor'
         passing['matched_approaches'] = len(approaches)
         return passing
-    primary = 'drag' if candidate['category'] == 'compliant_drag' else 'native'
+    primary = 'drag' if candidate['category'] == 'drag' else 'native'
     assert primary in paired and {'visit', 'return'} <= paired[primary].keys(), paired
     assert paired[primary]['visit']['completed'] and paired[primary]['return']['completed'], paired[primary]
     if not partial and candidate['category'] == 'all':
@@ -826,8 +826,8 @@ def assert_frozen_group(folder, selected, names):
         values = [row for row in rows if row['joint'] == name]
         assert len(values) >= 100 and max(float(row['time_s']) for row in values) >= validation['duration_s'], (name, validation)
         assert all(row['actual_gains_known'] == '1' for row in values), name
-        assert all(math.isclose(float(row['actual_kp']), selected['kp'][axis], abs_tol=1e-6)
-                   and math.isclose(float(row['actual_kd']), selected['kd'][axis], abs_tol=1e-6) for row in values), name
+        assert all(math.isclose(float(row['actual_kp']), selected['gains']['kp'][axis], abs_tol=1e-6)
+                   and math.isclose(float(row['actual_kd']), selected['gains']['kd'][axis], abs_tol=1e-6) for row in values), name
         metric = validation['metrics'][axis]
         assert metric['measurement_samples'] >= 100 and metric['endpoint_window_available'], metric
         assert metric['endpoint_passed'] is False, metric
@@ -841,10 +841,10 @@ def assert_frozen_group(folder, selected, names):
 
 def assert_frozen(folder, candidate, names):
     targets = candidate.get('targets', {})
-    selected = targets.get('servo_tracking', candidate)
+    selected = targets.get('rigid', candidate)
     validation = selected['native_validation']
     native_group = assert_frozen_group(folder, selected, names)
-    compliant_group = assert_frozen_group(folder, targets['compliant_tracking'], names) if targets else None
+    compliant_group = assert_frozen_group(folder, targets['compliant'], names) if targets else None
     independent = [item for item in candidate['experiments'] if item.get('kind') == 'independent_torque_disturbance']
     assert independent, [item.get('kind') for item in candidate['experiments']]
     pulse_records = []
@@ -887,15 +887,14 @@ def assert_frozen(folder, candidate, names):
     if not direct['direct_measurement_complete']:
         assert not selected['qualification_complete'], 'Missing direct purpose evidence became complete purpose qualification'
     if targets:
-        assert set(targets) == {'rigid_tracking', 'compliant_tracking', 'servo_tracking', 'compliant_drag'}, targets.keys()
-        assert targets['rigid_tracking']['native_validation']['record_path'] == validation['record_path'], 'Rigid and servo duplicated the shared native frozen record'
+        assert set(targets) == {'rigid', 'compliant', 'drag'}, targets.keys()
         assert all(target['available'] for target in targets.values()), 'Completed purpose parameter groups were erased after missing independent-input evidence'
         assert all(target['validated'] is False for target in targets.values()), 'A reference record became an automatic purpose pass'
-        assert all(value == 0 for value in targets['compliant_drag']['kp']), targets['compliant_drag']
-        drag = assert_drag_zero_stiffness(folder, targets['compliant_drag'], names, candidate)
-        rigid = targets['rigid_tracking']
+        assert all(value == 0 for value in targets['drag']['gains']['kp']), targets['drag']
+        drag = assert_drag_zero_stiffness(folder, targets['drag'], names, candidate)
+        rigid = targets['rigid']
         assert rigid['hold_disturbance_verification']['record_path'] == rigid['disturbance_verification']['record_path'], 'Rigid hold re-injected an already measured same-condition purpose input'
-        compliant = targets['compliant_tracking']
+        compliant = targets['compliant']
         assert compliant['hold_disturbance_verification']['record_path'] == compliant['disturbance_verification']['record_path'], 'Compliant hold duplicated the same-condition purpose input'
         shared = [item for item in candidate['candidate_comparisons'] + candidate['experiments']
                   if item.get('kind') == 'shared_disturbance_evidence']
@@ -925,15 +924,15 @@ def assert_displaced_passing_resume(folder, candidate, names):
     assert bridge['reference_continuation'] and bridge['elapsed_s'] >= .5
     frames = read_rows(folder/'frames.csv')
     transition = [row for row in frames if row['gain_stage'] == 'compliant-passing-resume-endpoint-transition']
-    assert transition and all(row['impedance_mode'] == 'COMPLIANT_TRACKING' for row in transition), \
+    assert transition and all(row['impedance_mode'] == 'COMPLIANT' for row in transition), \
         'Resume submitted a reference while the actual runtime was still in assessment HOLD or DRAG'
     assert any(all(float(row['cmd_kp:'+name]) > 0 for name in names) for row in transition), \
         'The soft bridge never installed positive tracking feedback gains'
-    selected = candidate.get('targets', {}).get('compliant_tracking', candidate)
+    selected = candidate.get('targets', {}).get('compliant', candidate)
     for key in ('kp','kd'):
-        np.testing.assert_allclose(bridge[key], selected[key], atol=1e-8, rtol=0)
+        np.testing.assert_allclose(bridge[key], selected['gains'][key], atol=1e-8, rtol=0)
     before = frames[:frames.index(transition[0])]
-    assert any(row['impedance_mode'] == 'COMPLIANT_DRAG'
+    assert any(row['impedance_mode'] == 'DRAG'
                and all(abs(float(row['cmd_kp:'+name])) < 1e-10 for name in names) for row in before), \
         'The regression never entered actual P0 before resuming soft tracking'
     passing = next(event for event in experiments if event.get('kind') == 'taught_path_purpose_dwell'
@@ -965,7 +964,7 @@ def assert_displaced_passing_resume(folder, candidate, names):
             'callback_scope':'P0_then_real_taught_release_then_fresh_measured_HOLD_not_full_purpose_search',
             'same_rule_for_every_axis':True,
             'resume_bridge':bridge['record_path'], 'bridge_initial_offset_rad':difference.tolist(),
-            'bridge_runtime_mode':'COMPLIANT_TRACKING', 'compliant_passing_resumed':True,
+            'bridge_runtime_mode':'COMPLIANT', 'compliant_passing_resumed':True,
             'compliant_frozen_completed':True, 'taught_motion_release':release_records,
             'scope':'native_mode_handoff_and_evidence_not_physical_gain_performance'}
 
@@ -1004,7 +1003,7 @@ def run_focused_resume_case(terminal, timeout_s=180):
             candidate,result,status=final_record(native,task,deadline)
             folder=Path(task['directory'])
             assert status['phase']=='complete' and not candidate['termination']['fault_interrupted'],candidate['termination']
-            assert candidate['category']=='compliant_tracking' and not candidate.get('targets')
+            assert candidate['category']=='compliant' and not candidate.get('targets')
             assert candidate['budget_source_duration_s']==25 and candidate['actual_elapsed_s']<=375
             assert candidate['termination']==result['termination']==status['termination']
             assert not candidate['response_guard_events']
@@ -1017,7 +1016,7 @@ def run_focused_resume_case(terminal, timeout_s=180):
             dwell=next(event for event in candidate['experiments'] if event.get('kind')=='taught_path_purpose_dwell')
             assert len(dwell['nearby_reference_span_rad'])==len(dwell['axis_response_weights'])==len(names)
             assert all(math.isfinite(value) and value>=0 for value in dwell['axis_response_weights'])
-            exports=assert_exported_evidence(directory,folder,'compliant_tracking')
+            exports=assert_exported_evidence(directory,folder,'compliant')
             assert config.read_bytes()==before,'The fixture changed its input configuration'
             retained=Path(tempfile.mkdtemp(prefix='serialarm-focused-resume-result-'))/'evidence'
             shutil.copytree(directory,retained)
@@ -1067,7 +1066,7 @@ def run_case(terminal, kind='complete', old_gain_scale=1.0, timeout_s=660):
             # Stop all-use quick mode after native freezing, during its later
             # compliant learning. A fine single-use task now freezes last and
             # completes immediately; do not invent an idle cancellation window.
-            mode, depth = ('servo_tracking', 'fine') if kind == 'fine' else ('all', 'quick')
+            mode, depth = ('rigid', 'fine') if kind == 'fine' else ('all', 'quick')
             target_budget, hard_limit = (450, 600) if mode == 'all' else (300, 375)
             plan = native.request('model_calibration_gain_plan', {'gain_mode': mode, 'gain_tuning_mode': depth})
             assert plan['valid'] and plan['budget_source_duration_s'] == 25 and plan['target_budget_s'] == target_budget and plan['hard_limit_s'] == hard_limit, plan
@@ -1102,7 +1101,7 @@ def run_case(terminal, kind='complete', old_gain_scale=1.0, timeout_s=660):
             candidate, result, status = final_record(native, task, deadline)
             folder = Path(task['directory'])
             assert candidate['termination'] == result['termination'] == status['termination']
-            assert candidate['category'] == ('all' if mode == 'all' else 'servo_tracking'), candidate['category']
+            assert candidate['category'] == ('all' if mode == 'all' else 'rigid'), candidate['category']
             assert candidate['seed_source'].startswith('urdf') and candidate['seed_source'] == candidate['model_initialization']['source'], candidate['seed_source']
             assert not candidate['model_initialization']['measured'] and not candidate['task_model_demand']['executed']
             nominal_basis = assert_nominal_path_basis(candidate, names)
@@ -1120,10 +1119,10 @@ def run_case(terminal, kind='complete', old_gain_scale=1.0, timeout_s=660):
             if kind == 'cancel':
                 assert status['phase'] == 'cancelled' and candidate['termination']['kind'] == 'cancelled', status
                 assert candidate['termination']['reason'] == 'stop_requested' and not candidate['termination']['fault_interrupted'], candidate['termination']
-                native_target = candidate['targets']['servo_tracking']
+                native_target = candidate['targets']['rigid']
                 assert native_target['native_validation']['completed'] and native_target['native_validation']['available'], 'Cancelling a later purpose measurement erased the completed native frozen group'
                 assert candidate['available'] and candidate['review_ready'] and not candidate['validated'], candidate
-                assert not candidate['targets']['compliant_tracking']['available'], 'An interrupted compliant group became applicable without its frozen traversal'
+                assert not candidate['targets']['compliant']['available'], 'An interrupted compliant group became applicable without its frozen traversal'
                 frozen = assert_frozen_group(folder, native_target, names)
                 frozen['frozen_group_retained_after_cancel'] = True
             else:
@@ -1140,22 +1139,22 @@ def run_case(terminal, kind='complete', old_gain_scale=1.0, timeout_s=660):
             assert native.request('get_admittance')['execution_gains'] == original_gains, 'The worker retained temporary calibration gains after exit'
             assert config.read_text() == before_config, 'The worker modified its input Profile'
             native.request('deactivate')
-            applied = native.request('candidate_gain_apply', {'path': str(folder / 'gain-candidate.json'), 'gain_purposes': ['servo_tracking']})
-            assert applied['gain_purposes'] == ['servo_tracking'], applied
+            applied = native.request('candidate_gain_apply', {'path': str(folder / 'gain-candidate.json'), 'gain_purposes': ['rigid']})
+            assert applied['gain_purposes'] == ['rigid'], applied
             now = native.request('get_admittance')['execution_gains']
-            target = candidate.get('targets', {}).get('servo_tracking', candidate)
-            assert now['servo_tracking'] == {'kp': target['kp'], 'kd': target['kd']}, now
-            assert {key: value for key, value in now.items() if key != 'servo_tracking'} == {
-                key: value for key, value in original_gains.items() if key != 'servo_tracking'}, now
+            target = candidate.get('targets', {}).get('rigid', candidate)
+            assert now['rigid'] == {'kp': target['gains']['kp'], 'kd': target['gains']['kd']}, now
+            assert {key: value for key, value in now.items() if key != 'rigid'} == {
+                key: value for key, value in original_gains.items() if key != 'rigid'}, now
             native.request('candidate_gain_restore')
             assert native.request('get_admittance')['execution_gains'] == original_gains
             assert config.read_text() == before_config, 'Temporary candidate application wrote the Profile'
             local = assert_local_comparisons(folder, candidate, names)
-            exports = assert_exported_evidence(directory, folder, 'servo_tracking')
+            exports = assert_exported_evidence(directory, folder, 'rigid')
             assert config.read_text() == before_config, 'Artifact export changed the active configuration'
             return {'offline_mock_only': True, 'kind': kind, 'elapsed_s': time.monotonic()-started,
                     'actual_elapsed_s': candidate['actual_elapsed_s'],
-                    'old_gain_scale': old_gain_scale, 'old_servo_gains': original_gains['servo_tracking'],
+                    'old_gain_scale': old_gain_scale, 'old_servo_gains': original_gains['rigid'],
                     'seed_source': candidate['seed_source'], 'seed_kp': candidate['seed_kp'], 'seed_kd': candidate['seed_kd'],
                     'nominal_path_basis': nominal_basis,
                     'recorded_T_s': candidate['budget_source_duration_s'], 'target_budget_s': candidate['target_budget_s'],
@@ -1221,13 +1220,13 @@ def run_cold_drag_case(terminal, timeout_s=180):
             candidate, result, status = final_record(native, task, deadline)
             assert status['phase'] == 'complete' and candidate['termination']['kind'] == 'measured_reference_complete', candidate['termination']
             assert not candidate['termination']['fault_interrupted'] and candidate['termination'] == result['termination']
-            assert candidate['category'] == 'compliant_drag' and not candidate.get('targets'), candidate.get('category')
+            assert candidate['category'] == 'drag' and not candidate.get('targets'), candidate.get('category')
             assert_reference_only(candidate)
             assert candidate['available'] and candidate['review_ready'] and not candidate['validated']
             assert candidate['path_passes'] == 0, 'Drag-only measurement invented a full tracking traversal'
             assert candidate['budget_source_duration_s'] == 25 and candidate['target_budget_s'] == 300 and candidate['time_budget_s'] == 375
             assert candidate['actual_elapsed_s'] <= 376 and candidate['budget_source_task_id'] == 'offline-original-25s'
-            assert all(value == 0 for value in candidate['kp']) and all(math.isfinite(value) and value >= 0 for value in candidate['kd']), candidate
+            assert all(value == 0 for value in candidate['gains']['kp']) and all(math.isfinite(value) and value >= 0 for value in candidate['gains']['kd']), candidate
             folder = Path(task['directory'])
             assert not list(folder.glob('gain-trajectory-*-online-*.csv')) and not list(folder.glob('gain-trajectory-*-frozen.csv'))
             anchors = assert_anchor_visits(folder, candidate, names, False)
@@ -1243,21 +1242,21 @@ def run_cold_drag_case(terminal, timeout_s=180):
             drag = assert_drag_zero_stiffness(folder, candidate, names)
             assert native.request('get_admittance')['execution_gains'] == original_gains and config.read_text() == before_config
             native.request('deactivate')
-            applied = native.request('candidate_gain_apply', {'path': str(folder / 'gain-candidate.json'), 'gain_purposes': ['compliant_drag']})
-            assert applied['gain_purposes'] == ['compliant_drag'], applied
+            applied = native.request('candidate_gain_apply', {'path': str(folder / 'gain-candidate.json'), 'gain_purposes': ['drag']})
+            assert applied['gain_purposes'] == ['drag'], applied
             now = native.request('get_admittance')['execution_gains']
-            assert now['compliant_drag'] == {'kp': candidate['kp'], 'kd': candidate['kd']}, (applied, now)
-            assert {key: value for key, value in now.items() if key != 'compliant_drag'} == {
-                key: value for key, value in original_gains.items() if key != 'compliant_drag'}, now
+            assert now['drag'] == {'kp': candidate['gains']['kp'], 'kd': candidate['gains']['kd']}, (applied, now)
+            assert {key: value for key, value in now.items() if key != 'drag'} == {
+                key: value for key, value in original_gains.items() if key != 'drag'}, now
             native.request('candidate_gain_restore')
             assert native.request('get_admittance')['execution_gains'] == original_gains and config.read_text() == before_config
-            exports = assert_exported_evidence(directory, folder, 'compliant_drag')
+            exports = assert_exported_evidence(directory, folder, 'drag')
             assert config.read_text() == before_config
             return {'offline_mock_only': True, 'kind': 'drag', 'elapsed_s': time.monotonic()-started,
                     'actual_elapsed_s': candidate['actual_elapsed_s'],
                     'recorded_T_s': 25, 'target_budget_s': 300, 'hard_limit_s': 375, 'endpoint_offset_rad': .005,
                     'anchor_visits': anchors, 'cold_handoff_record': handoffs[0]['record_path'], 'exports': exports,
-                    'path_passes': candidate['path_passes'], 'kp': candidate['kp'], 'kd': candidate['kd'], 'drag': drag,
+                    'path_passes': candidate['path_passes'], 'kp': candidate['gains']['kp'], 'kd': candidate['gains']['kd'], 'drag': drag,
                     'available': candidate['available'], 'validated': candidate['validated'],
                     'only_selected_purpose_applied_and_restored': True, 'termination': candidate['termination']}
         except Exception:

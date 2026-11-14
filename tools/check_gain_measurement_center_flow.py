@@ -188,12 +188,10 @@ def run_case(terminal, directory, deadline, kind):
             # native trajectory still fits and must remain an actual measured
             # candidate rather than being discarded with the skipped stage.
             stages = candidate['targets']
-            native_trial = stages['servo_tracking']['native_validation']
+            native_trial = stages['rigid']['native_validation']
             assert native_trial['completed'] and native_trial['available'] and native_trial['record_path'], native_trial
-            assert stages['servo_tracking']['available'] and not stages['servo_tracking']['validated'], stages['servo_tracking']['warnings']
-            assert not stages['servo_tracking']['disturbance_verification']['available'], stages['servo_tracking']['warnings']
-            assert stages['servo_tracking']['kp'] == stages['rigid_tracking']['kp'] and stages['servo_tracking']['kd'] == stages['rigid_tracking']['kd']
-            assert stages['rigid_tracking']['native_validation']['record_path'] == native_trial['record_path']
+            assert stages['rigid']['available'] and not stages['rigid']['validated'], stages['rigid']['warnings']
+            assert not stages['rigid']['disturbance_verification']['available'], stages['rigid']['warnings']
             with (Path(task['directory']) / native_trial['record_path']).open() as stream:
                 rows = list(csv.DictReader(stream))
             counts = {}

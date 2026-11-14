@@ -40,8 +40,8 @@ inline bool park_safe_for_timed_rigid(const std::vector<double>& measured,
     return true;
 }
 
-// Smoothstep avoids an instantaneous Kp/Kd jump on COMPLIANT_TRACKING ->
-// RIGID_TRACKING; the trajectory reference is independently rebased to actual q
+// Smoothstep avoids an instantaneous Kp/Kd jump on COMPLIANT ->
+// RIGID; the trajectory reference is independently rebased to actual q
 inline double park_rigid_gain_fraction(double elapsed_s, double ramp_s) {
     if(!std::isfinite(elapsed_s) || !std::isfinite(ramp_s) || ramp_s<=0.0)
         return 0.0;

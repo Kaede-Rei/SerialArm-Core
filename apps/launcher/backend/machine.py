@@ -24,6 +24,7 @@ class NativeSession:
         self.reader = None
         self.stderr_reader = None
         self.telemetry_history = deque(maxlen=20000)
+        self.stderr_tail = deque(maxlen=32)
 
     def status(self):
         with self.mutex:
@@ -52,6 +53,9 @@ class NativeSession:
         with self.mutex:
             if self.state.get('state') in ('running', 'stopping'):
                 raise ValueError('a workspace session is already running')
+            if self.proc:
+                for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+                    stream.close()
             self._lease(devices)
             try:
                 self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -60,12 +64,36 @@ class NativeSession:
                 self._release()
                 raise
             self.telemetry_history.clear()
+            self.stderr_tail.clear()
             self.state = {'state': 'running', 'mode': 'workbench', 'recovery_required': False, 'pid': self.proc.pid,
                           'session_id':uuid.uuid4().hex, 'started_at': time.time(), 'devices': list(devices), 'command': list(argv)}
-            self.emit({'event': 'session', **self.state})
             self.reader = threading.Thread(target=self._read_stdout, args=(self.proc,self.state['session_id']), daemon=True)
-            self.stderr_reader = threading.Thread(target=self._read_stderr, daemon=True)
+            self.stderr_reader = threading.Thread(target=self._read_stderr, args=(self.proc,self.state['session_id']), daemon=True)
             self.reader.start(); self.stderr_reader.start()
+        # A spawned terminal can still fail while loading its config or native
+        # libraries. Only report a connected workspace after the IPC is ready.
+        try:
+            self.request('status')
+        except BaseException:
+            # Startup has only sent a read-only status request, so the terminal
+            # has not received any activation or motion command. Close its
+            # input, then stop a stalled initializer before allowing a retry.
+            proc = self.proc
+            try: proc.stdin.close()
+            except BrokenPipeError: pass
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                try: os.killpg(proc.pid, 9)
+                except ProcessLookupError: pass
+                proc.wait(timeout=2)
+            self.reader.join(timeout=2)
+            self.stderr_reader.join(timeout=1)
+            raise
+        with self.mutex:
+            if self.state.get('state') != 'running':
+                raise ValueError(self.state.get('exit_error') or 'native process exited during startup')
+            self.emit({'event': 'session', **self.state})
             return self.status()
 
     def _read_stdout(self, proc, session_id):
@@ -88,26 +116,40 @@ class NativeSession:
                     request['event'].set()
         finally:
             code = proc.wait()
+            # Drain diagnostics before resolving pending requests so startup
+            # failures carry the cause instead of only "session closed".
+            if self.stderr_reader:
+                self.stderr_reader.join(timeout=1)
             with self.mutex:
+                diagnostic = '\n'.join(self.stderr_tail).strip()[-8192:]
+                error = f'native process exited (code {code})'
+                if diagnostic:
+                    error += ': ' + diagnostic
                 for request in self.pending.values():
-                    request['message'] = {'error': 'native session closed'}
+                    request['message'] = {'error': error}
                     request['event'].set()
                 self.pending.clear()
                 self._release()
                 self.state.update(state='exited', exit_code=code)
+                if code:
+                    self.state['exit_error'] = error
                 self.emit({'event': 'session', **self.state})
 
-    def _read_stderr(self):
-        proc = self.proc
+    def _read_stderr(self, proc, session_id):
         for line in proc.stderr:
-            if line.strip(): self.emit({'event': 'native_log', 'data': line[-8192:]})
+            if line.strip():
+                with self.mutex:
+                    self.stderr_tail.append(line[-8192:].rstrip())
+                self.emit({'event': 'native_log', 'data': line[-8192:],
+                           'session_id': session_id, 'session_pid': proc.pid})
 
     def request(self, method, params=None, timeout=8, cancel_event=None):
         if not isinstance(method, str) or not method or len(method) > 128: raise ValueError('invalid native request method')
         if params is None: params = {}
         if not isinstance(params, dict): raise ValueError('native request params must be an object')
         with self.mutex:
-            if not self.proc or self.state.get('state') not in ('running', 'stopping'): raise ValueError('workspace session is not running')
+            if not self.proc or self.state.get('state') not in ('running', 'stopping'):
+                raise ValueError(self.state.get('exit_error') or 'workspace session is not running')
             if cancel_event is not None and cancel_event.is_set():
                 raise ValueError('park interrupted by operator')
             # A timed-out command may still execute later in the native process

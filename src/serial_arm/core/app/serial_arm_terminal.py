@@ -314,7 +314,7 @@ class Terminal:
         self.run_submenu(
             "控制方式与执行增益",
             [
-                (1, "选择控制方式（失能后切换）", self.set_reference_behavior),
+                (1, "选择控制方式（失能后切换）", self.set_control_path),
                 (2, "选择增益用途 / 进入拖拽", self.set_impedance),
                 (3, "当前位置保持", self.hold),
                 (4, "选择模型前馈（失能后切换）", self.set_model_mode),
@@ -387,7 +387,7 @@ class Terminal:
         print_vector("park_pos", target)
 
         self.session.set_impedance_mode(
-            self.serial_arm_module.JointImpedanceMode.RIGID_TRACKING
+            self.serial_arm_module.JointImpedanceMode.RIGID
         )
         self.session.move_to(target, float(shutdown.speed_scale))
 
@@ -442,7 +442,7 @@ class Terminal:
                     print("[停放] 严格判据超时，但满足宽松判据，将继续保持并失能")
                     break
                 self.session.hold_current()
-                print("停放超时，已请求 RIGID_HOLD 并取消 stop()")
+                print("停放超时，已请求 RIGID 并取消 stop()")
                 return False
             time.sleep(0.02)
 
@@ -486,51 +486,32 @@ class Terminal:
         print(f"FaultHoldMode           : {enum_name(self.session.fault_hold_mode)}")
 
     def set_impedance(self) -> None:
-        arm=self.serial_arm_module
-        print("\n1 刚性\n2 柔性\n3 拖拽\n4 伺服跟踪（辨识与导纳共用）")
-        choice=read_int("增益用途: ")
-        purposes={1:arm.JointGainProfile.RIGID,2:arm.JointGainProfile.COMPLIANT,
-                  3:arm.JointGainProfile.DRAG,4:arm.JointGainProfile.SERVO_TRACKING}
-        purpose=purposes.get(choice)
-        if purpose is None:
-            print("增益用途输入无效")
+        arm = self.serial_arm_module
+        print("\n1 刚性\n2 柔性\n3 拖拽\n4 伺服跟踪")
+        modes = {1: arm.JointImpedanceMode.RIGID, 2: arm.JointImpedanceMode.COMPLIANT,
+                 3: arm.JointImpedanceMode.DRAG, 4: arm.JointImpedanceMode.SERVO_TRACKING}
+        mode = modes.get(read_int("交互模式: "))
+        if mode is None:
+            print("交互模式输入无效")
             return
-        cfg=self.session.config
-        model=cfg.capability.admittance.enabled and cfg.capability.admittance.reference_behavior==arm.ReferenceBehavior.MODEL_ADMITTANCE
-        if model and purpose!=arm.JointGainProfile.SERVO_TRACKING:
-            print("模型导纳使用伺服跟踪增益；选择其他用途前请先停放失能并切换原生阻抗")
-            return
-        if purpose==arm.JointGainProfile.DRAG:
-            kd=vector(cfg.ctrller.compliant_drag_gains.kd)
-            if not kd.size or not np.all(np.isfinite(kd)) or np.any(kd<=0):
-                print("拖拽需要各关节配置正值阻尼")
-                return
-            if cfg.runtime.model_feedforward_mode!=arm.ModelFeedforwardMode.GRAVITY or not np.any(vector(cfg.dynamics.gravity_scale)>0):
-                print("拖拽需要重力补偿；请先停放失能，选择 GRAVITY 并设置有效重力比例")
-                return
-        mode=arm.JointImpedanceMode.COMPLIANT_DRAG if purpose==arm.JointGainProfile.DRAG else (
-            arm.JointImpedanceMode.COMPLIANT_HOLD if purpose==arm.JointGainProfile.COMPLIANT else arm.JointImpedanceMode.RIGID_HOLD)
         self.session.set_impedance_mode(mode)
-        self.session.set_execution_gain_profile(purpose)
-        print(f"已选择增益用途 {enum_name(purpose)}")
+        print(f"已选择交互模式 {enum_name(mode)}")
 
     def control_context(self) -> None:
-        cfg=self.session.config
-        behavior=cfg.capability.admittance.reference_behavior if cfg.capability.admittance.enabled else self.serial_arm_module.ReferenceBehavior.NATIVE_IMPEDANCE
-        snapshot=self.session.snapshot
-        purpose=enum_name(snapshot.cycle.gain_profile) if snapshot.valid else "—"
-        print(f"控制方式: {enum_name(behavior)} | 增益用途: {purpose}")
+        cfg = self.session.config
+        snapshot = self.session.snapshot
+        mode = enum_name(snapshot.cycle.interaction_mode) if snapshot.valid else "—"
+        print(f"执行路径: {enum_name(cfg.runtime.control_path)} | 交互模式: {mode}")
 
-    def set_reference_behavior(self) -> None:
-        print("\n1 原生阻抗\n2 模型导纳")
-        choices={1:self.serial_arm_module.ReferenceBehavior.NATIVE_IMPEDANCE,
-                 2:self.serial_arm_module.ReferenceBehavior.MODEL_ADMITTANCE}
-        behavior=choices.get(read_int("控制方式: "))
-        if behavior is None:
-            print("控制方式输入无效")
+    def set_control_path(self) -> None:
+        print("\n1 MIT\n2 CSP")
+        choices = {1: self.serial_arm_module.ControlPath.MIT, 2: self.serial_arm_module.ControlPath.CSP}
+        path = choices.get(read_int("执行路径: "))
+        if path is None:
+            print("执行路径输入无效")
             return
-        self.session.set_reference_behavior(behavior)
-        self.cfg=self.session.config
+        self.session.set_control_path(path)
+        self.cfg = self.session.config
         self.control_context()
 
     def set_model_mode(self) -> None:
@@ -737,9 +718,7 @@ class Terminal:
         print(
             f"model_feedforward_mode  : {enum_name(cfg.runtime.model_feedforward_mode)}"
         )
-        print(
-            f"tracking_gain_profile   : {enum_name(cfg.runtime.tracking_gain_profile) if cfg.runtime.tracking_gain_profile is not None else enum_name(cfg.runtime.tracking_impedance_mode)}"
-        )
+        print(f"control_path            : {enum_name(cfg.runtime.control_path)}")
         print(f"park_before_disable     : {cfg.shutdown.park_before_disable}")
         print_vector("park_pos", cfg.shutdown.park_pos)
         print(f"park_speed_scale        : {cfg.shutdown.speed_scale}")

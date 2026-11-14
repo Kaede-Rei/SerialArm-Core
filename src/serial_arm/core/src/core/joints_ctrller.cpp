@@ -50,7 +50,7 @@ tl::expected<void, JointCtrllerErr> JointCtrller::configure(const JointCtrllerCf
 
     cur_cmd_ = JointPosCmd{};
 
-    impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+    impedance_mode_ = JointImpedanceMode::RIGID;
     state_ = JointCtrllerState::CONFIGURED;
 
     has_cmd_ = false;
@@ -84,7 +84,7 @@ tl::expected<void, JointCtrllerErr> JointCtrller::initialize(const JointState& s
 
     cur_cmd_ = JointPosCmd{};
 
-    impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+    impedance_mode_ = JointImpedanceMode::RIGID;
     state_ = JointCtrllerState::INITIALIZED;
 
     has_cmd_ = false;
@@ -93,14 +93,24 @@ tl::expected<void, JointCtrllerErr> JointCtrller::initialize(const JointState& s
     return {};
 }
 
-tl::expected<void, JointCtrllerErr> JointCtrller::set_servo_tracking_gains(const JointImpedanceGains& gains) {
-    auto candidate=cfg_;candidate.servo_tracking_gains=gains;
-    auto valid=validate_cfg(candidate);
-    if(valid!=JointCtrllerErr::OK) return tl::make_unexpected(valid);
-    cfg_=std::move(candidate);return {};
-}
 void JointCtrller::set_hold_position(const JointVector& position) {
     hold_pos_=position;fallback_pos_=position;
+}
+
+bool JointCtrller::has_pending_reference(const JointVector& accepted, double tolerance) const noexcept {
+    const auto differs = [&](const JointVector& pos, const JointVector& vel) {
+        if(pos.size()!=accepted.size()) return true;
+        for(std::size_t i=0;i<pos.size();++i)
+            if(std::abs(pos[i]-accepted[i])>tolerance) return true;
+        return std::any_of(vel.begin(),vel.end(),[&](double v){return std::abs(v)>tolerance;});
+    };
+    if(has_full_cmd_) return differs(full_cmd_.pos,full_cmd_.vel);
+    if(!has_cmd_) return false;
+    return std::visit([&](const auto& command) {
+        using T=std::decay_t<decltype(command)>;
+        if constexpr(std::is_same_v<T,JointPosCmd>) return differs(command.pos,{});
+        else return differs(command.pos,command.vel);
+    },cur_cmd_);
 }
 
 void JointCtrller::reset() noexcept {
@@ -118,7 +128,7 @@ void JointCtrller::reset() noexcept {
     full_cmd_.kp.assign(cfg_.joints_count, 0.0);
     full_cmd_.kd.assign(cfg_.joints_count, 0.0);
 
-    impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+    impedance_mode_ = JointImpedanceMode::RIGID;
     has_cmd_ = false;
     has_full_cmd_ = false;
     state_ = JointCtrllerState::CONFIGURED;
@@ -152,39 +162,9 @@ tl::expected<void, JointCtrllerErr> JointCtrller::set_impedance_mode(JointImpeda
         return tl::make_unexpected(state_err);
     }
 
-    switch(mode) {
-        case JointImpedanceMode::RIGID_HOLD:
-        case JointImpedanceMode::COMPLIANT_HOLD:
-        {
-            hold_pos_ = state.pos;
-            fallback_pos_ = state.pos;
-            break;
-        }
-
-        case JointImpedanceMode::RIGID_TRACKING:
-        case JointImpedanceMode::COMPLIANT_TRACKING:
-        {
-            fallback_pos_ = state.pos;
-            break;
-        }
-
-        case JointImpedanceMode::COMPLIANT_DRAG:
-        {
-            fallback_pos_ = state.pos;
-            break;
-        }
-
-        default:
-        {
-            return tl::make_unexpected(JointCtrllerErr::INVALID_IMPEDANCE_MODE);
-        }
-    }
-
+    // The reference is independent of the interaction mode. Robot handles
+    // anchoring when a transition requires a new measured reference.
     impedance_mode_ = mode;
-
-    cur_cmd_ = JointPosCmd{};
-    has_cmd_ = false;
-    has_full_cmd_ = false;
 
     return {};
 }
@@ -201,10 +181,6 @@ tl::expected<void, JointCtrllerErr> JointCtrller::set_cmd(const JointCmd& cmd) {
 
     if(state_ != JointCtrllerState::INITIALIZED) {
         return tl::make_unexpected(JointCtrllerErr::NOT_INITIALIZED);
-    }
-
-    if(!is_tracking_mode()) {
-        return tl::make_unexpected(JointCtrllerErr::CMD_NOT_ALLOWED_IN_MODE);
     }
 
     const JointCtrllerErr err = validate_cmd(cmd);
@@ -236,10 +212,6 @@ tl::expected<void, JointCtrllerErr> JointCtrller::set_full_cmd(const JointCtrlCm
 
     if(!cfg_.allow_full_cmd) {
         return tl::make_unexpected(JointCtrllerErr::FULL_CMD_NOT_ALLOWED);
-    }
-
-    if(!is_tracking_mode()) {
-        return tl::make_unexpected(JointCtrllerErr::CMD_NOT_ALLOWED_IN_MODE);
     }
 
     const JointCtrllerErr err = validate_full_cmd(cmd);
@@ -286,67 +258,19 @@ tl::expected<JointCtrllerOutput, JointCtrllerErr> JointCtrller::update(const Joi
 
     JointCtrllerOutput output;
 
+    const JointImpedanceGains* gains = nullptr;
     switch(impedance_mode_) {
-        case JointImpedanceMode::RIGID_HOLD:
-        {
-            output.cmd = build_hold_cmd(
-                hold_pos_,
-                cfg_.rigid_hold_gains,
-                input.model_feedforward);
-            break;
-        }
-
-        case JointImpedanceMode::RIGID_TRACKING:
-        {
-            const auto cmd = build_tracking_cmd(
-                cfg_.rigid_tracking_gains,
-                input.model_feedforward);
-
-            if(!cmd) {
-                return tl::make_unexpected(cmd.error());
-            }
-
-            output.cmd = cmd.value();
-            break;
-        }
-
-        case JointImpedanceMode::COMPLIANT_HOLD:
-        {
-            output.cmd = build_hold_cmd(
-                hold_pos_,
-                cfg_.compliant_hold_gains,
-                input.model_feedforward);
-            break;
-        }
-
-        case JointImpedanceMode::COMPLIANT_DRAG:
-        {
-            output.cmd = build_drag_cmd(
-                input.state,
-                cfg_.compliant_drag_gains,
-                input.model_feedforward);
-            break;
-        }
-
-        case JointImpedanceMode::COMPLIANT_TRACKING:
-        {
-            const auto cmd = build_tracking_cmd(
-                cfg_.compliant_tracking_gains,
-                input.model_feedforward);
-
-            if(!cmd) {
-                return tl::make_unexpected(cmd.error());
-            }
-
-            output.cmd = cmd.value();
-            break;
-        }
-
-        default:
-        {
-            return tl::make_unexpected(JointCtrllerErr::INVALID_IMPEDANCE_MODE);
-        }
+        case JointImpedanceMode::RIGID:
+        case JointImpedanceMode::SERVO_TRACKING: gains = &cfg_.rigid_gains; break;
+        case JointImpedanceMode::COMPLIANT: gains = &cfg_.compliant_gains; break;
+        case JointImpedanceMode::DRAG: gains = &cfg_.drag_gains; break;
+        default: return tl::make_unexpected(JointCtrllerErr::INVALID_IMPEDANCE_MODE);
     }
+    const auto cmd = build_tracking_cmd(*gains, input.model_feedforward);
+    if(!cmd) return tl::make_unexpected(cmd.error());
+    output.cmd = cmd.value();
+    if(impedance_mode_ == JointImpedanceMode::DRAG)
+        std::fill(output.cmd.kp.begin(), output.cmd.kp.end(), 0.0);
 
     return output;
 }
@@ -401,12 +325,10 @@ JointCtrllerErr JointCtrller::validate_cfg(const JointCtrllerCfg& cfg) const {
         return kp_valid && kd_valid;
         };
 
-    if(!validate_gains(cfg.rigid_hold_gains) || !validate_gains(cfg.rigid_tracking_gains) ||
-        !validate_gains(cfg.compliant_hold_gains) || !validate_gains(cfg.compliant_drag_gains) ||
-        !validate_gains(cfg.compliant_tracking_gains) ||
-        ((!cfg.servo_tracking_gains.kp.empty()||!cfg.servo_tracking_gains.kd.empty())&&!validate_gains(cfg.servo_tracking_gains))) {
+    if(!validate_gains(cfg.rigid_gains) || !validate_gains(cfg.compliant_gains) ||
+       !validate_gains(cfg.drag_gains)) return JointCtrllerErr::INVALID_CFG;
+    if(std::any_of(cfg.drag_gains.kp.begin(),cfg.drag_gains.kp.end(),[](double kp){return kp!=0.0;}))
         return JointCtrllerErr::INVALID_CFG;
-    }
 
     return JointCtrllerErr::OK;
 }
@@ -529,28 +451,12 @@ JointCtrllerErr JointCtrller::validate_full_cmd(const JointCtrlCmd& cmd) const {
  */
 JointCtrllerErr JointCtrller::validate_impedance_mode(JointImpedanceMode mode) const {
     switch(mode) {
-        case JointImpedanceMode::RIGID_HOLD:
-        case JointImpedanceMode::RIGID_TRACKING:
-        case JointImpedanceMode::COMPLIANT_HOLD:
-        case JointImpedanceMode::COMPLIANT_DRAG:
-        case JointImpedanceMode::COMPLIANT_TRACKING:
-        {
-            return JointCtrllerErr::OK;
-        }
-
-        default:
-        {
-            return JointCtrllerErr::INVALID_IMPEDANCE_MODE;
-        }
+        case JointImpedanceMode::RIGID:
+        case JointImpedanceMode::COMPLIANT:
+        case JointImpedanceMode::DRAG:
+        case JointImpedanceMode::SERVO_TRACKING: return JointCtrllerErr::OK;
+        default: return JointCtrllerErr::INVALID_IMPEDANCE_MODE;
     }
-}
-
-/**
- * @brief 检查当前关节阻抗模式是否为跟踪模式
- * @return true 当前为跟踪模式，否则返回 false
- */
-bool JointCtrller::is_tracking_mode() const noexcept {
-    return impedance_mode_ == JointImpedanceMode::RIGID_TRACKING || impedance_mode_ == JointImpedanceMode::COMPLIANT_TRACKING;
 }
 
 /**

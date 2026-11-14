@@ -163,8 +163,8 @@ def _identify(samples, index, name, dt):
 
 def response_condition_change(samples):
     """Do not fit one execution model across different closed-loop conditions"""
-    keys = ('kp', 'kd', 'actual_kp', 'actual_kd', 'gain_purpose', 'gain_profile',
-            'impedance_mode', 'reference_behavior', 'model_feedforward_mode',
+    keys = ('kp', 'kd', 'actual_kp', 'actual_kd',
+            'impedance_mode', 'control_path', 'model_feedforward_mode',
             'condition_signature', 'hold_compensation_enabled')
     if not samples: return None
     for key in keys:
@@ -200,7 +200,7 @@ def analyze_interaction_response(window):
                 reason = '快照间隔不连续，无法可靠估计执行延迟和带宽'
             elif sum(s.get('new_measurement') is False for s in samples) > len(samples) * 0.1:
                 reason = '记录中重复反馈过多，请使用持续收到新反馈的跟踪段'
-            elif window.get('impedance_mode') == 'COMPLIANT_DRAG':
+            elif window.get('impedance_mode') == 'DRAG' and window.get('control_path') == 'MIT':
                 reason = '原生拖拽不提供位置跟踪激励，请另录无接触跟踪段'
     changed = response_condition_change(samples) if samples and all(isinstance(s, dict) for s in samples) else None
     if changed:

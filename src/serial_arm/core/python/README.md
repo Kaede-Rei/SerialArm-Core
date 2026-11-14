@@ -33,7 +33,7 @@ Python 会话需要可加载的 Hardware Backend 来读取执行器能力；`run
 
 ## 控制方式与增益用途
 
-`ReferenceBehavior` 选择原生阻抗或模型导纳，需在 `INACTIVE` 状态设置；`JointGainProfile` 选择刚性、柔性、拖拽或伺服跟踪用途，模型导纳使用伺服跟踪增益
+`ControlPath` 在 `INACTIVE` 状态选择 MIT 或 CSP；达妙后端将 CSP 周期位置命令映射到驱动器 POS_VEL（0x100）位置速度接口，`position_speed_limit` 为该接口的速度上限；交互模式选择刚性、柔性、拖拽或伺服跟踪，伺服跟踪复用刚性增益
 
 `move_to()` 接收各关节的绝对目标，返回运动 ID；通过 `snapshot.motion` 读取到位或中断状态；该方法从保持转入对应跟踪，拖拽用途需先退出才能提交目标
 

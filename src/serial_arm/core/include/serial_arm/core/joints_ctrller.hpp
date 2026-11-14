@@ -49,12 +49,9 @@ enum class JointCtrllerErr {
 struct JointCtrllerCfg {
     std::size_t joints_count{ 0 };                       ///< 关节数量
 
-    JointImpedanceGains rigid_hold_gains;                ///< 刚性保持模式增益
-    JointImpedanceGains rigid_tracking_gains;            ///< 刚性跟踪模式增益
-    JointImpedanceGains compliant_hold_gains;            ///< 柔性保持模式增益
-    JointImpedanceGains compliant_drag_gains;            ///< 柔性拖拽模式增益
-    JointImpedanceGains compliant_tracking_gains;        ///< 柔性跟踪模式增益
-    JointImpedanceGains servo_tracking_gains;   ///< 辨识与模型导纳共用的伺服跟踪增益
+    JointImpedanceGains rigid_gains;
+    JointImpedanceGains compliant_gains;
+    JointImpedanceGains drag_gains;
 
     bool allow_full_cmd{ false };                         ///< 是否允许直接设置关节完整控制命令
 };
@@ -146,8 +143,8 @@ public:
      * @return JointImpedanceMode 当前关节阻抗模式
      */
     JointImpedanceMode get_impedance_mode() const noexcept;
-    tl::expected<void, JointCtrllerErr> set_servo_tracking_gains(const JointImpedanceGains& gains);
     void set_hold_position(const JointVector& position);
+    bool has_pending_reference(const JointVector& accepted, double tolerance) const noexcept;
 
 private:
     /**
@@ -189,7 +186,6 @@ private:
      * @brief 检查当前关节阻抗模式是否为跟踪模式
      * @return true 当前为跟踪模式，否则返回 false
      */
-    bool is_tracking_mode() const noexcept;
 
     /**
      * @brief 检查向量是否为有限值
@@ -227,7 +223,7 @@ private:
 private:
     JointCtrllerCfg cfg_;                                                   ///< 关节控制器配置
     JointCtrllerState state_{ JointCtrllerState::UNCONFIGURED };            ///< 关节控制器生命周期状态
-    JointImpedanceMode impedance_mode_{ JointImpedanceMode::RIGID_HOLD };   ///< 当前关节阻抗模式
+    JointImpedanceMode impedance_mode_{ JointImpedanceMode::RIGID };   ///< 当前关节阻抗模式
 
     JointVector hold_pos_;          ///< 关节保持位置
     JointVector fallback_pos_;      ///< 关节跟踪回退位置

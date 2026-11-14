@@ -43,6 +43,7 @@ struct JointAdmittanceInput {
     JointVector max_delta_q;
     JointVector min_delta_q_dot;
     JointVector max_delta_q_dot;
+    bool zero_stiffness{false};
 };
 
 struct JointAdmittanceOutput {

@@ -29,6 +29,8 @@ enum class SafetyErr {
 
     JOINT_POS_LIMIT,             ///< 关节状态位置超过硬限制
     JOINT_VEL_LIMIT,             ///< 关节状态速度超过限制
+    JOINT_EFFORT_LIMIT,          ///< CSP 反馈力矩超限
+    CMD_TRACKING_ERROR,          ///< CSP 参考与反馈位置误差超限
 
     ACTUATOR_OFFLINE,            ///< 至少一个执行器离线
     ACTUATOR_NOT_ENABLED,        ///< 至少一个执行器未使能
@@ -80,6 +82,7 @@ struct JointLimitCfg {
     JointVector max_pos;       ///< 状态位置硬上限，rad
     JointVector max_vel;       ///< 最大速度，rad/s
     JointVector max_acc;       ///< 最大加速度，rad/s^2
+    JointVector max_tracking_error; ///< CSP 参考与反馈最大位置误差，rad
     JointVector max_effort;    ///< 最大关节前馈力矩，N·m
     JointVector max_kp;        ///< 硬件协议映射到 Joint 侧的最大 kp，非用户策略上限
     JointVector max_kd;        ///< 硬件协议映射到 Joint 侧的最大 kd，非用户策略上限

@@ -79,6 +79,15 @@ public:
      *
      * Backend 可在此阶段使能执行器并切换到 Backend contract 要求的控制模式
      */
+    // Select the protocol while deactivated. CSP speed limits are actuator-side rad/s
+    // and apply also to the first position anchor sent during activation.
+    virtual tl::expected<void, MotorBusErr> select_control_path(ControlPath path,
+        const ActuatorVector& position_speed_limit = {}) {
+        (void)position_speed_limit;
+        return path == ControlPath::MIT ? tl::expected<void, MotorBusErr>{} :
+            tl::expected<void, MotorBusErr>{tl::make_unexpected(MotorBusErr::MODE_SWITCH_FAILED)};
+    }
+
     virtual tl::expected<void, MotorBusErr> activate() = 0;
 
     /**

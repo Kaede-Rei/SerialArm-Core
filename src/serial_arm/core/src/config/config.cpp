@@ -186,26 +186,11 @@ ModelFeedforwardMode load_model_feedforward_mode(const YAML::Node& runtime) {
     throw ConfigLoadException(ConfigErr::INVALID_VALUE, "runtime.model_feedforward_mode must be NONE, GRAVITY or FULL_INVERSE_DYNAMICS");
 }
 
-/**
- * @brief 解析 ros2_control 跟踪阻抗模式
- */
-JointImpedanceMode load_tracking_impedance_mode(const YAML::Node& runtime) {
-    if(!runtime["tracking_impedance_mode"]) return JointImpedanceMode::RIGID_TRACKING;
-    const std::string value = require_as<std::string>(runtime, "tracking_impedance_mode", "runtime");
-
-    if(value == "RIGID_TRACKING") return JointImpedanceMode::RIGID_TRACKING;
-    if(value == "COMPLIANT_TRACKING") return JointImpedanceMode::COMPLIANT_TRACKING;
-
-    throw ConfigLoadException(ConfigErr::INVALID_VALUE, "runtime.tracking_impedance_mode must be RIGID_TRACKING or COMPLIANT_TRACKING");
-}
-
-std::optional<JointGainProfile> load_tracking_gain_profile(const YAML::Node& runtime) {
-    if(!runtime["tracking_gain_profile"]) return std::nullopt;
-    const auto value=require_as<std::string>(runtime,"tracking_gain_profile","runtime");
-    if(value=="RIGID")return JointGainProfile::RIGID;
-    if(value=="COMPLIANT")return JointGainProfile::COMPLIANT;
-    if(value=="SERVO_TRACKING")return JointGainProfile::SERVO_TRACKING;
-    throw ConfigLoadException(ConfigErr::INVALID_VALUE,"runtime.tracking_gain_profile must be RIGID, COMPLIANT or SERVO_TRACKING");
+ControlPath load_control_path(const YAML::Node& runtime) {
+    const auto value = runtime["control_path"] ? runtime["control_path"].as<std::string>() : "MIT";
+    if(value == "MIT") return ControlPath::MIT;
+    if(value == "CSP") return ControlPath::CSP;
+    throw ConfigLoadException(ConfigErr::INVALID_VALUE, "runtime.control_path must be MIT or CSP");
 }
 
 /**
@@ -243,15 +228,8 @@ std::filesystem::path resolve_urdf_path(const std::filesystem::path& config_path
  * @param cfg 控制器配置
  * @return 阻抗增益的指针数组
  */
-std::array<const JointImpedanceGains*, 6> all_gains(const JointCtrllerCfg& cfg) {
-    return {
-        &cfg.rigid_hold_gains,
-        &cfg.rigid_tracking_gains,
-        &cfg.compliant_hold_gains,
-        &cfg.compliant_drag_gains,
-        &cfg.compliant_tracking_gains,
-        &cfg.servo_tracking_gains,
-    };
+std::array<const JointImpedanceGains*, 3> all_gains(const JointCtrllerCfg& cfg) {
+    return {&cfg.rigid_gains, &cfg.compliant_gains, &cfg.drag_gains};
 }
 
 /**
@@ -277,61 +255,17 @@ JointImpedanceGains load_controller_gains(const YAML::Node& node, const std::vec
             require_as<JointVector>(node, "kd", context.c_str())};
 }
 
-// The file groups gains by four purposes. HOLD and TRACKING remain separate
-// internal roles, including when an older file spells those roles flat
 void load_controller_cfg(const YAML::Node& controller, const std::vector<std::string>& joint_names,
                          bool named, const char* context, JointCtrllerCfg& cfg) {
-    reject_unknown_keys(controller, context, { "allow_full_cmd", "rigid", "compliant", "drag", "servo_tracking",
-        "rigid_hold", "rigid_tracking", "compliant_hold", "compliant_drag", "compliant_tracking", "identification_tracking" });
+    reject_unknown_keys(controller, context, {"allow_full_cmd", "rigid", "compliant", "drag"});
     cfg.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", context);
-    if(controller["rigid"] || controller["compliant"] || controller["drag"])
-        for(const auto* purpose : { "rigid", "compliant", "drag", "servo_tracking" })
-            require_map(controller, purpose, context);
-    const auto role = [&](const char* group, const char* member, const char* legacy) {
-        YAML::Node current(YAML::NodeType::Undefined);
-        std::string current_context = std::string(context) + "." + group;
-        if(controller[group]) {
-            const auto purpose = require_map(controller, group, context);
-            if(member) {
-                reject_unknown_keys(purpose, current_context.c_str(), { "hold", "tracking" });
-                // A supplied purpose must describe both roles, even if a
-                // legacy alias elsewhere could otherwise fill the omission
-                require_map(purpose, "hold", current_context.c_str());
-                require_map(purpose, "tracking", current_context.c_str());
-                current = require_map(purpose, member, current_context.c_str());
-                current_context += std::string(".") + member;
-            } else current = purpose;
-        }
-        const auto legacy_context = std::string(context) + "." + legacy;
-        if(current) {
-            auto gains = load_controller_gains(current, joint_names, named, current_context);
-            if(controller[legacy]) {
-                const auto old = load_controller_gains(require_map(controller, legacy, context), joint_names, named, legacy_context);
-                if(gains.kp != old.kp || gains.kd != old.kd)
-                    throw ConfigLoadException(ConfigErr::INVALID_VALUE, current_context + " conflicts with " + legacy_context);
-            }
-            return gains;
-        }
-        return load_controller_gains(require_map(controller, legacy, context), joint_names, named, legacy_context);
+    const auto group = [&](const char* name) {
+        return load_controller_gains(require_map(controller, name, context), joint_names, named,
+                                     std::string(context) + "." + name);
     };
-    cfg.rigid_hold_gains = role("rigid", "hold", "rigid_hold");
-    cfg.rigid_tracking_gains = role("rigid", "tracking", "rigid_tracking");
-    cfg.compliant_hold_gains = role("compliant", "hold", "compliant_hold");
-    cfg.compliant_tracking_gains = role("compliant", "tracking", "compliant_tracking");
-    cfg.compliant_drag_gains = role("drag", nullptr, "compliant_drag");
-    cfg.servo_tracking_gains = cfg.rigid_tracking_gains;
-    if(controller["servo_tracking"] || controller["identification_tracking"]) {
-        const char* key = controller["servo_tracking"] ? "servo_tracking" : "identification_tracking";
-        cfg.servo_tracking_gains = load_controller_gains(require_map(controller, key, context), joint_names, named,
-            std::string(context) + "." + key);
-        if(controller["servo_tracking"] && controller["identification_tracking"]) {
-            const auto old = load_controller_gains(require_map(controller, "identification_tracking", context), joint_names, named,
-                std::string(context) + ".identification_tracking");
-            if(cfg.servo_tracking_gains.kp != old.kp || cfg.servo_tracking_gains.kd != old.kd)
-                throw ConfigLoadException(ConfigErr::INVALID_VALUE,
-                    std::string(context) + ".servo_tracking conflicts with " + context + ".identification_tracking");
-        }
-    }
+    cfg.rigid_gains = group("rigid");
+    cfg.compliant_gains = group("compliant");
+    cfg.drag_gains = group("drag");
 }
 
 /**
@@ -346,14 +280,6 @@ std::vector<std::uint8_t> load_named_joint_enabled(const YAML::Node& node, const
         values.push_back(static_cast<std::uint8_t>(require_as<bool>(node, joint_name.c_str(), context) ? 1 : 0));
     }
     return values;
-}
-
-AdmittanceObserverMode load_admittance_observer_mode(const YAML::Node& observer) {
-    const std::string value = require_as<std::string>(observer, "mode", "capability.admittance.observer");
-    if(value == "FULL_ID") return AdmittanceObserverMode::FULL_ID;
-    if(value == "MOMENTUM") return AdmittanceObserverMode::MOMENTUM;
-    throw ConfigLoadException(ConfigErr::INVALID_VALUE,
-        "capability.admittance.observer.mode must be FULL_ID or MOMENTUM");
 }
 
 /**
@@ -383,30 +309,25 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
             yaml_location(capability_node.Mark()) + "root.capability must be a map");
     }
     reject_unknown_keys(capability_node, "capability", { "admittance" });
+    if(!capability_node["admittance"]) return;
 
     const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
     reject_unknown_keys(admittance, "capability.admittance", {
-        "enabled", "reference_behavior", "joint_enabled", "observer", "calibration", "controller"
+        "joint_enabled", "observer", "calibration", "controller"
     });
 
     auto& cfg = capability.admittance;
-    cfg.enabled = require_as<bool>(admittance, "enabled", "capability.admittance");
-    cfg.reference_behavior=cfg.enabled?ReferenceBehavior::MODEL_ADMITTANCE:ReferenceBehavior::NATIVE_IMPEDANCE;
-    if(admittance["reference_behavior"]) {
-        const auto behavior=admittance["reference_behavior"].as<std::string>();
-        if(behavior=="NATIVE_IMPEDANCE") cfg.reference_behavior=ReferenceBehavior::NATIVE_IMPEDANCE;
-        else if(behavior=="MODEL_ADMITTANCE") cfg.reference_behavior=ReferenceBehavior::MODEL_ADMITTANCE;
-        else throw std::runtime_error("capability.admittance.reference_behavior must be NATIVE_IMPEDANCE or MODEL_ADMITTANCE");
-    }
+    // A complete section declares observation capability. Runtime path and
+    // interaction mode select whether the estimated torque drives admittance.
+    cfg.enabled = true;
     cfg.joint_enabled = load_named_joint_enabled(
         require_map(admittance, "joint_enabled", "capability.admittance"),
         joint_names, "capability.admittance.joint_enabled");
 
     const YAML::Node observer = require_map(admittance, "observer", "capability.admittance");
     reject_unknown_keys(observer, "capability.admittance.observer", {
-        "mode", "momentum_gain"
+        "momentum_gain"
     });
-    cfg.observer.mode = load_admittance_observer_mode(observer);
     cfg.observer.momentum_gain = load_named_joint_vector(
         require_map(observer, "momentum_gain", "capability.admittance.observer"),
         joint_names, "capability.admittance.observer.momentum_gain");
@@ -514,8 +435,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.runtime.joint_acc_filter_alpha = runtime["joint_acc_filter_alpha"] ? require_as<double>(runtime, "joint_acc_filter_alpha", "runtime") : 0.2;
         cfg.runtime.write_enabled = require_as<bool>(runtime, "write_enabled", "runtime");
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
-        cfg.runtime.tracking_impedance_mode = load_tracking_impedance_mode(runtime);
-        cfg.runtime.tracking_gain_profile = load_tracking_gain_profile(runtime);
+        cfg.runtime.control_path = load_control_path(runtime);
 
         cfg.shutdown.park_pos.assign(cfg.joint_names.size(), 0.0);
         const YAML::Node shutdown = root["shutdown"];
@@ -551,6 +471,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.safety.limits.max_pos = require_as<JointVector>(limits, "max_pos", "limits");
         cfg.safety.limits.max_vel = require_as<JointVector>(limits, "max_vel", "limits");
         cfg.safety.limits.max_acc = require_as<JointVector>(limits, "max_acc", "limits");
+        if(limits["max_tracking_error"]) cfg.safety.limits.max_tracking_error = require_as<JointVector>(limits, "max_tracking_error", "limits");
         cfg.safety.limits.max_effort = require_as<JointVector>(limits, "max_effort", "limits");
         // Legacy limits.max_kp/max_kd are accepted but never parsed or used.
         cfg.safety.limits.pos_margin = require_as<JointVector>(limits, "pos_margin", "limits");
@@ -760,7 +681,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path" });
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
         reject_unknown_keys(control_node, "control", { "runtime", "controller", "hold_compensation" });
-        reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
+        reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_tracking_error", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
         reject_unknown_keys(shutdown_node, "shutdown", { "park_before_disable", "park_pos", "speed_scale", "position_tolerance", "velocity_tolerance", "settle_time_s", "relaxed_tolerance_ratio", "compliant_phase_ratio", "timeout_s" });
 
         RobotCfg cfg;
@@ -783,13 +704,12 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         load_admittance_capability_cfg(root, cfg.joint_names, cfg.capability);
 
         const YAML::Node runtime = require_map(control_node, "runtime", "control");
-        reject_unknown_keys(runtime, "control.runtime", { "ctrl_frequency_hz", "joint_acc_filter_alpha", "write_enabled", "model_feedforward_mode", "tracking_impedance_mode", "tracking_gain_profile" });
+        reject_unknown_keys(runtime, "control.runtime", { "ctrl_frequency_hz", "joint_acc_filter_alpha", "write_enabled", "model_feedforward_mode", "control_path" });
         cfg.runtime.ctrl_frequency_hz = require_as<double>(runtime, "ctrl_frequency_hz", "runtime");
         cfg.runtime.joint_acc_filter_alpha = runtime["joint_acc_filter_alpha"] ? require_as<double>(runtime, "joint_acc_filter_alpha", "runtime") : 0.2;
         cfg.runtime.write_enabled = require_as<bool>(runtime, "write_enabled", "runtime");
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
-        cfg.runtime.tracking_impedance_mode = load_tracking_impedance_mode(runtime);
-        cfg.runtime.tracking_gain_profile = load_tracking_gain_profile(runtime);
+        cfg.runtime.control_path = load_control_path(runtime);
         load_hold_compensation(control_node["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
         const YAML::Node controller = require_map(control_node, "controller", "control");
         load_controller_cfg(controller, cfg.joint_names, true, "control.controller", cfg.ctrller);
@@ -811,6 +731,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         policy.cmd_vel_scale = require_as<double>(safety_node, "cmd_vel_scale", "safety");
         policy.state_vel_scale = require_as<double>(safety_node, "state_vel_scale", "safety");
         policy.max_acc = load_named_joint_vector(require_map(safety_node, "max_acc", "safety"), cfg.joint_names, "safety.max_acc");
+        if(safety_node["max_tracking_error"]) policy.max_tracking_error = load_named_joint_vector(safety_node["max_tracking_error"], cfg.joint_names, "safety.max_tracking_error");
         if(safety_node["max_effort_override"]) policy.max_effort_override = load_named_joint_vector(safety_node["max_effort_override"], cfg.joint_names, "safety.max_effort_override");
         // Deprecated PD overrides are intentionally not decoded or validated.
         policy.max_dt_s = require_as<double>(safety_node, "max_dt_s", "safety");
@@ -910,13 +831,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     if(!std::isfinite(cfg.runtime.joint_acc_filter_alpha) || cfg.runtime.joint_acc_filter_alpha < 0.0 || cfg.runtime.joint_acc_filter_alpha > 1.0) {
         return fail(ConfigErr::INVALID_VALUE, "runtime.joint_acc_filter_alpha must be in [0, 1]");
     }
-    if(cfg.runtime.tracking_impedance_mode != JointImpedanceMode::RIGID_TRACKING &&
-        cfg.runtime.tracking_impedance_mode != JointImpedanceMode::COMPLIANT_TRACKING) {
-        return fail(ConfigErr::INVALID_VALUE, "runtime.tracking_impedance_mode must be a tracking mode");
-    }
-    if(cfg.runtime.tracking_gain_profile && *cfg.runtime.tracking_gain_profile!=JointGainProfile::RIGID &&
-       *cfg.runtime.tracking_gain_profile!=JointGainProfile::COMPLIANT && *cfg.runtime.tracking_gain_profile!=JointGainProfile::SERVO_TRACKING)
-        return fail(ConfigErr::INVALID_VALUE,"runtime.tracking_gain_profile must be RIGID, COMPLIANT or SERVO_TRACKING");
+    if(cfg.runtime.control_path != ControlPath::MIT && cfg.runtime.control_path != ControlPath::CSP)
+        return fail(ConfigErr::INVALID_VALUE, "invalid runtime.control_path");
 
     const auto& hold=cfg.hold_compensation;
     if(hold.enabled) {
@@ -927,13 +843,18 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
                 return fail(ConfigErr::INVALID_VALUE,"invalid hold_compensation joint values");
     }
     const auto& admittance = cfg.capability.admittance;
+    if(cfg.runtime.control_path == ControlPath::CSP && !admittance.enabled)
+        return fail(ConfigErr::INVALID_VALUE, "CSP requires the complete capability.admittance section");
+    if(cfg.runtime.control_path == ControlPath::CSP && limits.max_tracking_error.size() != n) {
+        std::string joints;
+        for(const auto& name : cfg.joint_names) joints += (joints.empty() ? "" : ", ") + name;
+        return fail(ConfigErr::INVALID_SIZE,
+            "CSP requires safety_policy.max_tracking_error for every joint: " + joints);
+    }
     const auto& observer = admittance.observer;
     const auto& calibration = admittance.calibration;
     const auto& friction = calibration.friction;
     const auto& controller = admittance.controller;
-    if(admittance.reference_behavior!=ReferenceBehavior::NATIVE_IMPEDANCE &&
-       admittance.reference_behavior!=ReferenceBehavior::MODEL_ADMITTANCE)
-        return fail(ConfigErr::INVALID_VALUE,"invalid capability.admittance.reference_behavior");
     const bool has_admittance_parameters = !admittance.joint_enabled.empty() ||
         !observer.momentum_gain.empty() || !calibration.torque_bias.empty() ||
         !calibration.torque_threshold.empty() || !controller.mass.empty() ||
@@ -975,7 +896,10 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         for(std::size_t i = 0; i < n; ++i) {
             if(observer.momentum_gain[i] <= 0.0 || calibration.torque_threshold[i] < 0.0 ||
                 controller.mass[i] <= 0.0 || controller.damping[i] < 0.0 ||
-                controller.stiffness[i] < 0.0 || controller.max_delta_q[i] <= 0.0 ||
+                controller.stiffness[i] < 0.0 ||
+                (admittance.enabled && admittance.joint_enabled[i] &&
+                    (controller.damping[i] <= 0.0 || controller.stiffness[i] <= 0.0)) ||
+                controller.max_delta_q[i] <= 0.0 ||
                 controller.max_delta_q_dot[i] <= 0.0) {
                 return fail(ConfigErr::INVALID_VALUE,
                     "invalid capability.admittance parameter at index " + std::to_string(i));
@@ -1016,6 +940,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         return fail(ConfigErr::INVALID_VALUE, "invalid Joint/Actuator mapping");
     }
 
+    if(std::any_of(cfg.ctrller.drag_gains.kp.begin(),cfg.ctrller.drag_gains.kp.end(),[](double kp){return kp!=0.0;}))
+        return fail(ConfigErr::INVALID_VALUE, "drag gains require zero Kp");
     JointCtrller ctrller;
     if(!ctrller.configure(cfg.ctrller)) {
         return fail(ConfigErr::INVALID_VALUE, "invalid Joint controller gains");
@@ -1108,13 +1034,10 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs->mapper.direction != rhs->mapper.direction || lhs->mapper.joint_zero_offset != rhs->mapper.joint_zero_offset ||
         lhs->mapper.actuator_zero_offset != rhs->mapper.actuator_zero_offset) add("mapping");
     if(lhs->runtime.ctrl_frequency_hz != rhs->runtime.ctrl_frequency_hz) add("runtime.ctrl_frequency_hz");
-    if(lhs->runtime.native_tracking_gain_profile() != rhs->runtime.native_tracking_gain_profile()) add("runtime.tracking_gain_profile");
-    if(lhs->ctrller.rigid_hold_gains.kp != rhs->ctrller.rigid_hold_gains.kp || lhs->ctrller.rigid_hold_gains.kd != rhs->ctrller.rigid_hold_gains.kd ||
-        lhs->ctrller.rigid_tracking_gains.kp != rhs->ctrller.rigid_tracking_gains.kp || lhs->ctrller.rigid_tracking_gains.kd != rhs->ctrller.rigid_tracking_gains.kd ||
-        lhs->ctrller.compliant_hold_gains.kp != rhs->ctrller.compliant_hold_gains.kp || lhs->ctrller.compliant_hold_gains.kd != rhs->ctrller.compliant_hold_gains.kd ||
-        lhs->ctrller.compliant_drag_gains.kp != rhs->ctrller.compliant_drag_gains.kp || lhs->ctrller.compliant_drag_gains.kd != rhs->ctrller.compliant_drag_gains.kd ||
-        lhs->ctrller.compliant_tracking_gains.kp != rhs->ctrller.compliant_tracking_gains.kp || lhs->ctrller.compliant_tracking_gains.kd != rhs->ctrller.compliant_tracking_gains.kd ||
-        lhs->ctrller.servo_tracking_gains.kp != rhs->ctrller.servo_tracking_gains.kp || lhs->ctrller.servo_tracking_gains.kd != rhs->ctrller.servo_tracking_gains.kd) add("controller.impedance_gains");
+    if(lhs->runtime.control_path != rhs->runtime.control_path) add("runtime.control_path");
+    if(lhs->ctrller.rigid_gains.kp != rhs->ctrller.rigid_gains.kp || lhs->ctrller.rigid_gains.kd != rhs->ctrller.rigid_gains.kd ||
+       lhs->ctrller.compliant_gains.kp != rhs->ctrller.compliant_gains.kp || lhs->ctrller.compliant_gains.kd != rhs->ctrller.compliant_gains.kd ||
+       lhs->ctrller.drag_gains.kp != rhs->ctrller.drag_gains.kp || lhs->ctrller.drag_gains.kd != rhs->ctrller.drag_gains.kd) add("controller.impedance_gains");
     if(lhs->safety.limits.min_pos != rhs->safety.limits.min_pos || lhs->safety.limits.max_pos != rhs->safety.limits.max_pos) add("limits.position");
     if(lhs->safety.limits.max_vel != rhs->safety.limits.max_vel) add("limits.max_cmd_vel_or_state_base");
     if(lhs->safety.limits.max_acc != rhs->safety.limits.max_acc) add("limits.max_acc");
@@ -1130,8 +1053,7 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     const auto& lhs_adm = lhs->capability.admittance;
     const auto& rhs_adm = rhs->capability.admittance;
     if(lhs_adm.enabled != rhs_adm.enabled ||
-        lhs_adm.reference_behavior != rhs_adm.reference_behavior || lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
-        lhs_adm.observer.mode != rhs_adm.observer.mode ||
+        lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
         lhs_adm.observer.momentum_gain != rhs_adm.observer.momentum_gain ||
         lhs_adm.calibration.torque_bias != rhs_adm.calibration.torque_bias ||
         lhs_adm.calibration.torque_threshold != rhs_adm.calibration.torque_threshold ||
@@ -1191,7 +1113,7 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
             const auto& initial = source.initial_limits.*field;
             const auto& edited = requested.safety.limits.*field;
             auto& target = result.limits.*field;
-            if(initial.size()!=target.size()) return false;
+            if(initial.size()!=target.size() || edited.size()!=initial.size()) return false;
             for(std::size_t i=0;i<target.size();++i)
                 if(edited[i]!=initial[i]) target[i]=edited[i];
             return true;
@@ -1199,6 +1121,7 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
         if(!preserve_edits(&JointLimitCfg::has_position_limit) ||
            !preserve_edits(&JointLimitCfg::min_pos) || !preserve_edits(&JointLimitCfg::max_pos) ||
            !preserve_edits(&JointLimitCfg::max_vel) || !preserve_edits(&JointLimitCfg::max_acc) ||
+           !preserve_edits(&JointLimitCfg::max_tracking_error) ||
            !preserve_edits(&JointLimitCfg::max_effort) || !preserve_edits(&JointLimitCfg::pos_margin)) return invalid();
     }
     for(std::size_t i=0;i<ordered->size();++i) {

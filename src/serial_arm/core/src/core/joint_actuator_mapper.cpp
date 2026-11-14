@@ -57,6 +57,17 @@ tl::expected<ActuatorCtrlCmd, JointActuatorMapErr> JointActuatorMapper::to_actua
     }
 
     ActuatorCtrlCmd actuator_cmd;
+    actuator_cmd.path = joint_cmd.path;
+    if(joint_cmd.path == ControlPath::CSP) {
+        if(joint_cmd.position_speed_limit.size() != cfg_.joints_count)
+            return tl::make_unexpected(JointActuatorMapErr::INVALID_CONVERSION_VALUE);
+        actuator_cmd.position_speed_limit.resize(cfg_.joints_count);
+        for(std::size_t i=0; i<cfg_.joints_count; ++i) {
+            actuator_cmd.position_speed_limit[i] = std::abs(cfg_.pos_ratio[i]) * joint_cmd.position_speed_limit[i];
+            if(!std::isfinite(actuator_cmd.position_speed_limit[i]) || actuator_cmd.position_speed_limit[i] <= 0.0)
+                return tl::make_unexpected(JointActuatorMapErr::INVALID_CONVERSION_VALUE);
+        }
+    }
 
     actuator_cmd.pos.resize(cfg_.joints_count);
     actuator_cmd.vel.resize(cfg_.joints_count);

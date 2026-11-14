@@ -195,7 +195,7 @@ def initialize_profile_gains(inspector, core_path, core, urdf_path, hardware, dr
             'constraints':p_reasons+d_reasons})
     purpose_suggestions = {}
     raw_purposes = design.get('purpose_nominal_gain_designs') or {}
-    for role in ('rigid_hold','rigid_tracking','compliant_hold','compliant_tracking','servo_tracking','compliant_drag'):
+    for role in ('rigid', 'compliant', 'drag'):
         raw = raw_purposes.get(role) or {}
         if any(not isinstance(raw.get(term),list) or len(raw[term])!=len(names) or any(
             isinstance(value,bool) or not isinstance(value,(float,int)) or not math.isfinite(value) or value<0
@@ -241,12 +241,12 @@ def initialize_profile_gains(inspector, core_path, core, urdf_path, hardware, dr
     if apply_generated:
         controller = core['control']['controller']
         generated = {}
-        for role in ('rigid_hold','rigid_tracking','compliant_hold','compliant_tracking','servo_tracking','compliant_drag'):
-            purpose_axes = purpose_suggestions[role]['axes']
+        for group in ('rigid', 'compliant', 'drag'):
+            purpose_axes = purpose_suggestions[group]['axes']
             pair = {term:{axis['joint']:axis[term] for axis in purpose_axes} for term in ('kp','kd')}
-            controller[role].update(pair);generated[role] = pair
+            controller[group].update(pair); generated[group] = pair
         recovery = core['safety_policy']['fault_recovery']['compliant_recovery']
-        recovery.update({term:dict(generated['compliant_hold'][term]) for term in ('kp','kd')})
+        recovery.update({term:dict(generated['compliant'][term]) for term in ('kp','kd')})
         result.update(configuration_applied=True, configuration_initialized=True,
             runtime_baseline_unchanged=False, generated_controller=generated)
     return result

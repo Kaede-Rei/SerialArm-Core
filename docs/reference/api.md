@@ -234,32 +234,17 @@ PD 配置不提供用户上限；旧 `safety_policy.max_kp_override`、`max_kd_o
 
 普通周期与故障保持共用增益投影；故障保持在投影后检查实际 PD 与前馈总力矩，超出既有力矩边界时返回 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`，经现有停止／失能路径处理
 
-### 四用途与任务
+### 执行路径与交互模式
 
-公开增益用途为 `JointGainProfile::{RIGID, COMPLIANT, DRAG, SERVO_TRACKING}`；刚性和柔性各保存保持、跟踪两组增益，拖拽与伺服跟踪各保存一组
+`ControlPath::{MIT, CSP}` 选择执行路径；`JointImpedanceMode::{RIGID, COMPLIANT, DRAG, SERVO_TRACKING}` 选择交互模式，定点、连续参考与轨迹属于独立的运动操作
 
-| Core YAML 路径 | C++ 配置字段 |
-| --- | --- |
-| `control.controller.rigid.hold` | `ctrller.rigid_hold_gains` |
-| `control.controller.rigid.tracking` | `ctrller.rigid_tracking_gains` |
-| `control.controller.compliant.hold` | `ctrller.compliant_hold_gains` |
-| `control.controller.compliant.tracking` | `ctrller.compliant_tracking_gains` |
-| `control.controller.drag` | `ctrller.compliant_drag_gains` |
-| `control.controller.servo_tracking` | `ctrller.servo_tracking_gains` |
+`control.controller.rigid`、`compliant`、`drag` 各包含逐关节 `kp/kd`；伺服跟踪使用刚性参数，拖拽的 MIT `kp` 为零；MIT 将位置、速度、增益与前馈送至执行器的 PD；CSP 的柔性和拖拽使用观测外力驱动虚拟 M/D/K，拖拽使用零刚度，刚性和伺服跟踪直接输出名义参考
 
-保持与跟踪是任务阶段，四用途是参数组织方式；兼容枚举 `JointImpedanceMode` 保留以下五种任务
+完整的 `capability.admittance` section 声明外力观测能力，加载器由此派生内部能力状态；公开 YAML 不再接受 `capability.admittance.enabled`、`reference_behavior` 或 `observer.mode`；`joint_enabled` 只选择参与导纳的轴；CSP 的柔性与拖拽使用导纳，刚性与伺服跟踪直接执行名义参考；MIT 使用三组 PD，伺服跟踪引用刚性参数
 
-| 任务 | 接收 `set_cmd()` | 原生方式默认增益 |
-| --- | --- | --- |
-| `RIGID_HOLD` | 否 | 刚性保持 |
-| `RIGID_TRACKING` | 是 | 刚性跟踪 |
-| `COMPLIANT_HOLD` | 否 | 柔性保持 |
-| `COMPLIANT_TRACKING` | 是 | 柔性跟踪 |
-| `COMPLIANT_DRAG` | 否 | 拖拽，每周期以实测位置为位置参考 |
+CSP 必须提供逐关节正值 `safety_policy.max_tracking_error`；缺失或遗漏关节会在配置预检中报告具体字段与关节，MIT 可省略；Safety 检查位置、速度、加速度步长、跟踪误差和反馈力矩；`ActuatorCtrlCmd.position_speed_limit` 是正的执行器侧速度上限，独立于带符号的速度参考
 
-`ReferenceBehavior::NATIVE_IMPEDANCE` 直接跟踪名义参考；`MODEL_ADMITTANCE` 使用外力估计修正参考并由伺服增益执行，拖拽仍使用拖拽增益
-
-`JointImpedanceGains` 的 `kp`、`kd` 必须逐轴、有限、非负且不超过最终 Safety 上限；Safety 上限是允许范围，不是推荐标定目标
+达妙 Backend 将 CSP 周期位置参考映射到位置速度模式 `0x100 + ID`，周期帧包含目标位置和运行最大绝对速度；驱动器内部执行串级位置／速度控制；需在实际固件上核对驱动限矩与内部轨迹响应；TMAX 是协议映射范围，不应当作输出力矩限幅
 
 ### 运行、前馈与限制
 
@@ -285,7 +270,7 @@ PD 配置不提供用户上限；旧 `safety_policy.max_kp_override`、`max_kd_o
 | --- | --- |
 | `configure(cfg, bus, feedforward, model_state)` | 接管 `std::unique_ptr<MotorBus>`，成功后 `UNCONFIGURED → INACTIVE`，拒绝重复配置 |
 | `activate()` | 连接并使能 Backend，以真实反馈初始化控制器，成功后进入 `ACTIVE` |
-| `set_cmd(cmd, now)` | ACTIVE 跟踪任务提交参考，时间戳须单调，保持／拖拽拒绝该命令 |
+| `set_cmd(cmd, now)` | ACTIVE 状态提交运动参考，时间戳须单调 |
 | `set_full_cmd(cmd, now)` | 原生方式且 `allow_full_cmd=true` 才可直接覆盖完整关节命令，仍经过 Safety |
 | `cycle(now)` | 执行一次完整读状态、控制、检查、映射与写命令，返回 `RobotCycleOutput` 或 `RobotFault` |
 | `deactivate()` | 正常停止并失能，成功后回到 `INACTIVE` |
@@ -305,34 +290,13 @@ Robot 析构尽力失能并释放资源；应用应显式处理停止结果，�
 
 ### 模式与参数更新
 
-| 接口 | 主要行为 |
-| --- | --- |
-| `set_impedance_mode(mode, now, target_policy)` | ACTIVE 中切换任务，清除旧跟踪命令、用途覆盖与保持积分，平滑交接增益和命令力矩 |
-| `set_execution_gain_profile(profile)` / `clear_execution_gain_profile()` | 选择或清除原生用途覆盖，模型导纳与拖拽的用途优先 |
-| `set_servo_tracking_gains(gains)` | 校验并更新伺服增益，ACTIVE 平滑交接 |
-| `set_hold_compensation_cfg(cfg)` | 更新保持补偿，受尺寸、有限值及安全上限检查 |
-| `set_reference_behavior(behavior)` | INACTIVE 时选择原生阻抗或模型导纳 |
-| `set_model_feedforward_mode(mode)` | INACTIVE 时选择前馈策略 |
-| `set_admittance_cfg(cfg)` | INACTIVE 配置，ACTIVE 仅允许同策略调参并平滑交接 |
-| `set_admittance_suspended(bool)` | 临时旁路导纳修正并重锚到已接受参考，不修改持久配置 |
+`set_impedance_mode(mode, now, target_policy)` 在 ACTIVE 状态交接交互模式；`set_control_path(path)` 在 INACTIVE 状态选择 MIT 或 CSP；`set_model_feedforward_mode(mode)` 选择前馈策略，CSP 不下发力矩前馈
 
-伺服增益和保持补偿在 FAULT 中只允许恢复合法配置，不恢复执行；模式切换清除用途覆盖，需要特定用途时应在切换后选择
-
-普通保持默认使用 `HoldTargetPolicy::PRESERVE_NOMINAL`，显式捕获当前位置使用 `CAPTURE_MEASURED`，两者不能混用
-
-```cpp
-auto held = robot.set_impedance_mode(
-    serial_arm::JointImpedanceMode::RIGID_HOLD,
-    serial_arm::Robot::Clock::now(),
-    serial_arm::HoldTargetPolicy::CAPTURE_MEASURED);
-if(!held) return 1;
-```
-
-标定使用 `set_calibration_reference_behavior()`、`set_calibration_model_feedforward_mode()` 及临时保持／跟踪增益覆盖；这些试验上下文不改持久配置，调用方需在成功、取消与异常路径清除覆盖并恢复原会话
+`set_admittance_cfg(cfg)` 更新虚拟模型参数，控制器保留虚拟状态；启动、故障保持和模式转换应锚定已接受参考或实测状态
 
 `set_calibration_disturbance(torque, now)` 为独立扰动短测提供有界关节力矩入口，`clear_calibration_disturbance()` 清除该输入；扰动仍经过原有力矩、参考与 Safety 约束，调用方需按周期刷新并在所有退出路径清除；周期输出的 `calibration_disturbance` 记录本周期实际叠加的扰动，不以请求值代替执行值
 
-HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；`ControlRuntime::submit_reference()` 在 HOLD 中仍返回 `CMD_NOT_ALLOWED_IN_MODE`；新候选的 `available` 表示参数测量完整，`qualification_complete` 保留证据范围完整度；`validated` 为旧接口兼容字段，新任务固定为 false，不能把仅供参考的指标提升为精度通过，见 [时间与结果语义](calibration.md#时间与结果语义)
+固定目标扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；新候选的 `available` 表示参数测量完整，`qualification_complete` 保留证据范围完整度；`validated` 为旧接口兼容字段，新任务固定为 false，不能把仅供参考的指标提升为精度通过，见 [时间与结果语义](calibration.md#时间与结果语义)
 
 自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
 
@@ -396,7 +360,7 @@ HOLD 扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰
 | `gain_profile` / `gain_source` / `effective_kp` / `effective_kd` | 实际执行用途、来源与协议可编码增益 |
 | `requested_kp` / `requested_kd` | 当前周期投影到协议网格前的请求增益；`joint_cmd`、`actuator_cmd` 保留实际可编码值 |
 | `hold_target_pos` / `hold_integral_torque` / `hold_integrator_frozen` | 保持目标和积分补偿状态 |
-| `reference_behavior` / `parameter_update_progress` | 当前参考策略与参数交接进度 |
+| `control_path` / `parameter_update_progress` | 当前参考策略与参数交接进度 |
 | `nominal_ref_*` / `virtual_ref_*` / `accepted_ref_*` | 名义、导纳虚拟与最终接受的参考 |
 | `model_feedforward` / `predicted_total_torque` | 模型前馈与预测总力矩 |
 | `joint_cmd` / `actuator_cmd` | Safety 后关节命令与实际发送的执行器命令 |
@@ -471,8 +435,8 @@ print(dynamics.tool_pose)
 
 | 配置／接口 | 契约 |
 | --- | --- |
-| `AdmittanceCapabilityCfg` | 总开关、参考方式、逐轴开关、观测器、标定与控制器参数 |
-| `AdmittanceObserverCfg` | `FULL_ID` 使用实测加速度计算 residual，`MOMENTUM` 使用广义动量观测，不显式依赖实测加速度 |
+| `AdmittanceCapabilityCfg` | 总开关、逐轴开关、动量观测器、标定与控制器参数 |
+| `AdmittanceObserverCfg` | 使用广义动量观测，不显式依赖实测加速度 |
 | `momentum_gain` | MOMENTUM 一阶增益，单位 s⁻¹，逐轴且大于零 |
 | `AdmittanceCalibrationCfg` | 固定 `torque_bias`、速度相关摩擦 residual 模型与 `torque_threshold` |
 | `AdmittanceControllerCfg` | `mass`、`damping`、`stiffness`、`max_delta_q` 与 `max_delta_q_dot` |
@@ -519,7 +483,7 @@ print(dynamics.tool_pose)
 | `maintain_fault_hold()` | FAULT 且保持有效时刷新故障保持，不执行普通目标 |
 | `enter_fault_compliant_recovery()` | 人工请求受限柔性恢复，需配置允许且当前故障可恢复 |
 | `return_to_fault_rigid_hold()` | 退出柔性恢复并返回故障刚性保持 |
-| `clear_fault()` | 满足恢复条件后以当前实测位置进入 `ACTIVE + RIGID_HOLD` |
+| `clear_fault()` | 满足恢复条件后以当前实测位置进入 `ACTIVE + RIGID` |
 | `reset_fault()` | 兼容入口，执行与 `clear_fault()` 相同的恢复流程 |
 
 自管周期在进入 FAULT 后转入故障保持分支；`ControlRuntime` 与 `RobotSession` 已处理这一分支，调用方仍需决定恢复或失能
@@ -568,8 +532,8 @@ Python 线程提交请求，独立 C++ 工作线程串行维护控制周期；Py
 | `hold_current()` | 取消位置目标并捕获当前实测位置保持 |
 | `set_impedance_mode(mode)` | 工作线程串行应用任务切换，清除旧目标与用途覆盖 |
 | `set_execution_gain_profile(profile)` / `clear_execution_gain_profile()` | 设置或清除用途覆盖 |
-| `set_reference_behavior(behavior)` / `set_model_feedforward_mode(mode)` | 在已配置、未启动且 INACTIVE 时选择策略 |
-| `set_servo_tracking_gains(gains)` / `set_hold_compensation_cfg(cfg)` / `set_admittance_cfg(cfg)` | 提交合法参数，运行中等待工作线程应用结果，导纳仅允许同策略更新 |
+| `set_control_path(path)` / `set_model_feedforward_mode(mode)` | 在已配置、未启动且 INACTIVE 时选择策略 |
+| `set_hold_compensation_cfg(cfg)` / `set_admittance_cfg(cfg)` | 提交合法参数，运行中等待工作线程应用结果，导纳仅允许同策略更新 |
 | `set_gravity_scale(values)` | 运行时由工作线程应用逐轴重力比例 |
 | `clear_fault()` / `reset_fault()` / `enter_fault_compliant_recovery()` / `return_to_fault_rigid_hold()` | 提交给同一工作线程处理的故障恢复请求 |
 | `snapshot` | 线程安全复制的周期、运动、故障与动力学快照 |
@@ -744,7 +708,7 @@ if(!output) {
 | 关节映射与 Safety | [joint_actuator_mapper.hpp](../../src/serial_arm/core/include/serial_arm/core/joint_actuator_mapper.hpp) · [safety.hpp](../../src/serial_arm/core/include/serial_arm/core/safety.hpp) |
 | 动力学与重力校正 | [dynamics.hpp](../../src/serial_arm/core/include/serial_arm/dynamics/dynamics.hpp) · [gravity_correction.hpp](../../src/serial_arm/core/include/serial_arm/dynamics/gravity_correction.hpp) |
 | 导纳控制与指标 | [joint_admittance_controller.hpp](../../src/serial_arm/core/include/serial_arm/interaction/controllers/joint_admittance_controller.hpp) |
-| FULL_ID 与 MOMENTUM | [torque_residual_observer.hpp](../../src/serial_arm/core/include/serial_arm/interaction/estimators/torque_residual_observer.hpp) · [generalized_momentum_observer.hpp](../../src/serial_arm/core/include/serial_arm/interaction/estimators/generalized_momentum_observer.hpp) |
+| 广义动量观测 | [generalized_momentum_observer.hpp](../../src/serial_arm/core/include/serial_arm/interaction/estimators/generalized_momentum_observer.hpp) |
 | 外力估计与运行组合 | [external_torque_observer.hpp](../../src/serial_arm/core/include/serial_arm/interaction/estimators/external_torque_observer.hpp) · [interaction_controller.hpp](../../src/serial_arm/core/include/serial_arm/interaction/runtime/interaction_controller.hpp) |
 | 导纳标定 | [admittance_calibration.hpp](../../src/serial_arm/core/include/serial_arm/interaction/admittance_calibration.hpp) |
 | Backend 与能力 | [motor_bus.hpp](../../src/serial_arm/core/include/serial_arm/hardware/motor_bus.hpp) · [hardware_capability.hpp](../../src/serial_arm/core/include/serial_arm/hardware/hardware_capability.hpp) · [hardware_loader.hpp](../../src/serial_arm/core/include/serial_arm/hardware/hardware_loader.hpp) |

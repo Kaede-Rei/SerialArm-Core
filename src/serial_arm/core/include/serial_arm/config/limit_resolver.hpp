@@ -22,6 +22,7 @@ struct SafetyPolicyCfg {
     double cmd_vel_scale{ 1.0 };                ///< 命令速度比例
     double state_vel_scale{ 1.0 };              ///< 状态速度检查比例
     JointVector max_acc;                        ///< Joint 侧最大加速度
+    JointVector max_tracking_error;             ///< CSP 最大跟踪误差
     JointVector max_effort_override;            ///< Joint 侧力矩收窄值
     JointVector max_kp_override;                ///< 废弃兼容字段，完全忽略
     JointVector max_kd_override;                ///< 废弃兼容字段，完全忽略
@@ -47,6 +48,7 @@ struct ResolvedJointLimitCfg {
     double max_cmd_vel{ 0.0 };              ///< 命令速度上限
     double max_state_vel{ 0.0 };            ///< 状态速度检查上限
     double max_acc{ 0.0 };                  ///< 加速度上限
+    double max_tracking_error{ 0.0 };       ///< CSP 跟踪误差上限，0 表示未配置
     double max_effort{ 0.0 };               ///< Joint 侧力矩上限
     double max_kp{ 0.0 };                   ///< Joint 侧 kp 上限
     double max_kd{ 0.0 };                   ///< Joint 侧 kd 上限

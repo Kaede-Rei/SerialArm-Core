@@ -294,11 +294,14 @@ std::uint64_t session_move_to(PyRobotSession& self, const DoubleArray& pos, doub
  */
 void bind_enums(py::module_& module) {
     py::enum_<JointImpedanceMode>(module, "JointImpedanceMode")
-        .value("RIGID_HOLD", JointImpedanceMode::RIGID_HOLD)
-        .value("RIGID_TRACKING", JointImpedanceMode::RIGID_TRACKING)
-        .value("COMPLIANT_HOLD", JointImpedanceMode::COMPLIANT_HOLD)
-        .value("COMPLIANT_DRAG", JointImpedanceMode::COMPLIANT_DRAG)
-        .value("COMPLIANT_TRACKING", JointImpedanceMode::COMPLIANT_TRACKING);
+        .value("RIGID", JointImpedanceMode::RIGID)
+        .value("COMPLIANT", JointImpedanceMode::COMPLIANT)
+        .value("DRAG", JointImpedanceMode::DRAG)
+        .value("SERVO_TRACKING", JointImpedanceMode::SERVO_TRACKING);
+
+    py::enum_<ControlPath>(module, "ControlPath")
+        .value("MIT", ControlPath::MIT)
+        .value("CSP", ControlPath::CSP);
 
     py::enum_<JointGainProfile>(module,"JointGainProfile")
         .value("RIGID",JointGainProfile::RIGID).value("COMPLIANT",JointGainProfile::COMPLIANT)
@@ -310,13 +313,6 @@ void bind_enums(py::module_& module) {
         .value("NONE", ModelFeedforwardMode::NONE)
         .value("GRAVITY", ModelFeedforwardMode::GRAVITY)
         .value("FULL_INVERSE_DYNAMICS", ModelFeedforwardMode::FULL_INVERSE_DYNAMICS);
-
-    py::enum_<ReferenceBehavior>(module,"ReferenceBehavior")
-        .value("NATIVE_IMPEDANCE",ReferenceBehavior::NATIVE_IMPEDANCE)
-        .value("MODEL_ADMITTANCE",ReferenceBehavior::MODEL_ADMITTANCE);
-    py::enum_<AdmittanceObserverMode>(module,"AdmittanceObserverMode")
-        .value("FULL_ID",AdmittanceObserverMode::FULL_ID)
-        .value("MOMENTUM",AdmittanceObserverMode::MOMENTUM);
 
     py::enum_<JointCtrllerState>(module, "JointCtrllerState")
         .value("UNCONFIGURED", JointCtrllerState::UNCONFIGURED)
@@ -466,6 +462,8 @@ void bind_enums(py::module_& module) {
         .value("NON_FINITE_ACTUATOR_STATE", SafetyErr::NON_FINITE_ACTUATOR_STATE)
         .value("JOINT_POS_LIMIT", SafetyErr::JOINT_POS_LIMIT)
         .value("JOINT_VEL_LIMIT", SafetyErr::JOINT_VEL_LIMIT)
+        .value("JOINT_EFFORT_LIMIT", SafetyErr::JOINT_EFFORT_LIMIT)
+        .value("CMD_TRACKING_ERROR", SafetyErr::CMD_TRACKING_ERROR)
         .value("ACTUATOR_OFFLINE", SafetyErr::ACTUATOR_OFFLINE)
         .value("ACTUATOR_NOT_ENABLED", SafetyErr::ACTUATOR_NOT_ENABLED)
         .value("ACTUATOR_FAULT", SafetyErr::ACTUATOR_FAULT)
@@ -523,7 +521,9 @@ void bind_state_types(py::module_& module) {
         .def_property("vel", &get_double_member<JointCtrlCmd, &JointCtrlCmd::vel>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::vel>)
         .def_property("tor", &get_double_member<JointCtrlCmd, &JointCtrlCmd::tor>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::tor>)
         .def_property("kp", &get_double_member<JointCtrlCmd, &JointCtrlCmd::kp>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::kp>)
-        .def_property("kd", &get_double_member<JointCtrlCmd, &JointCtrlCmd::kd>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::kd>);
+        .def_property("kd", &get_double_member<JointCtrlCmd, &JointCtrlCmd::kd>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::kd>)
+        .def_readwrite("path", &JointCtrlCmd::path)
+        .def_property("position_speed_limit", &get_double_member<JointCtrlCmd, &JointCtrlCmd::position_speed_limit>, &set_double_member<JointCtrlCmd, &JointCtrlCmd::position_speed_limit>);
 
     py::class_<ActuatorCtrlCmd>(module, "ActuatorCtrlCmd")
         .def(py::init<>())
@@ -531,7 +531,9 @@ void bind_state_types(py::module_& module) {
         .def_property("vel", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::vel>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::vel>)
         .def_property("tor", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::tor>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::tor>)
         .def_property("kp", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kp>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kp>)
-        .def_property("kd", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kd>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kd>);
+        .def_property("kd", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kd>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::kd>)
+        .def_readwrite("path", &ActuatorCtrlCmd::path)
+        .def_property("position_speed_limit", &get_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::position_speed_limit>, &set_double_member<ActuatorCtrlCmd, &ActuatorCtrlCmd::position_speed_limit>);
 }
 
 // ! ========================= 配 置 绑 定 方 法 实 现 ========================= ! //
@@ -567,13 +569,9 @@ void bind_config(py::module_& module) {
     py::class_<JointCtrllerCfg>(module, "JointCtrllerCfg")
         .def(py::init<>())
         .def_readwrite("joints_count", &JointCtrllerCfg::joints_count)
-        .def_readwrite("rigid_hold_gains", &JointCtrllerCfg::rigid_hold_gains)
-        .def_readwrite("rigid_tracking_gains", &JointCtrllerCfg::rigid_tracking_gains)
-        .def_readwrite("compliant_hold_gains", &JointCtrllerCfg::compliant_hold_gains)
-        .def_readwrite("compliant_drag_gains", &JointCtrllerCfg::compliant_drag_gains)
-        .def_readwrite("compliant_tracking_gains", &JointCtrllerCfg::compliant_tracking_gains)
-        .def_readwrite("servo_tracking_gains",&JointCtrllerCfg::servo_tracking_gains)
-        .def_readwrite("identification_tracking_gains",&JointCtrllerCfg::servo_tracking_gains)
+        .def_readwrite("rigid_gains", &JointCtrllerCfg::rigid_gains)
+        .def_readwrite("compliant_gains", &JointCtrllerCfg::compliant_gains)
+        .def_readwrite("drag_gains", &JointCtrllerCfg::drag_gains)
         .def_readwrite("allow_full_cmd", &JointCtrllerCfg::allow_full_cmd);
 
     py::class_<JointActuatorMapCfg>(module, "JointActuatorMapCfg")
@@ -634,8 +632,7 @@ void bind_config(py::module_& module) {
         .def_readwrite("joint_acc_filter_alpha", &RuntimeCfg::joint_acc_filter_alpha)
         .def_readwrite("write_enabled", &RuntimeCfg::write_enabled)
         .def_readwrite("model_feedforward_mode", &RuntimeCfg::model_feedforward_mode)
-        .def_readwrite("tracking_impedance_mode", &RuntimeCfg::tracking_impedance_mode)
-        .def_readwrite("tracking_gain_profile", &RuntimeCfg::tracking_gain_profile);
+        .def_readwrite("control_path", &RuntimeCfg::control_path);
 
     py::class_<ShutdownCfg>(module, "ShutdownCfg")
         .def(py::init<>())
@@ -669,7 +666,6 @@ void bind_config(py::module_& module) {
 
     py::class_<AdmittanceObserverCfg>(module,"AdmittanceObserverCfg")
         .def(py::init<>())
-        .def_readwrite("mode",&AdmittanceObserverCfg::mode)
         .def_readwrite("momentum_gain",&AdmittanceObserverCfg::momentum_gain);
 
     py::class_<AdmittanceCalibrationCfg>(module,"AdmittanceCalibrationCfg")
@@ -688,8 +684,7 @@ void bind_config(py::module_& module) {
 
     py::class_<AdmittanceCapabilityCfg>(module,"AdmittanceCapabilityCfg")
         .def(py::init<>())
-        .def_readwrite("enabled",&AdmittanceCapabilityCfg::enabled)
-        .def_readwrite("reference_behavior",&AdmittanceCapabilityCfg::reference_behavior)
+        .def_readonly("enabled",&AdmittanceCapabilityCfg::enabled)
         .def_readwrite("joint_enabled",&AdmittanceCapabilityCfg::joint_enabled)
         .def_readwrite("observer",&AdmittanceCapabilityCfg::observer)
         .def_readwrite("calibration",&AdmittanceCapabilityCfg::calibration)
@@ -931,7 +926,8 @@ void bind_robot_session(py::module_& module) {
         .def_property_readonly("bias_compensated",[](const RobotCycleOutput& value){return vector_to_numpy(value.bias_compensated);})
         .def_property_readonly("friction_residual_hat",[](const RobotCycleOutput& value){return vector_to_numpy(value.friction_residual_hat);})
         .def_property_readonly("friction_compensated",[](const RobotCycleOutput& value){return vector_to_numpy(value.friction_compensated);})
-        .def_readonly("reference_behavior",&RobotCycleOutput::reference_behavior)
+        .def_readonly("interaction_mode",&RobotCycleOutput::interaction_mode)
+        .def_readonly("control_path",&RobotCycleOutput::control_path)
         .def_readonly("observer_valid",&RobotCycleOutput::observer_valid)
         .def_readonly("new_measurement",&RobotCycleOutput::new_measurement)
         .def_readonly("measurement_dt",&RobotCycleOutput::measurement_dt)
@@ -953,7 +949,9 @@ void bind_robot_session(py::module_& module) {
         .def_readonly("max_kd", &RobotSessionActuatorInfo::max_kd)
         .def_readonly("kp_resolution", &RobotSessionActuatorInfo::kp_resolution)
         .def_readonly("kd_resolution", &RobotSessionActuatorInfo::kd_resolution)
-        .def_readonly("effort_resolution", &RobotSessionActuatorInfo::effort_resolution);
+        .def_readonly("effort_resolution", &RobotSessionActuatorInfo::effort_resolution)
+        .def_readonly("supports_mit", &RobotSessionActuatorInfo::supports_mit)
+        .def_readonly("supports_csp", &RobotSessionActuatorInfo::supports_csp);
 
     py::class_<JointMotionStatus>(module,"JointMotionStatus")
         .def_readonly("id",&JointMotionStatus::id)
@@ -1007,10 +1005,7 @@ void bind_robot_session(py::module_& module) {
         .def("return_to_fault_rigid_hold", &PyRobotSession::return_to_fault_rigid_hold, py::call_guard<py::gil_scoped_release>())
         .def("set_impedance_mode", &PyRobotSession::set_impedance_mode)
         .def("set_hold_compensation_cfg",&PyRobotSession::set_hold_compensation_cfg,py::call_guard<py::gil_scoped_release>())
-        .def("set_servo_tracking_gains",&PyRobotSession::set_servo_tracking_gains,py::call_guard<py::gil_scoped_release>())
-        .def("set_execution_gain_profile",&PyRobotSession::set_execution_gain_profile,py::call_guard<py::gil_scoped_release>())
-        .def("clear_execution_gain_profile",&PyRobotSession::clear_execution_gain_profile,py::call_guard<py::gil_scoped_release>())
-        .def("set_reference_behavior",&PyRobotSession::set_reference_behavior)
+        .def("set_control_path",&PyRobotSession::set_control_path)
         .def("set_admittance_cfg",&PyRobotSession::set_admittance_cfg,py::call_guard<py::gil_scoped_release>())
         .def("set_model_feedforward_mode", &PyRobotSession::set_model_feedforward_mode)
         .def("set_gravity_scale", &session_set_gravity_scale)

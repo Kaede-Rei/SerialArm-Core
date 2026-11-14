@@ -57,9 +57,7 @@ std::string make_robot_error(const char* action, const RobotFault& fault) {
  * @param mode 阻抗模式
  * @return 需要连续参考时返回 true，否则返回 false
  */
-bool is_tracking_mode(JointImpedanceMode mode) {
-    return mode == JointImpedanceMode::RIGID_TRACKING || mode == JointImpedanceMode::COMPLIANT_TRACKING;
-}
+
 
 /**
  * @brief 离线时的模拟电机 Bus
@@ -89,6 +87,18 @@ public:
         const auto stamp=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
         state_.feedback_received_ns.assign(size(),stamp);state_.feedback_timing_valid.assign(size(),1);
         return state_;
+    }
+    tl::expected<void, MotorBusErr> select_control_path(ControlPath path, const ActuatorVector& speed_limit = {}) override {
+        if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
+        if(active_) return tl::make_unexpected(MotorBusErr::INVALID_STATE);
+        if(path!=ControlPath::MIT && path!=ControlPath::CSP) return tl::make_unexpected(MotorBusErr::MODE_SWITCH_FAILED);
+        if(std::any_of(capabilities_.begin(), capabilities_.end(), [path](const auto& cap) {
+            return path==ControlPath::MIT ? !cap.supports_mit : !cap.supports_csp;
+        })) return tl::make_unexpected(MotorBusErr::MODE_SWITCH_FAILED);
+        if(path==ControlPath::CSP && (speed_limit.size()!=size() ||
+           std::any_of(speed_limit.begin(),speed_limit.end(),[](double v){return !std::isfinite(v) || v<=0.0;})))
+            return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+        return {};
     }
     tl::expected<void, MotorBusErr> activate() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
@@ -183,6 +193,8 @@ void PyRobotSession::configure(
             item.kp_resolution,
             item.kd_resolution,
             item.effort_resolution,
+            item.supports_mit,
+            item.supports_csp,
             });
     }
 
@@ -212,7 +224,7 @@ void PyRobotSession::configure(
     std::lock_guard<std::mutex> snapshot_lock(mutex_);
     robot_ = std::move(robot);
     motion_=JointMotionTracker{};snapshot_.motion=motion_.status();
-    requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+    requested_impedance_mode_ = JointImpedanceMode::RIGID;
     requested_gravity_scale_ = cfg_.dynamics.gravity_scale;
     goal_pos_.assign(cfg_.joint_names.size(), 0.0);
     ref_pos_.assign(cfg_.joint_names.size(), 0.0);
@@ -261,17 +273,17 @@ void PyRobotSession::start() {
         for(std::size_t i=0;i<capabilities.size();++i) {
             const auto& item=capabilities[i];
             actuator_info_[i]={item.actuator_name,cfg_.joint_names[i],item.min_pos,item.max_pos,
-                item.max_vel,item.max_effort,item.max_kp,item.max_kd,item.kp_resolution,item.kd_resolution,item.effort_resolution};
+                item.max_vel,item.max_effort,item.max_kp,item.max_kd,item.kp_resolution,item.kd_resolution,item.effort_resolution,
+                item.supports_mit,item.supports_csp};
         }
         ref_pos_ = robot_->get_joint_state().pos;
         ref_vel_.assign(ref_pos_.size(), 0.0);
         goal_pos_ = ref_pos_;
-        requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+        requested_impedance_mode_ = JointImpedanceMode::RIGID;
         requested_gravity_scale_ = dynamics_->get_gravity_scale();
         impedance_sequence_ = 0;
         gravity_sequence_ = 0;
         speed_scale_ = 0.3;
-        requested_execution_profile_.reset();
         pending_execution_update_={};completed_execution_sequence_=execution_sequence_;
         pending_admittance_.reset();completed_admittance_sequence_=admittance_sequence_;
         has_goal_ = false;
@@ -388,9 +400,6 @@ void PyRobotSession::set_impedance_mode(JointImpedanceMode mode) {
     }
     requested_impedance_mode_ = mode;
     requested_hold_policy_=HoldTargetPolicy::PRESERVE_NOMINAL;
-    requested_execution_profile_.reset();
-    motion_.finish("interrupted","control mode changed");snapshot_.motion=motion_.status();
-    has_goal_=false;
     ++impedance_sequence_;
 }
 
@@ -413,26 +422,16 @@ void PyRobotSession::submit_execution_update(std::function<tl::expected<void,Rob
 void PyRobotSession::set_hold_compensation_cfg(const HoldCompensationCfg& cfg) {
     submit_execution_update([this,cfg]{auto result=robot_->set_hold_compensation_cfg(cfg);if(result){std::lock_guard<std::mutex> lock(mutex_);cfg_.hold_compensation=cfg;}return result;});
 }
-void PyRobotSession::set_servo_tracking_gains(const JointImpedanceGains& gains) {
-    submit_execution_update([this,gains]{auto result=robot_->set_servo_tracking_gains(gains);if(result){std::lock_guard<std::mutex> lock(mutex_);cfg_.ctrller.servo_tracking_gains=gains;}return result;});
-}
-void PyRobotSession::set_execution_gain_profile(JointGainProfile profile) {
-    submit_execution_update([this,profile]{auto result=robot_->set_execution_gain_profile(profile);if(result){std::lock_guard<std::mutex> lock(mutex_);requested_execution_profile_=profile;}return result;});
-}
-void PyRobotSession::clear_execution_gain_profile() {
-    submit_execution_update([this]{robot_->clear_execution_gain_profile();{std::lock_guard<std::mutex> lock(mutex_);requested_execution_profile_.reset();}return tl::expected<void,RobotFault>{};});
-}
-
-void PyRobotSession::set_reference_behavior(ReferenceBehavior behavior) {
+void PyRobotSession::set_control_path(ControlPath path) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
-    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(!configured_ || !robot_) throw SerialArmPythonError("RobotSession is not configured");
     if(running_.load() || robot_->get_state()!=RobotState::INACTIVE)
-        throw SerialArmPythonError("set_reference_behavior() requires an INACTIVE session");
-    if(worker_.joinable())worker_.join();
-    const auto result=robot_->set_reference_behavior(behavior);
-    if(!result)throw SerialArmPythonError(make_robot_error("Robot set_reference_behavior",result.error()));
+        throw SerialArmPythonError("set_control_path() requires an INACTIVE session");
+    if(worker_.joinable()) worker_.join();
+    const auto result=robot_->set_control_path(path);
+    if(!result) throw SerialArmPythonError(make_robot_error("Robot set_control_path",result.error()));
     std::lock_guard<std::mutex> lock(mutex_);
-    cfg_.capability.admittance.reference_behavior=behavior;
+    cfg_.runtime.control_path=path;
     runtime_.clear_commands();
 }
 
@@ -440,15 +439,19 @@ void PyRobotSession::set_admittance_cfg(const AdmittanceCapabilityCfg& cfg) {
     std::lock_guard<std::mutex> single_update(admittance_update_mutex_);
     std::unique_lock<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    auto candidate=cfg;
+    // Python's capability flag is read-only. Required per-joint parameters
+    // establish presence, and the Core validates the complete configuration.
+    candidate.enabled=!candidate.joint_enabled.empty();
     if(!running_.load()) {
         if(worker_.joinable())worker_.join();
-        const auto result=robot_->set_admittance_cfg(cfg);
+        const auto result=robot_->set_admittance_cfg(candidate);
         if(!result)throw SerialArmPythonError(make_robot_error("Robot set_admittance_cfg",result.error()));
-        std::lock_guard<std::mutex> lock(mutex_);cfg_.capability.admittance=cfg;return;
+        std::lock_guard<std::mutex> lock(mutex_);cfg_.capability.admittance=candidate;return;
     }
     std::unique_lock<std::mutex> lock(mutex_);
     if(snapshot_.robot_state!=RobotState::ACTIVE)throw SerialArmPythonError("set_admittance_cfg() requires ACTIVE or INACTIVE");
-    pending_admittance_=cfg;admittance_error_.clear();
+    pending_admittance_=candidate;admittance_error_.clear();
     const auto sequence=++admittance_sequence_;
     lifecycle_lock.unlock();
     fault_recovery_cv_.wait(lock,[&]{return completed_admittance_sequence_>=sequence || !running_.load();});
@@ -529,13 +532,6 @@ std::uint64_t PyRobotSession::move_to(const JointVector& pos, double speed_scale
     if(snapshot_.robot_state != RobotState::ACTIVE) {
         throw SerialArmPythonError("move_to() requires RobotState::ACTIVE");
     }
-    if(requested_impedance_mode_==JointImpedanceMode::COMPLIANT_DRAG || requested_execution_profile_==JointGainProfile::DRAG)
-        throw SerialArmPythonError("leave drag mode before move_to()");
-    if(!is_tracking_mode(requested_impedance_mode_)) {
-        requested_impedance_mode_=(requested_execution_profile_==JointGainProfile::COMPLIANT || (!requested_execution_profile_ && requested_impedance_mode_==JointImpedanceMode::COMPLIANT_HOLD))?
-            JointImpedanceMode::COMPLIANT_TRACKING:JointImpedanceMode::RIGID_TRACKING;
-        ++impedance_sequence_;
-    }
     goal_pos_ = pos;
     speed_scale_ = speed_scale;
     has_goal_ = true;
@@ -552,9 +548,7 @@ void PyRobotSession::hold_current() {
     if(snapshot_.robot_state != RobotState::ACTIVE) {
         throw SerialArmPythonError("hold_current() requires RobotState::ACTIVE");
     }
-    requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
     requested_hold_policy_=HoldTargetPolicy::CAPTURE_MEASURED;
-    requested_execution_profile_.reset();
     ++impedance_sequence_;
     has_goal_ = false;
     motion_.finish("interrupted","current-position hold requested");snapshot_.motion=motion_.status();
@@ -620,7 +614,7 @@ std::vector<RobotSessionActuatorInfo> PyRobotSession::get_actuator_info() const 
  */
 void PyRobotSession::loop() noexcept {
     std::uint64_t applied_impedance_sequence=0,applied_gravity_sequence=0;
-    JointImpedanceMode applied_impedance_mode=JointImpedanceMode::RIGID_HOLD;
+    JointImpedanceMode applied_impedance_mode=JointImpedanceMode::RIGID;
     bool fault_reported=false;
     auto handle_robot_failure = [&](const std::string& message) -> bool {
         set_worker_error(message);
@@ -655,7 +649,6 @@ void PyRobotSession::loop() noexcept {
         }
         JointImpedanceMode impedance_mode;
         HoldTargetPolicy hold_policy;
-        std::optional<JointGainProfile> execution_profile;
         JointVector gravity_scale;
         std::uint64_t impedance_sequence;
         std::uint64_t gravity_sequence;
@@ -663,7 +656,6 @@ void PyRobotSession::loop() noexcept {
             std::lock_guard<std::mutex> lock(mutex_);
             impedance_mode = requested_impedance_mode_;
             hold_policy=requested_hold_policy_;
-            execution_profile=requested_execution_profile_;
             gravity_scale = requested_gravity_scale_;
             impedance_sequence = impedance_sequence_;
             gravity_sequence = gravity_sequence_;
@@ -689,22 +681,17 @@ void PyRobotSession::loop() noexcept {
                 return false;
             }
 
-            if(execution_profile) {
-                const auto profile=robot_->set_execution_gain_profile(*execution_profile);
-                if(!profile) {set_worker_error(make_robot_error("execution profile handover",profile.error()));running_.store(false);return false;}
-            }
             applied_impedance_mode = impedance_mode;
             applied_impedance_sequence = impedance_sequence;
-            ref_pos_ = robot_->get_joint_state().pos;
-            ref_vel_.assign(ref_pos_.size(), 0.0);
-
-            std::lock_guard<std::mutex> lock(mutex_);
-            if(!has_goal_) {
+            if(hold_policy == HoldTargetPolicy::CAPTURE_MEASURED) {
+                ref_pos_ = robot_->get_joint_state().pos;
+                ref_vel_.assign(ref_pos_.size(), 0.0);
+                std::lock_guard<std::mutex> lock(mutex_);
                 goal_pos_ = ref_pos_;
             }
         }
 
-        if(is_tracking_mode(applied_impedance_mode)) {
+        {
             update_reference(dt);
             const auto cmd_result = runtime_.submit_reference(*robot_,JointPosVelCmd{ ref_pos_, ref_vel_ }, now,MotionSource::STREAM);
             if(!cmd_result) {
@@ -792,18 +779,17 @@ void PyRobotSession::invalidate_motion_requests_for_fault(
         ref_vel_.assign(measured.size(), 0.0);
         goal_pos_ = measured;
         has_goal_ = false;
-        requested_execution_profile_.reset();
         pending_execution_update_={};execution_error_="FAULT interrupted execution profile update";completed_execution_sequence_=execution_sequence_;
         pending_admittance_.reset();admittance_error_="FAULT interrupted admittance update";completed_admittance_sequence_=admittance_sequence_;
         fault_recovery_cv_.notify_all();
         speed_scale_ = 0.3;
-        requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+        requested_impedance_mode_ = JointImpedanceMode::RIGID;
         ++impedance_sequence_;
         applied_impedance_sequence = impedance_sequence_;
         requested_gravity_scale_ = dynamics_->get_gravity_scale();
         ++gravity_sequence_;
         applied_gravity_sequence = gravity_sequence_;
-        applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
+        applied_impedance_mode = JointImpedanceMode::RIGID;
         snapshot_.robot_state = RobotState::FAULT;
         fault_hold_mode_cache_ = hold_mode;
     }
@@ -858,10 +844,10 @@ void PyRobotSession::process_fault_recovery_request(
             goal_pos_ = measured;
             has_goal_ = false;
             speed_scale_ = 0.3;
-            requested_impedance_mode_ = JointImpedanceMode::RIGID_HOLD;
+            requested_impedance_mode_ = JointImpedanceMode::RIGID;
             ++impedance_sequence_;
             applied_impedance_sequence = impedance_sequence_;
-            applied_impedance_mode = JointImpedanceMode::RIGID_HOLD;
+            applied_impedance_mode = JointImpedanceMode::RIGID;
             snapshot_.robot_state = RobotState::ACTIVE;
             snapshot_.last_error.clear();
             snapshot_.valid = false;

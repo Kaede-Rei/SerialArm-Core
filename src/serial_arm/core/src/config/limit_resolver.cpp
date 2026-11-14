@@ -38,6 +38,7 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
     const std::size_t n = model.joint_names.size();
     if(n == 0 || model.joint_limits.size() != n || capabilities.size() != n ||
         mapper.pos_ratio.size() != n || mapper.tor_ratio.size() != n || policy.max_acc.size() != n ||
+        (!policy.max_tracking_error.empty() && policy.max_tracking_error.size() != n) ||
         mapper.direction.size() != n || mapper.joint_zero_offset.size() != n || mapper.actuator_zero_offset.size() != n ||
         policy.position_margin < 0.0 || policy.cmd_vel_scale <= 0.0 || policy.cmd_vel_scale > 1.0 ||
         policy.state_vel_scale <= 0.0 || policy.state_vel_scale < policy.cmd_vel_scale ||
@@ -92,6 +93,11 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
         resolved.max_cmd_vel = max_velocity * policy.cmd_vel_scale;
         resolved.max_state_vel = max_velocity * policy.state_vel_scale;
         resolved.max_acc = policy.max_acc[i];
+        if(!policy.max_tracking_error.empty()) {
+            if(!std::isfinite(policy.max_tracking_error[i]) || policy.max_tracking_error[i] <= 0.0)
+                return tl::make_unexpected(LimitResolverErr::INVALID_INPUT);
+            resolved.max_tracking_error = policy.max_tracking_error[i];
+        }
         resolved.max_effort = std::min(joint.max_effort, hardware_effort);
         resolved.max_kp = hardware_kp;
         resolved.max_kd = hardware_kd;
@@ -155,6 +161,7 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
         cfg.limits.max_pos.push_back(joint.hard_max_pos);
         cfg.limits.max_vel.push_back(joint.max_cmd_vel);
         cfg.limits.max_acc.push_back(joint.max_acc);
+        if(joint.max_tracking_error > 0.0) cfg.limits.max_tracking_error.push_back(joint.max_tracking_error);
         cfg.limits.max_effort.push_back(joint.max_effort);
         cfg.limits.max_kp.push_back(joint.max_kp);
         cfg.limits.max_kd.push_back(joint.max_kd);
@@ -190,6 +197,7 @@ ResolvedSafetyCfg resolve_from_safety_cfg(const std::vector<std::string>& joint_
         joint.max_cmd_vel = cfg.limits.max_vel[i];
         joint.max_state_vel = cfg.limits.max_vel[i] * cfg.state_vel_fault_ratio;
         joint.max_acc = cfg.limits.max_acc[i];
+        joint.max_tracking_error = cfg.limits.max_tracking_error.empty() ? 0.0 : cfg.limits.max_tracking_error[i];
         joint.max_effort = cfg.limits.max_effort[i];
         joint.max_kp = cfg.limits.max_kp[i];
         joint.max_kd = cfg.limits.max_kd[i];

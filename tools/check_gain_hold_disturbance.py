@@ -150,7 +150,7 @@ def run(terminal):
                     if row['gain_stage'] != 'rigid_tracking-hold-disturbance':
                         continue
                     frame_count += 1
-                    assert row['impedance_mode'] == 'RIGID_HOLD', row['impedance_mode']
+                    assert row['impedance_mode'] == 'RIGID', row['impedance_mode']
                     for axis, joint in enumerate(names):
                         assert abs(float(row['nominal_q:'+joint])-center[axis]) < 1e-9, joint
                         assert abs(float(row['accepted_q:'+joint])-center[axis]) < 1e-9, joint
@@ -163,7 +163,7 @@ def run(terminal):
             models = [axis for axis in experiment['axes'] if 'disturbance_valid' in axis]
             assert len(models) == len(names) and not all(axis['disturbance_valid'] for axis in models), models
             assert not candidate['validated'], candidate['validated']
-            rigid = candidate.get('targets', {}).get('rigid_tracking', candidate)
+            rigid = candidate.get('targets', {}).get('rigid', candidate)
             assert rigid['native_validation']['available'] and rigid['hold_verification']['available'], rigid
             assert rigid['available'] and not candidate['available'] and not candidate['review_ready'], rigid
             assert rigid['qualification_complete'] is False and not rigid['validated'], rigid

@@ -60,7 +60,7 @@ function extract(name) {
 }
 const alertContext=vm.createContext({state:{language:'zh-CN'},busyText:zh=>zh,t:()=> '错误',localizedError:raw=>translateError(raw),
   reportedCalibrationErrors:new Set(),lastRuntimeFaultKey:'',lastTeachReplayErrorKey:'',alerts:[],gainCalibrationQualityWarning:()=>false,
-  gainCalibrationFailure:status=>({code:'GAIN_CALIBRATION_FAILED',message:status.error}),jointDisplaySpec:()=>({factor:180/Math.PI,unit:'°',velocityUnit:'°/s',effortUnit:'Nm'})});
+  gainCalibrationFailure:status=>({code:'GAIN_CALIBRATION_FAILED',message:status.error}),jointDisplaySpec:()=>({factor:180/Math.PI,unit:'°',velocityUnit:'°/s',effortUnit:'N·m'})});
 for(const name of ['normalizeDialogError','describeRuntimeFault','checkRuntimeAlerts'])vm.runInContext(extract(name),alertContext);
 alertContext.showPriorityError=(raw,kind)=>alertContext.alerts.push(alertContext.normalizeDialogError(raw,kind));
 const responseFault={robot_state:'FAULT',fault:{code:'CALIBRATION_RESPONSE_UNSTABLE'},model_calibration:{task_id:'response-stop',workflow_kind:'gain',phase:'failed',fault_interrupted:true,error:'model calibration stopped by safety fault'},teach_replay:{phase:'failed',error:'model calibration stopped by safety fault'}};
@@ -81,11 +81,11 @@ const context = vm.createContext({state:{language:'zh-CN',gainMode:'all',gainTun
   gainCandidateReviewHtml:()=>'',gainTaskWarningsHtml:()=>'',gainModelInitializationHtml:()=>''});
 for (const name of ['gainTimeText','gainBudgetValues','gainBudgetHtml','gainCalibrationOptionsHtml','gainCandidateGroups','gainCandidatePurposeAvailable','gainCandidateReviewReady','gainCandidateDeployable']) vm.runInContext(extract(name),context);
 const html = vm.runInContext('gainCalibrationOptionsHtml({gain_budget_source_duration_s:25},null,false)',context);
-assert(html.includes('四用途快速标定') && html.includes('目标用时') && html.includes('7 分 30 秒') && html.includes('10 分 0 秒'));
-context.state.gainTuningMode='fine';context.state.gainFinePurpose='servo_tracking';
+assert(html.includes('三组参数快速标定') && html.includes('目标用时') && html.includes('7 分 30 秒') && html.includes('10 分 0 秒'));
+context.state.gainTuningMode='fine';context.state.gainFinePurpose='rigid';
 const fine = vm.runInContext('gainCalibrationOptionsHtml({gain_budget_source_duration_s:25},null,false)',context);
 assert(fine.includes('5 分 0 秒') && fine.includes('6 分 15 秒') && fine.includes('id="gain-target"'));
-assert.equal(context.state.gainMode,'servo_tracking');
+assert.equal(context.state.gainMode,'rigid');
 assert(!html.includes('data-gain-requirement')&&!fine.includes('data-gain-requirement')&&html.includes('选择需要采用的用途'),'Both modes omit obsolete accuracy inputs and state the next user action');
 for(const [mode,target,maximum] of [['quick',450,600],['fine',300,375]]){
  context.budgetInput={gain_tuning_mode:mode,gain_budget_source_duration_s:25};
@@ -99,7 +99,7 @@ delete context.budgetInput.target_budget_s;delete context.budgetInput.time_budge
 assert.equal(vm.runInContext('gainBudgetValues(budgetInput,true).maximum',context),0,'Missing historical budget fields remain unknown rather than adopting a new policy');
 assert(!source.includes('gain_requirements:')&&!source.includes('function readGainRequirements'),'Frontend does not submit obsolete accuracy thresholds');
 const tracking = {independent:true,duration_s:1,measured_duration_s:1,metrics:[{samples:200,measurement_samples:200,rms_error_rad:.01,peak_error_rad:.02,velocity_rms_rad_s:.01,tail_error_rad:.01,settling_s:.2}]};
-const warning = {category:'servo_tracking',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[3],kd:[.4],validated:false,available:true,qualification_complete:true,disturbance_verification:{available:true,completed:true,record_path:'disturbance.csv'},native_validation:tracking,admittance_required:false,admittance_validation:{required:false,status:'not_requested'}};
+const warning = {category:'rigid',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',gains:{kp:[3],kd:[.4]},hold_verification:{available:true,completed:true,samples:10,fresh_samples:[10],worst_error_rad:0,worst_velocity_rad_s:0},validated:false,available:true,qualification_complete:true,disturbance_verification:{available:true,completed:true,record_path:'disturbance.csv'},native_validation:tracking,admittance_required:false,admittance_validation:{required:false,status:'not_requested'}};
 context.candidate=warning;
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Measured warnings remain usable without extra approval');
 context.candidate={...warning,available:false};
@@ -114,11 +114,11 @@ context.candidate={...warning,native_validation:{...tracking,completed:false}};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false);
 context.candidate={...warning,validation_scope:'legacy_local_probe'};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Legacy records never acquire missing validation');
-context.candidate={category:'compliant_drag',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[0],kd:[.4],validated:false,available:false,drag_validation:{available:true,completed:true,samples:100,initial_velocity_rad_s:[.1],decay_s:[.8]}};
+context.candidate={category:'drag',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',gains:{kp:[0],kd:[.4]},validated:false,available:false,drag_validation:{available:true,completed:true,samples:100,initial_velocity_rad_s:[.1],decay_s:[.8]}};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Historical completed drag vectors retain their measured parameter contract');
 context.candidate.drag_validation.completed=false;
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false,'Incomplete historical drag is not available');
-context.candidate={category:'compliant_drag',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',kp:[0],kd:[.4],available:true,validated:true,drag_validation:{available:true,completed:true,samples:100,axes:[{joint:'j1',samples:100,quiet_stability_measured:true,quiet_stability_passed:true,quiet_position_span_rad:.0001,quiet_speed_rad_s:.0002,release_decay_measured:false,release_decay_passed:false,initial_velocity_rad_s:null,decay_s:null}]}};
+context.candidate={category:'drag',joint_names:['j1'],validation_scope:'independent_demonstration_trajectory',gains:{kp:[0],kd:[.4]},available:true,validated:true,drag_validation:{available:true,completed:true,samples:100,axes:[{joint:'j1',samples:100,quiet_stability_measured:true,quiet_stability_passed:true,quiet_position_span_rad:.0001,quiet_speed_rad_s:.0002,release_decay_measured:false,release_decay_passed:false,initial_velocity_rad_s:null,decay_s:null}]}};
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Measured quiet-scope drag remains temporarily applicable without inventing release input or decay');
 context.candidate.validated=false;context.candidate.drag_validation.axes[0].quiet_stability_passed=false;
 assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),true,'Complete but unmet quiet measurements retain warning-application semantics');
@@ -129,9 +129,9 @@ assert.equal(vm.runInContext('gainCandidateDeployable(candidate)',context),false
 Object.assign(context,{t:key=>key,localizedError:String,gainProbeMessageLabel:String,gainPurposeLabel:String,
   jointDisplayValue:value=>typeof value === 'number' && Number.isFinite(value) ? String(value) : '—',
   gainPathValidationHtml:()=>'',gainTaughtPathMetricsHtml:()=>'',gainObserverAndBoundsHtml:()=>'',
-  gainQualificationScopeHtml:()=>'',selectedGainPurposes:()=>['servo_tracking'],setupActionHtml:()=>'',gainCalibrationPhaseText:()=>'任务已结束'});
+  gainQualificationScopeHtml:()=>'',selectedGainPurposes:()=>['rigid'],setupActionHtml:()=>'',gainCalibrationPhaseText:()=>'任务已结束'});
 context.state.calibrationRuntimeCandidates={};
-for (const name of ['busyText','canonicalGainPurpose','gainPurposeLabel','capabilityNumber','gainProbePhaseLabel','gainProbeStageLabel','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainProbeGhostSource','gainCheckStatus','gainCompliantScopeSummaryHtml','gainPurposeDirectionEvidenceHtml','gainEvidenceRecordHtml','bindGainEvidencePaths','gainCompliantScopeEvidenceHtml','gainDirectDisturbanceScope','gainMeasurementSourceKey','gainPurposeMeasurementEvidence','gainPurposeMeasurementWarnings','gainDirectDisturbanceEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainCalibrationQualityWarning','gainTaskConclusion','gainMeasurementPhaseLabel','gainMeasurementReasonLabel','gainWarningLabel','gainCandidateAvailabilityLabel','gainCandidateResultCounts','gainCandidateParameterSourceHtml','gainCandidateParametersHtml','gainModelInitializationHtml','gainResponseModelsHtml','gainMotionEstablishmentHtml','gainFixedReferenceEvidenceHtml','gainExperimentHtml','gainTaughtPathMetricsHtml','gainCandidateReviewHtml'])vm.runInContext(extract(name),context);
+for (const name of ['jointDisplaySpec','jointNativeUnits','jointNativeValue','busyText','canonicalGainPurpose','gainPurposeLabel','capabilityNumber','gainProbePhaseLabel','gainProbeStageLabel','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainProbeGhostSource','gainCheckStatus','gainCompliantScopeSummaryHtml','gainPurposeDirectionEvidenceHtml','gainEvidenceRecordHtml','bindGainEvidencePaths','gainCompliantScopeEvidenceHtml','gainDirectDisturbanceScope','gainMeasurementSourceKey','gainPurposeMeasurementEvidence','gainPurposeMeasurementWarnings','gainDirectDisturbanceEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainCalibrationQualityWarning','gainTaskConclusion','gainMeasurementPhaseLabel','gainMeasurementReasonLabel','gainWarningLabel','gainCandidateAvailabilityLabel','gainCandidateResultCounts','gainCandidateParameterSourceHtml','gainCandidateParametersHtml','gainModelInitializationHtml','gainResponseModelsHtml','gainMotionEstablishmentHtml','gainFixedReferenceEvidenceHtml','gainExperimentHtml','gainTaughtPathMetricsHtml','gainCandidateReviewHtml'])vm.runInContext(extract(name),context);
 assert(vm.runInContext("gainProbeMessageLabel('bounded_endpoint_transition')",context).includes('最新实测位置平滑过渡'));
 assert(vm.runInContext("gainProbeStageLabel('trajectory_discovery')",context).includes('沿示教路径建立响应'));
 for(const message of ['taught_path_original_speed_discovery','taught_path_feedback_bounded_discovery','taught_path_candidate_window','taught_path_discovery_complete']) {
@@ -481,7 +481,7 @@ context.nominal={design_target_source:'explicit_generic_response_design_not_urdf
   axes:[{joint:'J3',kp:500,kd:5,unconstrained_kp:679.028,unconstrained_kd:75.649}],hardware_constraints:'declared_protocol_encoding'};
 const nominalHtml=vm.runInContext("gainModelInitializationHtml(nominal,['J3'])",context);
 assert(nominalHtml.includes('模型初始增益（仅供参考）')&&nominalHtml.includes('原始 Kp')&&nominalHtml.includes('配置 Kp'));
-assert(nominalHtml.includes('679.028')&&nominalHtml.includes('<td>500</td>')&&nominalHtml.includes('不是由 URDF 测出的执行器带宽或阻尼'));
+assert(nominalHtml.includes('679.028')&&nominalHtml.includes('<td>500 N·m/rad</td>')&&nominalHtml.includes('不是由 URDF 测出的执行器带宽或阻尼'));
 assert(!nominalHtml.includes('恢复目标起动候选')&&!nominalHtml.includes('当前运行与恢复参数保持原值'),
   'New generated gains display actual initialization and separate raw model design from encoding');
 context.nominal.configuration_initialized=false;context.nominal.hardware_constraints='pending_hardware_selection';
@@ -533,7 +533,7 @@ assert(warningReview.includes('data-gain-result-review')&&warningReview.includes
 assert(vm.runInContext('gainCandidateDeployable(warningReview)',context),'review_required is a result-view hint, not a new approval or application gate');
 context.exitFaultReview={...warning,validated:true,task_id:'late-exit-fault',termination:{kind:'execution_fault',reason:'recording exit failed',fault_interrupted:true}};
 const exitFaultReview=vm.runInContext('gainCandidateReviewHtml(exitFaultReview)',context);
-assert(exitFaultReview.includes('标定执行已中断')&&!exitFaultReview.includes('gain-result-outcome is-pass')&&exitFaultReview.includes('data-gain-candidate-purpose="servo_tracking"'),'A late execution fault stays visible while retaining an earlier complete parameter set');
+assert(exitFaultReview.includes('标定执行已中断')&&!exitFaultReview.includes('gain-result-outcome is-pass')&&exitFaultReview.includes('data-gain-candidate-purpose="rigid"'),'A late execution fault stays visible while retaining an earlier complete parameter set');
 context.exitFaultReview.termination={kind:'budget_exhausted',reason:'time_budget_reached'};
 assert(!vm.runInContext('gainTaskConclusion({},exitFaultReview).success',context)&&vm.runInContext('gainCandidateReviewHtml(exitFaultReview)',context).includes('标定已到时限'),'A task that reached its hard budget cannot inherit a passed task headline from retained measured parameters');
 context.warningReview.native_validation={...tracking,completed:false};assert(!vm.runInContext('gainCandidateDeployable(warningReview)',context),'The review hint never makes incomplete measurements applicable');
@@ -542,18 +542,18 @@ const warningConclusion=vm.runInContext('gainTaskConclusion(summaryStatus)',cont
 assert(warningConclusion.title.includes('待补测')&&warningConclusion.reason.includes('流程已继续')&&!warningConclusion.reason.includes('measurement_warning:'),'The first warning remains a readable final cause rather than an execution-fault headline');
 context.summaryStatus.phase='gain_adaptation';context.summaryStatus.error=context.summaryStatus.termination.reason;context.summaryStatus.termination.kind='running';
 assert(vm.runInContext('gainProbeStatusValues(summaryStatus).error',context)==='','A continued stage warning does not populate the red live execution-error field');
-context.partialPassed={...context.warningReview,category:'all',targets:{servo_tracking:{...warning,validated:true},rigid_tracking:{error:'not_started'},compliant_tracking:{error:'not_started'},compliant_drag:{error:'not_started'}}};
+context.partialPassed={...context.warningReview,category:'all',targets:{rigid:{...warning,validated:true},compliant:{error:'not_started'},drag:{error:'not_started'}}};
 const partialPassed=vm.runInContext('gainCandidateReviewHtml(partialPassed)',context);
 assert(partialPassed.includes('gain-result-outcome is-reference')&&!partialPassed.includes('gain-result-outcome is-pass'),'One passed available use does not color the whole task as passed while other uses remain unmeasured');
-assert(partialPassed.includes('部分用途待补测') && partialPassed.includes('data-gain-candidate-purpose="servo_tracking"') && partialPassed.includes('data-tool-export="gain"'));
-assert(vm.runInContext("gainCandidateDeployable(partialPassed,['servo_tracking'])",context),'One completely measured use remains applicable while other four-use measurements are incomplete');
-assert(!vm.runInContext("gainCandidateDeployable(partialPassed,['rigid_tracking'])",context),'Unmeasured uses remain unavailable for explicit selection');
+assert(partialPassed.includes('部分用途待补测') && partialPassed.includes('data-gain-candidate-purpose="rigid"') && partialPassed.includes('data-tool-export="gain"'));
+assert(vm.runInContext("gainCandidateDeployable(partialPassed,['rigid'])",context),'One completely measured use remains applicable while other four-use measurements are incomplete');
+assert(!vm.runInContext("gainCandidateDeployable(partialPassed,['compliant'])",context),'Unmeasured uses remain unavailable for explicit selection');
 context.incompleteReview={...warning,measurement_complete:false,review_ready:false,qualification_complete:false,review_required:false,disturbance_verification:{available:false,completed:false}};
 assert(vm.runInContext('gainCandidateDeployable(incompleteReview)',context),'Modern aggregate qualification flags cannot hide a complete measured parameter set');
 assert(vm.runInContext('gainTaskConclusion({phase:"complete"},incompleteReview).review',context));
 assert(!context.incompleteReview.validated,'Making complete parameters available does not promote missing disturbance qualification to validated');
 const incompleteScopeHtml=vm.runInContext('gainCandidateReviewHtml(incompleteReview)',context);
-assert(incompleteScopeHtml.includes('抗扰响应待补测')&&incompleteScopeHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Missing independent disturbance remains a visible warning beside applicable measured gains');
+assert(incompleteScopeHtml.includes('抗扰响应待补测')&&incompleteScopeHtml.includes('data-gain-candidate-purpose="rigid"'),'Missing independent disturbance remains a visible warning beside applicable measured gains');
 context.incompleteReview.task_id='retained-parameters';
 assert(vm.runInContext('gainTaskConclusion({phase:"complete",task_id:"retained-parameters",termination:{kind:"insufficient_measurement"}},incompleteReview).title',context).includes('参数已测量'),'A final missing-purpose-evidence outcome does not imply that complete parameter measurements vanished');
 vm.runInContext(extract('gainCalibrationPhaseText'),context);
@@ -564,8 +564,8 @@ context.incompleteReview={...warning,validated:true,validation_scope:'legacy_loc
 assert(!vm.runInContext('gainCandidateDeployable(incompleteReview)',context),'Historical local-probe aggregate completion flags keep their original contract');
 context.candidate.candidate_comparisons=[context.motion];context.candidate.experiments.push(...context.measuredMotion);
 const compared=vm.runInContext('gainCandidateReviewHtml(candidate)',context);
-assert(compared.includes('起动测量决策 1')&&compared.includes('参考驱动计划峰值 Nm')&&compared.includes('原始比较记录'),'Historical motion decisions are readable alongside the original comparison data');
-context.frequencyCandidate={...warning,joint_names:['J1','J2','J3'],kp:[3,4,5],kd:[.2,.3,.4],native_validation:{...tracking,metrics:Array.from({length:3},()=>({...tracking.metrics[0]}))},experiments:[context.partialFrf],candidate_comparisons:[context.frf]};
+assert(compared.includes('起动测量决策 1')&&compared.includes('参考驱动计划峰值 N·m')&&compared.includes('原始比较记录'),'Historical motion decisions are readable alongside the original comparison data');
+context.frequencyCandidate={...warning,joint_names:['J1','J2','J3'],gains:{kp:[3,4,5],kd:[.2,.3,.4]},native_validation:{...tracking,metrics:Array.from({length:3},()=>({...tracking.metrics[0]}))},experiments:[context.partialFrf],candidate_comparisons:[context.frf]};
 const aggregated=vm.runInContext('gainCandidateReviewHtml(frequencyCandidate)',context);
 assert.equal((aggregated.match(/data-gain-frf-design/g)||[]).length,1,'Aggregate comparison records display FRF design once and merge matching axis evidence by record_path');
 context.frequencyCandidate.candidate_comparisons=[];
@@ -592,7 +592,7 @@ for(const language of ['zh-CN','en']){
  context.state.language=language;
  const referenceHtml=vm.runInContext('gainCandidateReviewHtml(referenceOnly)',context);
  assert(!/达标|验收通过|Target met|Target not met|Outside reference limits|>Passed</.test(referenceHtml));
- assert(referenceHtml.includes(language==='en'?'Review the measured motion':'请根据实测表现')&&referenceHtml.includes('4.5837°')&&referenceHtml.includes('data-gain-candidate-purpose="servo_tracking"'),'Reference-only results keep measured values and temporary-application availability');
+ assert(referenceHtml.includes(language==='en'?'Review the measured motion':'请根据实测表现')&&referenceHtml.includes('4.5837°')&&referenceHtml.includes('data-gain-candidate-purpose="rigid"'),'Reference-only results keep measured values and temporary-application availability');
 }
 assert.equal(JSON.stringify(context.referenceOnly),originalReferenceRecord,'Rendering never rewrites new or historical task records');
 context.state.language='zh-CN';
@@ -826,20 +826,20 @@ assert.equal(JSON.stringify(context.directPulse),directOriginal,'New direct evid
 context.state.language='zh-CN';
 context.sharedSourceCandidate=require('./gain-ui-fixture.cjs').makeCandidate();
 const sharedMissing={method:'isolated_smooth_torque_pulse',model_identified:false,direct_measurement_complete:false,available:false,completed:false,record_path:'shared-purpose.csv',axes:[]};
-Object.assign(context.sharedSourceCandidate.targets.rigid_tracking,{disturbance_verification:{...sharedMissing},hold_disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete','hold_disturbance_measurement_incomplete']});
-Object.assign(context.sharedSourceCandidate.targets.servo_tracking,{disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete']});
+Object.assign(context.sharedSourceCandidate.targets.rigid,{disturbance_verification:{...sharedMissing},hold_disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete','hold_disturbance_measurement_incomplete']});
+Object.assign(context.sharedSourceCandidate.targets.rigid,{disturbance_verification:{...sharedMissing},warnings:['disturbance_measurement_incomplete']});
 const sharedOriginal=JSON.stringify(context.sharedSourceCandidate);
 const sharedHtml=vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context),sharedText=sharedHtml.replace(/<[^>]+>/g,' ');
 assert.equal((sharedText.match(/抗扰响应待补测/g)||[]).length,1,'One missing shared acquisition is described once across disturbance, hold and reused servo scopes');
 assert(!sharedText.includes('保持扰动测量未完成'),'A hold alias of the same missing record is not shown as a second missing experiment');
 assert.equal(JSON.stringify(context.sharedSourceCandidate),sharedOriginal,'Warning deduplication never rewrites the shared historical source objects');
-context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={shared_with:'disturbance_verification',record_path:'alias-view.csv'};
+context.sharedSourceCandidate.targets.rigid.hold_disturbance_verification={shared_with:'disturbance_verification',record_path:'alias-view.csv'};
 assert(!vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'An explicit same-purpose shared_with reference deduplicates its source even when the alias path differs');
-context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={...sharedMissing};
-context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification.record_path='distinct-hold.csv';
+context.sharedSourceCandidate.targets.rigid.hold_disturbance_verification={...sharedMissing};
+context.sharedSourceCandidate.targets.rigid.hold_disturbance_verification.record_path='distinct-hold.csv';
 assert(vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'Different source records retain separate missing-scope explanations');
-context.sharedSourceCandidate.targets.rigid_tracking.hold_disturbance_verification={...sharedMissing,record_path:'alias.csv',shared_source:'shared-purpose.csv'};
-context.sharedSourceCandidate.targets.rigid_tracking.disturbance_verification.shared_source='shared-purpose.csv';
+context.sharedSourceCandidate.targets.rigid.hold_disturbance_verification={...sharedMissing,record_path:'alias.csv',shared_source:'shared-purpose.csv'};
+context.sharedSourceCandidate.targets.rigid.disturbance_verification.shared_source='shared-purpose.csv';
 assert(!vm.runInContext('gainCandidateReviewHtml(sharedSourceCandidate)',context).replace(/<[^>]+>/g,' ').includes('保持扰动测量未完成'),'An explicit shared source is honored even when aliases use different record paths');
 context.completedDirectCandidate={...context.referenceOnly,disturbance_verification:context.directPulse,hold_disturbance_verification:context.directPulse};
 assert(!vm.runInContext('gainCandidateReviewHtml(completedDirectCandidate)',context).replace(/<[^>]+>/g,' ').includes('独立扰动测量不足'),'New complete direct measurements are not downgraded by legacy model availability=false');
@@ -853,15 +853,15 @@ for(const language of ['zh-CN','en']){
  for(const reason of ['isolated_purpose_pulse','purpose_direct_input_measured','purpose_direct_measurement_partial','drag_actual_zero_stiffness_handover','quiet_drag_goal_measured','drag_measurement_available_for_review','drag_quiet','drag_input','drag_release']){context.reason=reason;assert.notEqual(vm.runInContext('gainProbeMessageLabel(reason)',context),reason,'Live purpose-measurement progress is readable');}
 }
 context.state.language='zh-CN';
-const dragFields=context.sharedSourceCandidate.targets.compliant_drag;
+const dragFields=context.sharedSourceCandidate.targets.drag;
 dragFields.warnings=['drag_release_decay_unmeasured'];
-context.dragCandidate={...context.sharedSourceCandidate,category:'compliant_drag',...dragFields,joint_names:context.sharedSourceCandidate.joint_names};
-const dragNotes=vm.runInContext('gainPurposeMeasurementWarnings(dragCandidate,"compliant_drag",dragCandidate)',context);
+context.dragCandidate={...context.sharedSourceCandidate,category:'drag',...dragFields,joint_names:context.sharedSourceCandidate.joint_names};
+const dragNotes=vm.runInContext('gainPurposeMeasurementWarnings(dragCandidate,"drag",dragCandidate)',context);
 assert(!dragNotes.includes('drag_release_decay_unmeasured'),'A complete quiet drag result keeps release absence in its separate scope line, not as a second whole-group warning');
 const {makeCandidate}=require('./gain-ui-fixture.cjs');
 context.partialUseResult=makeCandidate();
 context.partialUseResult.termination={kind:'insufficient_measurement',reason:'drag_release_decay_unmeasured:joint1'};
-Object.assign(context.partialUseResult.targets.compliant_tracking,{available:false,native_validation:{completed:false,metrics:[]},warnings:['compliant_measurement_incomplete']});
+Object.assign(context.partialUseResult.targets.compliant,{available:false,native_validation:{completed:false,metrics:[]},warnings:['compliant_measurement_incomplete']});
 const partialBefore=JSON.stringify(context.partialUseResult);
 for(const language of ['zh-CN','en']){
  context.state.language=language;
@@ -874,14 +874,14 @@ assert.equal(JSON.stringify(context.partialUseResult),partialBefore);
 context.state.language='zh-CN';
 context.originCandidate=makeCandidate();
 context.originCandidate.model_initialization.source='urdf_geometry_time_weighted_path_mass_matrix_nominal_response_design_double_diagonalization_diagonal_projection';
-const soft=context.originCandidate.targets.compliant_tracking;
+const soft=context.originCandidate.targets.compliant;
 soft.native_validation.record_path='gain-trajectory-compliant-frozen.csv';
-context.originCandidate.candidate_comparisons=[{kind:'taught_local_complete_group_comparison',purpose:'compliant',kept:false,previous_kp:soft.kp,previous_kd:soft.kd,proposed_kp:soft.kp.map(value=>value*.9),proposed_kd:soft.kd}];
-assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已比较 1 组候选，保留原整组参数'),'A measured rejected candidate is distinct from never attempting adjustment');
-context.originCandidate.candidate_comparisons=[{kind:'online_trajectory_PD_update',source_record_path:'gain-trajectory-compliant-online-0.csv',installed:true,proposed_kp:soft.kp,proposed_kd:soft.kd}];
-assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已在运动中调整，并完成整轨复测'));
+context.originCandidate.candidate_comparisons=[{kind:'taught_local_complete_group_comparison',purpose:'compliant',kept:false,previous_kp:soft.gains.kp,previous_kd:soft.gains.kd,proposed_kp:soft.gains.kp.map(value=>value*.9),proposed_kd:soft.gains.kd}];
+assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant")',context).includes('已比较 1 组候选，保留原整组参数'),'A measured rejected candidate is distinct from never attempting adjustment');
+context.originCandidate.candidate_comparisons=[{kind:'online_trajectory_PD_update',source_record_path:'gain-trajectory-compliant-online-0.csv',installed:true,proposed_kp:soft.gains.kp,proposed_kd:soft.gains.kd}];
+assert(vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant")',context).includes('已在运动中调整，并完成整轨复测'));
 context.originCandidate.candidate_comparisons[0].installed=false;
-assert(!vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant_tracking")',context).includes('已在运动中调整'),'An uninstalled proposal does not become a measured parameter change');
+assert(!vm.runInContext('gainCandidateParameterSourceHtml(originCandidate,"compliant")',context).includes('已在运动中调整'),'An uninstalled proposal does not become a measured parameter change');
 if(process.env.SERIAL_ARM_GAIN_UI_PARTIAL_RECORD_DIR){
  const folder=process.env.SERIAL_ARM_GAIN_UI_PARTIAL_RECORD_DIR;
  context.actualPartialCandidate=JSON.parse(fs.readFileSync(path.join(folder,'gain-candidate.json'),'utf8'));

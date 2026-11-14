@@ -46,7 +46,7 @@ def run(terminal):
                 'directory': str(directory / 'source'), 'pose_budget': 5})
             native.ready()
             native.request('model_calibration_start', {
-                'task_id': task['task_id'], 'workflow': 'gain', 'gain_mode': 'servo_tracking',
+                'task_id': task['task_id'], 'workflow': 'gain', 'gain_mode': 'rigid',
                 'gain_tuning_mode': 'fine', 'released': True,
                 'gain_trajectory_confirmed': True, 'gain_motion_range_confirmed': True})
             target = Path(task['directory']) / 'gain-trajectory-native-frozen.csv'
@@ -69,7 +69,7 @@ def run(terminal):
             while True:
                 status = native.request('status')
                 assert status['robot_state'] == 'ACTIVE', status
-                if status['impedance_mode'] == 'RIGID_HOLD':
+                if status['impedance_mode'] == 'RIGID':
                     break
                 if time.monotonic() > deadline:
                     raise AssertionError('Trajectory did not enter HOLD before assessment')
@@ -79,7 +79,7 @@ def run(terminal):
             while time.monotonic() - held_since < .35:
                 status = native.request('status')
                 assert status['robot_state'] == 'ACTIVE', status
-                assert status['impedance_mode'] == 'RIGID_HOLD', status
+                assert status['impedance_mode'] == 'RIGID', status
                 samples += 1
                 time.sleep(.015)
             # Resume the slow sink, then stop through the real worker exit.

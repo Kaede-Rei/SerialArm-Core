@@ -44,6 +44,8 @@ struct RobotSessionActuatorInfo {
     double kp_resolution{ 0.0 };   ///< 执行器协议 kp 步进
     double kd_resolution{ 0.0 };   ///< 执行器协议 kd 步进
     double effort_resolution{ 0.0 }; ///< 执行器协议力矩步进，0 表示连续或未声明
+    bool supports_mit{ true };
+    bool supports_csp{ false };
 };
 
 /**
@@ -99,7 +101,7 @@ public:
      */
     void reset_fault();
     /**
-     * @brief 在线请求控制线程清除 Robot FAULT，并恢复 ACTIVE + RIGID_HOLD
+     * @brief 在线请求控制线程清除 Robot FAULT，并恢复 ACTIVE + RIGID
      */
     void clear_fault();
     /**
@@ -116,11 +118,8 @@ public:
      * @param mode 目标阻抗模式
      */
     void set_impedance_mode(JointImpedanceMode mode);
-    void set_reference_behavior(ReferenceBehavior behavior);
+    void set_control_path(ControlPath path);
     void set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
-    void set_servo_tracking_gains(const JointImpedanceGains& gains);
-    void set_execution_gain_profile(JointGainProfile profile);
-    void clear_execution_gain_profile();
     void set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
     /**
      * @brief 请求切换模型前馈模式
@@ -249,9 +248,8 @@ private:
     JointVector ref_vel_;                               ///< 当前连续速度参考
     JointVector requested_gravity_scale_;               ///< 待应用重力补偿比例
 
-    std::optional<JointGainProfile> requested_execution_profile_;
     HoldTargetPolicy requested_hold_policy_{HoldTargetPolicy::PRESERVE_NOMINAL};
-    JointImpedanceMode requested_impedance_mode_{ JointImpedanceMode::RIGID_HOLD };       ///< 待应用阻抗模式
+    JointImpedanceMode requested_impedance_mode_{ JointImpedanceMode::RIGID };       ///< 待应用阻抗模式
     double speed_scale_{ 0.3 };                         ///< 梯形参考速度比例
 
     std::uint64_t impedance_sequence_{ 0 };             ///< 阻抗模式请求序号

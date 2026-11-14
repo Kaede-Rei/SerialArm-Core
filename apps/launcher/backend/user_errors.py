@@ -44,7 +44,7 @@ OPERATIONS = {
 
 
 def _machine_reason(technical):
-    codes = set(re.findall(r'\b(?:STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|FAULTED|SAFETY_FAILED|REFERENCE_GOVERNOR_FAILED|MOTOR_BUS_[A-Z_]+|ACTUATOR_OFFLINE|ENABLE_FAILED|DISABLE_FAILED|JOINT_[A-Z_]+)\b', technical))
+    codes = set(re.findall(r'\b(?:STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|FAULTED|SAFETY_FAILED|REFERENCE_GOVERNOR_FAILED|MOTOR_BUS_[A-Z_]+|ACTUATOR_OFFLINE|MODE_SWITCH_FAILED|ENABLE_FAILED|DISABLE_FAILED|JOINT_[A-Z_]+)\b', technical))
     if not codes: return None
     joint = re.search(r"(?:joint|actuator)\s*[=:]\s*['\"]?([A-Za-z0-9_.-]+)", technical, re.I)
     prefix = joint.group(1) + '：' if joint else ''
@@ -56,6 +56,8 @@ def _machine_reason(technical):
         return 'COMMAND_TIMEOUT', 'safety', '运动命令更新超时，当前任务已中断', '检查命令发送程序及更新频率；处理后清除故障，再重新开始任务', {'page': 'workbench', 'tab': 'monitor'}
     if codes & {'MOTOR_BUS_DEACTIVATE_FAILED', 'DISABLE_FAILED'}:
         return 'MOTOR_DISABLE_UNCONFIRMED', 'safety', prefix + '电机失能未得到确认', '先支撑机械臂，检查电机供电和通信；需要时使用硬件急停，再处理连接', {'page': 'diagnostics'}
+    if 'MODE_SWITCH_FAILED' in codes:
+        return 'MOTOR_MODE_SWITCH_FAILED', 'safety', prefix + '执行器控制模式切换失败', '检查所选 MIT/CSP 执行路径、硬件驱动和电机控制模式的确认结果；处理后清除启动故障，再重新使能', {'page': 'diagnostics'}
     if codes & {'MOTOR_BUS_ACTIVATE_FAILED', 'ENABLE_FAILED', 'ACTUATOR_OFFLINE'}:
         return 'MOTOR_ENABLE_FAILED', 'safety', prefix + '电机使能失败或执行器离线', '检查电机供电、急停、CAN 接线及电机 ID；反馈正常后清除故障并重新使能', {'page': 'diagnostics'}
     if 'MOTOR_BUS_CONNECT_FAILED' in codes:

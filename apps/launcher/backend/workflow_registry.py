@@ -268,7 +268,7 @@ def validate_gain_trajectory(directory, response_window, purpose):
     keys=selected_gain_purposes([purpose])
     groups=deployment_gain_groups(candidate,keys)
     key=keys[0]
-    if key=='compliant_drag': raise ValueError('拖拽使用释放稳定性验收，轨迹跟踪验收请选择刚性、柔性或伺服用途')
+    if key=='drag': raise ValueError('拖拽使用释放稳定性验收，轨迹跟踪验收请选择刚性、柔性或伺服用途')
     metadata=record.get('metadata') or {}
     if (candidate.get('task_id')!=record.get('task_id') or candidate.get('joint_names')!=metadata.get('joint_names') or
             candidate.get('urdf_fingerprint')!=metadata.get('urdf_fingerprint')):
@@ -295,7 +295,7 @@ def validate_gain_trajectory(directory, response_window, purpose):
         for field in ('accepted','pos','kp','kd'):
             if not isinstance(row.get(field),list) or len(row[field])!=n or not all(number(v) for v in row[field]):
                 raise ValueError('路径响应缺少有效逐轴 '+field)
-        if any(not math.isclose(row[field][i],fields[field][i],rel_tol=1e-7,abs_tol=1e-5) for field in ('kp','kd') for i in range(n)):
+        if any(not math.isclose(row[field][i],fields['gains'][field][i],rel_tol=1e-7,abs_tol=1e-5) for field in ('kp','kd') for i in range(n)):
             raise ValueError('实际执行增益与所选候选不同，请应用候选后重新录制')
         age=row.get('feedback_age_ms')
         if not number(age) or not 0<=age<=100: raise ValueError('路径响应含过期或未知年龄反馈')
@@ -306,13 +306,14 @@ def validate_gain_trajectory(directory, response_window, purpose):
     if times[-1]-times[0]<2 or any(not 0<b-a<=.15 for a,b in zip(times,times[1:])):
         raise ValueError('路径响应需至少 2 秒连续记录，帧间隔不得超过 150 ms')
     if any(b<=a for a,b in zip(stamps,stamps[1:])): raise ValueError('路径响应包含重复或回退的实测反馈')
-    condition_fields=('reference_behavior','gain_profile','impedance_mode','model_feedforward_mode')
+    condition_fields=('control_path','impedance_mode','model_feedforward_mode')
     for field in condition_fields:
         observed=[row.get(field,response_window.get(field)) for row in samples]
         if any(value!=observed[0] for value in observed): raise ValueError('路径记录期间控制条件发生变化: '+field)
-    expected={'rigid_tracking':'RIGID','compliant_tracking':'COMPLIANT','servo_tracking':'SERVO_TRACKING'}[key]
-    profile=response_window.get('gain_profile')
-    if profile is not None and profile!=expected: raise ValueError('路径记录的增益用途与候选不一致')
+    expected={'rigid':'RIGID','compliant':'COMPLIANT'}[key]
+    mode=response_window.get('impedance_mode')
+    if mode is not None and mode!=expected: raise ValueError('路径记录的交互模式与候选不一致')
+    if response_window.get('control_path') != 'MIT': raise ValueError('MIT 增益验证需要 MIT 执行路径')
     requirements=candidate.get('gain_requirements') or {}
     peak=float(requirements.get('peak_error_rad',.012));rms=float(requirements.get('rms_error_rad',.004))
     if not all(math.isfinite(v) and v>0 for v in (peak,rms)): raise ValueError('候选跟踪验收阈值无效')

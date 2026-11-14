@@ -66,6 +66,13 @@ public:
         const auto result=bus_->connect();if(!result)return result;
         return refresh_capabilities();
     }
+    tl::expected<void,MotorBusErr> select_control_path(ControlPath path, const ActuatorVector& speed_limit = {}) override {
+        if(path!=ControlPath::CSP) return bus_->select_control_path(path,{});
+        if(speed_limit.size()!=size()) return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+        ActuatorVector reordered(size());
+        for(std::size_t i=0;i<size();++i) reordered[order_[i]]=speed_limit[i];
+        return bus_->select_control_path(path,reordered);
+    }
     tl::expected<void,MotorBusErr> activate() override {return bus_->activate();}
     tl::expected<ActuatorState,MotorBusErr> read() override {
         auto result=bus_->read();if(!result)return result;
@@ -87,6 +94,12 @@ public:
         if(command.pos.size()!=size()||command.vel.size()!=size()||command.tor.size()!=size()||command.kp.size()!=size()||command.kd.size()!=size())
             return tl::make_unexpected(MotorBusErr::INVALID_CMD);
         for(std::size_t i=0;i<size();++i){const auto j=order_[i];command_.pos[j]=command.pos[i];command_.vel[j]=command.vel[i];command_.tor[j]=command.tor[i];command_.kp[j]=command.kp[i];command_.kd[j]=command.kd[i];}
+        command_.path=command.path;
+        if(command.path==ControlPath::CSP) {
+            if(command.position_speed_limit.size()!=size()) return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+            command_.position_speed_limit.resize(size());
+            for(std::size_t i=0;i<size();++i)command_.position_speed_limit[order_[i]]=command.position_speed_limit[i];
+        } else command_.position_speed_limit.clear();
         return bus_->write(command_);
     }
     tl::expected<void,MotorBusErr> stop() override {return bus_->stop();}

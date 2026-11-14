@@ -127,9 +127,9 @@ _GRAVITY_VERIFY_MACHINE = {
 }
 
 
-def gain_mode_configured(readiness, mode):
+def gain_mode_configured(readiness, mode, path='MIT'):
     # Measurement quality is reported separately from valid configured gains
-    return readiness.get('modes', {}).get(mode) in ('configured', 'verified', 'warning', 'stale')
+    return readiness.get('modes_by_path', {}).get(path, {}).get(mode) in ('configured', 'verified', 'warning', 'stale')
 
 
 def verify_machine_admission(library, config, method, params, native):
@@ -145,10 +145,10 @@ def verify_machine_admission(library, config, method, params, native):
     status = native.request('status', {}, timeout=8)
     robot_state = status.get('robot_state')
     def configured(mode):
-        return gain_mode_configured(readiness, mode)
+        return gain_mode_configured(readiness, mode, status.get('control_path', 'MIT'))
 
     def require_hold():
-        if not configured('RIGID_HOLD'):
+        if not configured('RIGID'):
             raise ValueError('启动保持增益必须为正且不超过 Safety 上限')
 
     def require_feedback():
@@ -162,33 +162,10 @@ def verify_machine_admission(library, config, method, params, native):
             raise ValueError('控制命令要求有效且未超时的真实反馈及无故障 ACTIVE 状态')
 
     def require_gain_context(mode, *, playback=False, profile=None):
-        if mode not in ('RIGID_HOLD', 'RIGID_TRACKING', 'COMPLIANT_HOLD', 'COMPLIANT_TRACKING', 'COMPLIANT_DRAG'):
-            raise ValueError('无效的任务状态')
-        runtime = native.request('get_admittance', {}, timeout=8)
-        if playback and 'reference_behavior' in params and params['reference_behavior'] not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
-            raise ValueError('无效的回放参考策略')
-        behavior = (params.get('reference_behavior') if playback else None) or runtime.get('reference_behavior') or status.get('reference_behavior') or 'NATIVE_IMPEDANCE'
-        if behavior not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
-            raise ValueError('无效的回放参考策略')
-        explicit = params.get('gain_profile') if profile is None else profile
-        purpose = explicit if explicit is not None else ('DRAG' if mode == 'COMPLIANT_DRAG' else
-                              'SERVO_TRACKING' if behavior == 'MODEL_ADMITTANCE' else
-                              'COMPLIANT' if mode.startswith('COMPLIANT') else 'RIGID')
-        if purpose not in ('RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'):
-            raise ValueError('无效的执行器增益用途')
-        if playback and (purpose == 'DRAG' or mode.endswith('_HOLD')):
-            raise ValueError('回放仅支持刚性、柔性或伺服跟踪用途')
-        if (purpose == 'DRAG') != (mode == 'COMPLIANT_DRAG'):
-            raise ValueError('拖拽用途与任务状态不一致')
-        if mode != 'COMPLIANT_DRAG' and behavior == 'MODEL_ADMITTANCE':
-            if purpose != 'SERVO_TRACKING' or runtime.get('enabled') is not True:
-                raise ValueError('模型导纳要求启用能力并使用伺服跟踪增益')
-        if 'gain_profile' in params and ((purpose in ('RIGID', 'SERVO_TRACKING') and not mode.startswith('RIGID')) or
-                         (purpose == 'COMPLIANT' and not mode.startswith('COMPLIANT'))):
-            raise ValueError('执行器增益用途与任务状态不一致')
-        required = 'SERVO_TRACKING' if purpose == 'SERVO_TRACKING' else mode
-        if not configured(required):
-            raise ValueError('目标增益用途缺失或超过 Safety 上限: ' + required)
+        if mode not in ('RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'):
+            raise ValueError('无效的交互模式')
+        if not configured('RIGID' if mode == 'SERVO_TRACKING' else mode):
+            raise ValueError('目标交互模式参数缺失或超出安全范围: ' + mode)
 
     gravity_active = (status.get('gravity_verification') or {}).get('active') is True
     if gravity_active and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
@@ -221,7 +198,7 @@ def verify_machine_admission(library, config, method, params, native):
         return
     if method == 'park':
         require_feedback()
-        if not all(configured(mode) for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')):
+        if not all(configured(mode) for mode in ('RIGID', 'COMPLIANT')):
             raise ValueError('自动停放需要合法的刚性及柔性跟踪增益')
         return
     if method == 'set_model_feedforward_mode':
@@ -234,23 +211,25 @@ def verify_machine_admission(library, config, method, params, native):
         if robot_state != 'INACTIVE':
             raise ValueError('正常重力比例仅允许在 INACTIVE 状态调整')
         return
-    if method == 'set_reference_behavior':
-        behavior = params.get('behavior')
-        if behavior not in ('NATIVE_IMPEDANCE', 'MODEL_ADMITTANCE'):
-            raise ValueError('参考策略必须为 NATIVE_IMPEDANCE 或 MODEL_ADMITTANCE')
+    if method == 'set_control_path':
+        path = params.get('path')
+        if path not in ('MIT', 'CSP'):
+            raise ValueError('执行路径必须为 MIT 或 CSP')
         if robot_state != 'INACTIVE':
-            raise ValueError('请先停放并失能，再切换参考策略')
+            raise ValueError('请先停放并失能，再切换执行路径')
         if ((status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled') or
                 (status.get('teach_replay') or {}).get('phase') in ('recording', 'playing')):
-            raise ValueError('请先退出标定或示教回放任务，再切换参考策略')
-        if behavior == 'MODEL_ADMITTANCE' and native.request('get_admittance', {}, timeout=8).get('enabled') is not True:
-            raise ValueError('当前 Profile 未启用模型导纳能力')
+            raise ValueError('请先退出标定或示教回放任务，再切换执行路径')
+        if path == 'CSP' and native.request('get_admittance', {}, timeout=8).get('enabled') is not True:
+            raise ValueError('当前 Profile 缺少完整的导纳与外力观测参数 capability.admittance')
+        if path == 'CSP' and not gain_mode_configured(readiness, 'RIGID', 'CSP'):
+            raise ValueError('CSP 需要完整的 capability.admittance 参数及逐关节 safety_policy.max_tracking_error')
         return
     if method == 'set_impedance_mode':
         require_feedback()
         mode = params.get('mode')
         require_gain_context(mode)
-        if mode == 'COMPLIANT_DRAG':
+        if mode == 'DRAG' and status.get('control_path', 'MIT') == 'MIT':
             scales = status.get('gravity_scale') or []
             if not scales or not any(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in scales):
                 raise ValueError('柔性拖拽需要非零的有效重力补偿')
@@ -258,10 +237,7 @@ def verify_machine_admission(library, config, method, params, native):
     if method in _TRACKING_MACHINE:
         require_feedback()
         mode = status.get('impedance_mode')
-        tracking = {'RIGID_HOLD': 'RIGID_TRACKING', 'COMPLIANT_HOLD': 'COMPLIANT_TRACKING'}.get(mode, mode)
-        if tracking not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
-            raise ValueError('移动目标要求已配置的保持或跟踪状态，请先退出拖拽')
-        require_gain_context(tracking, profile=status.get('gain_profile'))
+        require_gain_context(mode)
         speed = params.get('speed_scale', 1.0)
         if (not isinstance(speed, (int, float)) or isinstance(speed, bool) or
             not math.isfinite(speed) or not 0 < speed <= 1):
@@ -277,10 +253,10 @@ def verify_machine_admission(library, config, method, params, native):
     if method == 'set_admittance':
         if robot_state != 'INACTIVE':
             require_feedback()
-        if robot_state == 'ACTIVE' and status.get('impedance_mode') == 'COMPLIANT_DRAG':
+        if robot_state == 'ACTIVE' and status.get('impedance_mode') == 'DRAG':
             raise ValueError('柔性拖拽时不允许修改导纳运行参数')
-        if status.get('reference_behavior') != 'MODEL_ADMITTANCE':
-            raise ValueError('在线导纳调整要求先选择 MODEL_ADMITTANCE 参考策略')
+        if status.get('control_path') != 'CSP':
+            raise ValueError('在线导纳调整要求先选择 CSP 执行路径')
         if (status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled'):
             raise ValueError('标定任务进行中不能修改导纳运行参数')
         return
@@ -288,12 +264,12 @@ def verify_machine_admission(library, config, method, params, native):
         if method in ('teach_replay_record_begin', 'teach_replay_play'):
             require_feedback()
         if method == 'teach_replay_record_begin':
-            if not configured('COMPLIANT_DRAG'):
+            if not configured('DRAG'):
                 raise ValueError('示教记录要求合法柔性拖拽增益')
         if method == 'teach_replay_play':
             selected_mode = params.get('mode')
-            if selected_mode not in ('RIGID_TRACKING', 'COMPLIANT_TRACKING'):
-                raise ValueError('回放阻抗模式只能选择刚性跟踪或柔性跟踪')
+            if selected_mode not in ('RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'):
+                raise ValueError('回放交互模式无效')
             require_gain_context(selected_mode, playback=True)
         return
     if method.startswith(('model_calibration_', 'candidate_', 'calibration_',
@@ -569,13 +545,10 @@ def main():
                                 'direction': 'contact_cycle' if kind == 'cycle' else 'forward',
                                 'cycles': params.get('cycles', 1) if kind == 'cycle' else 1,
                                 'rate': params.get('rate', 0.2),
-                                'mode': params.get('mode', 'RIGID_TRACKING'),
+                                'mode': params.get('mode', 'RIGID'),
                                 'endpoint_dwell_s': params.get('endpoint_dwell_s', 0) if kind == 'cycle' else 0,
                                 'confirmed': params.get('confirmed') is True,
                             }
-                            for field in ('reference_behavior', 'gain_profile'):
-                                if field in params:
-                                    machine_params[field] = params[field]
                             verify_machine_admission(profile_library, active_workbench_config, 'teach_replay_play', machine_params, native)
                             result = native.request('teach_replay_play', machine_params, timeout=8)
                         elif op == 'stop':
@@ -713,10 +686,10 @@ def main():
                         try:
                             if not force and native.status().get('state') == 'running':
                                 admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
-                                safe_park = (admission.get('control_available') is True and
-                                    all(gain_mode_configured(admission, mode)
-                                        for mode in ('RIGID_TRACKING', 'COMPLIANT_TRACKING')))
                                 state_before = native.request('status', {}, timeout=8)
+                                safe_park = (admission.get('control_available') is True and
+                                    all(gain_mode_configured(admission, mode, state_before.get('control_path', 'MIT'))
+                                        for mode in ('RIGID', 'COMPLIANT')))
                                 if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
                                     raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
                                 if state_before.get('robot_state') == 'ACTIVE' and not safe_park:

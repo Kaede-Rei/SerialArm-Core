@@ -21,9 +21,6 @@ tl::expected<void, RobotFault> ControlRuntime::submit_reference(
     Robot& robot, JointCmd command, Robot::TimePoint received_at, MotionSource source) {
     if(robot.get_state()!=RobotState::ACTIVE)
         return tl::make_unexpected(rejected(robot.get_state()==RobotState::FAULT ? RobotErr::FAULTED : RobotErr::NOT_ACTIVE));
-    const auto mode=robot.get_impedance_mode();
-    if(mode!=JointImpedanceMode::RIGID_TRACKING && mode!=JointImpedanceMode::COMPLIANT_TRACKING)
-        return tl::make_unexpected(rejected(RobotErr::CTRLLER_FAILED));
     const auto n=robot.get_joint_state().pos.size();
     const bool valid=std::visit([&](const auto& cmd){
         using T=std::decay_t<decltype(cmd)>;
@@ -44,18 +41,7 @@ tl::expected<void, RobotFault> ControlRuntime::submit_reference(
 
 tl::expected<void, RobotFault> ControlRuntime::set_impedance_mode(Robot& robot, JointImpedanceMode mode, Robot::TimePoint now, HoldTargetPolicy target_policy) {
     const auto result=robot.set_impedance_mode(mode,now,target_policy);
-    if(result) {
-        // Legacy drag requests explicitly select native MIT interaction; this
-        // adapter policy is separate from Core's configurable reference law
-        if(mode==JointImpedanceMode::COMPLIANT_DRAG) {
-            if(!drag_suspension_)drag_suspension_=robot.is_admittance_suspended();
-            robot.set_admittance_suspended(true);
-        } else if(drag_suspension_) {
-            robot.set_admittance_suspended(*drag_suspension_);
-            drag_suspension_.reset();
-        }
-        clear_commands();
-    }
+    if(result && target_policy==HoldTargetPolicy::CAPTURE_MEASURED) clear_commands();
     return result;
 }
 
@@ -82,9 +68,14 @@ RuntimeSnapshot ControlRuntime::step_impl(Robot& robot, Robot::TimePoint now) {
     if(robot.get_state()==RobotState::ACTIVE) {
         std::optional<PendingReference> pending;
         {std::lock_guard<std::mutex> lock(command_mutex_);pending=std::move(pending_);pending_.reset();result.source=source_;}
+        if(result.source==MotionSource::NONE) robot.finish_continuous_reference();
         if(pending) {
-            auto sent=robot.set_cmd(pending->command,pending->received_at);
+            auto sent=robot.set_cmd(pending->command,pending->received_at,result.source!=MotionSource::POINT);
             if(!sent)result.fault=sent.error();
+            if(result.source==MotionSource::POINT) {
+                std::lock_guard<std::mutex> lock(command_mutex_);
+                if(source_==MotionSource::POINT && !pending_) source_=MotionSource::NONE;
+            }
         }
         if(!result.fault) {
             auto cycle=robot.cycle(now);
@@ -102,7 +93,7 @@ RuntimeSnapshot ControlRuntime::step_impl(Robot& robot, Robot::TimePoint now) {
         if(!result.fault && robot.get_last_fault())result.fault=*robot.get_last_fault();
     }
     result.state=robot.get_state();
-    if(result.state!=RobotState::ACTIVE){clear_commands();drag_suspension_.reset();result.source=MotionSource::NONE;}
+    if(result.state!=RobotState::ACTIVE){clear_commands();result.source=MotionSource::NONE;}
     {std::lock_guard<std::mutex> lock(snapshot_mutex_);result.sequence=snapshot_.sequence+1;snapshot_=result;}
     return result;
 }

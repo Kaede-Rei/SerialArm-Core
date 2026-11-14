@@ -86,6 +86,8 @@ struct AdmittanceFrictionSample {
     JointVector velocity;             ///< 实测关节速度 rad/s
     JointVector acceleration;         ///< 实测/滤波关节加速度 rad/s^2
     JointVector residual_after_bias;  ///< raw model_torque - measured_torque - torque_bias Nm
+    double measurement_dt{0.0};      ///< 首样本或观测器重置为 0，其余为动量观测器步长
+    bool acceleration_valid{true};   ///< 加速度不可得时保留观测动态但排除该样本的拟合/评估
 };
 
 /**
@@ -93,6 +95,8 @@ struct AdmittanceFrictionSample {
  */
 struct AdmittanceFrictionCalibrationCfg {
     std::size_t joints_count{ 0 };
+    JointVector momentum_gain;            ///< 空表示直接残差诊断；正式动量残差使用观测器增益
+    double velocity_transition{0.03};
     double min_fit_velocity{ 0.05 };       ///< 低于该速度不参与动态摩擦拟合，避免静摩擦不可辨识区
     double max_fit_acceleration{ 1.5 };    ///< 高于该加速度不参与拟合，降低惯性/qdd 误差污染
     double min_speed_span{ 0.03 };         ///< 每个方向至少覆盖的 |dq| 速度跨度 rad/s，保证 Coulomb/viscous 可分辨

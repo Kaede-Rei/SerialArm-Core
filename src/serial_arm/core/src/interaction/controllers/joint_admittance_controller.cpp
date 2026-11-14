@@ -126,10 +126,11 @@ JointAdmittanceController::update(const JointAdmittanceInput& input) {
         // Backward Euler solves the dissipative virtual dynamics implicitly
         // M(v1-v0)/dt + D*v1 + K*(x0+dt*v1) = tau
         const double old_velocity = delta_q_dot_[i];
+        const double stiffness = input.zero_stiffness ? 0.0 : cfg_.stiffness[i];
         const double denominator = cfg_.mass[i] + cfg_.damping[i]*input.dt +
-            cfg_.stiffness[i]*input.dt*input.dt;
+            stiffness*input.dt*input.dt;
         const double unconstrained_velocity = (cfg_.mass[i]*old_velocity +
-            input.dt*(input.tau_ext_hat[i]-cfg_.stiffness[i]*delta_q_[i]))/denominator;
+            input.dt*(input.tau_ext_hat[i]-stiffness*delta_q_[i]))/denominator;
         delta_q_dot_[i] = std::clamp(unconstrained_velocity, min_delta_q_dot, max_delta_q_dot);
         if(delta_q_dot_[i] != unconstrained_velocity) delta_q_dot_limited[i] = 1;
 

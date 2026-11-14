@@ -172,32 +172,31 @@ def run(terminal):
             assert any('plan unavailable' in warning or 'short response identification insufficient' in warning
                        for warning in candidate['warnings']), candidate['warnings']
             targets = candidate['targets']
-            assert set(targets) == {'rigid_tracking', 'compliant_tracking', 'compliant_drag', 'servo_tracking'}, targets
+            assert set(targets) == {'rigid', 'compliant', 'drag'}, targets
             measured = {}
-            for purpose in ('rigid_tracking', 'compliant_tracking', 'servo_tracking'):
+            for purpose in ('rigid', 'compliant'):
                 stage = targets[purpose]
                 measured[purpose] = measured_csv(folder, stage['native_validation'], names)
                 assert not stage['validated'] and not stage['qualification_complete'], stage
                 assert not stage['disturbance_verification']['available'], stage
                 assert stage['warnings'], stage
-                if purpose in ('rigid_tracking', 'compliant_tracking'):
+                if purpose in ('rigid', 'compliant'):
                     hold = stage['hold_verification']
                     assert hold['completed'] and hold['available'] and hold['samples'] >= 30, hold
                     assert hold['record_path'] and (folder / hold['record_path']).is_file(), hold
-            assert targets['rigid_tracking']['native_validation']['record_path'] == targets['servo_tracking']['native_validation']['record_path'], targets
-            assert measured['compliant_tracking']['record_path'] != measured['rigid_tracking']['record_path'], measured
-            drag = targets['compliant_drag']
+            assert measured['compliant']['record_path'] != measured['rigid']['record_path'], measured
+            drag = targets['drag']
             assert not drag['validated'] and not drag['drag_validation']['available'], drag
             assert any('insufficient safe joint range' in warning or 'range_insufficient' in warning
                        for warning in drag['warnings']), drag
             assert all('compliant_drag:' not in warning and not warning.startswith('drag-')
-                       for warning in targets['compliant_tracking']['warnings']), targets['compliant_tracking']['warnings']
+                       for warning in targets['compliant']['warnings']), targets['compliant']['warnings']
             assert all('not_started' not in warning and warning != 'measurement_in_progress'
                        for stage in targets.values() for warning in stage.get('warnings', [])), targets
             assert config.read_text() == config_before, 'The automatic worker modified its input configuration'
             return {'offline_mock_only': True, 'elapsed_s': time.monotonic() - started,
                     'first_identification_incomplete': True, 'later_complete_trajectory_measurements': measured,
-                    'later_hold_purposes': ['rigid_tracking', 'compliant_tracking'],
+                    'later_hold_purposes': ['rigid', 'compliant'],
                     'drag_attempted_with_honest_range_warning': True,
                     'purpose_warnings_isolated': True,
                     'observed_stages': observed, 'phase': status['phase'],
