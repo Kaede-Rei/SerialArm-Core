@@ -262,6 +262,17 @@ tl::expected<void, RobotFault> Robot::activate() {
     Safety replacement;
     const auto configured=replacement.configure(*limits);
     if(!configured) return tl::make_unexpected(make_safety_fault(configured.error()));
+
+    // Connecting may refresh drive ranges and their feedback quantization.
+    // Use those actual joint-side steps for the runtime friction model too.
+    JointVector velocity_resolution(cfg_.joint_names.size());
+    const auto& capabilities=motor_bus_->capabilities();
+    for(std::size_t i=0;i<velocity_resolution.size();++i)
+        velocity_resolution[i]=capabilities[i].velocity_resolution/std::abs(cfg_.mapper.pos_ratio[i]);
+    const auto interaction=interaction_controller_.reconfigure(make_interaction_cfg(
+        cfg_.capability.admittance,cfg_.joint_names.size(),cfg_.hold_compensation.enabled,velocity_resolution));
+    if(!interaction) return tl::make_unexpected(make_interaction_fault(interaction.error()));
+    friction_velocity_resolution_=std::move(velocity_resolution);
     safety_=std::move(replacement);
     cfg_.safety=*limits;
 

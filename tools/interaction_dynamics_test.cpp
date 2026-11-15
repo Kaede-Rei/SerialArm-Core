@@ -2,13 +2,146 @@
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 #include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 
 using namespace serial_arm;
 
+namespace {
+
+// Independent synthetic no-contact plant: a cubic Hermite ramp joins a
+// zero-friction velocity interval to the known signed Coulomb/viscous law.
+// Its half-ramp value is exactly 1/2, which is also checked below at velocities
+// absent from the identification and cross-validation trajectories.
+double synthetic_friction(double velocity, double resolution) {
+    const long double speed=std::abs(velocity);
+    const long double end=std::max(0.03,4.0*resolution);
+    if(speed<=resolution) return 0.0;
+    const long double u=std::min((speed-resolution)/(end-resolution),1.0L);
+    const long double blend=std::pow(u,3)-3.0L*std::pow(u,2)*(u-1.0L);
+    return static_cast<double>(blend*(velocity>0 ? 0.8L+0.4L*speed : -0.6L-0.3L*speed));
+}
+
+std::vector<AdmittanceFrictionSample> synthetic_friction_run(
+    double resolution, bool reverse, bool filtered) {
+    std::vector<AdmittanceFrictionSample> samples;
+    double residual=0.0;
+    for(int i=0;i<2400;++i) {
+        const double phase=i*(reverse?0.023:0.019)+(reverse?0.21:0.0);
+        const double amplitude=reverse?-0.17:0.18;
+        const double velocity=amplitude*std::sin(phase);
+        const double acceleration=amplitude*(reverse?0.023:0.019)/0.005*std::cos(phase);
+        const double friction=synthetic_friction(velocity,resolution);
+        const double dt=i==0?0.0:0.005;
+        if(filtered) {
+            if(dt>0) residual=(residual+25.0*dt*friction)/(1.0+25.0*dt);
+        } else residual=friction;
+        samples.push_back({{velocity},{acceleration},{residual},dt,true});
+    }
+    return samples;
+}
+
+ExternalTorqueObserver calibrated_friction_observer(
+    const AdmittanceFrictionCalibrationResult& fit, double resolution) {
+    ExternalTorqueObserverCfg cfg;cfg.joints_count=1;
+    cfg.friction.enabled=true;cfg.friction.velocity_transition=0.03;
+    cfg.friction.velocity_resolution={resolution};
+    cfg.friction.positive_coulomb=fit.positive_coulomb;
+    cfg.friction.positive_viscous=fit.positive_viscous;
+    cfg.friction.negative_coulomb=fit.negative_coulomb;
+    cfg.friction.negative_viscous=fit.negative_viscous;
+    ExternalTorqueObserver observer;assert(observer.configure(cfg));
+    return observer;
+}
+
+void check_resolution_aware_friction_calibration() {
+    for(double resolution:{0.0,0.005,0.02}) {
+        AdmittanceFrictionCalibrationCfg cfg;cfg.joints_count=1;
+        cfg.velocity_resolution={resolution};
+        // The default 0.05 rad/s exclusion would hide most of the low-speed
+        // regression; these synthetic trajectories deliberately identify it.
+        cfg.min_fit_velocity=0.0005;cfg.min_speed_span=0.05;
+        const auto reverse=synthetic_friction_run(resolution,true,false);
+        const auto forward=synthetic_friction_run(resolution,false,false);
+        const auto fit=calibrate_admittance_friction_cross_validated(reverse,forward,cfg);
+        assert(fit && fit->observable[0] && fit->validation_pass[0]);
+        assert(std::abs(fit->positive_coulomb[0]-0.8)<1e-8);
+        assert(std::abs(fit->positive_viscous[0]-0.4)<1e-8);
+        assert(std::abs(fit->negative_coulomb[0]+0.6)<1e-8);
+        assert(std::abs(fit->negative_viscous[0]+0.3)<1e-8);
+        assert(fit->cross_residual_rms_after[0]<1e-9);
+
+        auto observer=calibrated_friction_observer(*fit,resolution);
+        const double end=std::max(0.03,4.0*resolution);
+        for(double velocity:{-0.125,-end,-(resolution+end)/2,-resolution,
+                             -resolution/2,0.0,resolution/2,resolution,
+                             (resolution+end)/2,end,0.125}) {
+            const double expected=synthetic_friction(velocity,resolution);
+            const auto estimate=observer.update(TorqueResidualEstimate{{expected},{}},{velocity});
+            assert(estimate && std::abs(estimate->friction_residual_hat[0]-expected)<1e-9);
+            assert(std::abs(estimate->tau_ext_hat[0])<1e-9);
+        }
+        const double middle=(resolution+end)/2;
+        assert(std::abs(synthetic_friction(middle,resolution)-0.5*(0.8+0.4*middle))<1e-12);
+        assert(std::abs(synthetic_friction(-middle,resolution)-0.5*(-0.6-0.3*middle))<1e-12);
+
+        if(resolution>0.0) {
+            // Omitting resolution reproduces the former calibration basis.
+            // A fit can still reduce its own residual while leaving a false
+            // external torque when those coefficients run on the real device.
+            auto old_cfg=cfg;old_cfg.velocity_resolution.clear();
+            const auto old_fit=calibrate_admittance_friction_cross_validated(reverse,forward,old_cfg);
+            assert(old_fit && old_fit->observable[0]);
+            auto old_observer=calibrated_friction_observer(*old_fit,resolution);
+            const auto old_estimate=old_observer.update(
+                TorqueResidualEstimate{{synthetic_friction(middle,resolution)},{}},{middle});
+            assert(old_estimate && std::abs(old_estimate->tau_ext_hat[0])>1e-4);
+            if(resolution==0.02) assert(std::abs(old_estimate->tau_ext_hat[0])>0.1);
+        }
+
+        // Calibration must keep the same velocity law when friction is passed
+        // through the momentum observer pole, including both direction changes.
+        cfg.momentum_gain={25.0};
+        const auto filtered_fit=calibrate_admittance_friction_cross_validated(
+            synthetic_friction_run(resolution,true,true),
+            synthetic_friction_run(resolution,false,true),cfg);
+        assert(filtered_fit && filtered_fit->observable[0] && filtered_fit->validation_pass[0]);
+        assert(std::abs(filtered_fit->positive_coulomb[0]-0.8)<1e-8);
+        assert(std::abs(filtered_fit->positive_viscous[0]-0.4)<1e-8);
+        assert(std::abs(filtered_fit->negative_coulomb[0]+0.6)<1e-8);
+        assert(std::abs(filtered_fit->negative_viscous[0]+0.3)<1e-8);
+        assert(filtered_fit->cross_residual_rms_after[0]<1e-9);
+        auto filtered_observer=calibrated_friction_observer(*filtered_fit,resolution);
+        for(double velocity:{-0.125,-middle,middle,0.125}) {
+            const auto estimate=filtered_observer.update(
+                TorqueResidualEstimate{{synthetic_friction(velocity,resolution)},{}},{velocity});
+            assert(estimate && std::abs(estimate->tau_ext_hat[0])<1e-9);
+        }
+    }
+
+    AdmittanceFrictionCalibrationCfg invalid;invalid.joints_count=1;
+    const auto samples=synthetic_friction_run(0.0,false,false);
+    for(const JointVector& resolution:{JointVector{-0.001},JointVector{0.001,0.002},
+          JointVector{std::numeric_limits<double>::infinity()},
+          JointVector{std::numeric_limits<double>::quiet_NaN()}}) {
+        invalid.velocity_resolution=resolution;
+        const auto result=calibrate_admittance_friction(samples,invalid);
+        assert(!result && result.error()==AdmittanceStaticCalibrationErr::INVALID_CFG);
+    }
+    // Existing callers with no hardware resolution keep the zero-resolution
+    // behavior, including the filtered legacy fixture below.
+    invalid.velocity_resolution.clear();
+    const auto legacy=calibrate_admittance_friction(samples,invalid);
+    assert(legacy && legacy->observable[0]);
+}
+
+} // namespace
+
 int main() {
+    check_resolution_aware_friction_calibration();
     GeneralizedMomentumObserver observer;
     assert(observer.configure({1,{25},{0}}));
     GeneralizedMomentumInput in{{-0.7},{0},{0},{{1}},{0},0.005,{0.7}};

@@ -103,6 +103,7 @@ struct AdmittanceFrictionCalibrationCfg {
     double min_speed_span{ 0.03 };         ///< 每个方向至少覆盖的 |dq| 速度跨度 rad/s，保证 Coulomb/viscous 可分辨
     std::size_t min_samples_per_direction{ 30 }; ///< 每轴每个方向至少需要的有效样本
     double cross_validation_max_rms_ratio{ 0.8 }; ///< 双向交叉验证后 RMS_after / RMS_before 最大允许比例
+    JointVector velocity_resolution;       ///< 关节侧反馈速度步进，空表示未知，与运行模型一致
 };
 
 /**

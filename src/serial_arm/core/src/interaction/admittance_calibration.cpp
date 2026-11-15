@@ -1,4 +1,5 @@
 #include "serial_arm/interaction/admittance_calibration.hpp"
+#include "serial_arm/interaction/friction_residual_model.hpp"
 
 #include <algorithm>
 #include <array>
@@ -308,8 +309,8 @@ std::vector<FrictionFeatures> friction_features(const std::vector<AdmittanceFric
     FrictionFeatures filtered{};
     for(const auto& sample:samples) {
         const double v=sample.velocity[joint], speed=std::abs(v);
-        const double x=std::clamp(speed/cfg.velocity_transition,0.0,1.0);
-        const double blend=x*x*(3.0-2.0*x);
+        const double resolution=cfg.velocity_resolution.empty()?0.0:cfg.velocity_resolution[joint];
+        const double blend=friction_residual_blend(v,cfg.velocity_transition,resolution);
         FrictionFeatures feature{};
         if(v>0) { feature[0]=blend; feature[1]=blend*speed; }
         else if(v<0) { feature[2]=blend; feature[3]=blend*speed; }
@@ -371,6 +372,8 @@ calibrate_admittance_friction(const std::vector<AdmittanceFrictionSample>& sampl
        !std::isfinite(cfg.min_speed_span) || cfg.min_speed_span<0 ||
        !std::isfinite(cfg.cross_validation_max_rms_ratio) || cfg.cross_validation_max_rms_ratio<=0 ||
        cfg.cross_validation_max_rms_ratio>=1 || cfg.min_samples_per_direction<2 ||
+       (!cfg.velocity_resolution.empty() && (cfg.velocity_resolution.size()!=cfg.joints_count ||
+         !finite_vector(cfg.velocity_resolution) || std::any_of(cfg.velocity_resolution.begin(),cfg.velocity_resolution.end(),[](double x){return x<0;}))) ||
        (!cfg.momentum_gain.empty() && (cfg.momentum_gain.size()!=cfg.joints_count ||
          !finite_vector(cfg.momentum_gain) || std::any_of(cfg.momentum_gain.begin(),cfg.momentum_gain.end(),[](double x){return x<=0;}))))
         return tl::make_unexpected(AdmittanceStaticCalibrationErr::INVALID_CFG);

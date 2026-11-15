@@ -15,10 +15,14 @@ public:
     ActuatorCtrlCmd last;
     int writes{0};
     int activations{0};
+    double connected_velocity_resolution{-1.0};
     ControlPath path{ControlPath::MIT};
     ActuatorVector startup_speed_limit;
     tl::expected<void,MotorBusErr> configure(const std::string&) override{return {};}
-    tl::expected<void,MotorBusErr> connect() override{return {};}
+    tl::expected<void,MotorBusErr> connect() override{
+        if(connected_velocity_resolution >= 0.0) caps[0].velocity_resolution=connected_velocity_resolution;
+        return {};
+    }
     tl::expected<void,MotorBusErr> activate() override{++activations;state.enabled={1};return {};}
     tl::expected<void,MotorBusErr> deactivate() override{state.enabled={0};return {};}
     tl::expected<void,MotorBusErr> stop() override{return {};}
@@ -75,6 +79,36 @@ int main(){
   auto invalid_drag=cfg(ControlPath::MIT);
   invalid_drag.ctrller.drag_gains.kp[0]=.01;
   check(!validate_robot_core_cfg(invalid_drag),"nonzero drag Kp accepted by Robot configuration");
+  for(const auto path:{ControlPath::MIT,ControlPath::CSP}) {
+    auto c=cfg(path);c.mapper.pos_ratio={2};
+    auto& friction=c.capability.admittance.calibration.friction;
+    friction.enabled=true;friction.velocity_transition=.03;
+    friction.positive_coulomb={1};friction.negative_coulomb={-1};
+    Robot robot;auto bus=std::make_unique<TestBus>();auto* raw=bus.get();
+    raw->caps[0].velocity_resolution=.002;
+    raw->connected_velocity_resolution=.04;raw->state.vel={.1};
+    auto f=[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{0};};
+    auto m=[](const JointState&,double)->tl::expected<InteractionModelState,ModelFeedforwardErr>{return InteractionModelState{{0},{0},{{1}}};};
+    check(bool(robot.configure(c,std::move(bus),f,m)),"connected resolution fixture configuration failed");
+    for(const double actuator_resolution:{.04,.02}) {
+      raw->connected_velocity_resolution=actuator_resolution;
+      check(bool(robot.activate()),"connected resolution fixture activation failed");
+      double prediction=0;
+      for(int i=0;i<4;++i) {
+        // Real position progress distinguishes motion from stationary velocity-code jitter.
+        raw->state.pos[0]+=.001;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        auto out=robot.cycle();check(bool(out),"connected resolution fixture cycle failed");
+        check(out->friction_residual_hat.size()==1,"connected resolution friction diagnostic missing");
+        prediction=out->friction_residual_hat[0];
+      }
+      // Actuator dq=.1 maps to joint dq=.05. With resolution=.04/2,
+      // the low-speed blend is smoothstep((.05-.02)/(.08-.02))=.5.
+      const double expected=actuator_resolution==.04?.5:1.0;
+      check(std::abs(prediction-expected)<1e-10,"friction used stale or unmapped pre-connect velocity resolution");
+      check(bool(robot.force_deactivate()),"connected resolution fixture deactivation failed");
+    }
+  }
   for(const auto path:{ControlPath::MIT,ControlPath::CSP}) {
     Robot robot;auto bus=std::make_unique<TestBus>();auto* raw=bus.get();
     auto f=[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{.4};};

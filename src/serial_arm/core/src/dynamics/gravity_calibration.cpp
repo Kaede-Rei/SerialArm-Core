@@ -401,7 +401,8 @@ tl::expected<void, std::string> ModelCalibrationRecorder::write_metadata() const
             << ",\"max_vel\":" << cap.max_vel << ",\"max_effort\":" << cap.max_effort
             << ",\"protocol_kp_max\":"<<cap.max_kp<<",\"protocol_kd_max\":"<<cap.max_kd
             << ",\"kp_resolution\":"<<cap.kp_resolution<<",\"kd_resolution\":"<<cap.kd_resolution
-            << ",\"effort_resolution\":"<<cap.effort_resolution<<'}';
+            << ",\"effort_resolution\":"<<cap.effort_resolution
+            << ",\"velocity_resolution\":"<<cap.velocity_resolution<<'}';
     }
     out << "]},\n";
     out << "  \"mapping\":{\"pos_ratio\":"; json_vector(out, metadata_.mapping_pos_ratio);

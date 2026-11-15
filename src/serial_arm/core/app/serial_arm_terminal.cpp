@@ -8639,6 +8639,12 @@ private:
             config.min_speed_span = 0.03; config.min_samples_per_direction = 30; config.cross_validation_max_rms_ratio = 0.8;
             config.momentum_gain = cfg_.capability.admittance.observer.momentum_gain;
             config.velocity_transition = cfg_.capability.admittance.calibration.friction.velocity_transition;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                config.velocity_resolution.resize(cfg_.joint_names.size());
+                for(std::size_t i = 0; i < config.velocity_resolution.size(); ++i)
+                    config.velocity_resolution[i] = actuator_info_[i].velocity_resolution / std::abs(cfg_.mapper.pos_ratio[i]);
+            }
             const auto result = calibrate_admittance_friction_cross_validated(reverse_samples, forward_samples, config);
             if(!result) throw std::runtime_error("friction fit failed");
             last_friction_calibration_result_ = result.value();
@@ -10615,6 +10621,12 @@ private:
         calibration_cfg.cross_validation_max_rms_ratio = 0.8;
         calibration_cfg.momentum_gain = cfg_.capability.admittance.observer.momentum_gain;
         calibration_cfg.velocity_transition = cfg_.capability.admittance.calibration.friction.velocity_transition;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            calibration_cfg.velocity_resolution.resize(cfg_.joint_names.size());
+            for(std::size_t i = 0; i < calibration_cfg.velocity_resolution.size(); ++i)
+                calibration_cfg.velocity_resolution[i] = actuator_info_[i].velocity_resolution / std::abs(cfg_.mapper.pos_ratio[i]);
+        }
 
         const auto result = calibrate_admittance_friction_cross_validated(
             reverse_samples, forward_samples, calibration_cfg);

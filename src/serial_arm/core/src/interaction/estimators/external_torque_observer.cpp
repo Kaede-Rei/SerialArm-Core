@@ -103,9 +103,7 @@ ExternalTorqueObserver::update(
                 cfg_.friction.positive_viscous[i] : cfg_.friction.negative_viscous[i];
             const double dynamic_prediction = coulomb + viscous * speed;
             const double resolution=cfg_.friction.velocity_resolution.empty()?0.0:cfg_.friction.velocity_resolution[i];
-            const double transition=std::max(cfg_.friction.velocity_transition,4.0*resolution);
-            const double normalized_speed = std::clamp((speed-resolution) / (transition-resolution), 0.0, 1.0);
-            const double blend = normalized_speed * normalized_speed * (3.0 - 2.0 * normalized_speed);
+            const double blend = friction_residual_blend(joint_velocity[i], cfg_.friction.velocity_transition, resolution);
             friction_residual_hat = blend * dynamic_prediction;
         }
         estimate.friction_residual_hat[i] = friction_residual_hat;
