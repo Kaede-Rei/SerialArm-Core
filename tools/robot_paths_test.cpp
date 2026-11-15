@@ -13,12 +13,14 @@ public:
     HardwareCapabilities caps{{"a",-2,2,2,5,100,5,"a",0,0,0,true,true}};
     ActuatorState state{{0},{0},{0},{1},{1},{0},{},{1}};
     ActuatorCtrlCmd last;
+    int writes{0};
+    int activations{0};
     ControlPath path{ControlPath::MIT};
     ActuatorVector startup_speed_limit;
     tl::expected<void,MotorBusErr> configure(const std::string&) override{return {};}
     tl::expected<void,MotorBusErr> connect() override{return {};}
-    tl::expected<void,MotorBusErr> activate() override{return {};}
-    tl::expected<void,MotorBusErr> deactivate() override{return {};}
+    tl::expected<void,MotorBusErr> activate() override{++activations;state.enabled={1};return {};}
+    tl::expected<void,MotorBusErr> deactivate() override{state.enabled={0};return {};}
     tl::expected<void,MotorBusErr> stop() override{return {};}
     tl::expected<void,MotorBusErr> recover() override{return {};}
     tl::expected<void,MotorBusErr> select_control_path(ControlPath p,const ActuatorVector& speed_limit = {}) override{path=p;startup_speed_limit=speed_limit;return {};}
@@ -26,7 +28,7 @@ public:
         const auto ns=std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count();
         state.feedback_received_ns={static_cast<std::uint64_t>(ns)};return state;
     }
-    tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd& cmd) override{last=cmd;return {};}
+    tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd& cmd) override{++writes;last=cmd;return {};}
     const HardwareCapabilities& capabilities() const noexcept override{return caps;}
     std::size_t size() const noexcept override{return 1;}
     void cleanup() noexcept override{}
@@ -60,8 +62,8 @@ RobotCfg cfg(ControlPath path) {
     c.mapper={1,{1},{1},{1},{0},{0}};
     c.safety.joints_count=1;c.safety.max_dt_s=.2;c.safety.state_timeout_s=.5;c.safety.cmd_timeout_s=.04;
     auto& l=c.safety.limits;l.has_position_limit={1};l.min_pos={-2};l.max_pos={2};l.max_vel={2};l.max_acc={100};l.max_effort={5};l.max_kp={100};l.max_kd={5};l.pos_margin={.01};l.max_tracking_error={.5};
-    c.safety.fault_recovery.compliant_recovery={{.1},{.1},{.1},.5};
-    c.dynamics.urdf_path="memory.urdf";c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1};
+
+    c.dynamics.urdf_path="memory.urdf";c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1};c.dynamics.gravity_model_validated=true;
     auto& a=c.capability.admittance;a.enabled=true;a.joint_enabled={1};a.observer.momentum_gain={25};
     a.calibration.torque_bias={0};a.calibration.torque_threshold={0};
     a.calibration.friction.positive_coulomb={0};a.calibration.friction.positive_viscous={0};
@@ -139,7 +141,7 @@ int main(){
       for(int i=0;i<20;++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));out=robot.cycle();check(bool(out),"CSP post-switch motion failed");raw->state.pos=out->joint_cmd.pos;
       }
-      check(out->joint_cmd.pos[0]>moving_anchor+.003,"mode switch discarded active point target");
+      check(std::abs(out->joint_cmd.pos[0]-moving_anchor)<.02,"drag exit continued an old in-drag target");
       check(bool(robot.set_cmd(JointPosCmd{{.8}})),"pre-drag point rejected");
       for(int i=0;i<3;++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));out=robot.cycle();check(bool(out),"pre-drag point cycle failed");raw->state.pos=out->joint_cmd.pos;
@@ -150,12 +152,12 @@ int main(){
       for(int i=0;i<20;++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));out=robot.cycle();check(bool(out),"pending target continuation failed");raw->state.pos=out->joint_cmd.pos;
       }
-      check(out->joint_cmd.pos[0]>pending_anchor+.003,"drag switch discarded prior active point target");
+      check(std::abs(out->joint_cmd.pos[0]-pending_anchor)<.02,"drag exit continued a pre-drag target");
       check(bool(robot.set_cmd(JointPosCmd{{out->joint_cmd.pos[0]}},Robot::Clock::now(),true)),"CSP stream rejected");
       std::this_thread::sleep_for(std::chrono::milliseconds(5));check(bool(robot.cycle()),"CSP stream cycle failed");
       std::this_thread::sleep_for(std::chrono::milliseconds(60));check(!robot.cycle(),"CSP timeout not latched");
-      const auto recovery=robot.enter_fault_compliant_recovery();
-      check(!recovery && recovery.error().code==RobotErr::FAULT_RECOVERY_NOT_ALLOWED,"CSP fault falsely reported compliant recovery");
+      const auto recovery=robot.enter_fault_drag_recovery();
+      check(bool(recovery) && robot.get_fault_hold_mode()==FaultHoldMode::DRAG_RECOVERY,"CSP drag recovery unavailable");
     }
     if(path==ControlPath::MIT) {
       ControlRuntime runtime;
@@ -223,7 +225,7 @@ int main(){
     c.ctrller.rigid_gains={{4,4},{.5,.5}};c.ctrller.compliant_gains={{2,2},{.2,.2}};c.ctrller.drag_gains={{0,0},{.2,.2}};
     c.mapper={2,{1,1},{1,1},{1,1},{0,0},{0,0}};c.safety.joints_count=2;
     auto& l=c.safety.limits;l.has_position_limit={1,1};l.min_pos={-2,-2};l.max_pos={2,2};l.max_vel={2,2};l.max_acc={100,100};l.max_effort={5,5};l.max_kp={100,100};l.max_kd={5,5};l.pos_margin={.01,.01};l.max_tracking_error={.5,.5};
-    c.safety.fault_recovery.compliant_recovery={{.1,.1},{.1,.1},{.1,.1},.5};c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1,1};
+    c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1,1};
     auto& a=c.capability.admittance;a.joint_enabled={1,1};a.observer.momentum_gain={25,25};a.calibration.torque_bias={0,0};a.calibration.torque_threshold={0,0};
     a.calibration.friction.positive_coulomb={0,0};a.calibration.friction.positive_viscous={0,0};a.calibration.friction.negative_coulomb={0,0};a.calibration.friction.negative_viscous={0,0};
     a.controller.mass={1,1};a.controller.damping={2,2};a.controller.stiffness={4,4};a.controller.max_delta_q={.2,.2};a.controller.max_delta_q_dot={.5,.5};
@@ -236,6 +238,72 @@ int main(){
       if(out->new_measurement) {seen=true;check(std::abs(out->observer_state.pos[1]-2*out->observer_state.pos[0])<1e-9,"observer state not aligned");
         check(std::abs(evaluated.pos[1]-2*evaluated.pos[0])<1e-9,"model used asynchronous positions");}}
     check(seen,"skewed feedback never became alignable");
+  }
+
+  // A human mode change must capture the dragged pose even if a completed
+  // background STREAM kept sending its old stationary target.
+  for(auto path:{ControlPath::MIT,ControlPath::CSP}) for(auto dest:{JointImpedanceMode::RIGID,JointImpedanceMode::COMPLIANT}) {
+    auto c=cfg(path);Robot robot;auto bus=std::make_unique<TestBus>();auto* raw=bus.get();
+    auto f=[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{0};};
+    auto m=[](const JointState&,double)->tl::expected<InteractionModelState,ModelFeedforwardErr>{return InteractionModelState{{0},{0},{{1}}};};
+    check(bool(robot.configure(c,std::move(bus),f,m))&&bool(robot.activate()),"handover configure");
+    ControlRuntime runtime;check(bool(runtime.set_impedance_mode(robot,JointImpedanceMode::DRAG)),"handover drag");raw->state.pos={.2};
+    for(int i=0;i<4;i++) {std::this_thread::sleep_for(std::chrono::milliseconds(5));auto now=Robot::Clock::now();
+      check(bool(runtime.submit_reference(robot,JointPosVelCmd{{0},{0}},now,MotionSource::STREAM)),"stale stream");
+      check(runtime.step(robot,now).cycle.has_value(),"drag refresh");}
+    check(bool(runtime.submit_reference(robot,JointPosVelCmd{{0},{0}},Robot::Clock::now(),MotionSource::STREAM)),"pending old frame");
+    check(bool(runtime.set_impedance_mode(robot,dest)),"handover destination");check(runtime.source()==MotionSource::NONE,"old mailbox survived drag exit");
+    for(int i=0;i<20;i++) {std::this_thread::sleep_for(std::chrono::milliseconds(5));auto out=runtime.step(robot);
+      check(out.cycle && std::abs(out.cycle->joint_cmd.pos[0]-.2)<1e-6,"drag exit pulled to stale target");}
+  }
+  {
+    // CSP RIGID needs neither external observation nor MIT gain groups.
+    auto c=cfg(ControlPath::CSP);c.capability.admittance={};c.ctrller.rigid_gains={};c.ctrller.compliant_gains={};c.ctrller.drag_gains={};
+    c.safety.limits.max_vel={5.4};c.safety.limits.max_acc={10.8};Robot robot;
+    auto bus=std::make_unique<TestBus>();auto* raw=bus.get();raw->caps[0].max_vel=5.4;
+    check(bool(robot.configure(c,std::move(bus)))&&bool(robot.activate()),"CSP rigid wrongly requires MDK/PD");
+    check(!robot.set_impedance_mode(JointImpedanceMode::COMPLIANT),"CSP compliant accepted without MDK");
+    check(bool(robot.set_cmd(JointPosCmd{{1}})),"raw CSP point rejected");auto now=Robot::Clock::now();double peak=0;
+    for(int i=0;i<300;i++) {now+=std::chrono::milliseconds(5);auto out=robot.cycle(now);check(bool(out),"raw CSP point cycle");
+      peak=std::max(peak,out->joint_cmd.pos[0]);raw->state.pos=out->joint_cmd.pos;}
+    if(peak>1+1e-6 || std::abs(raw->last.pos[0]-1)>1e-6) throw std::runtime_error("CSP point missing braking or endpoint capture: peak="+std::to_string(peak)+" final="+std::to_string(raw->last.pos[0])+" v="+std::to_string(raw->last.vel[0]));
+  }
+  {
+    auto c=cfg(ControlPath::MIT);Robot robot;auto bus=std::make_unique<TestBus>();auto* raw=bus.get();c.capability.admittance={};
+    check(bool(robot.configure(c,std::move(bus),[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{0};}))&&bool(robot.activate()),"disabled fault fixture");
+    raw->state.err_code={1};ControlRuntime runtime;auto fault=runtime.step(robot);
+    check(fault.state==RobotState::FAULT && !robot.is_fault_holding(),"driver fault must disable");
+    const int writes=raw->writes,activations=raw->activations;check(!robot.clear_fault(),"unhealthy driver fault cleared");
+    raw->state.err_code={0};raw->state.pos={.15};
+    for(int i=0;i<4;i++){auto observed=runtime.step(robot);check(!observed.cycle && observed.fault_feedback && std::abs(observed.fault_feedback->joint_state.pos[0]-.15)<1e-12,"disabled FAULT feedback stale");}
+    check(raw->writes==writes&&raw->activations==activations,"disabled FAULT sent actuation");
+    check(bool(robot.clear_fault())&&robot.get_state()==RobotState::INACTIVE,"healthy disabled fault did not return INACTIVE");
+    check(raw->writes==writes&&raw->activations==activations,"clear fault automatically activated drive");
+  }
+  for(auto path:{ControlPath::MIT,ControlPath::CSP}) {
+    auto c=cfg(path);Robot robot;auto bus=std::make_unique<TestBus>();auto* raw=bus.get();
+    auto f=[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{0};};
+    auto m=[](const JointState&,double)->tl::expected<InteractionModelState,ModelFeedforwardErr>{return InteractionModelState{{0},{0},{{1}}};};
+    check(bool(robot.configure(c,std::move(bus),f,m))&&bool(robot.activate()),"drag recovery fixture");raw->state.pos={2.02};ControlRuntime runtime;
+    auto fault=runtime.step(robot);check(fault.state==RobotState::FAULT&&robot.is_fault_holding(),"position fault must capture fresh pose");
+    check(std::abs(raw->last.pos[0]-2.02)<1e-9,"position fault held an old pose");
+    check(bool(robot.enter_fault_drag_recovery()),"drag recovery rejected");
+    if(path==ControlPath::MIT) {raw->state.pos={1.9};for(int i=0;i<5;i++)check(bool(robot.maintain_fault_hold()),"MIT drag refresh");check(raw->last.kp[0]==0,"fault drag must use zero Kp");}
+    else {raw->state.tor={1};for(int i=0;i<90;i++){std::this_thread::sleep_for(std::chrono::milliseconds(5));auto out=runtime.step(robot);
+      check(out.fault_hold_maintained&&out.fault_feedback,"CSP recovery stopped");check(raw->last.pos[0]<=2.02+1e-9,"CSP recovery commanded outward");raw->state.pos=raw->last.pos;}
+      check(raw->last.pos[0]<2 && raw->last.kp[0]==0&&raw->last.kd[0]==0&&raw->last.tor[0]==0,"CSP recovery did not reuse observer/MDK position path");}
+    check(robot.get_state()==RobotState::FAULT,"drag recovery cleared fault implicitly");
+    for(int i=0;i<4;i++)check(bool(robot.maintain_fault_hold()),"healthy recovery refresh");
+    check(bool(robot.clear_fault())&&robot.get_state()==RobotState::ACTIVE,"recovered pose could not clear fault");
+  }
+  {
+    auto c=cfg(ControlPath::MIT);c.dynamics.gravity_model_validated=false;c.capability.admittance={};Robot robot;
+    auto f=[](ModelFeedforwardMode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector{0};};
+    check(bool(robot.configure(c,std::make_unique<TestBus>(),f))&&bool(robot.activate()),"unverified model fixture");
+    check(!robot.set_impedance_mode(JointImpedanceMode::DRAG),"unverified normal drag accepted");
+    check(bool(robot.force_deactivate())&&bool(robot.set_gravity_verification_active(true))&&bool(robot.activate()),"verification context");
+    check(bool(robot.set_impedance_mode(JointImpedanceMode::DRAG)),"first gravity verification circular gate");
+    check(bool(robot.set_gravity_verification_active(false)),"verification context cleanup");
   }
   std::cout<<"robot paths passed\n";
 }

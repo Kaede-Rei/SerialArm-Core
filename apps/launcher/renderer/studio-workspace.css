@@ -58,7 +58,7 @@
 }
 .studio-workspace-task .workspace-section + .workspace-section,
 .studio-workspace-task .geometry-task-flow > .geometry-card + .geometry-card,
-.studio-workspace-task .control-settings { border-top: .5px solid var(--line); }
+.studio-workspace-task .control-settings { border-top: 1px solid var(--line); }
 .studio-workspace-task .workspace-section .workspace-section { padding: 16px 0; border-radius: 0; background: transparent; box-shadow: none; }
 .studio-workspace-task .workspace-section-head { gap: 12px; margin-bottom: 16px; }
 .studio-workspace-task :is(h3,h4) { text-wrap: balance; }
@@ -102,14 +102,13 @@
   box-shadow: none;
 }
 #page .workspace-subpage-nav .workspace-subpage-button .calibration-entry-title { display: block; min-width: 0; color: var(--muted); font-size: 14px; font-weight: 500; line-height: 1.5; white-space: normal; }
-#page .calibration-subpage-nav .workspace-subpage-button .calibration-entry-title { white-space: nowrap; }
+#page .calibration-subpage-nav { overflow-x:auto; overflow-y:hidden; scrollbar-width:thin; }
+#page .calibration-subpage-nav .workspace-subpage-button { flex:1 0 auto; padding-inline:14px; }
+#page .calibration-subpage-nav .workspace-subpage-button .calibration-entry-title { white-space:nowrap; }
 #page .workspace-subpage-nav .workspace-subpage-button.selected .calibration-entry-title { color: var(--accent-text,var(--accent)); font-weight: 600; }
 .studio-workspace-task .workspace-subpage-nav .workspace-subpage-button:hover:not(:disabled) { background: color-mix(in srgb,var(--accent) 9%,transparent); }
 #page .workspace-subpage-nav .workspace-subpage-button:hover:not(:disabled) .calibration-entry-title { color: var(--text); }
 .studio-workspace-task .workspace-subpage-button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
-.workspace-subpage-status { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--blue,var(--muted)); }
-.workspace-subpage-status.ready { background: var(--green-indicator,var(--green)); }
-.workspace-subpage-status.warning { background: var(--yellow,var(--accent)); }
 .workspace-subpage-content { display: flex; flex-direction: column; min-width: 0; }
 .studio-workspace-task .control-target-head { align-items: center; }
 .control-speed-field { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
@@ -118,21 +117,25 @@
 .workspace-target-actions { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; }
 .workspace-target-actions .command-state { margin: 0; }
 .target-execute-actions { margin-inline-start: auto; }
-.studio-workspace-task .control-settings { padding: 0; }
-.studio-workspace-task .control-settings > summary { padding: 16px 0; color: var(--text); }
-.studio-workspace-task .control-settings-body { gap: 0; padding: 0; border-radius: 0; background: transparent; }
+.studio-workspace-task .control-settings { margin-top:20px; padding:0; border:1px solid var(--line-strong); border-radius:10px; background:var(--subtle); }
+.studio-workspace-task .control-settings > summary { padding:14px 16px; color:var(--text); font-size:16px; border-radius:9px; }
+.studio-workspace-task .control-settings[open] > summary { border-bottom:1px solid var(--line); border-radius:9px 9px 0 0; }
+.studio-workspace-task .control-settings-body { gap:18px; padding:16px; border-radius:0 0 9px 9px; background:var(--card); }
 .studio-workspace-task .control-gain-context { margin-block: 16px 0; }
-.studio-workspace-task .control-settings-body > .workspace-section:first-child { padding-top: 0; }
-.studio-workspace-task .control-settings-body > details { border: 0; border-top: .5px solid var(--line); border-radius: 0; background: transparent; }
-.studio-workspace-task .workspace-settings-list > .workspace-setting { padding: 18px 0; }
+.studio-workspace-task .control-settings-body > .workspace-section:first-child { padding:0; border-top:0; }
+.studio-workspace-task .control-settings .control-settings-body > details { padding:0; border:1px solid var(--line); border-radius:8px; background:var(--subtle); }
+.studio-workspace-task .control-settings-body > details > summary { padding:12px; font-size:14px; font-weight:500; }
+.studio-workspace-task .control-settings-body > details > :not(summary) { margin:0; padding:0 12px 12px; }
+.studio-workspace-task .workspace-settings-list > .workspace-setting { padding:18px 0 0; border-top:1px solid var(--line); }
+.studio-workspace-task .workspace-settings-list > .workspace-setting > h3 { margin:0 0 12px; font-size:14px; font-weight:550; }
 .studio-workspace-task .workspace-setting .workspace-section-head { margin-bottom: 12px; }
 .studio-workspace-task .workspace-setting .workspace-section-head h3 { margin: 0; font-size: 14px; }
 .studio-workspace-task .workspace-choice-group { display: flex; width: 100%; min-width: 0; gap: 3px; padding: 3px; border: .5px solid var(--line); border-radius: 9px; background: var(--subtle); }
 .studio-workspace-task .workspace-choice-group > .button { display: flex; flex: 1 1 0; align-items: center; justify-content: center; min-width: 0; min-height: 40px; padding: 8px 6px; border: 0; border-radius: 6px; background: transparent; font-size: 14px; font-weight: 400; line-height: 1.5; white-space: normal; overflow-wrap: normal; word-break: normal; text-align: center; box-shadow: none; }
 .studio-workspace-task .workspace-choice-group > .button[aria-pressed="true"] { color: var(--accent-text,var(--accent)); font-weight: 600; }
-.studio-workspace-task .workspace-setting-details { margin-top: 12px; padding: 0; border: 0; border-radius: 0; background: transparent; }
-.studio-workspace-task .workspace-setting-details > summary { width: fit-content; padding: 6px 0; color: var(--muted); font-size: 12px; }
-.studio-workspace-task .workspace-setting-details .control-gain-context { margin: 12px 0 0; }
+.studio-workspace-task .workspace-setting-details { margin-top:12px; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--subtle); }
+.studio-workspace-task .workspace-setting-details > summary { padding:10px 12px; color:var(--muted); font-size:14px; }
+.studio-workspace-task .workspace-setting-details .control-gain-context { margin:0; padding:0 12px 12px; }
 .workspace-selection-status { display: grid; grid-template-columns: minmax(76px,auto) minmax(0,1fr); gap: 6px 12px; margin: 12px 0; font-size: 12px; line-height: 1.6; }
 .workspace-selection-status dt { margin: 0; color: var(--muted); }
 .workspace-selection-status dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }

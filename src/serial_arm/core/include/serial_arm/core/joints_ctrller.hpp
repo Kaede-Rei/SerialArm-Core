@@ -47,6 +47,7 @@ enum class JointCtrllerErr {
  * @brief 关节控制器配置
  */
 struct JointCtrllerCfg {
+    ControlPath control_path{ControlPath::MIT};
     std::size_t joints_count{ 0 };                       ///< 关节数量
 
     JointImpedanceGains rigid_gains;

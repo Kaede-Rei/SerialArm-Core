@@ -51,7 +51,7 @@ RobotCfg configuration(bool integral=false) {
     c.safety.limits.max_vel={2,2}; c.safety.limits.max_acc={100,100};
     c.safety.limits.max_effort={1,1}; c.safety.limits.max_kp={100,100};
     c.safety.limits.max_kd={5,5}; c.safety.limits.pos_margin={.01,.01};
-    c.safety.fault_recovery.compliant_recovery={{.1,.1},{.1,.1},{.1,.1},.5};
+
     c.dynamics.urdf_path="memory-only-not-loaded.urdf";c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1,1};
     if(integral) {
         c.hold_compensation={true,{1,1},{.1,.1},{1,1},{.2,.2},.02,.03};

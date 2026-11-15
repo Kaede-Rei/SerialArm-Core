@@ -38,6 +38,9 @@ tl::expected<void, JointCtrllerErr> JointCtrller::configure(const JointCtrllerCf
     }
 
     cfg_ = cfg;
+    if(cfg_.control_path==ControlPath::CSP) for(auto* gains:{&cfg_.rigid_gains,&cfg_.compliant_gains,&cfg_.drag_gains}) {
+        gains->kp.assign(cfg_.joints_count,0.0);gains->kd.assign(cfg_.joints_count,0.0);
+    }
 
     hold_pos_.assign(cfg_.joints_count, 0.0);
     fallback_pos_.assign(cfg_.joints_count, 0.0);
@@ -325,8 +328,11 @@ JointCtrllerErr JointCtrller::validate_cfg(const JointCtrllerCfg& cfg) const {
         return kp_valid && kd_valid;
         };
 
-    if(!validate_gains(cfg.rigid_gains) || !validate_gains(cfg.compliant_gains) ||
-       !validate_gains(cfg.drag_gains)) return JointCtrllerErr::INVALID_CFG;
+    if(cfg.control_path==ControlPath::MIT && !validate_gains(cfg.rigid_gains)) return JointCtrllerErr::INVALID_CFG;
+    for(const auto* gains:{&cfg.rigid_gains,&cfg.compliant_gains,&cfg.drag_gains}) {
+        if(gains->kp.empty() && gains->kd.empty()) continue;
+        if(!validate_gains(*gains)) return JointCtrllerErr::INVALID_CFG;
+    }
     if(std::any_of(cfg.drag_gains.kp.begin(),cfg.drag_gains.kp.end(),[](double kp){return kp!=0.0;}))
         return JointCtrllerErr::INVALID_CFG;
 
@@ -450,6 +456,12 @@ JointCtrllerErr JointCtrller::validate_full_cmd(const JointCtrlCmd& cmd) const {
  * @return JointCtrllerErr 验证结果
  */
 JointCtrllerErr JointCtrller::validate_impedance_mode(JointImpedanceMode mode) const {
+    if(cfg_.control_path==ControlPath::MIT) {
+        const auto& gains=mode==JointImpedanceMode::DRAG?cfg_.drag_gains:
+            mode==JointImpedanceMode::COMPLIANT?cfg_.compliant_gains:cfg_.rigid_gains;
+        if(gains.kp.size()!=cfg_.joints_count || gains.kd.size()!=cfg_.joints_count)
+            return JointCtrllerErr::INVALID_CFG;
+    }
     switch(mode) {
         case JointImpedanceMode::RIGID:
         case JointImpedanceMode::COMPLIANT:

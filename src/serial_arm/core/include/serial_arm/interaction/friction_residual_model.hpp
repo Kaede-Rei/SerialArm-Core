@@ -21,6 +21,7 @@ struct FrictionResidualModelCfg {
     JointVector positive_viscous;          ///< dq>0 时 signed viscous residual Nm/(rad/s)
     JointVector negative_coulomb;          ///< dq<0 时 signed Coulomb residual Nm
     JointVector negative_viscous;          ///< dq<0 时 signed viscous residual Nm/(rad/s)
+    JointVector velocity_resolution;           ///< 内部：反馈量化步进，非YAML参数
 };
 
 } // namespace serial_arm

@@ -19,7 +19,6 @@ from ._serial_arm import DynamicsCfg
 from ._serial_arm import DynamicsErr
 from ._serial_arm import DynamicsInfo
 from ._serial_arm import DynamicsState
-from ._serial_arm import FaultCompliantRecoveryCfg
 from ._serial_arm import FaultHoldMode
 from ._serial_arm import FaultRecoveryCfg
 from ._serial_arm import JointActuatorMapCfg
@@ -174,9 +173,9 @@ class RobotSession:
         """在线清除可恢复 FAULT，并进入 ACTIVE + RIGID"""
         self._session.clear_fault()
 
-    def enter_fault_compliant_recovery(self) -> None:
-        """在线请求进入 FAULT 受限柔性恢复；由 C++ worker 串行执行"""
-        self._session.enter_fault_compliant_recovery()
+    def enter_fault_drag_recovery(self) -> None:
+        """在线请求进入 FAULT 拖拽恢复；由 C++ worker 串行执行"""
+        self._session.enter_fault_drag_recovery()
 
     def return_to_fault_rigid_hold(self) -> None:
         """在线请求返回 FAULT 刚性保持；由 C++ worker 串行执行"""
@@ -208,7 +207,7 @@ class RobotSession:
             np.ascontiguousarray(gravity_scale, dtype=np.float64)
         )
 
-    def move_to(self, pos: np.ndarray, speed_scale: float = 0.3) -> int:
+    def move_to(self, pos: np.ndarray, speed_scale: float = 0.2) -> int:
         """提交绝对位置目标并返回运动 ID；通过 snapshot.motion 查询动作完成、实际到位或中断状态"""
         return self._session.move_to(
             np.ascontiguousarray(pos, dtype=np.float64), float(speed_scale)
@@ -294,7 +293,6 @@ __all__ = [
     "DynamicsErr",
     "DynamicsInfo",
     "DynamicsState",
-    "FaultCompliantRecoveryCfg",
     "FaultHoldMode",
     "FaultRecoveryCfg",
     "JointActuatorMapCfg",

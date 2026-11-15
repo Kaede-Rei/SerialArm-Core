@@ -587,8 +587,7 @@ void SerialArmSystem::worker_loop() noexcept {
         if(step.fault && !worker_error_.load())set_error(make_robot_error("ControlRuntime step",*step.fault));
         if(step.state==serial_arm::RobotState::FAULT) {
             clear_command();
-            if(step.fault_hold_maintained)publish_robot_state(1.0/cfg_.runtime.ctrl_frequency_hz);
-            else worker_running_.store(false);
+            if(step.fault_feedback)publish_robot_state(1.0/cfg_.runtime.ctrl_frequency_hz);
         } else if(step.fault)worker_running_.store(false);
     };
     try {runtime_.run(*robot_,cfg_.runtime.ctrl_frequency_hz,cfg_.safety.max_dt_s,hooks);}
@@ -626,10 +625,11 @@ void SerialArmSystem::stop_worker() {
  */
 bool SerialArmSystem::park_before_deactivate() {
     serial_arm::JointVector ref_pos;
+    const bool csp_parking=cfg_.runtime.control_path==serial_arm::ControlPath::CSP;
     {
         std::lock_guard<std::mutex> robot_lock(robot_mutex_);
 
-        const auto mode_result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::COMPLIANT);
+        const auto mode_result = runtime_.set_impedance_mode(*robot_,csp_parking ? serial_arm::JointImpedanceMode::RIGID : serial_arm::JointImpedanceMode::COMPLIANT);
         if(!mode_result) {
             RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", mode_result.error()).c_str());
 
@@ -652,10 +652,10 @@ bool SerialArmSystem::park_before_deactivate() {
     serial_arm::Robot::TimePoint last_progress_at = started_at;
     serial_arm::Robot::TimePoint settled_at = started_at;
     bool settled = false;
-    bool rigid_finish_mode = false;
+    bool rigid_finish_mode = csp_parking;
     const double rigid_finish_switch_s = 0.75 * cfg_.shutdown.timeout_s;
 
-    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking before deactivate in COMPLIANT");
+    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking before deactivate in %s",csp_parking ? "RIGID CSP" : "COMPLIANT MIT");
     while(worker_running_.load()) {
         {
             std::lock_guard<std::mutex> robot_lock(robot_mutex_);

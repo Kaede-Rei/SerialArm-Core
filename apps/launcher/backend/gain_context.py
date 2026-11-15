@@ -108,7 +108,8 @@ def recorded_gain_core(core, metadata, candidate):
             return result
         original.setdefault('capability', {})['admittance'] = overlay(
             (original.get('capability') or {}).get('admittance'),
-            {key: value for key, value in context['admittance'].items() if key != 'enabled'})
+            {key: value for key, value in context['admittance'].items()
+             if key not in ('enabled', 'observer_enabled', 'gravity_model_validated')})
     return original
 
 

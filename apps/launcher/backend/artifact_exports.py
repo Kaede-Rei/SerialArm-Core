@@ -47,9 +47,16 @@ def _snapshot(record):
 
 
 def _replace_core(text, targets, *, hold_compensation=None):
-    # Patch task-role paths in memory, then serialize the four public purposes.
-    # This also upgrades old snapshots when exporting a non-servo candidate
+    # Add only the explicitly selected candidate leaves; optional purposes need
+    # not have existed in the source configuration.
     text = canonical_control_text(text)
+    additions = {}
+    for path, value in targets.items():
+        parent = additions
+        for key in path[:-1]:
+            parent = parent.setdefault(key, {})
+        parent[path[-1]] = yaml.safe_load(value) if isinstance(value, str) else value
+    text = complete_mapping_values(text, (), additions)
     if hold_compensation is not None:
         text = complete_mapping_values(text, ('control',), {'hold_compensation': hold_compensation})
     result=patch_text(text,targets)
@@ -253,8 +260,6 @@ def _gravity_merge_source(folder, metadata, source_core):
         model_path = current.parent / model_path
     if not matches_recorded_fingerprint(model_path.resolve(), metadata.get('urdf_fingerprint')):
         raise ValueError('当前 Core 所用 URDF 已变化，请先检查模型来源，不能自动合并历史重力候选')
-    if not isinstance(((live.get('control') or {}).get('controller')), dict):
-        raise ValueError('当前 Core 缺少控制增益配置，拒绝自动合并')
     return current, 'current_core'
 
 
@@ -375,14 +380,11 @@ def _gravity_export(record,dest,candidate_source=None,candidate_path=None):
         targets[('capability','admittance','calibration','friction',name)]=_gain_map_signed(joints,friction[name])
     core_text=core.read_text(encoding='utf-8')
     export_cfg=yaml.safe_load(core_text)
-    recovery=(export_cfg.get('safety_policy') or {}).get('fault_recovery') or {}
     scale_changed=any(export_cfg['model']['gravity_scale'].get(joint) != 1.0 for joint in joints)
-    if (recovery.get('gravity_model_validated') is True and
+    if ((export_cfg.get('model') or {}).get('gravity_model_validated') is True and
             (scale_changed or not _same_dynamics_model(model,target))):
-        # Static holdout scores do not validate native compliant recovery on a
-        # changed URDF or gravity scale. Keep the user's allow_compliant_recovery
-        # preference; only revoke inherited model-specific hardware validation
-        targets[('safety_policy','fault_recovery','gravity_model_validated')]='false'
+        # A changed gravity model needs a new model-specific hardware check
+        targets[('model','gravity_model_validated')]='false'
     result_core=_replace_core(core_text,targets)
     (dest/'core.yaml').write_text(result_core,encoding='utf-8')
     return {'target':'gravity_and_friction','validated':verified and friction_verified,

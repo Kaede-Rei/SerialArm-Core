@@ -58,7 +58,7 @@ for path in (root / 'src/robot_supports/robots/dm_arm/description/config/core').
             runtime[key] = ([value[name] for name in names] if isinstance(value, dict) and set(value) == set(names)
                             else {term: [values[name] for name in names] if isinstance(values, dict) else values
                                   for term, values in value.items()} if isinstance(value, dict) else value)
-    persisted = yaml.safe_load(_runtime_text(text, names, runtime, [config['model']['gravity_scale'][name] for name in names]))
+    persisted = yaml.safe_load(_runtime_text(text, names, runtime, fields=['observer', 'calibration', 'controller', 'joint_enabled']))
     assert 'enabled' not in persisted['capability']['admittance']
     restored = recorded_gain_core(config, {'joint_names': names}, {'control_context': {
         'runtime': config['control']['runtime'], 'admittance': {'enabled': True}}})

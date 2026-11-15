@@ -78,6 +78,7 @@ struct AdmittanceControllerCfg {
  * @brief 关节空间导纳能力的公开配置
  */
 struct AdmittanceCapabilityCfg {
+    bool observer_enabled{false};               ///< observer + calibration 完整时派生
     bool enabled{ false };                       ///< 完整导纳配置存在时由加载器派生，不是公开配置开关
     std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
     AdmittanceObserverCfg observer;              ///< 外力估计
@@ -111,6 +112,7 @@ struct ShutdownCfg {
  * @brief 动力学模块配置
  */
 struct DynamicsCfg {
+    bool gravity_model_validated{false};         ///< 与当前模型绑定的人工重力验证状态
     std::string urdf_path;                              ///< URDF 文件路径
     std::vector<std::string> joint_names;               ///< 受控关节名称，顺序与 JointVector 一致
     std::string base_frame{ "base_link" };              ///< 模型底座坐标系名称

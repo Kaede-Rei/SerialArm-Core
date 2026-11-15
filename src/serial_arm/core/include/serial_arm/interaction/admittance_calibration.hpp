@@ -30,10 +30,11 @@ struct AdmittanceStaticPoseSamples {
  */
 struct AdmittanceStaticCalibrationCfg {
     std::size_t joints_count{ 0 };             ///< 关节数量
-    JointVector fallback_gravity_scale;        ///< 重力变化不可观测时保留的 gravity_scale
+    JointVector fallback_gravity_scale;        ///< 禁止拟合或重力变化不可观测时保留的 gravity_scale
     double gravity_observability_span{ 0.25 }; ///< 至少覆盖该重力变化范围 Nm 才拟合 gravity_scale
     double threshold_margin{ 1.2 };            ///< P99 静态残差外的安全倍率
     double threshold_max_margin{ 1.05 };       ///< 已观测静态最大残差外的安全倍率
+    bool fit_gravity_scale{true};              ///< false：固定 fallback_gravity_scale，仅拟合 bias / threshold
 };
 
 /**
@@ -49,7 +50,7 @@ struct AdmittanceStaticCalibrationResult {
     JointVector lopo_residual_max;                   ///< Leave-One-Pose-Out 跨姿态泛化 |residual| 最大值 Nm
     JointVector residual_p99;                        ///< threshold 使用的保守 P99 envelope Nm
     JointVector residual_max;                        ///< threshold 使用的保守最大 residual envelope Nm
-    std::vector<std::uint8_t> gravity_scale_observable; ///< 1 表示该轴本次数据足以拟合 gravity_scale
+    std::vector<std::uint8_t> gravity_scale_observable; ///< 1 表示本次拟合了 gravity_scale；固定重力时为 0
 };
 
 

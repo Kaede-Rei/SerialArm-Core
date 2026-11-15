@@ -283,7 +283,7 @@ void PyRobotSession::start() {
         requested_gravity_scale_ = dynamics_->get_gravity_scale();
         impedance_sequence_ = 0;
         gravity_sequence_ = 0;
-        speed_scale_ = 0.3;
+        speed_scale_ = 0.2;
         pending_execution_update_={};completed_execution_sequence_=execution_sequence_;
         pending_admittance_.reset();completed_admittance_sequence_=admittance_sequence_;
         has_goal_ = false;
@@ -346,8 +346,8 @@ void PyRobotSession::clear_fault() {
     submit_fault_recovery_request(FaultRecoveryRequest::CLEAR_FAULT);
 }
 
-void PyRobotSession::enter_fault_compliant_recovery() {
-    submit_fault_recovery_request(FaultRecoveryRequest::ENTER_COMPLIANT);
+void PyRobotSession::enter_fault_drag_recovery() {
+    submit_fault_recovery_request(FaultRecoveryRequest::ENTER_DRAG);
 }
 
 void PyRobotSession::return_to_fault_rigid_hold() {
@@ -443,6 +443,7 @@ void PyRobotSession::set_admittance_cfg(const AdmittanceCapabilityCfg& cfg) {
     // Python's capability flag is read-only. Required per-joint parameters
     // establish presence, and the Core validates the complete configuration.
     candidate.enabled=!candidate.joint_enabled.empty();
+    candidate.observer_enabled=!candidate.observer.momentum_gain.empty();
     if(!running_.load()) {
         if(worker_.joinable())worker_.join();
         const auto result=robot_->set_admittance_cfg(candidate);
@@ -499,12 +500,17 @@ void PyRobotSession::set_gravity_scale(const JointVector& gravity_scale) {
         if(!result) {
             throw SerialArmPythonError("Dynamics set_gravity_scale failed; DynamicsErr=" + std::to_string(static_cast<int>(result.error())));
         }
+        if(cfg_.dynamics.gravity_scale!=gravity_scale)robot_->invalidate_gravity_validation();
+        cfg_.dynamics.gravity_scale=gravity_scale;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
     if(running_.load() && snapshot_.robot_state != RobotState::ACTIVE) {
         throw SerialArmPythonError("set_gravity_scale() requires RobotState::ACTIVE while the session is running");
     }
+    if(running_.load() && (requested_impedance_mode_==JointImpedanceMode::DRAG ||
+       snapshot_.cycle.interaction_mode==JointImpedanceMode::DRAG))
+        throw SerialArmPythonError("leave DRAG before changing the gravity model");
     requested_gravity_scale_ = gravity_scale;
     ++gravity_sequence_;
 }
@@ -618,7 +624,7 @@ void PyRobotSession::loop() noexcept {
     bool fault_reported=false;
     auto handle_robot_failure = [&](const std::string& message) -> bool {
         set_worker_error(message);
-        if(robot_ && robot_->get_state()==RobotState::FAULT && robot_->is_fault_holding()) {
+        if(robot_ && robot_->get_state()==RobotState::FAULT) {
             invalidate_motion_requests_for_fault(applied_impedance_sequence,applied_gravity_sequence,applied_impedance_mode);
             runtime_.clear_commands();
             return true;
@@ -662,6 +668,7 @@ void PyRobotSession::loop() noexcept {
         }
 
         if(gravity_sequence != applied_gravity_sequence) {
+            const bool changed=gravity_scale!=dynamics_->get_gravity_scale();
             const auto result = dynamics_->set_gravity_scale(gravity_scale);
             if(!result) {
                 set_worker_error("Dynamics set_gravity_scale failed; DynamicsErr=" + std::to_string(static_cast<int>(result.error())));
@@ -669,10 +676,15 @@ void PyRobotSession::loop() noexcept {
                 fault_recovery_cv_.notify_all();
                 return false;
             }
+            if(changed)robot_->invalidate_gravity_validation();
             applied_gravity_sequence = gravity_sequence;
         }
 
         if(impedance_sequence != applied_impedance_sequence) {
+            if(applied_impedance_mode==JointImpedanceMode::DRAG && impedance_mode!=JointImpedanceMode::DRAG) {
+                hold_policy=HoldTargetPolicy::CAPTURE_MEASURED;
+                runtime_.clear_commands();
+            }
             const auto result = runtime_.set_impedance_mode(*robot_,impedance_mode, now,hold_policy);
             if(!result) {
                 if(handle_robot_failure(make_robot_error("Robot set_impedance_mode", result.error()))) {
@@ -688,6 +700,8 @@ void PyRobotSession::loop() noexcept {
                 ref_vel_.assign(ref_pos_.size(), 0.0);
                 std::lock_guard<std::mutex> lock(mutex_);
                 goal_pos_ = ref_pos_;
+                has_goal_=false;
+                motion_.finish("interrupted","interaction mode captured current position");
             }
         }
 
@@ -705,6 +719,13 @@ void PyRobotSession::loop() noexcept {
         return true;
     };
     hooks.after_step=[&](const RuntimeSnapshot& step) {
+        if(step.fault_feedback) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            snapshot_.cycle=*step.fault_feedback;
+            snapshot_.sequence=step.sequence;snapshot_.monotonic_ns=step.monotonic_ns;
+            snapshot_.robot_state=step.state;
+            snapshot_.valid=false;
+        }
         if(step.cycle) {
             if(dynamics_->is_updated())static_cast<void>(dynamics_->update_reference(step.cycle->joint_ref_acc));
             fault_reported=false;
@@ -719,7 +740,7 @@ void PyRobotSession::loop() noexcept {
             fault_hold_mode_cache_=FaultHoldMode::RIGID_HOLD;
             return;
         }
-        if(step.fault && (!fault_reported || !step.fault_hold_maintained)) {
+        if(step.fault && !fault_reported) {
             fault_reported=true;
             handle_robot_failure(make_robot_error("ControlRuntime step",*step.fault));
         }
@@ -730,7 +751,7 @@ void PyRobotSession::loop() noexcept {
                 admittance_error_="parameter update cancelled by FAULT";fault_recovery_cv_.notify_all();
             }
         }
-        if(robot_->get_state()==RobotState::FAULT && step.fault_hold_maintained) {
+        if(robot_->get_state()==RobotState::FAULT) {
             process_fault_recovery_request(applied_impedance_sequence,applied_impedance_mode);
             std::lock_guard<std::mutex> lock(mutex_);
             snapshot_.robot_state=robot_->get_state();
@@ -782,7 +803,7 @@ void PyRobotSession::invalidate_motion_requests_for_fault(
         pending_execution_update_={};execution_error_="FAULT interrupted execution profile update";completed_execution_sequence_=execution_sequence_;
         pending_admittance_.reset();admittance_error_="FAULT interrupted admittance update";completed_admittance_sequence_=admittance_sequence_;
         fault_recovery_cv_.notify_all();
-        speed_scale_ = 0.3;
+        speed_scale_ = 0.2;
         requested_impedance_mode_ = JointImpedanceMode::RIGID;
         ++impedance_sequence_;
         applied_impedance_sequence = impedance_sequence_;
@@ -816,9 +837,9 @@ void PyRobotSession::process_fault_recovery_request(
         tl::expected<void, RobotFault> result;
         const char* action = "Robot FAULT recovery";
         switch(request) {
-            case FaultRecoveryRequest::ENTER_COMPLIANT:
-                action = "Robot enter_fault_compliant_recovery";
-                result = robot_->enter_fault_compliant_recovery();
+            case FaultRecoveryRequest::ENTER_DRAG:
+                action = "Robot enter_fault_drag_recovery";
+                result = robot_->enter_fault_drag_recovery();
                 break;
             case FaultRecoveryRequest::RETURN_RIGID:
                 action = "Robot return_to_fault_rigid_hold";
@@ -843,12 +864,12 @@ void PyRobotSession::process_fault_recovery_request(
             ref_vel_.assign(measured.size(), 0.0);
             goal_pos_ = measured;
             has_goal_ = false;
-            speed_scale_ = 0.3;
+            speed_scale_ = 0.2;
             requested_impedance_mode_ = JointImpedanceMode::RIGID;
             ++impedance_sequence_;
             applied_impedance_sequence = impedance_sequence_;
             applied_impedance_mode = JointImpedanceMode::RIGID;
-            snapshot_.robot_state = RobotState::ACTIVE;
+            snapshot_.robot_state = robot_->get_state();
             snapshot_.last_error.clear();
             snapshot_.valid = false;
             fault_hold_mode_cache_ = FaultHoldMode::RIGID_HOLD;

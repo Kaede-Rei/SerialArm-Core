@@ -25,7 +25,8 @@ function verify(kind,language){
  const show=group=>{state.profileGroup=group;renderedPage='';shell();collectProfileEditor();assert(JSON.stringify(editor.core)===before,`${group}: collecting preserves native values and precision`);};
  const linear=kind!=='rotary',name=names[1],q=linear?'m':'rad',effort=linear?'N':'N·m';
  show('motion');
- assert(document.querySelector('[data-parameter-unit-policy]').textContent.includes(language==='en'?'Parameters use SI':'参数使用 SI'),'visible SI/model policy');
+ const unitPolicy=document.querySelector('[data-parameter-unit-policy]');
+ assert(unitPolicy.querySelector('summary').textContent.includes('SI')&&unitPolicy.textContent.includes(language==='en'?'Joint types come from the model':'关节类型由模型确定'),'SI policy identifies the unit system and model-derived joint types');
  assert(document.querySelector('[data-parameter-unit-policy]').textContent.includes(language==='en'?'rad: radians':'rad：弧度'),'SI symbols have a visible plain-language explanation');
  expect(['core','control','controller','rigid','kp',name],`${effort}/${q}`);
  expect(['core','control','controller','rigid','kd',name],`${effort}·s/${q}`);
@@ -65,9 +66,7 @@ function verify(kind,language){
  assert(acceleration.closest('label').textContent.includes(`${q}/(${effort}·s²)`),'profile free-motion goal uses SI acceleration per effort');
  acceleration.value='.5';acceleration.dispatchEvent(new Event('input',{bubbles:true}));
  assert(state.profileInteractionGoal.acceleration===.5,'profile acceleration input parses SI without display conversion');
- state.telemetry={joint_names:names};state.admittance={mass:names.map(()=>1),damping:names.map(()=>2),stiffness:names.map(()=>10)};state.runtimeGoalJoint=1;state.runtimeInteractionGoal=null;
- const runtime=interactionGoalFieldsHtml('runtime');
- assert(runtime.includes(linear?'mm/N':'°/(N·m)'),'runtime response target retains existing display units');
+ assert(!tuningPanelHtml().includes('data-goal-context='),'runtime page has no independent response-target editor');
  assert(!/rad \/ m|N·m \/ N|rad\/s \/ m\/s/.test(document.querySelector('#page').innerText),'no candidate unit concatenations');
  const saved={modelData:state.modelData,modelSelection:state.modelSelection,telemetry:state.telemetry,session:state.session,page:state.page,selectedFrame:state.selectedFrame};
  state.modelData=structuredClone(data.model);

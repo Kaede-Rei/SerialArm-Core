@@ -21,7 +21,7 @@ InteractionController::configure(const InteractionControllerCfg& cfg) {
     JointAdmittanceController admittance_controller;
 
     if(!external_torque_observer.configure(cfg.external_torque) ||
-        !admittance_controller.configure(cfg.admittance)) {
+        (cfg.admittance_enabled && !admittance_controller.configure(cfg.admittance))) {
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     }
     if(!momentum_observer.configure([&]{auto c=cfg.momentum;c.initial_residual.assign(c.joints_count,0.0);return c;}())) {
@@ -58,6 +58,11 @@ InteractionController::update(const InteractionInput& input) {
     if(!usable || (!input.new_measurement && !observation_initialized_)) {
         // Missing measurement authority never becomes an estimated zero interaction
         if(!usable) { momentum_observer_.reset(); raw_momentum_observer_.reset(); observation_initialized_=false; }
+        if(!cfg_.admittance_enabled) {
+            const auto n=input.nominal_cmd.pos.size();
+            output.delta_q.assign(n,0);output.delta_q_dot.assign(n,0);output.delta_q_ddot.assign(n,0);
+            return output;
+        }
         admittance_controller_.advance_parameters(input.dt);
         auto held=admittance_controller_.hold(input.min_delta_q,input.max_delta_q);
         if(!held) return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
@@ -85,6 +90,16 @@ InteractionController::update(const InteractionInput& input) {
         JointVector measured_velocity=input.measured_velocity;
         if(measured_velocity.empty()) measured_velocity.assign(cfg_.external_torque.joints_count,0.0);
         const auto n=cfg_.external_torque.joints_count;
+        if(input.measured_position.size()==n) {
+            const auto& resolution=cfg_.external_torque.friction.velocity_resolution;
+            if(resolution.size()==n) for(std::size_t i=0;i<n;++i) {
+                const double h=input.measurement_dt>0?input.measurement_dt:input.dt;
+                const bool no_history=last_measured_position_.size()!=n;
+                const bool unchanged=no_history || std::abs(input.measured_position[i]-last_measured_position_[i])<=resolution[i]*h*.25;
+                if(resolution[i]>0 && unchanged && std::abs(measured_velocity[i])<=3.0*resolution[i]) measured_velocity[i]=0.0;
+            }
+            last_measured_position_=input.measured_position;
+        }
         TorqueResidualEstimate zero;zero.residual.assign(n,0.0);
         auto correction=external_torque_observer_.update(zero,measured_velocity);
         if(!correction) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
@@ -129,8 +144,8 @@ InteractionController::update(const InteractionInput& input) {
         output.threshold_active=last_observation_.threshold_active;
     }
 
-    if(!input.apply_admittance) {
-        admittance_controller_.advance_parameters(input.dt);
+    if(!input.apply_admittance || !cfg_.admittance_enabled) {
+        if(cfg_.admittance_enabled)admittance_controller_.advance_parameters(input.dt);
         output.state.valid=true;
         output.state.tau_ext_hat=output.tau_ext_hat;
         const auto n=input.nominal_cmd.pos.size();
@@ -184,18 +199,20 @@ InteractionController::reconfigure(const InteractionControllerCfg& cfg) {
         cfg_.external_torque.torque_threshold!=cfg.external_torque.torque_threshold ||
         cfg_.external_torque.friction.enabled!=cfg.external_torque.friction.enabled ||
         cfg_.external_torque.friction.velocity_transition!=cfg.external_torque.friction.velocity_transition ||
+        cfg_.external_torque.friction.velocity_resolution!=cfg.external_torque.friction.velocity_resolution ||
         cfg_.external_torque.friction.positive_coulomb!=cfg.external_torque.friction.positive_coulomb ||
         cfg_.external_torque.friction.positive_viscous!=cfg.external_torque.friction.positive_viscous ||
         cfg_.external_torque.friction.negative_coulomb!=cfg.external_torque.friction.negative_coulomb ||
         cfg_.external_torque.friction.negative_viscous!=cfg.external_torque.friction.negative_viscous;
-    if(!admittance_controller_.reconfigure(cfg.admittance))
+    if(cfg_.admittance_enabled != cfg.admittance_enabled) admittance_controller_=std::move(validated.admittance_controller_);
+    else if(cfg.admittance_enabled && !admittance_controller_.reconfigure(cfg.admittance))
         return tl::make_unexpected(InteractionControllerErr::INVALID_CFG);
     if(observer_changed) {
         momentum_observer_=std::move(validated.momentum_observer_);
         raw_momentum_observer_=std::move(validated.raw_momentum_observer_);
         net_external_torque_observer_=std::move(validated.net_external_torque_observer_);
         external_torque_observer_=std::move(validated.external_torque_observer_);
-        observation_initialized_=false;
+        observation_initialized_=false;last_measured_position_.clear();
     }
     cfg_=cfg;
     return {};
@@ -203,13 +220,14 @@ InteractionController::reconfigure(const InteractionControllerCfg& cfg) {
 
 tl::expected<void, InteractionControllerErr>
 InteractionController::accept_reference(const JointVector& q,const JointVector& dq) {
+    if(!cfg_.admittance_enabled) return {};
     if(!admittance_controller_.accept(q,dq))
         return tl::make_unexpected(InteractionControllerErr::ADMITTANCE_FAILED);
     return {};
 }
 
 void InteractionController::reset_reference() {
-    if(is_configured_ && cfg_.enabled) admittance_controller_.reset();
+    if(is_configured_ && cfg_.enabled && cfg_.admittance_enabled) admittance_controller_.reset();
 }
 
 void InteractionController::reset() {
@@ -219,6 +237,7 @@ void InteractionController::reset() {
     external_torque_observer_.reset();
     admittance_controller_.reset();
     observation_initialized_=false;
+    last_measured_position_.clear();
     last_observation_={};
 }
 
@@ -227,7 +246,7 @@ bool InteractionController::is_configured() const noexcept {
 }
 
 double InteractionController::parameter_update_progress() const noexcept {
-    return admittance_controller_.parameter_update_progress();
+    return cfg_.admittance_enabled?admittance_controller_.parameter_update_progress():1.0;
 }
 
 bool InteractionController::is_enabled() const noexcept {

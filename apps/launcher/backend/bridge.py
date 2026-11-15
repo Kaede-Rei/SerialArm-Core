@@ -74,6 +74,31 @@ def runtime_parameter_snapshot(inspector, native, config, active_config, active_
     return info, native.request('get_admittance', {}, timeout=8), snapshot
 
 
+def parameter_save_selection(inspector, native, config, active_config, active_fingerprint, params):
+    source = params.get('source')
+    if source not in ('actual', 'draft'):
+        raise ValueError('请明确选择保存已应用参数 actual 或未应用草稿 draft')
+    if source == 'actual':
+        info, values, snapshot = runtime_parameter_snapshot(inspector, native, config, active_config, active_fingerprint)
+        names = snapshot['joint_names']
+        flags = values.get('joint_enabled')
+        if isinstance(flags, list) and all(isinstance(flag, (bool, int)) and flag in (0, 1) for flag in flags):
+            values = {**values, 'joint_enabled': list(map(bool, flags))}
+    else:
+        info = inspector.inspect(config)
+        from profiles import read_yaml
+        names = read_yaml(info['resources']['core'])['model']['joint_names']
+        values = params.get('draft')
+        if not isinstance(values, dict):
+            raise ValueError('保存草稿需要明确提供 draft 参数')
+    linked = (active_config is not None and native.status().get('state') == 'running' and
+              Path(info['resources']['core']).resolve() ==
+              Path(inspector.inspect(active_config)['resources']['core']).resolve())
+    metadata = {'source': source, 'selected_fields': params.get('fields'),
+                'runtime_applied': source == 'actual', 'requires_reconnect': source == 'draft' and linked}
+    return info, names, values, metadata
+
+
 from calibration_jobs import run_full_inertial_isolated, recompute_gravity_isolated
 
 
@@ -132,6 +157,11 @@ def gain_mode_configured(readiness, mode, path='MIT'):
     return readiness.get('modes_by_path', {}).get(path, {}).get(mode) in ('configured', 'verified', 'warning', 'stale')
 
 
+def parking_configured(readiness, path='MIT'):
+    modes = ('RIGID',) if path == 'CSP' else ('RIGID', 'COMPLIANT')
+    return all(gain_mode_configured(readiness, mode, path) for mode in modes)
+
+
 def verify_machine_admission(library, config, method, params, native):
     # Keep exit and read-only operations available even when the Profile is invalid
     if method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE:
@@ -167,8 +197,13 @@ def verify_machine_admission(library, config, method, params, native):
         if not configured('RIGID' if mode == 'SERVO_TRACKING' else mode):
             raise ValueError('目标交互模式参数缺失或超出安全范围: ' + mode)
 
-    gravity_active = (status.get('gravity_verification') or {}).get('active') is True
-    if gravity_active and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
+    gravity = status.get('gravity_verification') or {}
+    gravity_active = gravity.get('active') is True
+    calibration = status.get('calibration') or {}
+    controlled_positioning = (method in _TRACKING_MACHINE and status.get('control_path') == 'CSP' and
+        (gravity_active and gravity.get('phase') == 'sampling' or
+         calibration.get('kind') in ('static', 'validation') and calibration.get('phase') == 'waiting_user'))
+    if gravity_active and not controlled_positioning and method not in (_GRAVITY_VERIFY_MACHINE | {'activate', 'deactivate', 'hold'}):
         raise ValueError('重力验证期间不能执行其他运动或参数调整')
     if method in _GRAVITY_VERIFY_MACHINE:
         require_hold()
@@ -193,13 +228,13 @@ def verify_machine_admission(library, config, method, params, native):
     if method == 'clear_fault':
         # Native fault recovery is responsible for checking the robot state
         return
-    if method == 'fault_compliant':
-        # Native fault recovery still checks gravity_model_validated and limits
+    if method == 'fault_drag_recovery':
+        # Native recovery reuses DRAG and checks model trust and live limits
         return
     if method == 'park':
         require_feedback()
-        if not all(configured(mode) for mode in ('RIGID', 'COMPLIANT')):
-            raise ValueError('自动停放需要合法的刚性及柔性跟踪增益')
+        if not parking_configured(readiness, status.get('control_path', 'MIT')):
+            raise ValueError('自动停放所需交互模式参数缺失或超出安全范围')
         return
     if method == 'set_model_feedforward_mode':
         if params.get('mode') not in ('NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'):
@@ -220,15 +255,15 @@ def verify_machine_admission(library, config, method, params, native):
         if ((status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled') or
                 (status.get('teach_replay') or {}).get('phase') in ('recording', 'playing')):
             raise ValueError('请先退出标定或示教回放任务，再切换执行路径')
-        if path == 'CSP' and native.request('get_admittance', {}, timeout=8).get('enabled') is not True:
-            raise ValueError('当前 Profile 缺少完整的导纳与外力观测参数 capability.admittance')
         if path == 'CSP' and not gain_mode_configured(readiness, 'RIGID', 'CSP'):
-            raise ValueError('CSP 需要完整的 capability.admittance 参数及逐关节 safety_policy.max_tracking_error')
+            raise ValueError('CSP 需要逐关节 safety_policy.max_tracking_error 与位置执行能力')
         return
     if method == 'set_impedance_mode':
         require_feedback()
         mode = params.get('mode')
         require_gain_context(mode)
+        if mode == 'DRAG' and status.get('gravity_model_validated') is not True:
+            raise ValueError('拖拽需要先验证当前模型与负载的重力补偿')
         if mode == 'DRAG' and status.get('control_path', 'MIT') == 'MIT':
             scales = status.get('gravity_scale') or []
             if not scales or not any(isinstance(x, (int, float)) and math.isfinite(x) and x > 0 for x in scales):
@@ -242,6 +277,10 @@ def verify_machine_admission(library, config, method, params, native):
         if (not isinstance(speed, (int, float)) or isinstance(speed, bool) or
             not math.isfinite(speed) or not 0 < speed <= 1):
             raise ValueError('运动速度比例必须在 (0,1]')
+        if controlled_positioning:
+            if mode != 'RIGID':
+                raise ValueError('首次模型采样仅允许 CSP 刚性低速定位')
+            params['speed_scale'] = min(speed, .1)
         values = params.get('delta') if method == 'move_relative' else params.get('positions')
         actual = (status.get('joint') or {}).get('pos') or []
         if (not isinstance(values, list) or len(values) != len(actual) or not values or
@@ -461,6 +500,7 @@ def main():
                     target = config_values(params.get('config', {}))
                     stage = params.get('stage', '')
                     linked_native = None
+                    linked_fingerprint = None
                     if (stage == 'gravity_verification' and active_workbench_config and
                             native.status().get('state') == 'running'):
                         target_info = inspector.inspect(target)
@@ -471,8 +511,9 @@ def main():
                                 target_info['profile'] == active_info['profile'] and
                                 target_info['resources'] == active_info['resources']):
                             linked_native = native
+                            linked_fingerprint = target_info['fingerprint']
                     result = profile_library.record_stage(
-                        target, stage, params.get('answers', {}), linked_native)
+                        target, stage, params.get('answers', {}), linked_native, linked_fingerprint)
                 elif method == 'readiness_approve_mode': result = profile_library.approve_gain_mode(config_values(params.get('config', {})), params.get('mode', ''), params.get('candidate_path', ''), native, params.get('gain_purposes'))
                 elif method == 'profile_editor_load': result = profile_library.profile_editor_load(config_values(params.get('config', params)))
                 elif method == 'profile_editor_save': result = profile_library.profile_editor_save(config_values(params.get('config', {})), params.get('payload', {}))
@@ -688,8 +729,7 @@ def main():
                                 admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
                                 state_before = native.request('status', {}, timeout=8)
                                 safe_park = (admission.get('control_available') is True and
-                                    all(gain_mode_configured(admission, mode, state_before.get('control_path', 'MIT'))
-                                        for mode in ('RIGID', 'COMPLIANT')))
+                                    parking_configured(admission, state_before.get('control_path', 'MIT')))
                                 if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
                                     raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
                                 if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
@@ -709,17 +749,17 @@ def main():
                     result = disconnect()
                 elif method == 'workbench_config_preview':
                     config = config_values(params.get('config', {}))
-                    info, runtime, snapshot = runtime_parameter_snapshot(
-                        inspector, native, config, active_workbench_config, active_workbench_fingerprint)
-                    result = preview_config(info['resources']['core'], snapshot['joint_names'], runtime, snapshot['gravity_scale'])
+                    info, names, values, selection = parameter_save_selection(
+                        inspector, native, config, active_workbench_config, active_workbench_fingerprint, params)
+                    result = {**preview_config(info['resources']['core'], names, values, fields=params.get('fields')), **selection}
                 elif method == 'workbench_config_save':
                     config = config_values(params.get('config', {}))
-                    info, runtime, snapshot = runtime_parameter_snapshot(
-                        inspector, native, config, active_workbench_config, active_workbench_fingerprint)
-                    result = save_config(info['resources']['core'], params.get('expected_sha', ''), snapshot['joint_names'], runtime, snapshot['gravity_scale'], profile_home(info, ROOT))
-                    # The saved values came from this exact live session; refresh
-                    # its disk identity without making the next command stale
-                    active_workbench_fingerprint = inspector.inspect(active_workbench_config)['fingerprint']
+                    info, names, values, selection = parameter_save_selection(
+                        inspector, native, config, active_workbench_config, active_workbench_fingerprint, params)
+                    result = {**save_config(info['resources']['core'], params.get('expected_sha', ''), names, values,
+                        storage_home=profile_home(info, ROOT), fields=params.get('fields')), **selection}
+                    if selection['source'] == 'actual':
+                        active_workbench_fingerprint = inspector.inspect(active_workbench_config)['fingerprint']
                 elif method == 'workbench_export':
                     metadata = {'profile': params.get('profile', ''), 'core': params.get('core', '')}
                     events = native.telemetry()

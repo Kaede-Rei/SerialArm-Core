@@ -380,17 +380,11 @@ tl::expected<void, SafetyFault> Safety::validate_cfg(const SafetyCfg& cfg) const
         std::any_of(cfg.limits.max_tracking_error.begin(), cfg.limits.max_tracking_error.end(), [](double v){ return v <= 0.0; })))
         return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
 
-    const auto& recovery = cfg.fault_recovery.compliant_recovery;
     if(cfg.fault_recovery.default_mode != FaultHoldMode::RIGID_HOLD ||
-        !std::isfinite(cfg.fault_recovery.recovery_timeout_s) || cfg.fault_recovery.recovery_timeout_s <= 0.0 ||
-        !std::isfinite(recovery.effort_scale) || recovery.effort_scale < 0.0 || recovery.effort_scale > 1.0) {
+        !std::isfinite(cfg.fault_recovery.recovery_timeout_s) || cfg.fault_recovery.recovery_timeout_s<=0)
         return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
-    }
-    if(!size_is_n(recovery.kp) || !size_is_n(recovery.kd) || !size_is_n(recovery.max_vel)) {
-        return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
-    }
 
-    const std::array<const JointVector*, 11> vectors = {
+    const std::array<const JointVector*, 8> vectors = {
         &cfg.limits.min_pos,
         &cfg.limits.max_pos,
         &cfg.limits.max_vel,
@@ -399,9 +393,6 @@ tl::expected<void, SafetyFault> Safety::validate_cfg(const SafetyCfg& cfg) const
         &cfg.limits.max_kp,
         &cfg.limits.max_kd,
         &cfg.limits.pos_margin,
-        &recovery.kp,
-        &recovery.kd,
-        &recovery.max_vel,
     };
     for(const auto* values : vectors) {
         if(!is_finite_vector(*values)) {
@@ -426,11 +417,7 @@ tl::expected<void, SafetyFault> Safety::validate_cfg(const SafetyCfg& cfg) const
                     2.0 * cfg.limits.pos_margin[i] >= cfg.limits.max_pos[i] - cfg.limits.min_pos[i]))) {
             return tl::make_unexpected(fault(SafetyErr::INVALID_CFG, i));
         }
-        if(recovery.kp[i] < 0.0 || recovery.kp[i] > cfg.limits.max_kp[i] ||
-            recovery.kd[i] < 0.0 || recovery.kd[i] > cfg.limits.max_kd[i] ||
-            recovery.max_vel[i] <= 0.0 || recovery.max_vel[i] > cfg.limits.max_vel[i]) {
-            return tl::make_unexpected(fault(SafetyErr::INVALID_CFG, i));
-        }
+
     }
 
     return {};

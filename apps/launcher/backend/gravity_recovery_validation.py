@@ -1,4 +1,4 @@
-"""Model-specific operator trust for compliant fault recovery
+"""Model-specific operator trust shared by dragging and fault recovery
 
 Compare the values used by dynamics, rather than file paths or YAML formatting.
 No controller gains participate in this comparison
@@ -66,7 +66,7 @@ def gravity_validation_changes(before, after):
 
 
 def gravity_trusted(core):
-    return ((core.get('safety_policy') or {}).get('fault_recovery') or {}).get('gravity_model_validated') is True
+    return (core.get('model') or {}).get('gravity_model_validated') is True
 
 
 def revoke_gravity_trust(text):
@@ -74,4 +74,4 @@ def revoke_gravity_trust(text):
     from persistence import patch_text
     if not gravity_trusted(yaml.safe_load(text) or {}):
         return text
-    return patch_text(text, {('safety_policy', 'fault_recovery', 'gravity_model_validated'): 'false'})
+    return patch_text(text, {('model', 'gravity_model_validated'): 'false'})

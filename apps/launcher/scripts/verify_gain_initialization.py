@@ -31,7 +31,8 @@ def core_for(names):
             'safety_policy': {'position_margin': .01, 'cmd_vel_scale': .25,
                 'max_acc': {name: 2 for name in names}, 'max_kp_override': {name: 50 for name in names},
                 'max_kd_override': {name: 2 for name in names},
-                'fault_recovery': {'compliant_recovery': {'kp': {}, 'kd': {}}}},
+                'fault_recovery': {'default_mode': 'rigid_hold', 'allow_drag_recovery': True,
+                    'require_operator_request': True, 'recovery_timeout_s': 30.}},
             'shutdown': {'park_pos': {name: 0 for name in names}}}
 
 

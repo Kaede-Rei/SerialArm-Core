@@ -412,7 +412,7 @@ void bind_enums(py::module_& module) {
 
     py::enum_<FaultHoldMode>(module, "FaultHoldMode")
         .value("RIGID_HOLD", FaultHoldMode::RIGID_HOLD)
-        .value("COMPLIANT_RECOVERY", FaultHoldMode::COMPLIANT_RECOVERY);
+        .value("DRAG_RECOVERY", FaultHoldMode::DRAG_RECOVERY);
 
     py::enum_<ConfigErr>(module, "ConfigErr")
         .value("FILE_OPEN_FAILED", ConfigErr::FILE_OPEN_FAILED)
@@ -597,21 +597,12 @@ void bind_config(py::module_& module) {
         .def_readonly("kd_resolution", &JointLimitCfg::kd_resolution)
         .def_readwrite("pos_margin", &JointLimitCfg::pos_margin);
 
-    py::class_<FaultCompliantRecoveryCfg>(module, "FaultCompliantRecoveryCfg")
-        .def(py::init<>())
-        .def_readwrite("kp", &FaultCompliantRecoveryCfg::kp)
-        .def_readwrite("kd", &FaultCompliantRecoveryCfg::kd)
-        .def_readwrite("max_vel", &FaultCompliantRecoveryCfg::max_vel)
-        .def_readwrite("effort_scale", &FaultCompliantRecoveryCfg::effort_scale);
-
     py::class_<FaultRecoveryCfg>(module, "FaultRecoveryCfg")
         .def(py::init<>())
         .def_readwrite("default_mode", &FaultRecoveryCfg::default_mode)
-        .def_readwrite("allow_compliant_recovery", &FaultRecoveryCfg::allow_compliant_recovery)
+        .def_readwrite("allow_drag_recovery", &FaultRecoveryCfg::allow_drag_recovery)
         .def_readwrite("require_operator_request", &FaultRecoveryCfg::require_operator_request)
-        .def_readwrite("gravity_model_validated", &FaultRecoveryCfg::gravity_model_validated)
-        .def_readwrite("recovery_timeout_s", &FaultRecoveryCfg::recovery_timeout_s)
-        .def_readwrite("compliant_recovery", &FaultRecoveryCfg::compliant_recovery);
+        .def_readwrite("recovery_timeout_s", &FaultRecoveryCfg::recovery_timeout_s);
 
     py::class_<SafetyCfg>(module, "SafetyCfg")
         .def(py::init<>())
@@ -647,6 +638,7 @@ void bind_config(py::module_& module) {
 
     py::class_<DynamicsCfg>(module, "DynamicsCfg")
         .def(py::init<>())
+        .def_readwrite("gravity_model_validated", &DynamicsCfg::gravity_model_validated)
         .def_readwrite("urdf_path", &DynamicsCfg::urdf_path)
         .def_readwrite("joint_names", &DynamicsCfg::joint_names)
         .def_readwrite("base_frame", &DynamicsCfg::base_frame)
@@ -684,6 +676,7 @@ void bind_config(py::module_& module) {
 
     py::class_<AdmittanceCapabilityCfg>(module,"AdmittanceCapabilityCfg")
         .def(py::init<>())
+        .def_readonly("observer_enabled",&AdmittanceCapabilityCfg::observer_enabled)
         .def_readonly("enabled",&AdmittanceCapabilityCfg::enabled)
         .def_readwrite("joint_enabled",&AdmittanceCapabilityCfg::joint_enabled)
         .def_readwrite("observer",&AdmittanceCapabilityCfg::observer)
@@ -1001,7 +994,7 @@ void bind_robot_session(py::module_& module) {
         .def("stop", &PyRobotSession::stop, py::call_guard<py::gil_scoped_release>())
         .def("reset_fault", &PyRobotSession::reset_fault, py::call_guard<py::gil_scoped_release>())
         .def("clear_fault", &PyRobotSession::clear_fault, py::call_guard<py::gil_scoped_release>())
-        .def("enter_fault_compliant_recovery", &PyRobotSession::enter_fault_compliant_recovery, py::call_guard<py::gil_scoped_release>())
+        .def("enter_fault_drag_recovery", &PyRobotSession::enter_fault_drag_recovery, py::call_guard<py::gil_scoped_release>())
         .def("return_to_fault_rigid_hold", &PyRobotSession::return_to_fault_rigid_hold, py::call_guard<py::gil_scoped_release>())
         .def("set_impedance_mode", &PyRobotSession::set_impedance_mode)
         .def("set_hold_compensation_cfg",&PyRobotSession::set_hold_compensation_cfg,py::call_guard<py::gil_scoped_release>())
@@ -1009,7 +1002,7 @@ void bind_robot_session(py::module_& module) {
         .def("set_admittance_cfg",&PyRobotSession::set_admittance_cfg,py::call_guard<py::gil_scoped_release>())
         .def("set_model_feedforward_mode", &PyRobotSession::set_model_feedforward_mode)
         .def("set_gravity_scale", &session_set_gravity_scale)
-        .def("move_to", &session_move_to, py::arg("pos"), py::arg("speed_scale") = 0.3)
+        .def("move_to", &session_move_to, py::arg("pos"), py::arg("speed_scale") = 0.2)
         .def("hold_current", &PyRobotSession::hold_current)
         .def_property_readonly("snapshot", &PyRobotSession::get_snapshot)
         .def_property_readonly("state", &PyRobotSession::get_state)

@@ -45,11 +45,8 @@ YAML::Node flat_config(const RobotCfg& cfg){
     auto runtime=root["runtime"];runtime["ctrl_frequency_hz"]=200;runtime["write_enabled"]=false;runtime["model_feedforward_mode"]="NONE";
     auto safety=root["safety"];safety["cmd_timeout_s"]=.1;safety["state_timeout_s"]=.05;safety["max_dt_s"]=.05;safety["numeric_tolerance"]=1e-9;
     safety["require_all_actuators_online"]=true;safety["require_all_actuators_enabled"]=true;safety["require_continuous_cmd"]=false;
-    auto recovery=safety["fault_recovery"];recovery["default_mode"]="rigid_hold";recovery["allow_compliant_recovery"]=false;
-    recovery["require_operator_request"]=true;recovery["gravity_model_validated"]=false;recovery["recovery_timeout_s"]=30;
-    recovery["compliant_recovery"]["kp"]=JointVector(cfg.joint_names.size(),0);
-    recovery["compliant_recovery"]["kd"]=JointVector(cfg.joint_names.size(),0);
-    recovery["compliant_recovery"]["max_vel"]=cfg.safety.limits.max_vel;recovery["compliant_recovery"]["effort_scale"]=.5;
+    auto recovery=safety["fault_recovery"];recovery["default_mode"]="rigid_hold";recovery["allow_drag_recovery"]=false;
+    recovery["require_operator_request"]=true;recovery["recovery_timeout_s"]=30;
     auto limits=root["limits"];limits["min_pos"]=cfg.safety.limits.min_pos;limits["max_pos"]=cfg.safety.limits.max_pos;
     limits["max_vel"]=cfg.safety.limits.max_vel;limits["max_acc"]=cfg.safety.limits.max_acc;limits["max_effort"]=cfg.safety.limits.max_effort;limits["pos_margin"]=cfg.safety.limits.pos_margin;
     auto map=root["mapping"];map["pos_ratio"]=cfg.mapper.pos_ratio;map["tor_ratio"]=cfg.mapper.tor_ratio;map["direction"]=cfg.mapper.direction;map["joint_zero_offset"]=cfg.mapper.joint_zero_offset;map["actuator_zero_offset"]=cfg.mapper.actuator_zero_offset;
@@ -74,6 +71,23 @@ int main(int argc,char** argv){try{
     require(!rejected_toggle && rejected_toggle.error().message.find("enabled")!=std::string::npos,"removed admittance toggle was accepted");
     removed=YAML::Clone(yaml);removed["capability"]=YAML::Node(YAML::NodeType::Map);write_yaml(section,removed);
     require(!load(section,caps).capability.admittance.enabled,"empty capability map declared an observer");
+    auto observer_only=YAML::Clone(yaml);observer_only["capability"]["admittance"].remove("controller");observer_only["capability"]["admittance"].remove("joint_enabled");
+    observer_only["capability"]["admittance"]["calibration"].remove("friction");write_yaml(section,observer_only);
+    const auto observed=load(section,caps);require(observed.capability.admittance.observer_enabled&&!observed.capability.admittance.enabled,"observer still coupled to MDK or friction fitting");
+    observer_only["capability"]["admittance"]["controller"]=YAML::Clone(yaml["capability"]["admittance"]["controller"]);write_yaml(section,observer_only);
+    require(!load_robot_cfg(section.string(),caps),"controller without joint_enabled accepted");
+    auto obsolete=YAML::Clone(yaml);obsolete["safety_policy"]["fault_recovery"]["compliant_recovery"]["kp"]=JointVector{0};write_yaml(section,obsolete);
+    require(!load_robot_cfg(section.string(),caps),"old recovery gain block accepted");
+    obsolete=YAML::Clone(yaml);obsolete["safety_policy"]["fault_recovery"]["gravity_model_validated"]=true;write_yaml(section,obsolete);
+    require(!load_robot_cfg(section.string(),caps),"gravity validation still accepted in old fault policy");
+    auto verified=YAML::Clone(yaml);verified["model"]["gravity_model_validated"]=true;write_yaml(section,verified);
+    require(load(section,caps).dynamics.gravity_model_validated,"model gravity validation lost");
+    verified["model"].remove("gravity_model_validated");write_yaml(section,verified);
+    require(!load(section,caps).dynamics.gravity_model_validated,"missing validation silently trusted model");
+    auto plain_csp=YAML::Clone(yaml);plain_csp["control"]["runtime"]["control_path"]="CSP";plain_csp["control"].remove("controller");plain_csp.remove("capability");
+    for(const auto& name:names)plain_csp["safety_policy"]["max_tracking_error"][name]=.2;
+    write_yaml(section,plain_csp);
+    require(!load(section,caps).capability.admittance.enabled,"CSP rigid unnecessarily requires MDK or MIT gains");
     write_yaml(section,yaml);
     for(std::size_t i=0;i<names.size();++i)require(near(baseline.safety.limits.max_kp[i],500)&&near(baseline.safety.limits.max_kd[i],5),"hardware-only gain bounds not loaded");
     auto csp=baseline;csp.runtime.control_path=ControlPath::CSP;
@@ -97,7 +111,6 @@ int main(int argc,char** argv){try{
     require(load(legacy,caps).safety.limits.max_kp==baseline.safety.limits.max_kp,"legacy PD values were parsed/validated");
     auto requested=ignored;requested.safety.limits.max_kp={std::numeric_limits<double>::quiet_NaN()};requested.safety.limits.max_kd={-1};
     requested.safety.limits.max_effort[0]=9;requested.safety.limits.max_vel[0]=.5;
-    requested.safety.fault_recovery.compliant_recovery.max_vel[0]=.5;
     auto refreshed=caps;for(auto& cap:refreshed){cap.max_kp=700;cap.max_kd=7;cap.kp_resolution=700.0/4095;cap.kd_resolution=7.0/4095;}
     const auto connected=resolve_connected_safety_cfg(requested,refreshed);require(bool(connected),"capability refresh retained stale/user PD bounds");
     require(near(connected->limits.max_kp[0],700)&&near(connected->limits.kp_resolution[0],700.0/4095),"refreshed hardware PD/quantum missing");
@@ -123,7 +136,7 @@ int main(int argc,char** argv){try{
     auto cfg=baseline;cfg.runtime.write_enabled=true;cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::NONE;cfg.shutdown.park_before_disable=false;
     cfg.ctrller.allow_full_cmd=true;
     cfg.ctrller.rigid_gains={JointVector(names.size(),.50001*500/4095),JointVector(names.size(),.50001*5/4095)};
-    cfg.capability.admittance.enabled=false;cfg.hold_compensation.enabled=false;cfg.safety.require_continuous_cmd=false;
+    cfg.capability.admittance={};cfg.hold_compensation.enabled=false;cfg.safety.require_continuous_cmd=false;
     auto bus=std::make_unique<MemoryBus>(caps);auto* memory=bus.get();Robot robot;require(bool(robot.configure(cfg,std::move(bus))),"memory Robot configure failed");
     require(bool(robot.activate()),"memory Robot activate failed");require(bool(robot.set_impedance_mode(JointImpedanceMode::RIGID)),"memory mode failed");
     require(robot.set_calibration_tracking_gains({JointVector(names.size(),499),JointVector(names.size(),4.9)}),"legal protocol gain still restricted by user ceiling");
@@ -141,11 +154,11 @@ int main(int argc,char** argv){try{
     require(robot.is_fault_holding()&&near(memory->last.kp[0],500.0/4095)&&near(memory->last.kd[0],5.0/4095),"initial fault hold bypassed gain projection");
     require(bool(robot.maintain_fault_hold())&&near(memory->last.kp[0],500.0/4095)&&near(memory->last.kd[0],5.0/4095),"maintained fault hold bypassed gain projection");
     require(bool(robot.force_deactivate()),"memory deactivate failed");
-    cfg.safety.fault_recovery.allow_compliant_recovery=true;cfg.safety.fault_recovery.gravity_model_validated=true;
-    cfg.safety.fault_recovery.compliant_recovery.kp.assign(names.size(),1.50001*500/4095);
-    cfg.safety.fault_recovery.compliant_recovery.kd.assign(names.size(),1.50001*5/4095);
+    cfg.safety.fault_recovery.allow_drag_recovery=true;cfg.dynamics.gravity_model_validated=true;
+
+
     auto recovery_bus=std::make_unique<MemoryBus>(caps);auto* recovery_memory=recovery_bus.get();Robot recovery_robot;
-    require(bool(recovery_robot.configure(cfg,std::move(recovery_bus)))&&bool(recovery_robot.activate()),"recovery memory fixture failed");
+    require(bool(recovery_robot.configure(cfg,std::move(recovery_bus),[](ModelFeedforwardMode,const JointState& state,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{return JointVector(state.pos.size(),0);}))&&bool(recovery_robot.activate()),"recovery memory fixture failed");
     require(bool(recovery_robot.set_impedance_mode(JointImpedanceMode::RIGID)),"recovery memory mode failed");
     auto out_of_range=output.joint_cmd;out_of_range.pos[0]=cfg.safety.limits.max_pos[0]+1;
     require(bool(recovery_robot.set_full_cmd(out_of_range)),"recovery invalid command setup failed");
@@ -153,12 +166,12 @@ int main(int argc,char** argv){try{
     if(position_fault) throw std::runtime_error("position safety changed during gain projection: command accepted");
     if(position_fault.error().safety_fault.code!=SafetyErr::CMD_POS_LIMIT)
         throw std::runtime_error("position safety changed during gain projection: robot="+std::to_string(static_cast<int>(position_fault.error().code))+", safety="+std::to_string(static_cast<int>(position_fault.error().safety_fault.code)));
-    require(bool(recovery_robot.enter_fault_compliant_recovery())&&near(recovery_memory->last.kp[0],2*500.0/4095)&&near(recovery_memory->last.kd[0],2*5.0/4095),"compliant fault recovery bypassed gain projection");
+    require(bool(recovery_robot.enter_fault_drag_recovery())&&near(recovery_memory->last.kp[0],0)&&near(recovery_memory->last.kd[0],std::round(cfg.ctrller.drag_gains.kd[0]/(5.0/4095))*(5.0/4095)),"compliant fault recovery bypassed gain projection");
     require(bool(recovery_robot.return_to_fault_rigid_hold())&&near(recovery_memory->last.kp[0],500.0/4095)&&near(recovery_memory->last.kd[0],5.0/4095),"return to rigid fault hold bypassed gain projection");
     require(bool(recovery_robot.force_deactivate()),"recovery memory deactivate failed");
     // Raw half-code damping would predict less than 1 Nm, but nearest encoding
     // produces one full code and exceeds that same unchanged effort limit.
-    auto budget_cfg=cfg;budget_cfg.safety.limits.max_effort[0]=1;budget_cfg.safety.numeric_tolerance=1e-9;
+    auto budget_cfg=cfg;budget_cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::GRAVITY;budget_cfg.safety.limits.max_effort[0]=1;budget_cfg.safety.numeric_tolerance=1e-9;
     const double gravity=.9999,negative_velocity=-.1;
     require(gravity-budget_cfg.ctrller.rigid_gains.kd[0]*negative_velocity<1&&gravity-(5.0/4095)*negative_velocity>1+budget_cfg.safety.numeric_tolerance,"half-code torque counterexample invalid");
     const auto gravity_model=[&](ModelFeedforwardMode mode,const JointState&,const JointVector&,const JointVector&,double)->tl::expected<JointVector,ModelFeedforwardErr>{

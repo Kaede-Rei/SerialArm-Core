@@ -199,7 +199,7 @@ ControlPath load_control_path(const YAML::Node& runtime) {
 FaultHoldMode load_fault_hold_mode(const YAML::Node& node, const char* context) {
     const std::string value = require_as<std::string>(node, "default_mode", context);
     if(value == "rigid_hold") return FaultHoldMode::RIGID_HOLD;
-    if(value == "compliant_recovery") return FaultHoldMode::COMPLIANT_RECOVERY;
+    if(value == "drag_recovery") return FaultHoldMode::DRAG_RECOVERY;
     throw ConfigLoadException(ConfigErr::INVALID_VALUE, std::string(context) + ".default_mode must be rigid_hold");
 }
 
@@ -258,8 +258,9 @@ JointImpedanceGains load_controller_gains(const YAML::Node& node, const std::vec
 void load_controller_cfg(const YAML::Node& controller, const std::vector<std::string>& joint_names,
                          bool named, const char* context, JointCtrllerCfg& cfg) {
     reject_unknown_keys(controller, context, {"allow_full_cmd", "rigid", "compliant", "drag"});
-    cfg.allow_full_cmd = require_as<bool>(controller, "allow_full_cmd", context);
+    cfg.allow_full_cmd = controller["allow_full_cmd"] ? require_as<bool>(controller, "allow_full_cmd", context) : false;
     const auto group = [&](const char* name) {
+        if(!controller[name]) return JointImpedanceGains{};
         return load_controller_gains(require_map(controller, name, context), joint_names, named,
                                      std::string(context) + "." + name);
     };
@@ -319,10 +320,11 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     auto& cfg = capability.admittance;
     // A complete section declares observation capability. Runtime path and
     // interaction mode select whether the estimated torque drives admittance.
-    cfg.enabled = true;
-    cfg.joint_enabled = load_named_joint_enabled(
-        require_map(admittance, "joint_enabled", "capability.admittance"),
-        joint_names, "capability.admittance.joint_enabled");
+    cfg.observer_enabled = true;
+    if(bool(admittance["joint_enabled"]) != bool(admittance["controller"]))
+        throw ConfigLoadException(ConfigErr::MISSING_FIELD,"capability.admittance controller and joint_enabled must be supplied together");
+    cfg.enabled = bool(admittance["controller"]);
+    if(cfg.enabled) cfg.joint_enabled = load_named_joint_enabled(admittance["joint_enabled"],joint_names,"capability.admittance.joint_enabled");
 
     const YAML::Node observer = require_map(admittance, "observer", "capability.admittance");
     reject_unknown_keys(observer, "capability.admittance.observer", {
@@ -343,6 +345,7 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
         require_map(calibration, "torque_threshold", "capability.admittance.calibration"),
         joint_names, "capability.admittance.calibration.torque_threshold");
 
+    if(calibration["friction"]) {
     const YAML::Node friction = require_map(calibration, "friction", "capability.admittance.calibration");
     reject_unknown_keys(friction, "capability.admittance.calibration.friction", {
         "enabled", "velocity_transition",
@@ -350,21 +353,22 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     });
     cfg.calibration.friction.enabled = require_as<bool>(
         friction, "enabled", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.velocity_transition = require_as<double>(
-        friction, "velocity_transition", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.positive_coulomb = load_named_joint_vector(
+    cfg.calibration.friction.velocity_transition = friction["velocity_transition"] ? friction["velocity_transition"].as<double>() : 0.03;
+    if(cfg.calibration.friction.enabled || friction["positive_coulomb"]) cfg.calibration.friction.positive_coulomb = load_named_joint_vector(
         require_map(friction, "positive_coulomb", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.positive_coulomb");
-    cfg.calibration.friction.positive_viscous = load_named_joint_vector(
+    if(cfg.calibration.friction.enabled || friction["positive_viscous"]) cfg.calibration.friction.positive_viscous = load_named_joint_vector(
         require_map(friction, "positive_viscous", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.positive_viscous");
-    cfg.calibration.friction.negative_coulomb = load_named_joint_vector(
+    if(cfg.calibration.friction.enabled || friction["negative_coulomb"]) cfg.calibration.friction.negative_coulomb = load_named_joint_vector(
         require_map(friction, "negative_coulomb", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.negative_coulomb");
-    cfg.calibration.friction.negative_viscous = load_named_joint_vector(
+    if(cfg.calibration.friction.enabled || friction["negative_viscous"]) cfg.calibration.friction.negative_viscous = load_named_joint_vector(
         require_map(friction, "negative_viscous", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.negative_viscous");
+    }
 
+    if(!cfg.enabled) return;
     const YAML::Node controller = require_map(admittance, "controller", "capability.admittance");
     reject_unknown_keys(controller, "capability.admittance.controller", {
         "mass", "damping", "stiffness", "max_delta_q", "max_delta_q_dot"
@@ -389,24 +393,14 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 /**
  * @brief 从 YAML 读取 FAULT 恢复配置
  */
-void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::string>& joint_names, SafetyCfg& safety_cfg) {
+void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::string>&, SafetyCfg& safety_cfg) {
     if(!node) return;
     if(!node.IsMap()) throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(node.Mark()) + "fault_recovery must be a map");
-    reject_unknown_keys(node, "fault_recovery", { "default_mode", "allow_compliant_recovery", "require_operator_request", "gravity_model_validated", "recovery_timeout_s", "compliant_recovery" });
+    reject_unknown_keys(node, "fault_recovery", { "default_mode", "allow_drag_recovery", "require_operator_request", "recovery_timeout_s" });
     safety_cfg.fault_recovery.default_mode = load_fault_hold_mode(node, "fault_recovery");
-    safety_cfg.fault_recovery.allow_compliant_recovery = require_as<bool>(node, "allow_compliant_recovery", "fault_recovery");
+    safety_cfg.fault_recovery.allow_drag_recovery = require_as<bool>(node, "allow_drag_recovery", "fault_recovery");
     safety_cfg.fault_recovery.require_operator_request = require_as<bool>(node, "require_operator_request", "fault_recovery");
-    safety_cfg.fault_recovery.gravity_model_validated = require_as<bool>(node, "gravity_model_validated", "fault_recovery");
     safety_cfg.fault_recovery.recovery_timeout_s = require_as<double>(node, "recovery_timeout_s", "fault_recovery");
-    const YAML::Node recovery = require_map(node, "compliant_recovery", "fault_recovery");
-    reject_unknown_keys(recovery, "fault_recovery.compliant_recovery", { "kp", "kd", "max_vel", "effort_scale" });
-    if(recovery["kp"].IsMap()) safety_cfg.fault_recovery.compliant_recovery.kp = load_named_joint_vector(recovery["kp"], joint_names, "fault_recovery.compliant_recovery.kp");
-    else safety_cfg.fault_recovery.compliant_recovery.kp = require_as<JointVector>(recovery, "kp", "fault_recovery.compliant_recovery");
-    if(recovery["kd"].IsMap()) safety_cfg.fault_recovery.compliant_recovery.kd = load_named_joint_vector(recovery["kd"], joint_names, "fault_recovery.compliant_recovery.kd");
-    else safety_cfg.fault_recovery.compliant_recovery.kd = require_as<JointVector>(recovery, "kd", "fault_recovery.compliant_recovery");
-    if(recovery["max_vel"].IsMap()) safety_cfg.fault_recovery.compliant_recovery.max_vel = load_named_joint_vector(recovery["max_vel"], joint_names, "fault_recovery.compliant_recovery.max_vel");
-    else safety_cfg.fault_recovery.compliant_recovery.max_vel = require_as<JointVector>(recovery, "max_vel", "fault_recovery.compliant_recovery");
-    safety_cfg.fault_recovery.compliant_recovery.effort_scale = require_as<double>(recovery, "effort_scale", "fault_recovery.compliant_recovery");
 }
 
 } // namespace
@@ -556,6 +550,7 @@ tl::expected<DynamicsCfg, ConfigErrInfo> load_dynamics_cfg(const std::string& pa
             const YAML::Node model = require_map(root, "model", "root");
             cfg.joint_names = require_as<std::vector<std::string>>(model, "joint_names", "model");
             cfg.urdf_path = resolve_urdf_path(config_path, require_as<std::string>(model, "urdf_path", "model")).string();
+            cfg.gravity_model_validated = model["gravity_model_validated"] ? model["gravity_model_validated"].as<bool>() : false;
             cfg.base_frame = require_as<std::string>(model, "base_frame", "model");
             cfg.tool_frame = require_as<std::string>(model, "tool_frame", "model");
             const JointVector gravity = require_as<JointVector>(model, "gravity", "model");
@@ -678,7 +673,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const YAML::Node control_node = require_map(root, "control", "root");
         const YAML::Node safety_node = require_map(root, "safety_policy", "root");
         const YAML::Node shutdown_node = require_map(root, "shutdown", "root");
-        reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path" });
+        reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path", "gravity_model_validated" });
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
         reject_unknown_keys(control_node, "control", { "runtime", "controller", "hold_compensation" });
         reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_tracking_error", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
@@ -689,6 +684,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const std::filesystem::path urdf_path = resolve_urdf_path(config_path, require_as<std::string>(model_node, "urdf_path", "model"));
         cfg.dynamics.urdf_path = urdf_path.string();
         cfg.dynamics.joint_names = cfg.joint_names;
+        cfg.dynamics.gravity_model_validated = model_node["gravity_model_validated"] ? model_node["gravity_model_validated"].as<bool>() : false;
         cfg.dynamics.base_frame = require_as<std::string>(model_node, "base_frame", "model");
         cfg.dynamics.tool_frame = require_as<std::string>(model_node, "tool_frame", "model");
         const JointVector gravity = require_as<JointVector>(model_node, "gravity", "model");
@@ -711,8 +707,9 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
         cfg.runtime.control_path = load_control_path(runtime);
         load_hold_compensation(control_node["hold_compensation"],cfg.joint_names,cfg.hold_compensation);
-        const YAML::Node controller = require_map(control_node, "controller", "control");
+        const YAML::Node controller = control_node["controller"] ? require_map(control_node, "controller", "control") : YAML::Node(YAML::NodeType::Map);
         load_controller_cfg(controller, cfg.joint_names, true, "control.controller", cfg.ctrller);
+        cfg.ctrller.control_path=cfg.runtime.control_path;
 
         const YAML::Node joints = require_map(calibration_node, "joints", "calibration");
         reject_unknown_joint_keys(joints, cfg.joint_names, "calibration.joints");
@@ -843,8 +840,6 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
                 return fail(ConfigErr::INVALID_VALUE,"invalid hold_compensation joint values");
     }
     const auto& admittance = cfg.capability.admittance;
-    if(cfg.runtime.control_path == ControlPath::CSP && !admittance.enabled)
-        return fail(ConfigErr::INVALID_VALUE, "CSP requires the complete capability.admittance section");
     if(cfg.runtime.control_path == ControlPath::CSP && limits.max_tracking_error.size() != n) {
         std::string joints;
         for(const auto& name : cfg.joint_names) joints += (joints.empty() ? "" : ", ") + name;
@@ -855,56 +850,41 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     const auto& calibration = admittance.calibration;
     const auto& friction = calibration.friction;
     const auto& controller = admittance.controller;
-    const bool has_admittance_parameters = !admittance.joint_enabled.empty() ||
-        !observer.momentum_gain.empty() || !calibration.torque_bias.empty() ||
-        !calibration.torque_threshold.empty() || !controller.mass.empty() ||
-        !controller.damping.empty() || !controller.stiffness.empty() ||
-        !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
-    if(admittance.enabled || hold.enabled || has_admittance_parameters) {
-        if(admittance.joint_enabled.size() != n || observer.momentum_gain.size() != n ||
-            calibration.torque_bias.size() != n || calibration.torque_threshold.size() != n ||
-            controller.mass.size() != n || controller.damping.size() != n ||
-            controller.stiffness.size() != n || controller.max_delta_q.size() != n ||
-            controller.max_delta_q_dot.size() != n) {
-            return fail(ConfigErr::INVALID_SIZE, "all capability.admittance joint arrays must match joint_names");
-        }
-        if(!std::all_of(admittance.joint_enabled.begin(), admittance.joint_enabled.end(), [](std::uint8_t value) {
-            return value == 0 || value == 1;
-            })) {
-            return fail(ConfigErr::INVALID_VALUE, "capability.admittance.joint_enabled values must be bool");
-        }
-        if(!finite_vector(observer.momentum_gain) || !finite_vector(calibration.torque_bias) ||
-            !finite_vector(calibration.torque_threshold) || !finite_vector(controller.mass) ||
-            !finite_vector(controller.damping) || !finite_vector(controller.stiffness) ||
-            !finite_vector(controller.max_delta_q) || !finite_vector(controller.max_delta_q_dot)) {
-            return fail(ConfigErr::INVALID_VALUE, "capability.admittance contains NaN or Inf");
-        }
-
-        const bool has_friction_parameters = !friction.positive_coulomb.empty() ||
-            !friction.positive_viscous.empty() || !friction.negative_coulomb.empty() ||
-            !friction.negative_viscous.empty();
+    const bool has_observer = admittance.observer_enabled || !observer.momentum_gain.empty() ||
+        !calibration.torque_bias.empty() || !calibration.torque_threshold.empty();
+    const bool has_controller = admittance.enabled || !admittance.joint_enabled.empty() || !controller.mass.empty() ||
+        !controller.damping.empty() || !controller.stiffness.empty() || !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
+    if(hold.enabled && !has_observer) return fail(ConfigErr::MISSING_FIELD,"hold_compensation requires observer and calibration");
+    if(has_controller && !has_observer) return fail(ConfigErr::MISSING_FIELD,"admittance controller requires observer and calibration");
+    if(has_observer) {
+        if(observer.momentum_gain.size()!=n || calibration.torque_bias.size()!=n || calibration.torque_threshold.size()!=n)
+            return fail(ConfigErr::INVALID_SIZE,"observer and calibration arrays must match joint_names");
+        if(!finite_vector(observer.momentum_gain) || !finite_vector(calibration.torque_bias) || !finite_vector(calibration.torque_threshold))
+            return fail(ConfigErr::INVALID_VALUE,"observer and calibration contain NaN or Inf");
+        for(std::size_t i=0;i<n;++i) if(observer.momentum_gain[i]<=0 || calibration.torque_threshold[i]<0)
+            return fail(ConfigErr::INVALID_VALUE,"invalid observer/calibration joint parameter");
+        const bool has_friction_parameters=!friction.positive_coulomb.empty() || !friction.positive_viscous.empty() ||
+            !friction.negative_coulomb.empty() || !friction.negative_viscous.empty();
         if(friction.enabled || has_friction_parameters) {
-            if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition <= 0.0 ||
-                friction.positive_coulomb.size() != n || friction.positive_viscous.size() != n ||
-                friction.negative_coulomb.size() != n || friction.negative_viscous.size() != n ||
-                !finite_vector(friction.positive_coulomb) || !finite_vector(friction.positive_viscous) ||
-                !finite_vector(friction.negative_coulomb) || !finite_vector(friction.negative_viscous)) {
-                return fail(ConfigErr::INVALID_VALUE, "invalid capability.admittance.calibration.friction");
-            }
+            if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition<=0 ||
+               friction.positive_coulomb.size()!=n || friction.positive_viscous.size()!=n ||
+               friction.negative_coulomb.size()!=n || friction.negative_viscous.size()!=n ||
+               !finite_vector(friction.positive_coulomb) || !finite_vector(friction.positive_viscous) ||
+               !finite_vector(friction.negative_coulomb) || !finite_vector(friction.negative_viscous))
+                return fail(ConfigErr::INVALID_VALUE,"invalid capability.admittance.calibration.friction");
         }
-
-        for(std::size_t i = 0; i < n; ++i) {
-            if(observer.momentum_gain[i] <= 0.0 || calibration.torque_threshold[i] < 0.0 ||
-                controller.mass[i] <= 0.0 || controller.damping[i] < 0.0 ||
-                controller.stiffness[i] < 0.0 ||
-                (admittance.enabled && admittance.joint_enabled[i] &&
-                    (controller.damping[i] <= 0.0 || controller.stiffness[i] <= 0.0)) ||
-                controller.max_delta_q[i] <= 0.0 ||
-                controller.max_delta_q_dot[i] <= 0.0) {
-                return fail(ConfigErr::INVALID_VALUE,
-                    "invalid capability.admittance parameter at index " + std::to_string(i));
-            }
-        }
+    }
+    if(has_controller) {
+        if(admittance.joint_enabled.size()!=n || controller.mass.size()!=n || controller.damping.size()!=n ||
+           controller.stiffness.size()!=n || controller.max_delta_q.size()!=n || controller.max_delta_q_dot.size()!=n)
+            return fail(ConfigErr::INVALID_SIZE,"controller and joint_enabled must be complete together");
+        if(!finite_vector(controller.mass) || !finite_vector(controller.damping) || !finite_vector(controller.stiffness) ||
+           !finite_vector(controller.max_delta_q) || !finite_vector(controller.max_delta_q_dot))
+            return fail(ConfigErr::INVALID_VALUE,"admittance controller contains NaN or Inf");
+        for(std::size_t i=0;i<n;++i) if(admittance.joint_enabled[i]>1 || controller.mass[i]<=0 || controller.damping[i]<0 ||
+            controller.stiffness[i]<0 || (admittance.joint_enabled[i] && (controller.damping[i]<=0 || controller.stiffness[i]<=0)) ||
+            controller.max_delta_q[i]<=0 || controller.max_delta_q_dot[i]<=0)
+            return fail(ConfigErr::INVALID_VALUE,"invalid admittance controller joint parameter");
     }
 
     const double nominal_dt = 1.0 / cfg.runtime.ctrl_frequency_hz;
@@ -943,7 +923,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     if(std::any_of(cfg.ctrller.drag_gains.kp.begin(),cfg.ctrller.drag_gains.kp.end(),[](double kp){return kp!=0.0;}))
         return fail(ConfigErr::INVALID_VALUE, "drag gains require zero Kp");
     JointCtrller ctrller;
-    if(!ctrller.configure(cfg.ctrller)) {
+    auto controller_cfg=cfg.ctrller;controller_cfg.control_path=cfg.runtime.control_path;
+    if(!ctrller.configure(controller_cfg)) {
         return fail(ConfigErr::INVALID_VALUE, "invalid Joint controller gains");
     }
 
@@ -953,6 +934,7 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     }
 
     for(const auto* gains : all_gains(cfg.ctrller)) {
+        if(gains->kp.empty() && gains->kd.empty()) continue;
         if(gains->kp.size() != n || gains->kd.size() != n) {
             return fail(ConfigErr::INVALID_SIZE, "every impedance gain vector must have length " + std::to_string(n));
         }
@@ -960,6 +942,7 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
 
     for(std::size_t i = 0; i < n; ++i) {
         for(const auto* gains : all_gains(cfg.ctrller)) {
+            if(gains->kp.empty() && gains->kd.empty()) continue;
             if(gains->kp[i] > limits.max_kp[i] || gains->kd[i] > limits.max_kd[i]) {
                 return fail(ConfigErr::INVALID_VALUE, "controller gain exceeds configured Safety limit at index " + std::to_string(i));
             }
@@ -1045,6 +1028,7 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs->safety.limits.max_kp != rhs->safety.limits.max_kp) add("limits.max_kp");
     if(lhs->safety.limits.max_kd != rhs->safety.limits.max_kd) add("limits.max_kd");
     if(lhs->safety.cmd_timeout_s != rhs->safety.cmd_timeout_s || lhs->safety.state_timeout_s != rhs->safety.state_timeout_s || lhs->safety.max_dt_s != rhs->safety.max_dt_s) add("safety.timeout");
+    if(lhs->dynamics.gravity_model_validated != rhs->dynamics.gravity_model_validated) add("model.gravity_model_validated");
     if(lhs->dynamics.urdf_path != rhs->dynamics.urdf_path) add("dynamics.urdf_path");
     if(lhs->hold_compensation.enabled!=rhs->hold_compensation.enabled || lhs->hold_compensation.integral_gain!=rhs->hold_compensation.integral_gain ||
        lhs->hold_compensation.max_torque!=rhs->hold_compensation.max_torque || lhs->hold_compensation.max_rate!=rhs->hold_compensation.max_rate ||
@@ -1052,7 +1036,7 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
        lhs->hold_compensation.error_threshold!=rhs->hold_compensation.error_threshold) add("hold_compensation");
     const auto& lhs_adm = lhs->capability.admittance;
     const auto& rhs_adm = rhs->capability.admittance;
-    if(lhs_adm.enabled != rhs_adm.enabled ||
+    if(lhs_adm.observer_enabled != rhs_adm.observer_enabled || lhs_adm.enabled != rhs_adm.enabled ||
         lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
         lhs_adm.observer.momentum_gain != rhs_adm.observer.momentum_gain ||
         lhs_adm.calibration.torque_bias != rhs_adm.calibration.torque_bias ||
@@ -1145,8 +1129,6 @@ tl::expected<SafetyCfg, ConfigErrInfo> resolve_connected_safety_cfg(
         result.limits.max_kd[i]=cap.max_kd*gains;
         result.limits.kp_resolution[i]=cap.kp_resolution*gains;
         result.limits.kd_resolution[i]=cap.kd_resolution*gains;
-        auto& recovery=result.fault_recovery.compliant_recovery;
-        recovery.max_vel[i]=std::min(recovery.max_vel[i],result.limits.max_vel[i]);
     }
     RobotCfg candidate=requested;
     candidate.safety=result;

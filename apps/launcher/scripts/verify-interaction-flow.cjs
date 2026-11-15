@@ -1,0 +1,108 @@
+/* Production renderer with an isolated in-memory API; no hardware or Profile writes */
+const {app,BrowserWindow}=require('electron');
+const fs=require('node:fs'),path=require('node:path');
+const {buildFixture}=require('./studio-ui-fixture.cjs');
+const outputIndex=process.argv.indexOf('--out');
+const output=path.resolve(outputIndex<0?'/tmp/serialarm-interaction-flow':process.argv[outputIndex+1]);
+const fixture=buildFixture(path.join(output,'fixture'));
+app.setPath('userData',path.join(output,'user-data'));
+app.commandLine.appendSwitch('force-device-scale-factor','1');
+async function verify(){
+ const checks=[],assert=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
+ const editor=structuredClone(studioUiData.editor),names=editor.joint_names,named=value=>Object.fromEntries(names.map(name=>[name,value]));
+ editor.core.control.runtime.control_path='CSP';editor.core.model.gravity_model_validated=false;
+ editor.core.safety_policy.max_tracking_error=named(.1);editor.urdf_joint_limits[names[1]].type='prismatic';
+ const a=editor.core.capability.admittance;
+ a.joint_enabled=named(true);a.controller={mass:named(.1),damping:named(1.26),stiffness:named(4),max_delta_q:named(.01),max_delta_q_dot:named(.02)};
+ Object.assign(state,{page:'profile_setup',profileGroup:'motion',language:'zh-CN',theme:'light',config:{profile:'fixture-flow',profile_file:'/offline/robot_profiles.yaml'},profileEditor:editor,capabilityProfile:structuredClone(editor),profileDirty:false,profileFieldErrors:{},profileRawInputs:{},profileError:'',modelData:null,session:{state:'idle'},telemetry:null,readiness:{control_available:true,checks:{},modes_by_path:{CSP:{RIGID:'configured',COMPLIANT:'configured',DRAG:'configured',SERVO_TRACKING:'configured'}},operation_readiness:{basic_control:{ready:true},gravity_verification:{ready:true},observation:{ready:true},drag:{ready:false,reason:'先完成重力验证'},admittance:{ready:true}},connection_readiness:{structurally_valid:true,read_only_connectable:true,write_enabled:true,basic_calibration_ready:true,basic_calibration_prerequisites:[]}},admittance:null,admittanceSaveSource:'draft',admittanceSaveFields:['controller.mass'],savePreview:null});
+ renderedPage='';shell();
+ assert(document.querySelectorAll('#admittance-editor').length===1,'exactly one admittance editor in Configuration');
+ assert(!document.querySelector('[data-goal-context="runtime"]'),'no separate runtime response draft');
+ assert(document.querySelector('#profile-apply-admittance').disabled,'offline draft cannot apply to a session');
+ const params=admittanceSaveParams();assert(params.source==='draft'&&params.fields.join()==='controller.mass'&&params.draft.mass[0]===.1,'offline narrow save contains the selected field and canonical draft');
+ assert(!('gravity_scale' in params.draft)&&!('execution_gains' in params.draft),'admittance save excludes unrelated trial parameters');
+ const unitFor=name=>[...document.querySelectorAll('[data-profile-field]')].find(node=>node.dataset.profileField===JSON.stringify(['core','capability','admittance','controller','mass',name]))?.closest('label').querySelector('[data-parameter-unit]')?.textContent;
+ assert(unitFor(names[0])==='N·m·s²/rad'&&unitFor(names[1])==='kg','mixed joints keep native SI M units');
+ const guide=document.querySelector('.setup-inspector > #profile-guide-container > section.profile-setup-guide'),notes=document.querySelector('.setup-reference-notes');
+ assert(guide?.querySelector('#profile-guide-title')&&!guide.querySelector(':scope > summary'),'configuration check remains visible without a collapse control');
+ assert(!!(guide.compareDocumentPosition(notes)&Node.DOCUMENT_POSITION_FOLLOWING),'configuration references follow the permanent check');
+ const units=notes.querySelector('#profile-unit-policy'),source=notes.querySelector('#profile-configuration-source');
+ assert(units instanceof HTMLDetailsElement&&source instanceof HTMLDetailsElement&&!units.open&&!source.open,'SI information and configuration source start collapsed');
+ const goal=SerialArmMotionGoals.fromMdk(.1,2*Math.sqrt(.1*4),4),round=SerialArmMotionGoals.convert(goal);
+ assert(Math.abs(round.mass-.1)<1e-9&&Math.abs(round.damping-2*Math.sqrt(.4))<1e-9&&round.stiffness===4,'response helper round trip preserves canonical MDK');
+ assert(!Number.isFinite(SerialArmMotionGoals.fromMdk(1,0,4).time),'unsupported zero damping is not disguised as a critically damped measured response');
+ assert(!Number.isFinite(SerialArmMotionGoals.fromMdk(1,0,0).time),'undamped free motion is not assigned a fabricated decay time');
+ const runtime=profileAdmittanceRuntime();runtime.enabled=true;runtime.observer_enabled=true;
+ Object.assign(state,{session:{state:'running',mode:'workbench',session_id:'isolated-fixture'},telemetry:{valid:true,sequence:1,feedback_age_ms:0,robot_state:'INACTIVE',control_path:'CSP',impedance_mode:'RIGID',joint_names:names,gravity_model_validated:false,joint:{pos:names.map(()=>0),vel:names.map(()=>0),tor:names.map(()=>0),residual_raw:names.map(()=>.4),tau_ext_estimate:names.map(()=>.3),tau_ext_hat:names.map(()=>.1)},observer_valid:true,actuator_info:[{name:'fixture-motor',servo_parameters:{ACC:12},velocity_resolution:.004}],model_calibration:{phase:'idle'},safety_limits:{max_cmd_vel:names.map(()=>5.4),max_acc:names.map(()=>10.8)}},telemetryReceivedAt:Date.now(),admittance:runtime});
+ assert(admittanceMayTune(),'CSP inactive session can apply the same configuration draft');
+ {
+  const previous={profileEditor:state.profileEditor,capabilityProfile:state.capabilityProfile,admittance:state.admittance,modes:state.readiness.modes_by_path.CSP};
+  const noCapability=structuredClone(editor);delete noCapability.core.capability;
+  Object.assign(state,{profileEditor:noCapability,capabilityProfile:structuredClone(noCapability),admittance:null});state.telemetry.control_path='MIT';
+  state.readiness.modes_by_path.CSP={RIGID:'configured',COMPLIANT:'unconfigured',DRAG:'unconfigured',SERVO_TRACKING:'configured'};
+  const picker=document.createElement('div');picker.innerHTML=referenceBehaviorHtml();document.body.append(picker);const cspButton=picker.querySelector('[data-reference-behavior="CSP"]');
+  assert(!cspButton.disabled,'new robot without capability can initially select CSP rigid');
+  refreshCapabilityDiagnostics();assert(!cspButton.disabled,'diagnostic refresh preserves CSP rigid selection without observer or MDK');
+  state.readiness.modes_by_path.CSP.RIGID='unconfigured';refreshCapabilityDiagnostics();assert(cspButton.disabled,'diagnostic refresh rejects CSP when rigid readiness is missing');
+  picker.remove();Object.assign(state,{profileEditor:previous.profileEditor,capabilityProfile:previous.capabilityProfile,admittance:previous.admittance});state.readiness.modes_by_path.CSP=previous.modes;state.telemetry.control_path='CSP';
+ }
+
+ state.profileEditor.core.capability.admittance.controller.mass[names[0]]=.2;
+ assert(state.admittance.mass[0]===.1&&state.capabilityProfile.core.capability.admittance.controller.mass[names[0]]===.1,'editing the draft changes neither runtime nor saved defaults');
+ state.page='workbench';state.workbenchTab='tuning';renderedPage='';shell();
+ assert(!document.querySelector('#admittance-editor')&&!document.querySelector('[data-tune-key]')&&!document.querySelector('[data-goal-context]'),'workspace shows runtime values and the configuration link without a second editor');
+ assert(document.querySelector('[data-setup-target]'),'workspace offers the shared configuration entry');
+ window.localStorage.removeItem(motionSpeedStorageKey());state.motionSpeedKey=null;restoreWorkbenchSpeed();assert(state.speedScale===.2,'new Profile starts at twenty percent');
+ updateWorkbenchSpeed('35');assert(state.speedScale===.35,'percentage input converts once to internal scale');
+ state.motionSpeedKey=null;restoreWorkbenchSpeed();assert(state.speedScale===.35,'same Profile restores its remembered speed');
+ const oldProfile=state.config.profile;state.config.profile='another-profile';state.motionSpeedKey=null;restoreWorkbenchSpeed();assert(state.speedScale===.2,'another Profile has the common twenty-percent default');state.config.profile=oldProfile;
+ updateWorkbenchSpeed('35');assert(motionLimitsHtml().includes('1.89')&&motionLimitsHtml().includes('10.8'),'effective velocity scales while acceleration remains the real configured limit');
+ const register=driverServoParametersHtml();assert(register.includes('12')&&register.includes('未读取')&&!register.includes('undefined'),'read-only driver parameters distinguish missing readings from zero');
+ const table=document.createElement('div');table.innerHTML=observerEffortTableHtml();
+ assert(table.querySelector('[data-observer-signal="residual_raw"]').textContent.includes('.4')&&table.querySelector('[data-observer-signal="tau_ext_estimate"]').textContent.includes('.3')&&table.querySelector('[data-observer-signal="tau_ext_hat"]').textContent.includes('.1'),'raw, continuous estimate and controller input use distinct telemetry fields');
+ state.telemetry.joint.tau_ext_estimate[0]=.7;table.innerHTML=observerEffortTableHtml();assert(table.querySelector('[data-observer-signal="tau_ext_estimate"]').textContent.includes('.7'),'observer formatter updates the continuous estimate without reusing controller input');
+ state.telemetry.gravity_verification={active:true,phase:'sampling',sample_count:1};state.telemetry.robot_state='ACTIVE';
+ const proof=document.createElement('div');proof.innerHTML=gravityVerificationPanelHtml();
+ assert(!proof.querySelector('[data-verify-scale-index]')&&!proof.querySelector('[data-verify-scale-slider]'),'CSP model sampling has no output-compensation ramp inputs');
+ assert(!proof.querySelector('#gravity-verify-sample').disabled&&proof.textContent.includes('刚性多姿态采样'),'CSP rigid sampling can record stable poses');
+ assert(cspCalibrationPositioning(),'CSP gravity sampling exposes the restricted positioning window');
+ state.telemetry.gravity_verification={active:false,phase:'idle'};state.telemetry.calibration={kind:'static',phase:'waiting_user'};assert(cspCalibrationPositioning(),'initial CSP static observation calibration uses rigid positioning');
+ assert(singleCalibrationToolsHtml().includes('workbench-speed'),'initial CSP static sampling exposes the bounded target controls in its actual tools panel');
+ state.capabilityProfile.core.model.gravity_model_validated=true;state.telemetry.gravity_model_validated=false;
+ const stageProof=document.createElement('div');stageProof.innerHTML=newArmStagesHtml();
+ assert(stageProof.querySelector('[data-readiness-live="gravity"] .readiness-status').dataset.status==='pending','live untrusted model is not overridden by saved trust');
+ const keep=structuredClone(state.profileEditor.core.capability.admittance);delete state.profileEditor.core.capability.admittance.controller;delete state.profileEditor.core.capability.admittance.joint_enabled;
+ const missing=document.createElement('div');missing.innerHTML=profileAdmittanceHtml(state.profileEditor);assert(!!missing.querySelector('#profile-add-admittance'),'observation-only Profile offers explicit MDK configuration');
+ assert(profileObservationHtml(state.profileEditor).includes('广义动量观测器'),'observation-only Profile remains editable independently of MDK');state.profileEditor.core.capability.admittance=keep;
+ state.telemetry.robot_state='ACTIVE';state.telemetry.control_path='CSP';state.telemetry.calibration={kind:'none',phase:'idle'};state.telemetry.gravity_verification={active:false,phase:'idle'};
+ state.readiness.modes_by_path.CSP.COMPLIANT='unconfigured';assert(controlOperationProblem('park')==='','CSP rigid-only setup can park without MDK');
+ state.readiness.modes_by_path.MIT={RIGID:'configured',COMPLIANT:'unconfigured'};state.telemetry.control_path='MIT';assert(!!controlOperationProblem('park'),'MIT parking still requires compliant tracking gains');state.telemetry.control_path='CSP';
+ state.telemetry.robot_state='FAULT';state.telemetry.fault={code:'SAFETY_VIOLATION',safety_code:'POSITION_LIMIT',joint_name:names[0]};acceptTelemetrySnapshot(state.telemetry);state.session={state:'exited'};state.lastSessionExit={error:'native session closed'};
+ assert(retainedFaultHtml().includes('POSITION_LIMIT')&&retainedFaultHtml().includes('会话退出原因'),'robot fault reason is retained separately from process exit');
+ const stages=document.createElement('div');stages.innerHTML=newArmStagesHtml();
+ assert(stages.querySelectorAll('.new-arm-stages li').length===5&&stages.querySelectorAll('.readiness-status-dot').length===13,'commissioning stages pair every evidence value with a status indicator');
+ assert(stages.textContent.includes('基础参数')&&stages.textContent.includes('模型检查')&&stages.textContent.includes('当前观测')&&stages.textContent.includes('验证记录'),'commissioning evidence names configuration, live readings and verification separately');
+ state.page='lifecycle';render();
+ const recordEntries=[...document.querySelectorAll('.stage-evidence [data-review-stage]')];
+ assert(recordEntries.map(button=>button.dataset.reviewStage).join()==='model_check,mapping_calibration,startup_hold,gravity_verification','commissioning evidence exposes its corresponding inspection forms directly');
+ const evidenceRows=[...document.querySelectorAll('.stage-evidence')].map(row=>[...row.children].map(item=>item.children[1].getBoundingClientRect().top));
+ assert(evidenceRows.every(row=>row.every(top=>Math.abs(top-row[0])<1)),'record actions do not shift sibling evidence values off their shared baseline');
+ for(const entry of recordEntries){
+  entry.click();const dialog=document.querySelector('#confirm-dialog'),review=readinessReviews[entry.dataset.reviewStage];
+  assert(dialog.open&&dialog.querySelectorAll('[data-review-key]').length===review.keys.length&&!!dialog.querySelector('#readiness-review-submit'),'commissioning '+entry.dataset.reviewStage+' opens the existing form with its save action');
+  dialog.querySelector('#readiness-review-cancel').click();
+ }
+ assert(!!document.querySelector('.readiness-tool-group')&&!!document.querySelector('.readiness-record-group'),'calibration tools and all inspection records have separate labelled sections');
+ return {checks};
+}
+const timeout=setTimeout(()=>{console.error('Interaction-flow fixture timed out');app.exit(1);},60000);
+app.whenReady().then(async()=>{
+ const win=new BrowserWindow({width:1300,height:900,show:false,webPreferences:{preload:fixture.preload,contextIsolation:true,sandbox:false}});
+ win.webContents.on('console-message',(_e,_level,message)=>{if(message.includes('Uncaught'))console.error(message);});
+ await win.loadFile(fixture.index);await new Promise(r=>setTimeout(r,250));
+ await win.webContents.executeJavaScript('term?.dispose();term=null;fit=null;window.Terminal=undefined;void 0;');
+ const result=await win.webContents.executeJavaScript(`(${verify})()`);
+ fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(result,null,2));
+ console.log('INTERACTION_FLOW_PASS '+JSON.stringify({checks:result.checks.length,report:path.join(output,'report.json')}));
+ clearTimeout(timeout);win.destroy();app.quit();
+}).catch(error=>{console.error(error.stack);app.exit(1);});

@@ -17,6 +17,7 @@ struct RuntimeSnapshot {
     RobotState state{RobotState::UNCONFIGURED};
     MotionSource source{MotionSource::NONE};
     std::optional<RobotCycleOutput> cycle;
+    std::optional<RobotCycleOutput> fault_feedback;
     std::optional<RobotFault> fault;
     bool fault_hold_maintained{false};
 };

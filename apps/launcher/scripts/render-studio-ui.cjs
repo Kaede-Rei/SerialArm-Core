@@ -29,7 +29,7 @@ if(args.includes('--software')){app.commandLine.appendSwitch('use-gl','angle');a
 function setScene(scene,theme,language='zh-CN'){
  const data=window.studioUiData;
  if(window.studioFixtureRescue)graphicsState.effectiveMode='rescue';
- Object.assign(state,{page:scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,tuneDraft:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
+ Object.assign(state,{page:scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
  if(scene==='calibration-result')state.calibrationToolSelected.gain={directory:'/offline/calibration-result',gain_candidate:structuredClone(data.candidate)};
  state.modelCalibrationOffline=null;state.idimReport=null;
  if(scene.startsWith('calibration-'))state.telemetry={joint_names:data.editor.joint_names,model_calibration:{workflow_kind:'gain',phase:scene==='calibration-result'?'complete':'idle',task_id:scene==='calibration-result'?data.candidate.task_id:'',gain_budget_source_duration_s:25,gain_target_budget_s:300,gain_time_budget_s:375,gain_elapsed_s:scene==='calibration-result'?239:0,gain_remaining_s:375}};
@@ -40,8 +40,14 @@ function setScene(scene,theme,language='zh-CN'){
   state.idimReport={physical_pass:true};
  }
  if(scene==='start'||scene==='library')state.config.profile='';
+ if(scene==='lifecycle'){
+  state.readiness.checks={model_check:'recorded',mapping_calibration:'stale',bringup:'recorded',gravity_verification:'pending'};
+  state.readiness.modes={RIGID:'pending'};
+  state.readiness.operation_readiness={basic_control:{ready:true},gravity_verification:{ready:true},drag:{ready:false,reason:language==='en'?'Verify gravity compensation for the current model and payload':'先验证当前模型与负载的重力补偿'},observation:{ready:true},admittance:{ready:false,reason:language==='en'?'Review tracking error limits and yielding bounds':'先核对跟踪误差上限与退让边界'}};
+ }
+ if(scene==='workbench'){state.workbenchTab='control';state.controlSettingsOpen=true;}
  if(data.receipt){state.readiness.gain_initialization=structuredClone(data.receipt);state.config.profile=data.receiptLabel;}
- renderedPage='';shell();
+ renderedPage='';renderedPageViewKey='';shell();
  if(scene==='parameters-csp'){state.profileEditor.core.control.runtime.control_path='CSP';state.profileGroup='motion';render();}
  if(scene==='parameters-motion')document.querySelector('[data-gain-purpose="RIGID"]').open=true;
 }
@@ -50,6 +56,7 @@ function snapshot(){
  const visibleText=[...page.querySelectorAll('*')].filter(n=>{const r=n.getBoundingClientRect(),style=getComputedStyle(n);return r.width&&r.height&&r.top<innerHeight&&r.bottom>0&&style.visibility!=='hidden'&&([...n.childNodes].some(child=>child.nodeType===3&&child.textContent.trim())||n.matches('input:not([type=checkbox]):not([type=radio]),textarea,select'));});
  const sizes=[...new Set(visibleText.map(n=>getComputedStyle(n).fontSize))];
  const outer=[...document.querySelectorAll('.content,.studio-page-body')].filter(n=>n.scrollWidth>n.clientWidth+1).map(n=>({class:n.className,width:n.clientWidth,scroll:n.scrollWidth}));
+ const navigationLabelOverflow=[...page.querySelectorAll('.workspace-subpage-nav .calibration-entry-title')].filter(node=>node.getBoundingClientRect().left+node.scrollWidth>node.closest('button').getBoundingClientRect().right+2).map(node=>({text:node.textContent.trim(),width:node.clientWidth,scroll:node.scrollWidth,buttonWidth:node.closest('button').getBoundingClientRect().width}));
  const buttons=[...page.querySelectorAll('.button.primary')].filter(n=>n.getClientRects().length).map(n=>({id:n.id,text:n.textContent.trim(),color:getComputedStyle(n).color,background:getComputedStyle(n).backgroundColor}));
  const paletteProbe=document.createElement('i');paletteProbe.hidden=true;paletteProbe.style.cssText='color:var(--primary-on);background-color:var(--primary)';document.body.append(paletteProbe);
  const primaryPalette={color:getComputedStyle(paletteProbe).color,background:getComputedStyle(paletteProbe).backgroundColor};paletteProbe.remove();
@@ -64,7 +71,7 @@ function snapshot(){
   const style=getComputedStyle(node),foreground=blend(parse(style.color),background),lum=[luminance(foreground),luminance(background)].sort((a,b)=>b-a);
   return {tag:node.tagName,class:node.className,text:node.innerText.trim().slice(0,60),size:style.fontSize,color:style.color,ratio:Math.round((lum[0]+.05)/(lum[1]+.05)*100)/100};
  });
- return {title:texts,fonts:sizes,smallText:unusualFonts,contrast,unusualFonts,outerOverflow:outer,pageWidth:page.getBoundingClientRect().width,viewport:innerWidth,bodyWidth:document.documentElement.scrollWidth,buttons,primaryPalette,middleDots:/\s·\s/.test(page.innerText),parameterKeys:page.querySelectorAll('.parameter-key').length};
+ return {title:texts,fonts:sizes,smallText:unusualFonts,contrast,unusualFonts,outerOverflow:outer,navigationLabelOverflow,pageWidth:page.getBoundingClientRect().width,viewport:innerWidth,bodyWidth:document.documentElement.scrollWidth,buttons,primaryPalette,middleDots:/\s·\s/.test(page.innerText),parameterKeys:page.querySelectorAll('.parameter-key').length};
 }
 function testParameters(){
  const checks=[],assert=(ok,name)=>{if(!ok)throw Error(name);checks.push(name);};
@@ -112,6 +119,26 @@ function testParameters(){
  if(window.studioUiData.receipt){const actual=gainModelInitializationHtml(window.studioUiData.receipt);assert(actual.includes('当前运行与恢复参数保持原值')&&actual.includes('尚无示教轨迹')&&actual.includes('需求 Kp')&&!actual.includes('NaN'),'真实Profile回执逐轴模型候选与无示教恢复目标正确展示');}
  return checks;
 }
+async function testCalibrationNavigation(){
+ const checks=[],moves=[],assert=(ok,label)=>{if(!ok)throw Error(label);checks.push(label);};
+ const current=()=>document.querySelector('.calibration-subpage-nav');
+ const visible=()=>{const nav=current(),item=nav.querySelector('[aria-current="page"]'),a=nav.getBoundingClientRect(),b=item.getBoundingClientRect();return b.left>=a.left-1&&b.right<=a.right+1;};
+ assert(state.calibrationEntry==='dynamics'&&visible(),'initial full-dynamics tab is revealed inside the narrow navigation');
+ assert(!current().querySelector('.workspace-subpage-status'),'calibration navigation has no verification status dot');
+ for(const entry of ['gravity','gain','dynamics']){
+  const nav=current(),button=nav.querySelector(`[data-calibration-entry="${entry}"]`),a=nav.getBoundingClientRect(),b=button.getBoundingClientRect(),before=nav.scrollLeft;
+  const adjustment=b.left<a.left?b.left-a.left:b.right>a.right?b.right-a.right:0;
+  const expected=Math.max(0,Math.min(nav.scrollWidth-nav.clientWidth,before+adjustment));
+  button.click();await new Promise(resolve=>setTimeout(resolve,350));
+  const after=current().scrollLeft;moves.push({entry,before,after,expected});
+  assert(state.calibrationEntry===entry&&visible()&&Math.abs(after-expected)<2,`${entry}: switching tabs preserves horizontal position except the nearest reveal`);
+ }
+ const nav=current();nav.scrollLeft=Math.max(0,nav.scrollLeft-20);const before=nav.scrollLeft;
+ refreshWorkspacePanel();await new Promise(resolve=>setTimeout(resolve,200));
+ assert(Math.abs(current().scrollLeft-before)<2,'ordinary workspace refresh retains navigation scrolling');
+ const body=document.querySelector('.studio-page-body');assert(body.scrollWidth<=body.clientWidth+1,'navigation scroll remains inside the task panel');
+ return {checks,moves};
+}
 app.whenReady().then(async()=>{
  fs.mkdirSync(output,{recursive:true});
  const win=new BrowserWindow({width:1280,height:1000,show:false,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
@@ -135,13 +162,14 @@ app.whenReady().then(async()=>{
   console.log('STUDIO_SCENE '+JSON.stringify({scene,width,height,theme,language}));
   const dom=await win.webContents.executeJavaScript('window.studioFixtureSnapshot()');
   if(dom.bodyWidth>width||dom.outerOverflow.length)finding('Outer overflow',{scene,width,height,theme,language,dom});
+  if(dom.navigationLabelOverflow.length)finding('Subpage label overflow',{scene,width,height,theme,language,labels:dom.navigationLabelOverflow});
   if(dom.buttons.some(b=>b.color!==dom.primaryPalette.color||b.background!==dom.primaryPalette.background))finding('Primary button palette',{scene,width,height,theme,language,buttons:dom.buttons,expected:dom.primaryPalette});
   const tree=await win.webContents.debugger.sendCommand('DOM.getDocument');const fontNode=await win.webContents.debugger.sendCommand('DOM.querySelector',{nodeId:tree.root.nodeId,selector:'#page .page-title,#page h1,#page h2,#page h3'});const platformFonts=fontNode.nodeId?(await win.webContents.debugger.sendCommand('CSS.getPlatformFontsForNode',{nodeId:fontNode.nodeId})).fonts:[];
   const fontState=await win.webContents.executeJavaScript(`({status:document.fonts.status,check:document.fonts.check('14px "SerialArm Maple Italic"'),faces:[...document.fonts].filter(face=>face.family.includes('SerialArm Maple Italic')).map(face=>({family:face.family,weight:face.weight,style:face.style,status:face.status}))})`);
   if(!fontState.check||!fontState.faces.some(face=>face.status==='loaded')||!platformFonts.some(font=>/MapleMono.*CN.*Italic/i.test(font.postScriptName||'')))finding('Requested Maple Italic font was not used',{scene,width,height,theme,language,platformFonts,fontState});
   const item={scene,width,height,theme,language,dom,platformFonts,fontState,captures:[]};
   const stem=`${scene}-${width}x${height}-${theme}-${language}`;
-  if(dom.fonts.length>4||dom.smallText.length)finding('Visible text scale',{scene,width,height,theme,language,fonts:dom.fonts,smallText:dom.smallText});
+  if(dom.fonts.some(size=>![12,14,16,20,24].includes(parseFloat(size)))||dom.smallText.length)finding('Visible text scale',{scene,width,height,theme,language,fonts:dom.fonts,smallText:dom.smallText});
   if(audit){item.defaultClip=await runAudit();if(item.defaultClip.cut)finding('Default shadow clip',{scene,width,height,theme,language,clip:item.defaultClip});}
   const scroller=await win.webContents.executeJavaScript(`(()=>{const nodes=[...document.querySelectorAll('.studio-page-body,.content')];const node=nodes.find(n=>n.scrollHeight>n.clientHeight+2)||nodes[0];node.dataset.fixtureScroll='true';return {height:node.scrollHeight,viewport:node.clientHeight};})()`);
   for(const position of [0,Math.max(0,scroller.height-scroller.viewport)]){
@@ -162,17 +190,22 @@ app.whenReady().then(async()=>{
    if(width===1300&&language==='zh-CN'&&['lifecycle','calibration-gain','run','settings'].includes(scene)){entry.file=path.join(output,`${stem}-hover-${kind}.png`);fs.writeFileSync(entry.file,(await win.webContents.capturePage()).toPNG());}
    item.hover.push(entry);
   }
-  if(['parameters-motion','parameters-hardware','calibration-result','diagnostics'].includes(scene)||scene==='lifecycle'&&args.includes('--receipt')){
+  if(['parameters-motion','parameters-csp','parameters-hardware','calibration-result','diagnostics','lifecycle','workbench'].includes(scene)){
    await win.webContents.executeJavaScript(`document.querySelectorAll('#page details').forEach(n=>n.open=true)`);await settle();
    item.expandedDom=await win.webContents.executeJavaScript('window.studioFixtureSnapshot()');
    if(item.expandedDom.outerOverflow.length)finding('Expanded overflow',{scene,width,height,theme,language,dom:item.expandedDom});
    if(audit){item.expandedClip=await runAudit();if(item.expandedClip.cut)finding('Expanded shadow clip',{scene,width,height,theme,language,clip:item.expandedClip});}
    const file=path.join(output,`${stem}-expanded.png`);fs.writeFileSync(file,(await win.webContents.capturePage()).toPNG());item.expandedFile=file;
-   const target=scene==='calibration-result'||scene==='lifecycle'?'[data-gain-model-stages]':scene==='parameters-motion'?'.profile-gain-task':null;
+   const target=scene==='calibration-result'?'[data-gain-model-stages]':scene==='lifecycle'?'.readiness-tools-and-records':scene==='workbench'?'#control-settings':scene==='parameters-motion'?'.profile-gain-task':scene==='parameters-csp'?'#admittance-editor .table-scroll':null;
    if(target){const position=await win.webContents.executeJavaScript(`(()=>{const n=document.querySelector(${JSON.stringify(target)}),s=document.querySelector('[data-fixture-scroll]');if(!n)return null;const top=s.getBoundingClientRect().top,occluded=Math.max(top,...[...document.querySelectorAll('#page > .page-head,.workspace-operation-panel')].map(node=>node.getBoundingClientRect().bottom));s.scrollTop+=n.getBoundingClientRect().top-occluded-16;return s.scrollTop;})()`);await settle();const detail=path.join(output,`${stem}-detail.png`);fs.writeFileSync(detail,(await win.webContents.capturePage()).toPNG());item.expandedDetail={file:detail,scrollTop:position};}
   }
   if(audit){await settle();item.finalClip=await runAudit();if(item.finalClip.cut)finding('Final shadow clip',{scene,width,height,theme,language,clip:item.finalClip});}
   report.renders.push(item);
+ }
+ if(scenes.some(scene=>scene.startsWith('calibration-'))&&sizes.some(([width])=>width===1000)&&languages.includes('en')){
+  win.setContentSize(1000,720);await win.webContents.executeJavaScript(`window.studioFixtureSetScene('workbench','light','en');window.studioFixtureSetScene('calibration-dynamics','light','en')`);await settle();
+  report.calibrationNavigation=await win.webContents.executeJavaScript(`(${testCalibrationNavigation})()`);
+  report.checks.push(...report.calibrationNavigation.checks);
  }
  // Test keyboard focus and reduced-motion using Chromium's real input/media
  // machinery; no device API or production backend exists in this fixture.

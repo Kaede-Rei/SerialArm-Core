@@ -979,8 +979,6 @@ def run_focused_resume_case(terminal, timeout_s=180):
         document=json.loads(config.read_text())
         document['safety_policy']['cmd_vel_scale']=min(document['safety_policy']['cmd_vel_scale'],.03)
         document['safety_policy']['max_acc']={name:min(value,.6) for name,value in document['safety_policy']['max_acc'].items()}
-        recovery=document['safety_policy']['fault_recovery']['compliant_recovery']
-        recovery['max_vel']={name:min(value,.03) for name,value in recovery['max_vel'].items()}
         config.write_text(json.dumps(document,indent=2))
         before=config.read_bytes()
         storage=directory/'storage';storage.mkdir()
@@ -1049,8 +1047,6 @@ def run_case(terminal, kind='complete', old_gain_scale=1.0, timeout_s=660):
         document['safety_policy']['cmd_vel_scale'] = min(document['safety_policy']['cmd_vel_scale'], .03)
         document['safety_policy']['max_acc'] = {name: min(value, .6)
             for name, value in document['safety_policy']['max_acc'].items()}
-        recovery = document['safety_policy']['fault_recovery']['compliant_recovery']
-        recovery['max_vel'] = {name: min(value, .03) for name, value in recovery['max_vel'].items()}
         config.write_text(json.dumps(document, indent=2))
         before_config = config.read_text()
         storage = directory / 'storage'

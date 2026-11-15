@@ -49,6 +49,30 @@ def main():
                               'scope': 'write-disabled mock IPC; no physical hardware'}))
         finally:
             native.close()
+        # A new CSP robot must be able to run and park before configuring
+        # external-effort observation, MDK or unused motor-side MIT gains
+        config, names = prepare_config(directory)
+        document = json.loads(config.read_text())
+        document['control']['runtime']['control_path'] = 'CSP'
+        document['control']['controller'] = {}
+        document['model']['gravity_model_validated'] = False
+        document.pop('capability', None)
+        document['safety_policy']['max_tracking_error'] = {name: .5 for name in names}
+        document['shutdown'].update(park_before_disable=True, settle_time_s=.03, timeout_s=2)
+        config.write_text(json.dumps(document))
+        native = Native(terminal, config, directory / 'storage-rigid')
+        try:
+            native.request('activate')
+            status=native.ready()
+            assert status['impedance_mode']=='RIGID' and status['gravity_model_validated'] is False, status
+            admittance=native.request('get_admittance')
+            assert not admittance['enabled'] and not admittance['observer_enabled'],admittance
+            assert native.request('park') is True
+            status=native.request('status')
+            assert status['robot_state']=='INACTIVE',status
+            print(json.dumps({'status':'passed','scope':'new CSP rigid startup and parking without MDK or MIT gains; offline mock'}))
+        finally:
+            native.close()
 
 
 if __name__ == '__main__':

@@ -219,6 +219,8 @@ public:
      * @param now 当前时间点
      * @return 成功返回空 expected，失败返回 RobotFault
      */
+    tl::expected<void, RobotFault> set_gravity_verification_active(bool active);
+    void invalidate_gravity_validation() noexcept { cfg_.dynamics.gravity_model_validated=false; }
     tl::expected<void, RobotFault> set_full_cmd(const JointCtrlCmd& cmd, TimePoint now = Clock::now());
     /**
      * @brief 切换阻抗模式
@@ -302,7 +304,7 @@ public:
      * @brief 人工请求进入 FAULT 受限柔性恢复
      * @return 成功返回空 expected，失败返回 RobotFault
      */
-    tl::expected<void, RobotFault> enter_fault_compliant_recovery();
+    tl::expected<void, RobotFault> enter_fault_drag_recovery();
     /**
      * @brief 操作员取消柔性恢复并返回 FAULT 刚性保持
      * @return 成功返回空 expected，失败返回 RobotFault
@@ -318,6 +320,7 @@ public:
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> maintain_fault_hold();
+    const RobotCycleOutput& get_fault_feedback() const noexcept { return fault_feedback_; }
 
     /**
      * @brief 获取当前 Robot 生命周期状态
@@ -494,7 +497,20 @@ private:
      * @brief 判断当前锁存故障是否允许柔性恢复
      * @return 允许柔性恢复返回 true
      */
-    bool is_compliant_recovery_fault_allowed() const noexcept;
+    bool is_drag_recovery_fault_allowed() const noexcept;
+    struct InteractionEvaluation {
+        InteractionOutput output;
+        MeasuredDynamicsSnapshot model_snapshot;
+        JointState observer_state;
+        bool new_measurement{false},observation_valid{false};
+        double measurement_dt{0},feedback_skew_ms{std::numeric_limits<double>::quiet_NaN()};
+        std::uint64_t observer_timestamp_ns{0};
+        std::vector<std::uint8_t> safety_position_margin_active,safety_velocity_margin_active;
+    };
+    tl::expected<InteractionEvaluation,RobotFault> update_interaction(const JointState&,const ActuatorState&,const JointVector&,bool,JointCtrlCmd,double,bool,bool,bool position_recovery=false);
+    RobotCycleOutput fault_feedback_;
+    JointVector friction_velocity_resolution_;
+    bool gravity_verification_active_{false};
     /**
      * @brief 清除外部命令并把参考重置为实测位置
      * @param state 当前实测 Joint 状态
@@ -557,7 +573,6 @@ private:
     bool has_state_{ false };                       ///< 是否已有合法状态
     bool has_completed_cycle_{ false };             ///< 是否已经完成至少一个周期
     bool continuous_cmd_{ false };
-    bool drag_reference_received_{ false };         ///< 拖拽期间收到新的运动参考
     bool has_external_cmd_{ false };                ///< 跟踪模式是否收到过外部命令
     bool has_last_joint_cmd_{ false };              ///< 是否已有合法关节控制命令
     bool fault_hold_active_{ false };               ///< 是否已建立故障刚性保持命令

@@ -23,6 +23,7 @@ enum class InteractionControllerErr {
 
 struct InteractionControllerCfg {
     bool enabled{ false };
+    bool admittance_enabled{true};
     GeneralizedMomentumObserverCfg momentum;
     ExternalTorqueObserverCfg external_torque;
     JointAdmittanceControllerCfg admittance;
@@ -45,6 +46,7 @@ struct InteractionInput {
     double measurement_dt{ 0.0 };
     bool apply_admittance{ true };
     bool drag{ false };
+    JointVector measured_position;
 };
 
 struct InteractionOutput {
@@ -85,6 +87,7 @@ private:
     InteractionControllerCfg cfg_;
     bool is_configured_{ false };
     InteractionOutput last_observation_;
+    JointVector last_measured_position_;
     bool observation_initialized_{ false };
 };
 

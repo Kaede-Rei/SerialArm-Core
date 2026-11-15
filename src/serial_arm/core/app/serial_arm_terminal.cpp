@@ -106,7 +106,7 @@ struct StreamState {
     bool enabled{ false };
     bool completion_reported{ false };
     bool park_mode{ false };
-    double speed_scale{ 0.3 };
+    double speed_scale{ 0.2 };
     JointVector target_pos;
     JointVector ref_pos;
     JointVector ref_vel;
@@ -231,7 +231,7 @@ std::string to_string(ModelFeedforwardMode value) {
 std::string to_string(FaultHoldMode value) {
     switch(value) {
         case FaultHoldMode::RIGID_HOLD: return "RIGID_HOLD";
-        case FaultHoldMode::COMPLIANT_RECOVERY: return "COMPLIANT_RECOVERY";
+        case FaultHoldMode::DRAG_RECOVERY: return "DRAG_RECOVERY";
     }
     return "UNKNOWN";
 }
@@ -1091,8 +1091,8 @@ public:
                         machine_clear_fault();
                         emit_reply(id, "true");
                     }
-                    else if(method == "fault_compliant") {
-                        machine_fault_compliant();
+                    else if(method == "fault_drag_recovery") {
+                        machine_fault_drag_recovery();
                         emit_reply(id, "true");
                     }
                     else if(method == "fault_rigid") {
@@ -1144,12 +1144,12 @@ public:
                         emit_reply(id, machine_snapshot_json());
                     }
                     else if(method == "move_to") {
-                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
+                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.2;
                         machine_move_to(machine_node_vector(params["positions"], "positions"), speed_scale, false);
                         emit_reply(id, machine_motion_json());
                     }
                     else if(method == "move_relative") {
-                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.3;
+                        const double speed_scale = params && params["speed_scale"] ? params["speed_scale"].as<double>() : 0.2;
                         machine_move_to(machine_node_vector(params["delta"], "delta"), speed_scale, true);
                         emit_reply(id, machine_motion_json());
                     }
@@ -1540,27 +1540,27 @@ private:
         background_fault_reported_ = false;
     }
 
-    void machine_fault_compliant() {
-        machine_require_no_calibration("fault_compliant");
+    void machine_fault_drag_recovery() {
+        machine_require_no_calibration("fault_drag_recovery");
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
-        const auto result = robot_.enter_fault_compliant_recovery();
+        const auto result = robot_.enter_fault_drag_recovery();
         if(!result) {
             if(result.error().code == RobotErr::FAULT_RECOVERY_NOT_ALLOWED) {
                 const auto& recovery = cfg_.safety.fault_recovery;
-                if(!recovery.allow_compliant_recovery)
-                    throw std::runtime_error("fault_compliant: fault_recovery.allow_compliant_recovery is false");
-                if(!recovery.gravity_model_validated)
-                    throw std::runtime_error("fault_compliant: fault_recovery.gravity_model_validated is false; verify the current robot gravity model and confirm it in Profile Safety before reconnecting");
+                if(!recovery.allow_drag_recovery)
+                    throw std::runtime_error("fault_drag_recovery: fault_recovery.allow_drag_recovery is false");
+                if(!robot_.get_config().dynamics.gravity_model_validated)
+                    throw std::runtime_error("fault_drag_recovery: model.gravity_model_validated is false; verify the current robot gravity model before reconnecting");
                 if(recovery.default_mode != FaultHoldMode::RIGID_HOLD || !recovery.require_operator_request)
-                    throw std::runtime_error("fault_compliant: fault recovery policy does not permit operator compliant recovery");
+                    throw std::runtime_error("fault_drag_recovery: fault recovery policy does not permit operator drag recovery");
                 if(const auto& fault = robot_.get_last_fault()) {
                     if(fault->code == RobotErr::SAFETY_FAILED)
-                        throw std::runtime_error("fault_compliant: fault type is not eligible for compliant recovery: " + to_string(fault->safety_fault.code));
-                    throw std::runtime_error("fault_compliant: fault type is not eligible for compliant recovery: " + to_string(fault->code));
+                        throw std::runtime_error("fault_drag_recovery: fault type is not eligible for drag recovery: " + to_string(fault->safety_fault.code));
+                    throw std::runtime_error("fault_drag_recovery: fault type is not eligible for drag recovery: " + to_string(fault->code));
                 }
             }
-            throw machine_robot_error("fault_compliant", result.error());
+            throw machine_robot_error("fault_drag_recovery", result.error());
         }
         background_fault_reported_ = false;
     }
@@ -1586,7 +1586,10 @@ private:
         machine_require_no_calibration("set_impedance_mode");
         if(gravity_verify_active_) throw std::runtime_error("interaction mode is owned by gravity verification");
         std::lock_guard<std::mutex> lock(mutex_);
-        const auto result=runtime_.set_impedance_mode(robot_,mode);
+        const bool leaving_drag=robot_.get_impedance_mode()==JointImpedanceMode::DRAG && mode!=JointImpedanceMode::DRAG;
+        if(leaving_drag) clear_command_sources();
+        const auto result=runtime_.set_impedance_mode(robot_,mode,Robot::Clock::now(),
+            leaving_drag ? HoldTargetPolicy::CAPTURE_MEASURED : HoldTargetPolicy::PRESERVE_NOMINAL);
         if(!result) throw machine_robot_error("set_impedance_mode",result.error());
         last_output_.reset();
         feedback_time_ns_=0;
@@ -1614,6 +1617,7 @@ private:
         const auto feed = robot_.set_model_feedforward_mode(gravity_verify_original_feed_);
         if(!feed) throw machine_robot_error("gravity verification feedforward restore", feed.error());
         cfg_.runtime.model_feedforward_mode = gravity_verify_original_feed_;
+        (void)robot_.set_gravity_verification_active(false);
         gravity_verify_active_ = false;
         gravity_verify_target_scale_.clear();
     }
@@ -1627,16 +1631,18 @@ private:
         if(dynamics_.has_gravity_first_moment_override() || model_calibration_candidate_applied_ ||
            runtime_gravity_applied_ || runtime_gain_applied_ || runtime_dynamics_applied_)
             throw std::runtime_error("restore temporary calibration candidates before gravity verification");
+        const bool mit=robot_.get_control_path()==ControlPath::MIT;
         const auto& gains = cfg_.ctrller.drag_gains;
-        if(gains.kd.size() != cfg_.joint_names.size() ||
+        if(mit && (gains.kd.size() != cfg_.joint_names.size() ||
            !std::all_of(gains.kd.begin(), gains.kd.end(), [](double d) { return std::isfinite(d) && d > 0.0; }))
+           )
             throw std::runtime_error("gravity verification requires positive DRAG damping on every joint");
         gravity_verify_original_scale_ = dynamics_.get_gravity_scale();
         if(!std::any_of(gravity_verify_original_scale_.begin(), gravity_verify_original_scale_.end(),
                         [](double value) { return value > 0.0; }))
             throw std::runtime_error("gravity verification requires a nonzero baseline gravity model");
         gravity_verify_original_feed_ = robot_.get_model_feedforward_mode();
-        const JointVector zero(cfg_.joint_names.size(), 0.0);
+        const JointVector zero=mit ? JointVector(cfg_.joint_names.size(), 0.0) : gravity_verify_original_scale_;
         const auto reset = dynamics_.set_gravity_scale(zero);
         if(!reset) throw std::runtime_error("gravity verification initial scale failed");
         const auto feed = robot_.set_model_feedforward_mode(ModelFeedforwardMode::GRAVITY);
@@ -1646,6 +1652,8 @@ private:
         }
         cfg_.dynamics.gravity_scale = zero;
         cfg_.runtime.model_feedforward_mode = ModelFeedforwardMode::GRAVITY;
+        const auto context=robot_.set_gravity_verification_active(true);
+        if(!context)throw machine_robot_error("gravity verification context",context.error());
         gravity_verify_target_scale_ = gravity_verify_original_scale_;
         gravity_verify_samples_.clear();
         gravity_verify_result_ = "prepared";
@@ -1672,6 +1680,13 @@ private:
         if(!gravity_verify_active_ || gravity_verify_result_ != "prepared")
             throw std::runtime_error("start gravity verification before entering drag");
         machine_gravity_verify_require_feedback_locked();
+        if(robot_.get_control_path()==ControlPath::CSP) {
+            if(robot_.get_impedance_mode()!=JointImpedanceMode::RIGID)
+                throw std::runtime_error("CSP gravity model sampling requires RIGID");
+            gravity_verify_drag_entered_=true;
+            gravity_verify_result_="sampling";
+            return;
+        }
         if(robot_.get_impedance_mode() != JointImpedanceMode::RIGID ||
            robot_.get_model_feedforward_mode() != ModelFeedforwardMode::GRAVITY)
             throw std::runtime_error("gravity verification requires RIGID with GRAVITY feedforward");
@@ -1703,9 +1718,10 @@ private:
 
     void machine_gravity_verify_sample() {
         std::lock_guard<std::mutex> lock(mutex_);
-        if(!gravity_verify_active_ || gravity_verify_result_ != "dragging" ||
-           robot_.get_impedance_mode() != JointImpedanceMode::DRAG)
-            throw std::runtime_error("gravity verification sampling requires DRAG");
+        const bool csp=robot_.get_control_path()==ControlPath::CSP;
+        if(!gravity_verify_active_ || (csp ? gravity_verify_result_!="sampling" || robot_.get_impedance_mode()!=JointImpedanceMode::RIGID :
+           gravity_verify_result_!="dragging" || robot_.get_impedance_mode()!=JointImpedanceMode::DRAG))
+            throw std::runtime_error("gravity verification sampling requires its active verification mode");
         machine_gravity_verify_require_feedback_locked();
         if(!gravity_verify_target_scale_.empty())
             for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i)
@@ -1762,7 +1778,7 @@ private:
 
     void gravity_verify_cycle_update() {
         if(!gravity_verify_active_ || gravity_verify_target_scale_.size() != cfg_.joint_names.size() ||
-           robot_.get_state() != RobotState::ACTIVE) return;
+           robot_.get_state() != RobotState::ACTIVE || robot_.get_control_path()==ControlPath::CSP) return;
         // Updates use the same mutex and period as Robot::cycle, not the GUI event cadence
         const double dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
         JointVector next = cfg_.dynamics.gravity_scale;
@@ -1797,6 +1813,7 @@ private:
         if(robot_.get_state() != RobotState::INACTIVE) throw std::runtime_error("set_gravity_scale requires RobotState::INACTIVE");
         const auto result = dynamics_.set_gravity_scale(values);
         if(!result) throw std::runtime_error("set_gravity_scale failed: " + to_string(result.error()));
+        if(cfg_.dynamics.gravity_scale!=values)robot_.invalidate_gravity_validation();
         cfg_.dynamics.gravity_scale = values;
     }
 
@@ -1815,8 +1832,13 @@ private:
 
     void machine_move_to(const JointVector& values, double speed_scale, bool relative) {
         if(teach_replay_phase_.load()==1||teach_replay_phase_.load()==3)throw std::runtime_error("teaching or replay owns motion");
-        machine_require_no_calibration("motion");
-        if(gravity_verify_active_) throw std::runtime_error("tracking commands are blocked during gravity verification");
+        const bool csp_pose_sampling=robot_.get_control_path()==ControlPath::CSP &&
+            !model_calibration_task_active() &&
+            ((machine_calibration_kind_!="none" && machine_calibration_phase_=="waiting_user") ||
+             (gravity_verify_active_ && gravity_verify_result_=="sampling"));
+        if(!csp_pose_sampling)machine_require_no_calibration("motion");
+        if(gravity_verify_active_ && !csp_pose_sampling) throw std::runtime_error("tracking commands are blocked during gravity verification");
+        if(csp_pose_sampling)speed_scale=std::min(speed_scale,0.1);
         std::lock_guard<std::mutex> lock(mutex_);
         if(robot_.get_state() != RobotState::ACTIVE) throw std::runtime_error("motion requires RobotState::ACTIVE");
         const auto previous_mode=robot_.get_impedance_mode();
@@ -1898,6 +1920,8 @@ private:
         const auto& a = cfg_.capability.admittance;
         std::ostringstream out;
         out << std::setprecision(17) << "{\"enabled\":" << (a.enabled ? "true" : "false");
+        out << ",\"observer_enabled\":" << (a.observer_enabled ? "true" : "false");
+        out << ",\"gravity_model_validated\":" << (robot_.get_config().dynamics.gravity_model_validated ? "true" : "false");
         out << ",\"control_path\":\"" << (robot_.get_control_path()==ControlPath::MIT ? "MIT" : "CSP") << "\"";
         out << ",\"joint_enabled\":"; machine_json_vector(out, a.joint_enabled);
         out << ",\"momentum_gain\":"; machine_json_joint_vector(out, a.observer.momentum_gain);
@@ -1948,6 +1972,18 @@ private:
         set_vector("max_delta_q", candidate.controller.max_delta_q);
         set_vector("max_delta_q_dot", candidate.controller.max_delta_q_dot);
         set_vector("momentum_gain", candidate.observer.momentum_gain);
+        if(params["joint_enabled"]) {
+            const auto values=params["joint_enabled"];
+            if(!values.IsSequence() || values.size()!=cfg_.joint_names.size())
+                throw std::runtime_error("joint_enabled size does not match joint count");
+            candidate.joint_enabled.clear();
+            for(const auto& value:values) {
+                const auto text=value.as<std::string>();
+                if(text!="true" && text!="false" && text!="0" && text!="1")
+                    throw std::runtime_error("joint_enabled must contain booleans");
+                candidate.joint_enabled.push_back(text=="true" || text=="1");
+            }
+        }
         if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("set_admittance failed");
     }
 
@@ -8445,10 +8481,11 @@ private:
         machine_calibration_phase_ = "waiting_user";
         machine_calibration_expected_ = kind == "static" ? 8 : 5;
         machine_calibration_poses_.clear();
-        if(!set_tuning_impedance_mode(JointImpedanceMode::DRAG)) {
+        const auto sampling_mode=robot_.get_control_path()==ControlPath::CSP ? JointImpedanceMode::RIGID : JointImpedanceMode::DRAG;
+        if(!set_tuning_impedance_mode(sampling_mode)) {
             machine_calibration_kind_ = "none";
             machine_restore_calibration_runtime(true);
-            throw std::runtime_error("failed to enter DRAG");
+            throw std::runtime_error("failed to enter calibration sampling mode");
         }
     }
 
@@ -8464,7 +8501,8 @@ private:
         if(!samples) { machine_calibration_phase_ = "waiting_user"; throw std::runtime_error("static sample collection failed"); }
         machine_calibration_poses_.push_back(std::move(*samples));
         if(machine_calibration_poses_.size() < machine_calibration_expected_) {
-            if(!set_tuning_impedance_mode(JointImpedanceMode::DRAG)) throw std::runtime_error("failed to return to DRAG");
+            const auto sampling_mode=robot_.get_control_path()==ControlPath::CSP ? JointImpedanceMode::RIGID : JointImpedanceMode::DRAG;
+            if(!set_tuning_impedance_mode(sampling_mode)) throw std::runtime_error("failed to return to calibration sampling mode");
             machine_calibration_phase_ = "waiting_user";
         }
         else machine_calibration_phase_ = "ready_to_fit";
@@ -8475,6 +8513,7 @@ private:
         machine_calibration_phase_ = "fitting";
         if(machine_calibration_kind_ == "static") {
             AdmittanceStaticCalibrationCfg config;
+            config.fit_gravity_scale=false;
             config.joints_count = cfg_.joint_names.size();
             config.fallback_gravity_scale = machine_calibration_original_gravity_;
             config.gravity_observability_span = 0.25;
@@ -8699,6 +8738,7 @@ private:
         }
         else out << ",\"feedback_age_ms\":null";
         out << ",\"write_enabled\":" << (cfg_.runtime.write_enabled ? "true" : "false");
+        out << ",\"gravity_model_validated\":" << (robot_.get_config().dynamics.gravity_model_validated ? "true" : "false");
         out << ",\"gravity_scale\":"; machine_json_joint_vector(out, cfg_.dynamics.gravity_scale);
         out << ",\"gravity_verification\":{\"active\":" << (gravity_verify_active_ ? "true" : "false")
             << ",\"phase\":\"" << gravity_verify_result_ << "\""
@@ -8755,7 +8795,14 @@ private:
                 << ",\"max_effort\":" << item.max_effort
                 << ",\"max_kp\":" << item.max_kp
                 << ",\"max_kd\":" << item.max_kd
-                << ",\"kp_resolution\":"<<item.kp_resolution<<",\"kd_resolution\":"<<item.kd_resolution<<",\"effort_resolution\":"<<item.effort_resolution<<'}';
+                << ",\"kp_resolution\":"<<item.kp_resolution<<",\"kd_resolution\":"<<item.kd_resolution<<",\"effort_resolution\":"<<item.effort_resolution
+                << ",\"velocity_resolution\":"<<item.velocity_resolution<<",\"servo_parameters\":{";
+            bool first_parameter=true;
+            for(const auto& [name,value]:item.servo_parameters) {
+                if(!first_parameter)out<<',';
+                first_parameter=false;machine_json_string(out,name);out<<':'<<value;
+            }
+            out << "}}";
         }
         out << ']';
         out << ",\"actuator_info_source\":";
@@ -8802,6 +8849,7 @@ private:
         // Report effective runtime limits, not merely the URDF source limits
         out << ",\"safety_limits\":{\"max_cmd_vel\":";
         machine_json_joint_vector(out, cfg_.safety.limits.max_vel);
+        out << ",\"max_acc\":";machine_json_joint_vector(out,cfg_.safety.limits.max_acc);
         out << ",\"min_pos\":";machine_json_joint_vector(out,cfg_.safety.limits.min_pos);
         out << ",\"max_pos\":";machine_json_joint_vector(out,cfg_.safety.limits.max_pos);
         out << ",\"pos_margin\":";machine_json_joint_vector(out,cfg_.safety.limits.pos_margin);
@@ -8870,6 +8918,8 @@ private:
             machine_json_joint_vector(out, output.residual_raw);
             out << ",\"tau_ext_hat\":";
             machine_json_joint_vector(out, output.tau_ext_hat);
+            out << ",\"tau_ext_estimate\":";
+            machine_json_joint_vector(out, output.friction_compensated);
             out << ",\"delta_q\":";
             machine_json_joint_vector(out, output.delta_q);
             out << '}';
@@ -8959,6 +9009,15 @@ private:
             return true;
         };
         hooks.after_step=[this](const RuntimeSnapshot& step){
+            if(step.fault_feedback) {
+                last_output_=*step.fault_feedback;
+                last_cycle_monotonic_ns_=step.monotonic_ns;
+                const auto& stamps=last_output_->actuator_state.feedback_received_ns;
+                feedback_time_ns_=!stamps.empty() && std::isfinite(measured_feedback_age_ms(*last_output_)) ?
+                    *std::min_element(stamps.begin(),stamps.end()) : 0;
+                ++cycle_counter_;
+                cycle_cv_.notify_all();
+            }
             if(step.cycle) {
                 // Refresh diagnostic RNEA against the accepted reference; the
                 // command itself was already computed from the cycle snapshot
@@ -9181,7 +9240,7 @@ private:
         std::cout << " 2. 回到停放姿态并失能\n";
         std::cout << " 3. 立即停止并失能（危险）\n";
         std::cout << " 4. clear_fault()\n";
-        std::cout << " 5. FAULT 进入受限柔性恢复\n";
+        std::cout << " 5. FAULT 进入拖拽恢复\n";
         std::cout << " 6. FAULT 返回刚性保持\n";
         std::cout << " 7. 查看当前故障恢复模式\n";
         std::cout << " 0. 返回主菜单\n";
@@ -9192,7 +9251,7 @@ private:
             case 2: park_and_deactivate(); break;
             case 3: immediate_deactivate(); break;
             case 4: clear_fault(); break;
-            case 5: enter_fault_compliant_recovery(); break;
+            case 5: enter_fault_drag_recovery(); break;
             case 6: return_to_fault_rigid_hold(); break;
             case 7: show_fault_hold_mode(); break;
             default: std::cout << "未知菜单编号\n"; break;
@@ -9337,7 +9396,7 @@ private:
         // into a normal shutdown. Robot's ordinary configured gains stay intact
         robot_.clear_calibration_hold_gains();
         robot_.clear_calibration_tracking_gains();
-        // 停放使用柔性交互模式，CSP 下导纳仍按当前路径工作
+        // CSP 停放使用名义位置轨迹，不依赖尚未标定的外力退让
 
         const auto resume_admittance = [this]() {
 
@@ -9352,10 +9411,11 @@ private:
             return true;
             };
 
-        const auto mode_result = runtime_.set_impedance_mode(robot_, JointImpedanceMode::COMPLIANT, Robot::Clock::now());
+        const bool csp_parking=robot_.get_control_path()==ControlPath::CSP;
+        const auto mode_result = runtime_.set_impedance_mode(robot_, csp_parking ? JointImpedanceMode::RIGID : JointImpedanceMode::COMPLIANT, Robot::Clock::now());
         if(!mode_result) {
-            park_last_error_ = "park failed: cannot enter COMPLIANT; robot was not automatically disabled";
-            std::cout << "切换 COMPLIANT 失败：\n";
+            park_last_error_ = "park failed: cannot enter parking mode; robot was not automatically disabled";
+            std::cout << "切换停放模式失败：\n";
             print_fault(mode_result.error());
             resume_admittance();
             return;
@@ -9374,7 +9434,8 @@ private:
         background_fault_reported_ = false;
 
         std::cout << "开始回到配置的停放姿态\n";
-        std::cout << "[停放] 前 " << cfg_.shutdown.compliant_phase_ratio * 100.0
+        if(csp_parking)std::cout << "[停放] CSP 刚性位置轨迹，不启用导纳退让\n";
+        else std::cout << "[停放] 前 " << cfg_.shutdown.compliant_phase_ratio * 100.0
             << "% 时间柔性快速回位，后 " << (1.0 - cfg_.shutdown.compliant_phase_ratio) * 100.0
             << "% 时间刚性精调，切换时重新以实测关节位置建立参考\n";
         print_vector("park_pos", cfg_.shutdown.park_pos);
@@ -9382,7 +9443,7 @@ private:
         const Robot::TimePoint started_at = Robot::Clock::now();
         Robot::TimePoint last_progress_at = started_at;
         std::optional<Robot::TimePoint> settled_at;
-        bool rigid_finish_mode = false;
+        bool rigid_finish_mode = csp_parking;
         while(robot_.get_state() == RobotState::ACTIVE) {
             if(interrupted()) return;
             const std::uint64_t previous_cycle = cycle_counter_;
@@ -9577,17 +9638,17 @@ private:
         std::cout << "clear_fault() 成功，已清除外部命令并进入 ACTIVE + RIGID\n";
     }
 
-    void enter_fault_compliant_recovery() {
+    void enter_fault_drag_recovery() {
         std::lock_guard<std::mutex> lock(mutex_);
         clear_command_sources();
-        const auto result = robot_.enter_fault_compliant_recovery();
+        const auto result = robot_.enter_fault_drag_recovery();
         if(!result) {
-            std::cout << "enter_fault_compliant_recovery() 失败：\n";
+            std::cout << "enter_fault_drag_recovery() 失败：\n";
             print_fault(result.error());
             return;
         }
         background_fault_reported_ = false;
-        std::cout << "已进入 FAULT 受限柔性恢复\n";
+        std::cout << "已进入 FAULT 拖拽恢复\n";
     }
 
     void return_to_fault_rigid_hold() {
@@ -9913,6 +9974,7 @@ private:
             }
             return;
         }
+        if(cfg_.dynamics.gravity_scale!=*scale)robot_.invalidate_gravity_validation();
         cfg_.dynamics.gravity_scale = *scale;
         std::cout << "重力补偿比例已更新该值只修改当前进程，不会回写 YAML\n";
     }
@@ -9954,7 +10016,7 @@ private:
             print_fault(result.error());
             return false;
         }
-        cfg_.capability.admittance = candidate;
+        cfg_.capability.admittance = robot_.get_config().capability.admittance;
         last_output_.reset();
         return true;
     }
@@ -10683,6 +10745,7 @@ private:
         }
 
         AdmittanceStaticCalibrationCfg calibration_cfg;
+        calibration_cfg.fit_gravity_scale=false;
         calibration_cfg.joints_count = cfg_.joint_names.size();
         calibration_cfg.fallback_gravity_scale = original_gravity_scale;
         calibration_cfg.gravity_observability_span = 0.25;

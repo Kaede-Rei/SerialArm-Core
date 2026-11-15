@@ -17,7 +17,7 @@ import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
 from control_parameters import (add_mapping_value, canonical_control_text, canonical_core,
-                                four_mode_control_text, complete_mapping_values)
+                                four_mode_control_text, complete_mapping_values, interaction_configuration)
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted, revoke_gravity_trust
 
 
@@ -32,82 +32,95 @@ def _map(joint_names, values):
     return '{' + ', '.join(f'{name}: {float(value):.9g}' for name, value in zip(joint_names, values)) + '}'
 
 
-def _targets(joints, runtime, gravity_scale):
-    friction = runtime.get('friction') or {}
-    targets = {
-        ('model', 'gravity_scale'): _map(joints, gravity_scale),
-        ('capability', 'admittance', 'observer', 'momentum_gain'): _map(joints, runtime['momentum_gain']),
-        ('capability', 'admittance', 'calibration', 'torque_bias'): _map(joints, runtime['torque_bias']),
-        ('capability', 'admittance', 'calibration', 'torque_threshold'): _map(joints, runtime['torque_threshold']),
-        ('capability', 'admittance', 'calibration', 'friction', 'enabled'): 'true' if friction.get('enabled') else 'false',
-        ('capability', 'admittance', 'calibration', 'friction', 'velocity_transition'): f"{float(friction.get('velocity_transition', 0.03)):.9g}",
-        ('capability', 'admittance', 'calibration', 'friction', 'positive_coulomb'): _map(joints, friction.get('positive_coulomb', [])),
-        ('capability', 'admittance', 'calibration', 'friction', 'positive_viscous'): _map(joints, friction.get('positive_viscous', [])),
-        ('capability', 'admittance', 'calibration', 'friction', 'negative_coulomb'): _map(joints, friction.get('negative_coulomb', [])),
-        ('capability', 'admittance', 'calibration', 'friction', 'negative_viscous'): _map(joints, friction.get('negative_viscous', [])),
-        ('capability', 'admittance', 'controller', 'mass'): _map(joints, runtime['mass']),
-        ('capability', 'admittance', 'controller', 'damping'): _map(joints, runtime['damping']),
-        ('capability', 'admittance', 'controller', 'stiffness'): _map(joints, runtime['stiffness']),
-        ('capability', 'admittance', 'controller', 'max_delta_q'): _map(joints, runtime['max_delta_q']),
-        ('capability', 'admittance', 'controller', 'max_delta_q_dot'): _map(joints, runtime['max_delta_q_dot']),
-    }
-    if 'joint_enabled' in runtime:
-        flags = runtime['joint_enabled']
-        if len(flags) != len(joints) or any(value not in (0, 1, False, True) for value in flags):
-            raise ValueError('参与导纳的关节设置无效')
-        targets[('capability', 'admittance', 'joint_enabled')] = yaml.safe_dump(
-            dict(zip(joints, map(bool, flags))), default_flow_style=True).strip()
-    for purpose, gains in (runtime.get('execution_gains') or {}).items():
-        if purpose not in ('rigid', 'compliant', 'drag'):
-            raise ValueError('未知执行增益用途: ' + purpose)
-        for term in ('kp', 'kd'):
-            values = gains.get(term)
-            if (not isinstance(values, list) or len(values) != len(joints) or
-                    any(isinstance(v, bool) or not isinstance(v, (int, float)) or
-                        not math.isfinite(v) or v < 0 for v in values)):
-                raise ValueError('执行增益必须为有限非负关节数组')
-            targets[('control', 'controller', purpose, term)] = _map(joints, values)
-    if 'hold_compensation' in runtime:
-        hold = runtime['hold_compensation']
-        if not isinstance(hold, dict) or not isinstance(hold.get('enabled'), bool):
-            raise ValueError('定位保持补偿配置无效')
-        targets[('control', 'hold_compensation', 'enabled')] = 'true' if hold['enabled'] else 'false'
-        for term in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
-            values = hold.get(term)
-            if (not isinstance(values, list) or len(values) != len(joints) or
-                    any(isinstance(v, bool) or not isinstance(v, (int, float)) or
-                        not math.isfinite(v) or v < 0 for v in values)):
-                raise ValueError('定位保持补偿必须为有限非负关节数组')
-            targets[('control', 'hold_compensation', term)] = _map(joints, values)
-        for term in ('velocity_threshold', 'error_threshold'):
-            value = hold.get(term)
-            if (isinstance(value, bool) or not isinstance(value, (int, float)) or
-                    not math.isfinite(value) or value <= 0):
-                raise ValueError('定位保持补偿阈值必须为有限正数')
-            targets[('control', 'hold_compensation', term)] = repr(float(value))
-    return targets
+_INTERACTION_FIELDS = {
+    'momentum_gain': ('observer', 'momentum_gain'),
+    'torque_bias': ('calibration', 'torque_bias'),
+    'torque_threshold': ('calibration', 'torque_threshold'),
+    **{key: ('controller', key) for key in
+       ('mass', 'damping', 'stiffness', 'max_delta_q', 'max_delta_q_dot')},
+    'joint_enabled': ('joint_enabled',),
+}
 
 
-def _runtime_text(text, joints, runtime, gravity_scale):
-    targets = _targets(joints, runtime, gravity_scale)
-    original = yaml.safe_load(text)
-    canonical = canonical_core(original)
-    defaults = (canonical.get('capability') or {}).get('admittance')
-    if defaults is not None and 'admittance' not in (original.get('capability') or {}):
-        if 'capability' not in original:
-            text = add_mapping_value(text, (), 'capability', {'admittance': defaults})
-        else:
-            text = add_mapping_value(text, ('capability',), 'admittance', defaults)
-    text = canonical_control_text(text)
-    if 'hold_compensation' in runtime:
-        hold = runtime['hold_compensation']
-        value = {key: dict(zip(joints, item)) if isinstance(item, list) else item
-                 for key, item in hold.items()}
-        text = complete_mapping_values(text, ('control',), {'hold_compensation': value})
+def _targets(joints, runtime, fields):
+    """Serialize explicitly selected observation/MDK leaves only."""
+    if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or not field for field in fields):
+        raise ValueError('请选择要保存的观察或导纳字段')
+    if not isinstance(runtime, dict):
+        raise ValueError('导纳参数来源必须是参数对象')
+    requested = [tuple(field.split('.')) for field in fields]
+    def wanted(path):
+        return any(path[:len(prefix)] == prefix or prefix[:len(path)] == path for prefix in requested)
+    values = {}
+    def number(value, path):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError('保存字段必须是有限数值: ' + '.'.join(path))
+        return float(value)
+    for key, path in _INTERACTION_FIELDS.items():
+        if not wanted(path):
+            continue
+        array = runtime.get(key)
+        if array is None or array == []:
+            continue
+        if not isinstance(array, list) or len(array) != len(joints):
+            raise ValueError('导纳参数维度不匹配: ' + key)
+        for name, value in zip(joints, array):
+            leaf = (*path, name)
+            if not wanted(leaf):
+                continue
+            if key == 'joint_enabled':
+                if not isinstance(value, bool):
+                    raise ValueError('参与导纳的关节设置必须为布尔值')
+                values[leaf] = value
+            else:
+                values[leaf] = number(value, leaf)
+    friction = (runtime.get('friction') or {}) if wanted(('calibration', 'friction')) else {}
+    if not isinstance(friction, dict):
+        raise ValueError('摩擦参数必须是对象')
+    if 'enabled' in friction and wanted(('calibration', 'friction', 'enabled')):
+        if not isinstance(friction['enabled'], bool):
+            raise ValueError('摩擦启用状态必须为布尔值')
+        values[('calibration', 'friction', 'enabled')] = friction['enabled']
+    if 'velocity_transition' in friction and wanted(('calibration', 'friction', 'velocity_transition')):
+        path = ('calibration', 'friction', 'velocity_transition')
+        values[path] = number(friction['velocity_transition'], path)
+    for key in ('positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
+        if not wanted(('calibration', 'friction', key)):
+            continue
+        array = friction.get(key)
+        if array is None or array == []:
+            continue
+        if not isinstance(array, list) or len(array) != len(joints):
+            raise ValueError('摩擦参数维度不匹配: ' + key)
+        for name, value in zip(joints, array):
+            path = ('calibration', 'friction', key, name)
+            if wanted(path):
+                values[path] = number(value, path)
+    selected = {}
+    for field in fields:
+        prefix = tuple(field.split('.'))
+        matching = {path: value for path, value in values.items() if path[:len(prefix)] == prefix}
+        if not matching:
+            raise ValueError('不可保存或来源中不存在的字段: ' + field)
+        selected.update(matching)
+    return {('capability', 'admittance', *path): yaml.safe_dump(value, default_flow_style=True).strip().removesuffix('\n...')
+            for path, value in selected.items()}
+
+
+def _runtime_text(text, joints, runtime, gravity_scale=None, *, fields=None):
+    targets = _targets(joints, runtime, fields)
+    additions = {}
+    for path, encoded in targets.items():
+        parent = additions
+        for key in path[:-1]:
+            parent = parent.setdefault(key, {})
+        parent[path[-1]] = yaml.safe_load(encoded)
+    text = complete_mapping_values(text, (), additions)
     after = patch_text(text, targets)
-    if (canonical.get('model') or {}).get('gravity_scale') != (yaml.safe_load(after).get('model') or {}).get('gravity_scale'):
-        after = revoke_gravity_trust(after)
-    return four_mode_control_text(after)
+    # Reject incomplete new observation/MDK blocks rather than filling them with
+    # invented calibration values. Existing unrelated defaults remain untouched.
+    interaction_configuration(yaml.safe_load(after))
+    return after
 
 
 def patch_text(text, targets):
@@ -186,10 +199,10 @@ def patch_text(text, targets):
     return updated
 
 
-def preview(path, joints, runtime, gravity_scale):
+def preview(path, joints, runtime, gravity_scale=None, *, fields=None):
     path = Path(path).resolve()
     before = path.read_text()
-    after = _runtime_text(before, joints, runtime, gravity_scale)
+    after = _runtime_text(before, joints, runtime, gravity_scale, fields=fields)
     changed = []
     for line in difflib.ndiff(before.splitlines(), after.splitlines()):
         if line.startswith(('- ', '+ ')):
@@ -200,13 +213,13 @@ def preview(path, joints, runtime, gravity_scale):
             'gravity_validation_reset': trust_reset, 'gravity_validation_changes': ['gravity_scale'] if trust_reset else []}
 
 
-def save(path, expected_sha, joints, runtime, gravity_scale, storage_home=None):
+def save(path, expected_sha, joints, runtime, gravity_scale=None, storage_home=None, *, fields=None):
     path = Path(path).resolve()
     current = sha256_file(path)
     if current != expected_sha:
         raise ValueError('configuration changed outside the workspace; reload before saving')
     before = path.read_text()
-    after = _runtime_text(before, joints, runtime, gravity_scale)
+    after = _runtime_text(before, joints, runtime, gravity_scale, fields=fields)
     yaml.safe_load(after)
     trust_reset = gravity_trusted(yaml.safe_load(before)) and not gravity_trusted(yaml.safe_load(after))
     if before == after:

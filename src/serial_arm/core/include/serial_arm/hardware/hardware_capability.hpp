@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 
 namespace serial_arm {
 
@@ -26,6 +27,8 @@ struct ActuatorCapability {
     double effort_resolution{ 0.0 }; ///< 执行器协议力矩步进，0 表示连续或未声明
     bool supports_mit{ true }; ///< 支持电机端 PD 命令
     bool supports_csp{ false }; ///< 已确认支持 Core 周期位置参考抽象，具体驱动模式由 Backend 声明
+    double velocity_resolution{0.0}; ///< 执行器速度反馈步进，0 表示未声明
+    std::map<std::string,double> servo_parameters; ///< 驱动已读回的内部伺服参数，仅供诊断
 };
 
 using HardwareCapabilities = std::vector<ActuatorCapability>;

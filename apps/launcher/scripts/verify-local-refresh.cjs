@@ -9,7 +9,7 @@ const out=path.resolve(arg('--out','/tmp/serialarm-local-refresh'));
 const record=arg('--record','/home/kaede-rei/AgroTech/repos/ROS2-Workspace/temp-tomato-picker/src/tomato_picker/serial_arm_core_profile/tomato_picker/.serialarm/model-calibration/model-calibration-1794241207035');
 const fixture=buildFixture(path.join(out,'fixture'),{record});
 const fixtureDataPath=path.join(fixture.directory,'data.json'),fixtureData=JSON.parse(fs.readFileSync(fixtureDataPath,'utf8'));
-fixtureData.editor.original_gravity_model_validated=fixtureData.editor.core.safety_policy.fault_recovery?.gravity_model_validated===true;
+fixtureData.editor.original_gravity_model_validated=fixtureData.editor.core.model?.gravity_model_validated===true;
 fs.writeFileSync(fixtureDataPath,JSON.stringify(fixtureData));
 const sourceFiles=['gain-candidate.json','result.json','metadata.json','frames.csv'].map(name=>({file:path.join(record,name),bytes:fs.readFileSync(path.join(record,name))}));
 const sceneSource=fs.readFileSync(path.join(__dirname,'render-studio-ui.cjs'),'utf8');

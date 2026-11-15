@@ -13,9 +13,9 @@ _CONTROLLER_ROLES = ('rigid', 'compliant', 'drag')
 def _canonical_controller(controller):
     if not isinstance(controller, dict):
         raise ValueError('control.controller 必须为映射')
-    if set(controller) != {'allow_full_cmd', *_CONTROLLER_ROLES}:
-        raise ValueError('control.controller 必须包含 allow_full_cmd、rigid、compliant 和 drag')
-    for key in _CONTROLLER_ROLES:
+    if set(controller) - {'allow_full_cmd', *_CONTROLLER_ROLES}:
+        raise ValueError('control.controller 含未知控制用途')
+    for key in set(controller) & set(_CONTROLLER_ROLES):
         if not isinstance(controller[key], dict) or set(controller[key]) != {'kp', 'kd'}:
             raise ValueError('control.controller.' + key + ' 必须包含 kp 和 kd')
     return deepcopy(controller)
@@ -42,16 +42,10 @@ def canonical_core(core):
         observer = admittance.get('observer')
         if isinstance(observer, dict) and set(observer) - {'momentum_gain'}:
             raise ValueError('capability.admittance.observer 仅支持 momentum_gain')
-    if names and 'admittance' not in (result.get('capability') or {}):
-        zeros = {name: 0.0 for name in names}
-        result.setdefault('capability', {})['admittance'] = {
-            'joint_enabled': {name: True for name in names},
-            'observer': {'momentum_gain': {name: 25.0 for name in names}},
-            'calibration': {'torque_bias': deepcopy(zeros), 'torque_threshold': {name: .05 for name in names},
-                'friction': {'enabled': False, 'velocity_transition': .03,
-                            **{term: deepcopy(zeros) for term in ('positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous')}}},
-            'controller': {key: {name: value for name in names} for key, value in
-                           (('mass', 1.0), ('damping', 5.5), ('stiffness', 15.0), ('max_delta_q', .5), ('max_delta_q_dot', 1.0))}}
+    recovery = (result.get('safety_policy') or {}).get('fault_recovery') or {}
+    removed = set(recovery) & {'allow_compliant_recovery', 'gravity_model_validated', 'compliant_recovery'}
+    if removed:
+        raise ValueError('safety_policy.fault_recovery 含已移除参数: ' + ', '.join(sorted(removed)))
     runtime = (result.get('control') or {}).get('runtime')
     if isinstance(runtime, dict):
         unknown = set(runtime) - {'ctrl_frequency_hz', 'joint_acc_filter_alpha', 'write_enabled',
@@ -69,10 +63,74 @@ def canonical_core(core):
         hold.setdefault('velocity_threshold', .02)
         hold.setdefault('error_threshold', .03)
     controller = (result.get('control') or {}).get('controller')
-    if not isinstance(controller, dict):
+    if controller is None:
         return result
     result['control']['controller'] = _canonical_controller(controller)
     return result
+
+
+def interaction_configuration(core):
+    """Validate only authored observation/MDK groups, without inventing defaults."""
+    names = (core.get('model') or {}).get('joint_names') or []
+    capability = core.get('capability', {})
+    if not isinstance(capability, dict) or set(capability) - {'admittance'}:
+        raise ValueError('capability 仅支持 admittance')
+    admittance = capability.get('admittance')
+    if admittance is None:
+        return {'observation_configured': False, 'admittance_configured': False}
+    if not isinstance(admittance, dict):
+        raise ValueError('capability.admittance 必须为映射')
+    prefix = 'capability.admittance.'
+    if set(admittance) - {'observer', 'calibration', 'controller', 'joint_enabled'}:
+        raise ValueError('capability.admittance 含未知参数')
+
+    def mapping(value, path, keys):
+        if not isinstance(value, dict) or set(value) != set(keys):
+            raise ValueError(prefix + path + ' 字段不完整或包含未知字段')
+        return value
+
+    def joint_map(value, path, minimum=None, strict=False):
+        mapping(value, path, names)
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or
+               minimum is not None and (v <= minimum if strict else v < minimum) for v in value.values()):
+            raise ValueError(prefix + path + ' 必须为有效逐关节数值')
+
+    observed = 'observer' in admittance or 'calibration' in admittance
+    if observed:
+        observer = mapping(admittance.get('observer'), 'observer', ('momentum_gain',))
+        joint_map(observer['momentum_gain'], 'observer.momentum_gain', 0, True)
+        calibration = admittance.get('calibration')
+        if not isinstance(calibration, dict) or not {'torque_bias', 'torque_threshold'} <= set(calibration) or set(calibration) - {'torque_bias', 'torque_threshold', 'friction'}:
+            raise ValueError(prefix + 'calibration 字段不完整或包含未知字段')
+        joint_map(calibration['torque_bias'], 'calibration.torque_bias')
+        joint_map(calibration['torque_threshold'], 'calibration.torque_threshold', 0)
+        friction = calibration.get('friction') or {}
+        if not isinstance(friction, dict) or set(friction) - {'enabled', 'velocity_transition', 'positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'}:
+            raise ValueError(prefix + 'calibration.friction 含未知字段')
+        if not isinstance(friction.get('enabled', False), bool):
+            raise ValueError(prefix + 'calibration.friction.enabled 必须为布尔值')
+        transition = friction.get('velocity_transition', .03)
+        if isinstance(transition, bool) or not isinstance(transition, (int, float)) or not math.isfinite(transition) or transition <= 0:
+            raise ValueError(prefix + 'calibration.friction.velocity_transition 必须为正数')
+        for key in ('positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
+            if key in friction or friction.get('enabled'):
+                joint_map(friction.get(key), 'calibration.friction.' + key)
+    modeled = 'controller' in admittance or 'joint_enabled' in admittance
+    if modeled:
+        if not observed:
+            raise ValueError('导纳需要先配置 capability.admittance.observer 和 calibration')
+        flags = mapping(admittance.get('joint_enabled'), 'joint_enabled', names)
+        if any(not isinstance(v, bool) for v in flags.values()):
+            raise ValueError(prefix + 'joint_enabled 必须为逐关节布尔值')
+        controller = mapping(admittance.get('controller'), 'controller',
+            ('mass', 'damping', 'stiffness', 'max_delta_q', 'max_delta_q_dot'))
+        for key in ('mass', 'max_delta_q', 'max_delta_q_dot'):
+            joint_map(controller[key], 'controller.' + key, 0, True)
+        for key in ('damping', 'stiffness'):
+            joint_map(controller[key], 'controller.' + key, 0)
+            if any(flags[name] and controller[key][name] <= 0 for name in names):
+                raise ValueError(prefix + 'controller.' + key + ' 参与轴必须为正数')
+    return {'observation_configured': observed, 'admittance_configured': modeled}
 
 
 GAIN_PURPOSE_KEYS = ('rigid', 'compliant', 'drag')
@@ -485,7 +543,9 @@ def canonical_control_text(text):
     text = remove_deprecated_pd_limits_text(text)
     original = yaml.safe_load(text)
     canonical_core(original or {})
-    _canonical_controller(((original or {}).get('control') or {}).get('controller'))
+    controller = ((original or {}).get('control') or {}).get('controller')
+    if controller is not None:
+        _canonical_controller(controller)
     expanded = _expand_yaml_aliases(text)
     if yaml.safe_load(expanded) != original:
         raise ValueError('展开 YAML 别名会改变配置内容，请改用独立参数映射')

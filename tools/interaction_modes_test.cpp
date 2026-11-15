@@ -31,5 +31,11 @@ int main() {
         assert(out->cmd.kp[0] == kp && out->cmd.kd[0] == kd);
         assert(controller.set_cmd(JointPosVelCmd{{0.3}, {0.2}}));
     }
+    auto partial=cfg;partial.compliant_gains={};partial.drag_gains={};JointCtrller rigid_only;
+    assert(rigid_only.configure(partial));assert(rigid_only.initialize(state));
+    assert(!rigid_only.set_impedance_mode(JointImpedanceMode::COMPLIANT,state));
+    partial.control_path=ControlPath::CSP;partial.rigid_gains={};JointCtrller csp;
+    assert(csp.configure(partial));assert(csp.initialize(state));auto position=csp.update(input);
+    assert(position && position->cmd.kp[0]==0 && position->cmd.kd[0]==0);
     std::cout << "interaction modes passed\n";
 }

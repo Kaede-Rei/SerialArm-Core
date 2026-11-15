@@ -17,7 +17,7 @@ import sys
 import yaml
 
 from profiles import Inspector, config_values, read_yaml, text
-from control_parameters import canonical_core, four_mode_core, four_mode_control_text, effective_hardware
+from control_parameters import canonical_core, four_mode_core, four_mode_control_text, effective_hardware, interaction_configuration, complete_mapping_values
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted
 
 
@@ -167,17 +167,13 @@ class ProfileLibrary:
         shutdown = core.get('shutdown') or {}
         capability = core.get('capability') or {}
         hardware_hash = self._digest(info.get('hardware_plugin'), effective_hardware(hardware, info.get('connection_overrides')), info.get('devices'))
-        model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path')}
+        model_chain = {key: value for key, value in model.items() if key not in ('gravity_scale', 'gravity_correction_path', 'gravity_model_validated')}
         model_hash = self._digest(source, model_chain)
         startup_hash = self._digest(model_hash, hardware_hash, calibration,
                                     controller.get('rigid'))
         mapping_hash = self._digest(source, hardware_hash, calibration)
         geometry_hash = self._digest(source, calibration)
-        correction_path = model.get('gravity_correction_path') or ''
-        correction_sha = content_digest((Path(info['resources']['core']).parent / correction_path).resolve()) if correction_path else ''
-        gravity_hash = self._digest(mapping_hash, model_hash, model.get('gravity'), model.get('gravity_scale'),
-                                    model.get('gravity_correction_path'), correction_sha,
-                                    controller.get('drag'), controller.get('rigid'))
+        gravity_hash = self._digest(gravity_validation_context(core, info['resources']['core'], hardware, info.get('hardware_plugin')))
         dynamics_hash = self._digest(model_hash, mapping_hash, model.get('gravity'),
                                      controller.get('rigid'), capability)
         scopes = {
@@ -388,8 +384,8 @@ class ProfileLibrary:
         safety = core.get('safety_policy') or {}
         runtime = ((core.get('control') or {}).get('runtime') or {})
         tracking = safety.get('max_tracking_error')
+        interaction = interaction_configuration(core) if profile_setup else {'observation_configured': False, 'admittance_configured': False}
         csp_ready = (profile_setup and bool(joints) and
-            isinstance((authored_core.get('capability') or {}).get('admittance'), dict) and
             isinstance(tracking, dict) and set(tracking) == set(joints)
             and all(isinstance(tracking[j], (int, float)) and not isinstance(tracking[j], bool)
                     and math.isfinite(tracking[j]) and tracking[j] > 0 for j in joints))
@@ -398,7 +394,8 @@ class ProfileLibrary:
             for name in self._MODES:
                 if path == 'CSP':
                     # MIT gain evidence does not qualify a different execution path.
-                    result[name] = 'configured' if csp_ready else 'unconfigured'
+                    ready = csp_ready and (name in ('RIGID', 'SERVO_TRACKING') or interaction['admittance_configured'])
+                    result[name] = 'configured' if ready else 'unconfigured'
                     continue
                 key = self._MODE_KEYS[name]
                 gains = (controller.get('rigid')
@@ -486,10 +483,14 @@ class ProfileLibrary:
             'core.control.runtime.write_enabled', 'motion')
         drag = controller.get('drag') or {}
         kd = drag.get('kd') or {}
-        prerequisite('drag_damping', '拖拽阻尼', bool(joints) and all(
-            isinstance(kd.get(j), (int, float)) and not isinstance(kd.get(j), bool) and
-            math.isfinite(kd[j]) and kd[j] > 0 for j in joints),
-            'core.control.controller.drag.kd', 'motion')
+        if runtime.get('control_path', 'MIT') == 'MIT':
+            prerequisite('drag_damping', '拖拽阻尼', bool(joints) and all(
+                isinstance(kd.get(j), (int, float)) and not isinstance(kd.get(j), bool) and
+                math.isfinite(kd[j]) and kd[j] > 0 for j in joints),
+                'core.control.controller.drag.kd', 'motion')
+        else:
+            prerequisite('observation', '外力观察参数', interaction['observation_configured'],
+                'core.capability.admittance.observer.momentum_gain', 'observation')
         gravity = model.get('gravity')
         scales = model.get('gravity_scale') or {}
         gravity_ready = (isinstance(gravity, list) and len(gravity) == 3 and
@@ -502,11 +503,28 @@ class ProfileLibrary:
         prerequisite('hold_gains', '刚性保持增益', mode_states.get('RIGID') != 'unconfigured',
             'core.control.controller.rigid.kp', 'motion')
         calibration_ready = profile_setup and all(item['ready'] for item in prerequisites)
+        selected_path = runtime.get('control_path', 'MIT')
+        trusted = gravity_trusted(core)
+        operation_readiness = {
+            'basic_control': {'ready': profile_setup and mode_states.get('RIGID') != 'unconfigured',
+                              'reason': reason or ('' if mode_states.get('RIGID') != 'unconfigured' else '请配置当前执行路径的刚性控制参数')},
+            'gravity_verification': {'ready': calibration_ready,
+                'reason': '' if calibration_ready else '请补齐当前路径的基础控制、模型和采样参数'},
+            'drag': {'ready': profile_setup and trusted and mode_states.get('DRAG') != 'unconfigured',
+                'reason': '请先验证当前模型与负载的重力补偿' if not trusted else
+                    '' if mode_states.get('DRAG') != 'unconfigured' else '请配置当前执行路径的拖拽参数'},
+            'observation': {'ready': profile_setup and interaction['observation_configured'],
+                'reason': '' if interaction['observation_configured'] else '请显式配置观察器与外力校准参数',
+                'calibration_status': 'unverified' if interaction['observation_configured'] else 'unconfigured'},
+            'admittance': {'ready': csp_ready and interaction['admittance_configured'],
+                'reason': '' if csp_ready and interaction['admittance_configured'] else '需要 CSP、跟踪误差限制及完整观察与 MDK 参数'},
+        }
         return {'state': state, 'verification_state': verification_state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'modes_by_path': modes_by_path, 'reason': reason,
                 'gain_initialization': meta.get('gain_initialization'),
                 'fingerprint': info['fingerprint'], 'info': info,
                 'control_available': profile_setup, 'safety_summary': safety_summary,
+                'operation_readiness': operation_readiness,
                 'connection_readiness': {'structurally_valid': profile_setup, 'read_only_connectable': offline_ready,
                     'offline_connectable': offline_ready, 'hardware_connectable': profile_setup,
                     'offline_issues': core_issues,
@@ -569,7 +587,7 @@ class ProfileLibrary:
         # A bundled configuration is trusted as a source, never as proof of this machine's tests
         return self._readiness(config)
 
-    def record_stage(self, config, stage, answers, native=None):
+    def record_stage(self, config, stage, answers, native=None, native_fingerprint=None):
         """Store optional operator notes without turning them into runtime admission
 
         A checklist is not a native robot measurement. Opening or recording a
@@ -602,7 +620,10 @@ class ProfileLibrary:
         # Only the Profile and its configuration dependencies are required to
         # associate a note with the right robot; no hardware session is needed
         info = self.inspector.inspect(config)
-        core = read_yaml(info['resources']['core'])
+        core_path = Path(info['resources']['core'])
+        core_text = core_path.read_text(encoding='utf-8')
+        core = yaml.safe_load(core_text)
+        core_sha = hashlib.sha256(core_text.encode('utf-8')).hexdigest()
         hardware = read_yaml(info['resources']['hardware'])
         scopes = self._dependencies(info, core, hardware)
         path, data = self._readiness_meta(info, scopes)
@@ -625,6 +646,7 @@ class ProfileLibrary:
         # A real completed native gravity task may provide stronger evidence.
         # Missing, stale or unrelated sessions never block saving a note and
         # must never transform self-reported checkboxes into a native proof
+        accept_gravity = False
         if stage == 'gravity_verification' and native is not None:
             try:
                 sample = native.request('status', {}, timeout=8)
@@ -638,6 +660,7 @@ class ProfileLibrary:
                         isinstance(v, (int, float)) and math.isfinite(v) and
                         abs(stored[j] - v) <= 1e-6 for j, v in zip(names, actual)))
                 native_completed = (
+                    native_fingerprint is not None and info.get('fingerprint') == native_fingerprint and
                     sample.get('robot_state') == 'INACTIVE' and
                     proof.get('active') is False and
                     proof.get('phase') == 'completed' and
@@ -652,17 +675,33 @@ class ProfileLibrary:
                         'runtime': {'sample_count': proof['sample_count'],
                                     'robot_state': 'INACTIVE', 'joint_names': names},
                     })
-                    data.setdefault('modes', {})['DRAG'] = {
-                        'result': 'passed', 'scope': scopes['modes']['DRAG'],
-                        'kind': 'native_gravity_completed',
-                        'sample_count': proof['sample_count'],
-                        'recorded_at': time.time(),
-                    }
+                    if sample.get('control_path', 'MIT') == 'MIT':
+                        data.setdefault('modes', {})['DRAG'] = {
+                            'result': 'passed', 'scope': scopes['modes']['DRAG'],
+                            'kind': 'native_gravity_completed',
+                            'sample_count': proof['sample_count'],
+                            'recorded_at': time.time(),
+                        }
+                    accept_gravity = (all(checked.values()) and native_fingerprint is not None and
+                                      info.get('fingerprint') == native_fingerprint)
             except Exception:
                 # There is no usable live native proof; keep only the note
                 pass
         _atomic_yaml(path, data)
-        return self._readiness(config)
+        trust_saved = accept_gravity and not gravity_trusted(core)
+        if trust_saved:
+            # The dedicated task measured this bound model; the final operator
+            # acknowledgment persists only its trust flag. Loading it into the
+            # control session remains an explicit reconnect.
+            if _sha(core_path) != core_sha:
+                raise ValueError('验证期间模型配置已变化，请重新连接并验证后再确认')
+            from persistence import patch_text
+            trusted_text = complete_mapping_values(core_text, ('model',), {'gravity_model_validated': False})
+            trusted_text = patch_text(trusted_text, {('model', 'gravity_model_validated'): 'true'})
+            _atomic_yaml_text(core_path, trusted_text)
+        readiness = self._readiness(config)
+        readiness.update(gravity_validation_saved=trust_saved, requires_reconnect=trust_saved)
+        return readiness
 
     @staticmethod
     def _gain_interaction_context(core, purpose):
@@ -1053,12 +1092,12 @@ class ProfileLibrary:
             # Zero placeholders are replaced by model-derived per-axis suggestions below
             kp_rigid=zeros.copy(); kd_rigid=zeros.copy(); kp_soft=zeros.copy(); kd_soft=zeros.copy()
             core={
-              'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones},
+              'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones,'gravity_model_validated':False},
               'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
               'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','control_path':'MIT'},'controller':{'allow_full_cmd':False,'rigid':{'kp':kp_rigid,'kd':kd_rigid},'compliant':{'kp':kp_soft,'kd':kd_soft},'drag':{'kp':zeros,'kd':zeros.copy()}}},
-              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_compliant_recovery':True,'require_operator_request':True,'gravity_model_validated':False,'recovery_timeout_s':30.0,'compliant_recovery':{'kp':kp_soft,'kd':kd_soft,'max_vel':self._joint_map(joints,0.5),'effort_scale':0.5}}},
+              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_drag_recovery':True,'require_operator_request':True,'recovery_timeout_s':30.0}},
               'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
-              'capability':{'admittance':{'joint_enabled':{j:True for j in joints},'observer':{'momentum_gain':self._joint_map(joints,25.0)},'calibration':{'torque_bias':zeros,'torque_threshold':self._joint_map(joints,0.05),'friction':{'enabled':False,'velocity_transition':0.03,'positive_coulomb':zeros,'positive_viscous':zeros,'negative_coulomb':zeros,'negative_viscous':zeros}},'controller':{'mass':ones,'damping':self._joint_map(joints,5.5),'stiffness':self._joint_map(joints,15.0),'max_delta_q':self._joint_map(joints,0.5),'max_delta_q_dot':self._joint_map(joints,1.0)}}}
+
             }
             # If the Description already supplies a robot-specific Core config,
             # preserve its gains; new automatic calibration independently derives
@@ -1256,7 +1295,7 @@ class ProfileLibrary:
             'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits,
             'urdf_joint_limits': urdf_joint_limits, 'core': core, 'hardware': hardware,
             'profile_entry': profile,
-            'original_gravity_model_validated': bool(((core.get('safety_policy') or {}).get('fault_recovery') or {}).get('gravity_model_validated')),
+            'original_gravity_model_validated': gravity_trusted(core),
             'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
             'setup_issues': self._setup_issues(core, hardware, profile),
             'managed_by_launcher': self._readiness_path(info['profile_file'], info['profile']).is_file(),
@@ -1401,9 +1440,9 @@ class ProfileLibrary:
         for field in ('control.runtime.write_enabled', 'control.controller.allow_full_cmd',
                       'safety_policy.require_all_actuators_online', 'safety_policy.require_all_actuators_enabled',
                       'safety_policy.reject_motor_error', 'safety_policy.require_continuous_cmd',
-                      'safety_policy.fault_recovery.allow_compliant_recovery',
+                      'safety_policy.fault_recovery.allow_drag_recovery',
                       'safety_policy.fault_recovery.require_operator_request',
-                      'safety_policy.fault_recovery.gravity_model_validated', 'shutdown.park_before_disable',
+                      'model.gravity_model_validated', 'shutdown.park_before_disable',
                       'capability.admittance.calibration.friction.enabled'):
             value = core
             for part in field.split('.'):
@@ -1419,10 +1458,13 @@ class ProfileLibrary:
             raise ValueError('control.runtime.model_feedforward_mode 无效')
         if runtime['control_path'] not in ('MIT', 'CSP'):
             raise ValueError('control.runtime.control_path 无效')
-        controller = section('control.controller')
+        controller = core.get('control', {}).get('controller') or {}
         for mode in ('rigid', 'compliant', 'drag'):
-            for axis in ('kp','kd'): joint_map(f'control.controller.{mode}.{axis}',0)
-        if any(controller['drag']['kp'][name] != 0 for name in names):
+            if mode in controller:
+                for axis in ('kp','kd'): joint_map(f'control.controller.{mode}.{axis}',0)
+        if runtime['control_path'] == 'MIT' and 'rigid' not in controller:
+            raise ValueError('MIT 基础运行需要 control.controller.rigid')
+        if 'drag' in controller and any(controller['drag']['kp'][name] != 0 for name in names):
             raise ValueError('拖拽模式 Kp 必须为零')
         hold = core['control'].get('hold_compensation')
         if hold is not None:
@@ -1451,9 +1493,10 @@ class ProfileLibrary:
         if recovery['default_mode'] != 'rigid_hold':
             raise ValueError('safety_policy.fault_recovery.default_mode 仅支持 rigid_hold')
         scalar('safety_policy.fault_recovery.recovery_timeout_s',1e-7)
-        for field in ('kp','kd','max_vel'):
-            joint_map('safety_policy.fault_recovery.compliant_recovery.'+field,0)
-        scalar('safety_policy.fault_recovery.compliant_recovery.effort_scale',0,1)
+        if not isinstance(recovery.get('allow_drag_recovery'), bool):
+            raise ValueError('fault_recovery.allow_drag_recovery 必须为布尔值')
+        if recovery.get('require_operator_request') is not True:
+            raise ValueError('fault_recovery.require_operator_request 必须为 true')
         from gain_initialization import protocol_gain_limits
         protocol = protocol_gain_limits(core, hardware, ((entry.get('hardware') or {}).get('plugin') or ''))
         for name in names:
@@ -1479,22 +1522,9 @@ class ProfileLibrary:
                 pos = shut['park_pos'][name]
                 if not lo+safety['position_margin'] <= pos <= hi-safety['position_margin']:
                     raise ValueError(f'shutdown.park_pos.{name} 超出 URDF 有效限位')
-        admittance = section('capability.admittance')
-        flags = admittance['joint_enabled']
-        if not isinstance(flags,dict) or set(flags)!=set(names) or any(not isinstance(v,bool) for v in flags.values()):
-            raise ValueError('capability.admittance.joint_enabled 与关节名称不一致')
-        joint_map('capability.admittance.observer.momentum_gain',1e-7)
-        for key in ('torque_bias','torque_threshold'):
-            joint_map('capability.admittance.calibration.'+key,0 if key=='torque_threshold' else None)
-        friction = admittance['calibration']['friction']
-        scalar('capability.admittance.calibration.friction.velocity_transition',1e-7)
-        for key in ('positive_coulomb','positive_viscous','negative_coulomb','negative_viscous'):
-            joint_map('capability.admittance.calibration.friction.'+key)
-        for key in ('mass','damping','stiffness','max_delta_q','max_delta_q_dot'):
-            joint_map('capability.admittance.controller.'+key,0 if key in ('damping', 'stiffness') else 1e-7)
-        for name in names:
-            if flags[name] and any(admittance['controller'][key][name] <= 0 for key in ('damping', 'stiffness')):
-                raise ValueError(f'capability.admittance.controller.{name} 参与导纳时阻尼和刚度必须为正数')
+        interaction = interaction_configuration(core)
+        if hold and hold.get('enabled') and not interaction['observation_configured']:
+            raise ValueError('刚性定位积分补偿需要 capability.admittance.observer 和 calibration')
         plugin = ((entry.get('hardware') or {}).get('plugin') or '')
         if not isinstance(plugin,str): raise ValueError('profile.hardware.plugin 必须是文本')
         if plugin == 'serial_arm_hardware_damiao':
@@ -1566,31 +1596,38 @@ class ProfileLibrary:
         entry = payload.get('profile_entry')
         if not isinstance(core,dict) or not isinstance(hardware,dict) or not isinstance(entry,dict):
             raise ValueError('core hardware profile_entry 必须是完整配置对象')
-        self._same_structure(before_core,core)
+        before_structure, next_structure = copy.deepcopy(before_core), copy.deepcopy(core)
+        # Optional purposes can be deliberately added or removed. Their own
+        # validators below enforce complete observation and MDK pairs.
+        for document in (before_structure, next_structure):
+            document.pop('capability', None)
+            document['model'].pop('gravity_model_validated', None)
+            document['control'].pop('controller', None)
+        self._same_structure(before_structure,next_structure)
         for section, allowed in {
-            'model': {'gravity_correction_path'},
+            'model': {'gravity_correction_path', 'gravity_model_validated'},
             'safety_policy': {'max_effort_override', 'max_tracking_error'},
             'shutdown': {'compliant_phase_ratio'},
         }.items():
-            extra = set(core[section]) - set(before_core[section])
+            extra = set(core.get(section, {})) - set(before_core.get(section, {}))
             if not extra.issubset(allowed):
                 raise ValueError(f'{section} 不支持新增字段 {sorted(extra)}')
         for section in ('calibration','control','capability'):
-            extra = set(core[section]) - set(before_core[section])
-            if extra - ({'hold_compensation'} if section == 'control' else set()):
+            extra = set(core.get(section, {})) - set(before_core.get(section, {}))
+            if extra - ({'hold_compensation', 'controller'} if section == 'control' else {'admittance'} if section == 'capability' else set()):
                 raise ValueError(f'{section} 不允许新增未知字段')
-        new_modes = set(core['control']['controller']) - set(before_core['control']['controller'])
+        new_modes = set(core['control'].get('controller', {})) - {'allow_full_cmd', 'rigid', 'compliant', 'drag'}
         if new_modes:
             raise ValueError('control.controller 不允许新增未知控制模式')
         gravity_status = self._profile_editor_gravity_status(config, {**payload, 'core': core})
-        original_gravity_trusted = before_core['safety_policy']['fault_recovery']['gravity_model_validated']
-        requested_gravity_trusted = core['safety_policy']['fault_recovery']['gravity_model_validated']
+        original_gravity_trusted = gravity_trusted(before_core)
+        requested_gravity_trusted = gravity_trusted(core)
         # Explicit operator acknowledgment is required for a false -> true trust transition
         # Disabling recovery trust must always remain possible
-        if requested_gravity_trusted and not original_gravity_trusted and payload.get('gravity_recovery_confirmed') is not True:
-            raise ValueError('启用柔性故障恢复前必须确认重力补偿已在当前机械臂和负载上完成真机验证')
+        if requested_gravity_trusted and not original_gravity_trusted and payload.get('gravity_confirmed') is not True:
+            raise ValueError('启用拖拽前必须确认重力模型已在当前机械臂和负载上完成验证')
         if gravity_status['gravity_validation_reset']:
-            core['safety_policy']['fault_recovery']['gravity_model_validated'] = False
+            core['model']['gravity_model_validated'] = False
         if payload.get('hardware_imported') is not True:
             self._same_structure(before_hw,hardware,'hardware')
         self._same_structure(original_entry,entry,'profile')
@@ -1600,20 +1637,21 @@ class ProfileLibrary:
         readiness_meta = read_yaml(readiness_path) if readiness_path.is_file() else {}
         pending_model = readiness_meta.get('gain_initialization') or {}
         generated_roles = ('rigid', 'compliant')
+        controller = core['control'].get('controller') or {}
         empty_generated_gains = all(value == 0 for role in generated_roles for term in ('kp','kd')
-            for value in core['control']['controller'].get(role, {}).get(term, {}).values())
+            for value in controller.get(role, {}).get(term, {}).values())
         model_axes = pending_model.get('axes') or []
         model_gains = {term:{axis.get('joint'):axis.get(term) for axis in model_axes} for term in ('kp','kd')}
         generated_controller = pending_model.get('generated_controller') or {}
-        unchanged_model_gains = (all(core['control']['controller'].get(role, {}).get(term) == pair.get(term)
+        unchanged_model_gains = (all(controller.get(role, {}).get(term) == pair.get(term)
             for role,pair in generated_controller.items() for term in ('kp','kd')) if generated_controller else
-            bool(model_axes) and all(core['control']['controller'].get(role, {}).get(term) == model_gains[term]
+            bool(model_axes) and all(controller.get(role, {}).get(term) == model_gains[term]
                 for role in generated_roles for term in ('kp','kd')))
         model_context_changed = (hardware != before_hw or entry.get('hardware') != original_entry.get('hardware') or
             any(core.get(section) != before_core.get(section) for section in ('model','calibration','safety_policy')) or
             core['control']['runtime'] != before_core['control']['runtime'])
         initialization = None
-        if (not pending_model.get('existing_configuration_preserved') and
+        if (core['control']['runtime']['control_path'] == 'MIT' and not pending_model.get('existing_configuration_preserved') and
             (pending_model.get('configuration_applied') is False and empty_generated_gains or
              pending_model.get('configuration_applied') is True and unchanged_model_gains and model_context_changed) and
             (entry.get('hardware') or {}).get('plugin') == 'serial_arm_hardware_damiao'):

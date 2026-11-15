@@ -39,12 +39,16 @@ ExternalTorqueObserver::configure(const ExternalTorqueObserverCfg& cfg) {
 
     const auto& friction = cfg.friction;
     if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition <= 0.0 ||
+        !valid_optional_joint_vector(friction.velocity_resolution, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.positive_coulomb, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.positive_viscous, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.negative_coulomb, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.negative_viscous, cfg.joints_count)) {
         return tl::make_unexpected(ExternalTorqueObserverErr::INVALID_CFG);
     }
+
+    if(std::any_of(friction.velocity_resolution.begin(),friction.velocity_resolution.end(),[](double value){return value<0;}))
+        return tl::make_unexpected(ExternalTorqueObserverErr::INVALID_CFG);
 
     cfg_ = cfg;
     cfg_.torque_bias = zeros_if_empty(cfg_.torque_bias, cfg_.joints_count);
@@ -98,7 +102,9 @@ ExternalTorqueObserver::update(
             const double viscous = positive ?
                 cfg_.friction.positive_viscous[i] : cfg_.friction.negative_viscous[i];
             const double dynamic_prediction = coulomb + viscous * speed;
-            const double normalized_speed = std::clamp(speed / cfg_.friction.velocity_transition, 0.0, 1.0);
+            const double resolution=cfg_.friction.velocity_resolution.empty()?0.0:cfg_.friction.velocity_resolution[i];
+            const double transition=std::max(cfg_.friction.velocity_transition,4.0*resolution);
+            const double normalized_speed = std::clamp((speed-resolution) / (transition-resolution), 0.0, 1.0);
             const double blend = normalized_speed * normalized_speed * (3.0 - 2.0 * normalized_speed);
             friction_residual_hat = blend * dynamic_prediction;
         }

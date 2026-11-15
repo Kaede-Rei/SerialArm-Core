@@ -207,6 +207,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const DamiaoBusCfg& cf
         capability.kp_resolution = 500.0 / 4095.0;
         capability.kd_resolution = 5.0 / 4095.0;
         capability.effort_resolution = 2.0 * static_cast<double>(limit.tau_max) / 4095.0;
+        capability.velocity_resolution = 2.0 * static_cast<double>(limit.dq_max) / 4095.0;
         // Position/velocity mode uses the standard Damiao 0x100 protocol.
         // Firmware must support online CTRL_MODE switching; activation confirms it.
         capability.supports_csp = true;
@@ -285,6 +286,18 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::connect() {
             next_capabilities[i].max_vel = limit.dq_max;
             next_capabilities[i].max_effort = limit.tau_max;
             next_capabilities[i].effort_resolution = 2.0 * static_cast<double>(limit.tau_max) / 4095.0;
+            next_capabilities[i].velocity_resolution = 2.0 * static_cast<double>(limit.dq_max) / 4095.0;
+            // Optional read-only diagnostics never change the driver's settings
+            // Missing registers stay absent instead of looking like a measured zero
+            const std::pair<const char*,std::uint8_t> registers[]{
+                {"ACC",damiao::ACC},{"DEC",damiao::DEC},{"VEL_KP",damiao::KP_ASR},
+                {"VEL_KI",damiao::KI_ASR},{"POS_KP",damiao::KP_APR},{"POS_KI",damiao::KI_APR}};
+            next_capabilities[i].servo_parameters.clear();
+            for(const auto& [name,reg]:registers) {
+                const double value=next_control->read_motor_param(*next_motors[i],reg,std::chrono::milliseconds(50));
+                if(next_motors[i]->has_param(reg) && std::isfinite(value))
+                    next_capabilities[i].servo_parameters.emplace(name,value);
+            }
         }
 
         const std::size_t n = next_motors.size();

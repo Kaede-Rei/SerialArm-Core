@@ -90,14 +90,15 @@ StaticJointFit fit_static_joint(
     const std::vector<double>& pose_gravity,
     const std::vector<double>& pose_torque,
     double fallback_gravity_scale,
-    double gravity_observability_span) {
+    double gravity_observability_span,
+    bool fit_gravity_scale) {
     StaticJointFit fit;
     fit.gravity_scale = fallback_gravity_scale;
     if(pose_gravity.empty()) return fit;
 
     const auto [min_it, max_it] = std::minmax_element(pose_gravity.begin(), pose_gravity.end());
     const double gravity_span = *max_it - *min_it;
-    if(gravity_span >= gravity_observability_span) {
+    if(fit_gravity_scale && gravity_span >= gravity_observability_span) {
         const double mean_g = std::accumulate(pose_gravity.begin(), pose_gravity.end(), 0.0) /
             static_cast<double>(pose_gravity.size());
         const double mean_t = std::accumulate(pose_torque.begin(), pose_torque.end(), 0.0) /
@@ -193,7 +194,8 @@ calibrate_admittance_static(
             pose_gravity,
             pose_torque,
             cfg.fallback_gravity_scale[joint],
-            cfg.gravity_observability_span);
+            cfg.gravity_observability_span,
+            cfg.fit_gravity_scale);
         result.gravity_scale[joint] = full_fit.gravity_scale;
         result.torque_bias[joint] = full_fit.torque_bias;
         result.gravity_scale_observable[joint] = full_fit.gravity_scale_observable;
@@ -236,7 +238,8 @@ calibrate_admittance_static(
                     train_gravity,
                     train_torque,
                     cfg.fallback_gravity_scale[joint],
-                    cfg.gravity_observability_span);
+                    cfg.gravity_observability_span,
+                    cfg.fit_gravity_scale);
 
                 std::size_t representative_index = 0;
                 for(const auto& pose : poses) {

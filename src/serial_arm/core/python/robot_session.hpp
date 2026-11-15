@@ -105,9 +105,9 @@ public:
      */
     void clear_fault();
     /**
-     * @brief 请求进入 FAULT 受限柔性恢复
+     * @brief 请求进入 FAULT 拖拽恢复
      */
-    void enter_fault_compliant_recovery();
+    void enter_fault_drag_recovery();
     /**
      * @brief 请求返回 FAULT 刚性保持
      */
@@ -178,7 +178,7 @@ public:
 private:
     enum class FaultRecoveryRequest {
         NONE,
-        ENTER_COMPLIANT,
+        ENTER_DRAG,
         RETURN_RIGID,
         CLEAR_FAULT,
     };
@@ -250,7 +250,7 @@ private:
 
     HoldTargetPolicy requested_hold_policy_{HoldTargetPolicy::PRESERVE_NOMINAL};
     JointImpedanceMode requested_impedance_mode_{ JointImpedanceMode::RIGID };       ///< 待应用阻抗模式
-    double speed_scale_{ 0.3 };                         ///< 梯形参考速度比例
+    double speed_scale_{ 0.2 };                         ///< 梯形参考速度比例
 
     std::uint64_t impedance_sequence_{ 0 };             ///< 阻抗模式请求序号
     std::uint64_t gravity_sequence_{ 0 };               ///< 重力比例请求序号

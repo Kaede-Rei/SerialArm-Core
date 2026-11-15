@@ -37,7 +37,7 @@
 
 协议声明了增益步进时，控制周期先拒绝非法增益，再将合法请求投影到可编码网格，之后才执行参考治理与 Safety；`requested_kp/requested_kd` 保留投影前值，接受命令和有效增益保存实际可编码值；达妙增益编码使用 nearest，避免码中心再次向下截断；位置、速度、力矩的既有编码方式不变
 
-故障刚性保持与柔性恢复也先投影增益，再按实际可编码值检查 `|FF+Kp·(q_ref−q)+Kd·(v_ref−v)|` 是否在既有力矩预算内；不可行时沿现有停止／失能路径退出，不下发超预算保持命令
+故障刚性保持与拖拽恢复也先投影增益，再按实际可编码值检查 `|FF+Kp·(q_ref−q)+Kd·(v_ref−v)|` 是否在既有力矩预算内；不可行时沿现有停止／失能路径退出，不下发超预算保持命令
 
 自动任务实际 seed 来源包含 `double_diagonalization_diagonal_projection` 方法标识，`measured=false`、`reference_only=true`；当前模型、质量矩阵或关节映射无效时明确要求修正，不以固定模板增益宣称初始化完成；初始模型参数与后续实测更新分别记录；旧 `urdf_geometry_mass_matrix_only_nominal_response_design` 继续表示当时行和阻尼公式
 
@@ -657,7 +657,7 @@ GUI 记录导出包含历史候选；成果包包含 `robot.urdf`、`core.yaml`�
 
 原始数据、已验收静态数据或模型变化后需重新计算
 
-候选 URDF 的动力学参数或导出的重力缩放改变时，导出 Core 将撤销原模型的 `gravity_model_validated=true`；离线静态通过不继承实机故障恢复的模型验证状态，`allow_compliant_recovery` 偏好保持原值
+候选 URDF 的动力学参数或导出的重力缩放改变时，导出 Core 将撤销原模型的 `gravity_model_validated=true`；离线静态通过不继承实机故障恢复的模型验证状态，`allow_drag_recovery` 偏好保持原值
 
 ## 完整动力学辨识
 

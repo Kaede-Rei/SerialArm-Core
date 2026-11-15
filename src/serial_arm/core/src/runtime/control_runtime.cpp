@@ -40,8 +40,9 @@ tl::expected<void, RobotFault> ControlRuntime::submit_reference(
 }
 
 tl::expected<void, RobotFault> ControlRuntime::set_impedance_mode(Robot& robot, JointImpedanceMode mode, Robot::TimePoint now, HoldTargetPolicy target_policy) {
+    const bool leaving_drag=robot.get_impedance_mode()==JointImpedanceMode::DRAG && mode!=JointImpedanceMode::DRAG;
     const auto result=robot.set_impedance_mode(mode,now,target_policy);
-    if(result && target_policy==HoldTargetPolicy::CAPTURE_MEASURED) clear_commands();
+    if(result && (target_policy==HoldTargetPolicy::CAPTURE_MEASURED || leaving_drag)) clear_commands();
     return result;
 }
 
@@ -85,11 +86,10 @@ RuntimeSnapshot ControlRuntime::step_impl(Robot& robot, Robot::TimePoint now) {
     }
     if(robot.get_state()==RobotState::FAULT) {
         clear_commands();
-        if(robot.is_fault_holding()) {
-            auto held=robot.maintain_fault_hold();
-            result.fault_hold_maintained=bool(held);
-            if(!held)result.fault=held.error();
-        }
+        auto observed=robot.maintain_fault_hold();
+        result.fault_hold_maintained=bool(observed) && robot.is_fault_holding();
+        result.fault_feedback=robot.get_fault_feedback();
+        if(!observed)result.fault=observed.error();
         if(!result.fault && robot.get_last_fault())result.fault=*robot.get_last_fault();
     }
     result.state=robot.get_state();
@@ -148,6 +148,16 @@ bool advance_joint_reference(JointVector& position, JointVector& velocity, const
         const double response=std::max(.03,4.0*dt);
         const double acceleration=max_acceleration[i]*std::tanh((desired-velocity[i])/(max_acceleration[i]*response));
         double next_velocity=velocity[i]+std::clamp(acceleration*dt,-dv,dv);
+        // The smooth response can lag the desired braking curve near zero.
+        // Admit only a next velocity whose remaining stopping distance still
+        // fits before the target; keep the same acceleration bound.
+        if(error*next_velocity>0.0) {
+            const double hard_braking=max_acceleration[i];
+            const double hard_root=std::sqrt(2.0*hard_braking*distance+hard_braking*hard_braking*dt*dt);
+            const double hard_speed=(2.0*hard_braking*distance)/(hard_root+hard_braking*dt);
+            const double bounded=std::copysign(std::min(std::abs(next_velocity),hard_speed),error);
+            next_velocity=std::clamp(bounded,velocity[i]-dv,velocity[i]+dv);
+        }
         // A paused reference must reach exact rest in finitely many cycles;
         // the smooth tracking response alone only approaches zero asymptotically
         if(vmax==0.0)next_velocity=velocity[i]+std::clamp(-velocity[i],-dv,dv);

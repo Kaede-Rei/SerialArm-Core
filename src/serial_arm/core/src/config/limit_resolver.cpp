@@ -140,9 +140,6 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
         cfg.state_vel_fault_ratio = resolved.joints.front().max_state_vel /
             resolved.joints.front().max_cmd_vel;
     }
-    cfg.fault_recovery.compliant_recovery.kp.assign(resolved.joints.size(), 0.0);
-    cfg.fault_recovery.compliant_recovery.kd.assign(resolved.joints.size(), 0.0);
-    cfg.fault_recovery.compliant_recovery.max_vel.reserve(resolved.joints.size());
 
     cfg.limits.min_pos.reserve(resolved.joints.size());
     cfg.limits.has_position_limit.reserve(resolved.joints.size());
@@ -168,7 +165,6 @@ SafetyCfg to_safety_cfg(const ResolvedSafetyCfg& resolved) {
         cfg.limits.kp_resolution.push_back(joint.kp_resolution);
         cfg.limits.kd_resolution.push_back(joint.kd_resolution);
         cfg.limits.pos_margin.push_back(joint.cmd_min_pos - joint.hard_min_pos);
-        cfg.fault_recovery.compliant_recovery.max_vel.push_back(joint.max_cmd_vel);
     }
     return cfg;
 }

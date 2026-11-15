@@ -11,6 +11,7 @@
 
 # 01 model
 model:
+  gravity_model_validated: true  # 当前模型、映射与负载的重力验证结果
   urdf_path: ../../model/white/urdf/dm_arm.urdf                     # 有夹爪 URDF，路径相对当前 YAML
   joint_names: [joint1, joint2, joint3, joint4, joint5, joint6]               # 受控关节名称与固定顺序
   base_frame: base_link                                                       # 动力学基坐标系
@@ -104,22 +105,12 @@ safety_policy:
   require_continuous_cmd: false                     # 是否强制相邻外部命令连续；false 允许离散输入
   fault_recovery:
     default_mode: rigid_hold                        # FAULT 默认保持模式；当前固定为 rigid_hold
-    allow_compliant_recovery: true                  # 是否允许操作员请求受限柔性恢复
-    require_operator_request: true                  # 是否要求操作员显式请求柔性恢复
-    gravity_model_validated: true                   # 是否确认重力模型已验证，可用于低增益恢复
-    recovery_timeout_s: 30.0                        # 柔性恢复最大持续时间 s
-    compliant_recovery:
-      # 柔性恢复位置刚度
-      kp: {joint1: 8.0, joint2: 20.0, joint3: 12.0, joint4: 5.0, joint5: 3.0, joint6: 1.0}
-      # 柔性恢复速度阻尼
-      kd: {joint1: 0.08, joint2: 0.20, joint3: 0.12, joint4: 0.05, joint5: 0.03, joint6: 0.01}
-      # 柔性恢复最大关节速度 rad/s
-      max_vel: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
-      effort_scale: 1.0                             # 柔性恢复重力补偿力矩缩放 [0, 1]
-
+    allow_drag_recovery: true                  # 是否允许操作员请求拖拽恢复
+    require_operator_request: true                  # 是否要求操作员显式请求拖拽恢复
+    recovery_timeout_s: 30.0                        # 拖拽恢复最大持续时间 s
 # 05 shutdown
 shutdown:
-  park_before_disable: true                         # 正常停机前是否以 COMPLIANT_TRACKING 回到停放姿态
+  park_before_disable: true                         # 正常停机前是否以 COMPLIANT 回到停放姿态
   # 各关节停放目标位置 rad
   park_pos: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
   speed_scale: 0.10                                 # 停放轨迹速度相对正常速度的比例

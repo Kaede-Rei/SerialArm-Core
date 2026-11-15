@@ -303,7 +303,7 @@ class Terminal:
                 (2, "回到停放姿态并 stop()", self.park_and_stop),
                 (3, "立即 stop() 并失能（危险）", self.force_stop),
                 (4, "clear_fault()", self.clear_fault),
-                (5, "FAULT 进入受限柔性恢复", self.enter_fault_compliant_recovery),
+                (5, "FAULT 进入受限拖拽恢复", self.enter_fault_drag_recovery),
                 (6, "FAULT 返回刚性保持", self.return_to_fault_rigid_hold),
                 (7, "查看当前故障恢复模式", self.show_fault_hold_mode),
             ],
@@ -474,9 +474,9 @@ class Terminal:
         self.session.clear_fault()
         print(f"clear_fault() 完成，state={enum_name(self.session.state)}")
 
-    def enter_fault_compliant_recovery(self) -> None:
-        self.session.enter_fault_compliant_recovery()
-        print("已进入 FAULT 受限柔性恢复")
+    def enter_fault_drag_recovery(self) -> None:
+        self.session.enter_fault_drag_recovery()
+        print("已进入 FAULT 受限拖拽恢复")
 
     def return_to_fault_rigid_hold(self) -> None:
         self.session.return_to_fault_rigid_hold()

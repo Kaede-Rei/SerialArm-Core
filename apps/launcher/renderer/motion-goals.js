@@ -30,14 +30,15 @@
         return { mass, damping, stiffness };
     }
     function fromMdk(mass, damping, stiffness) {
-        mass = Number.isFinite(mass) && mass > 0 ? mass : 1;
-        damping = Number.isFinite(damping) && damping >= 0 ? damping : 0;
-        stiffness = Number.isFinite(stiffness) && stiffness >= 0 ? stiffness : 0;
-        const zeta = stiffness > 0 ? damping / (2 * Math.sqrt(mass * stiffness)) : 1;
-        const normalized = zeta >= .7 && zeta <= 1.2 ? zeta : 1;
-        return { kind: stiffness > 0 ? 'return' : 'free', compliance: stiffness > 0 ? 1 / stiffness : .1,
-            time: stiffness > 0 ? returnFactor(normalized) / Math.sqrt(stiffness / mass) : damping > 0 ? -Math.log(.05) * mass / damping : 2,
-            zeta: normalized, acceleration: 1 / mass };
+        const validMass=typeof mass==='number'&&Number.isFinite(mass)&&mass>0;
+        const validDamping=typeof damping==='number'&&Number.isFinite(damping)&&damping>=0;
+        const validStiffness=typeof stiffness==='number'&&Number.isFinite(stiffness)&&stiffness>=0;
+        const returning=validStiffness&&stiffness>0;
+        const zeta=validMass&&validDamping&&returning?damping/(2*Math.sqrt(mass*stiffness)):1;
+        const supported=zeta>=.7&&zeta<=1.2;
+        return {kind:returning?'return':'free',compliance:returning?1/stiffness:NaN,
+            time:validMass&&validDamping?(returning?(supported?returnFactor(zeta)/Math.sqrt(stiffness/mass):NaN):(damping>0?-Math.log(.05)*mass/damping:NaN)):NaN,
+            zeta,acceleration:validMass?1/mass:NaN};
     }
     const api = { returnFactor, convert, fromMdk };
     if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -479,16 +479,20 @@ print(dynamics.tool_pose)
 | Robot 接口 | 条件与结果 |
 | --- | --- |
 | `get_last_fault()` | 返回最近锁存故障，按顶层码选择有意义的子错误 |
-| `is_fault_holding()` / `get_fault_hold_mode()` | 检查故障保持是否有效及其刚性／柔性恢复状态 |
-| `maintain_fault_hold()` | FAULT 且保持有效时刷新故障保持，不执行普通目标 |
-| `enter_fault_compliant_recovery()` | 人工请求受限柔性恢复，需配置允许且当前故障可恢复 |
-| `return_to_fault_rigid_hold()` | 退出柔性恢复并返回故障刚性保持 |
-| `clear_fault()` | 满足恢复条件后以当前实测位置进入 `ACTIVE + RIGID` |
+| `is_fault_holding()` / `get_fault_hold_mode()` | 检查故障保持是否有效及其刚性／拖拽恢复状态 |
+| `maintain_fault_hold()` | FAULT 中持续观察反馈；保持有效时刷新受控输出，不执行普通目标 |
+| `enter_fault_drag_recovery()` | 人工请求使用已有 DRAG 参数恢复，需当前模型重力已验证且故障允许受控输出 |
+| `return_to_fault_rigid_hold()` | 退出拖拽恢复并返回故障刚性保持 |
+| `clear_fault()` | 保持型故障满足条件后以当前实测位置进入 `ACTIVE + RIGID`；停止输出型故障清到 `INACTIVE`，需重新使能 |
 | `reset_fault()` | 兼容入口，执行与 `clear_fault()` 相同的恢复流程 |
 
 自管周期在进入 FAULT 后转入故障保持分支；`ControlRuntime` 与 `RobotSession` 已处理这一分支，调用方仍需决定恢复或失能
 
 清故障不是无条件清错；通信、反馈、安全状态与恢复配置必须满足条件，成功后重新提交新的运动请求，旧目标不会自动恢复
+
+`FaultHoldMode::DRAG_RECOVERY` 表示 FAULT 锁存中的拖拽恢复，不是第五种交互模式；配置使用 `fault_recovery.allow_drag_recovery`，重力验证放在 `model.gravity_model_validated`，不再提供恢复专属 Kp/Kd、速度或重力缩放
+
+手动退出 DRAG 会捕获当前实测位置；调用端必须停止旧轨迹和目标生产者，不能在下一周期重新发送拖拽前目标；`ControlRuntime`、Terminal 和 `RobotSession` 使用同一交接语义
 
 ## 关节与执行器映射
 
@@ -535,7 +539,7 @@ Python 线程提交请求，独立 C++ 工作线程串行维护控制周期；Py
 | `set_control_path(path)` / `set_model_feedforward_mode(mode)` | 在已配置、未启动且 INACTIVE 时选择策略 |
 | `set_hold_compensation_cfg(cfg)` / `set_admittance_cfg(cfg)` | 提交合法参数，运行中等待工作线程应用结果，导纳仅允许同策略更新 |
 | `set_gravity_scale(values)` | 运行时由工作线程应用逐轴重力比例 |
-| `clear_fault()` / `reset_fault()` / `enter_fault_compliant_recovery()` / `return_to_fault_rigid_hold()` | 提交给同一工作线程处理的故障恢复请求 |
+| `clear_fault()` / `reset_fault()` / `enter_fault_drag_recovery()` / `return_to_fault_rigid_hold()` | 提交给同一工作线程处理的故障恢复请求 |
 | `snapshot` | 线程安全复制的周期、运动、故障与动力学快照 |
 | `state` / `fault_hold_mode` / `configured` / `running` | 会话状态 |
 | `config` / `dynamics_info` / `actuator_info` | 静态配置、模型与执行器能力副本 |

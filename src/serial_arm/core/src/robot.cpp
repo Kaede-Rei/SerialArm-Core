@@ -87,9 +87,10 @@ static tl::expected<void,SafetyFault> check_observed_state(
     return result;
 }
 
-InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count, bool shadow_required=false) {
+InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count, bool shadow_required=false, const JointVector& velocity_resolution={}) {
     InteractionControllerCfg interaction_cfg;
-    interaction_cfg.enabled = admittance.enabled || shadow_required;
+    interaction_cfg.enabled = admittance.observer_enabled || !admittance.observer.momentum_gain.empty() || shadow_required;
+    interaction_cfg.admittance_enabled=admittance.enabled;
     if(!interaction_cfg.enabled) return interaction_cfg;
 
     interaction_cfg.momentum.joints_count = joints_count;
@@ -99,6 +100,7 @@ InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& adm
     interaction_cfg.external_torque.torque_bias = admittance.calibration.torque_bias;
     interaction_cfg.external_torque.torque_threshold = admittance.calibration.torque_threshold;
     interaction_cfg.external_torque.friction = admittance.calibration.friction;
+    interaction_cfg.external_torque.friction.velocity_resolution=velocity_resolution;
     interaction_cfg.admittance.joints_count = joints_count;
     interaction_cfg.admittance.enabled = admittance.joint_enabled;
     interaction_cfg.admittance.mass = admittance.controller.mass;
@@ -143,6 +145,9 @@ tl::expected<void, RobotFault> Robot::configure(
     }
 
     RobotCfg cfg=requested_cfg;
+    cfg.ctrller.control_path=cfg.runtime.control_path;
+    cfg.capability.admittance.observer_enabled=!cfg.capability.admittance.observer.momentum_gain.empty();
+    cfg.capability.admittance.enabled=!cfg.capability.admittance.joint_enabled.empty();
     const auto hardware_safety=resolve_connected_safety_cfg(cfg,motor_bus->capabilities());
     if(!hardware_safety)return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     cfg.safety=*hardware_safety;
@@ -164,12 +169,12 @@ tl::expected<void, RobotFault> Robot::configure(
     if(motor_bus->size() != cfg.joint_names.size()) {
         return tl::make_unexpected(make_fault(RobotErr::MOTOR_BUS_SIZE_MISMATCH));
     }
-    if(cfg.runtime.model_feedforward_mode != ModelFeedforwardMode::NONE && !model_feedforward) {
+    if(cfg.runtime.control_path==ControlPath::MIT && cfg.runtime.model_feedforward_mode != ModelFeedforwardMode::NONE && !model_feedforward) {
         RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
         fault.code = RobotErr::INVALID_CFG;
         return tl::make_unexpected(fault);
     }
-    if((cfg.capability.admittance.enabled || cfg.hold_compensation.enabled) &&
+    if((cfg.capability.admittance.observer_enabled || cfg.hold_compensation.enabled) &&
         !interaction_model_state) {
         RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
         fault.code = RobotErr::INVALID_CFG;
@@ -189,7 +194,10 @@ tl::expected<void, RobotFault> Robot::configure(
         return tl::make_unexpected(make_safety_fault(safety_result.error()));
     }
 
-    InteractionControllerCfg interaction_cfg = make_interaction_cfg(cfg.capability.admittance, cfg.joint_names.size(),cfg.hold_compensation.enabled);
+    friction_velocity_resolution_.resize(cfg.joint_names.size());
+    for(std::size_t i=0;i<friction_velocity_resolution_.size();++i)
+        friction_velocity_resolution_[i]=capabilities[i].velocity_resolution/std::abs(cfg.mapper.pos_ratio[i]);
+    InteractionControllerCfg interaction_cfg = make_interaction_cfg(cfg.capability.admittance, cfg.joint_names.size(),cfg.hold_compensation.enabled,friction_velocity_resolution_);
     const auto interaction_result = interaction_controller_.configure(interaction_cfg);
     if(!interaction_result) {
         return tl::make_unexpected(make_interaction_fault(interaction_result.error()));
@@ -393,7 +401,6 @@ tl::expected<void, RobotFault> Robot::set_cmd(const JointCmd& cmd, TimePoint now
     const auto result = ctrller_.set_cmd(cmd);
     if(!result) return tl::make_unexpected(make_ctrller_fault(result.error()));
     full_command_active_=false;
-    if(ctrller_.get_impedance_mode()==JointImpedanceMode::DRAG) drag_reference_received_=true;
 
     last_cmd_time_ = now;
     has_external_cmd_ = true;
@@ -402,8 +409,186 @@ tl::expected<void, RobotFault> Robot::set_cmd(const JointCmd& cmd, TimePoint now
 }
 
 /**
- * @brief 设置完整 Joint 控制命令
+ * @brief 复用同一观测时刻的动力学、外力估计与可选导纳
  */
+tl::expected<Robot::InteractionEvaluation,RobotFault> Robot::update_interaction(
+    const JointState& state,const ActuatorState& actuator_state,const JointVector& joint_acc,
+    bool joint_acc_valid,JointCtrlCmd joint_cmd,double controller_dt,bool admittance_active,bool drag,bool position_recovery) {
+    const auto count=cfg_.joint_names.size();
+    const double nominal_dt=1.0/cfg_.runtime.ctrl_frequency_hz;
+    const auto state_received_at=Clock::now();
+    bool new_measurement=false,observation_valid=false;
+    double measurement_dt=0.0,feedback_skew_ms=std::numeric_limits<double>::quiet_NaN();
+    MeasuredDynamicsSnapshot model_snapshot;
+    JointState observer_state;
+    std::uint64_t observer_timestamp_ns=0;
+    InteractionOutput interaction_telemetry;
+    std::vector<std::uint8_t> safety_position_margin_active;
+    std::vector<std::uint8_t> safety_velocity_margin_active;
+
+    const auto& stamps=actuator_state.feedback_received_ns;
+    const auto& timing=actuator_state.feedback_timing_valid;
+    const auto received_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(state_received_at.time_since_epoch()).count());
+    if(stamps.size()==count && !stamps.empty()) {
+        const auto bounds=std::minmax_element(stamps.begin(),stamps.end());
+        feedback_skew_ms=static_cast<double>(*bounds.second-*bounds.first)/1.0e6;
+    }
+    const auto aligned=feedback_aligner_.update(state,stamps,timing,received_ns,
+        static_cast<std::uint64_t>(cfg_.safety.state_timeout_s*1.0e9),
+        static_cast<std::uint64_t>(2.0*nominal_dt*1.0e9));
+    observation_valid=aligned.valid;
+    new_measurement=aligned.fresh;
+    if(new_measurement) {
+        observer_timestamp_ns=aligned.timestamp_ns;
+        measurement_dt=observer_sample_ns_==0 ? nominal_dt :
+            (observer_timestamp_ns>observer_sample_ns_ ? static_cast<double>(observer_timestamp_ns-observer_sample_ns_)/1.0e9 : 0.0);
+        if(measurement_dt<=0.0 || measurement_dt>cfg_.safety.state_timeout_s) {
+            observation_valid=false;new_measurement=false;observer_sample_ns_=0;
+            feedback_aligner_.reset();
+        } else {
+            observer_state=aligned.state;
+            observer_sample_ns_=observer_timestamp_ns;
+        }
+    } else if(!observation_valid) observer_sample_ns_=0;
+
+    // Dynamics and measured torque/velocity use the same interpolated
+    // joint-side timestamp whenever an observer update is performed.
+    const JointState& model_state=new_measurement ? observer_state : state;
+    const auto snapshot=interaction_model_state_(model_state,controller_dt);
+    if(!snapshot) {
+        const auto fault=make_model_fault(snapshot.error());
+            return tl::make_unexpected(fault);
+    }
+    model_snapshot=*snapshot;
+    bool model_valid=model_snapshot.gravity.size()==count && model_snapshot.coriolis.size()==count &&
+        model_snapshot.mass_matrix.size()==count && finite_vector(model_snapshot.gravity) && finite_vector(model_snapshot.coriolis);
+    if(model_valid) for(std::size_t i=0;i<count;++i)
+        if(model_snapshot.mass_matrix[i].size()!=count || !finite_vector(model_snapshot.mass_matrix[i]) ||
+           model_snapshot.mass_matrix[i][i]<=0.0) {model_valid=false;break;}
+    if(!model_valid) {
+        const auto fault=make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD);
+            return tl::make_unexpected(fault);
+    }
+    JointVector interaction_model_torque;
+    if(joint_acc_valid) {
+        interaction_model_torque=model_snapshot.gravity;
+        for(std::size_t i=0;i<count;++i) {
+            interaction_model_torque[i]+=model_snapshot.coriolis[i];
+            for(std::size_t j=0;j<count;++j) interaction_model_torque[i]+=model_snapshot.mass_matrix[i][j]*joint_acc[j];
+        }
+    }
+    const std::size_t joints_count = cfg_.joint_names.size();
+    safety_position_margin_active.assign(joints_count, 0);
+    safety_velocity_margin_active.assign(joints_count, 0);
+    JointVector min_delta_q(joints_count, 0.0);
+    JointVector max_delta_q(joints_count, 0.0);
+    JointVector min_delta_q_dot(joints_count, 0.0);
+    JointVector max_delta_q_dot(joints_count, 0.0);
+    const auto& admittance_cfg = cfg_.capability.admittance;
+    const auto& limits = cfg_.safety.limits;
+
+    for(std::size_t i = 0; i < joints_count; ++i) {
+        if(!admittance_cfg.enabled) continue;
+        min_delta_q[i] = -admittance_cfg.controller.max_delta_q[i];
+        max_delta_q[i] = admittance_cfg.controller.max_delta_q[i];
+        min_delta_q_dot[i] = -admittance_cfg.controller.max_delta_q_dot[i];
+        max_delta_q_dot[i] = admittance_cfg.controller.max_delta_q_dot[i];
+
+        if(position_recovery && limits.has_position_limit[i] &&
+           (joint_cmd.pos[i]<limits.min_pos[i]+limits.pos_margin[i] || joint_cmd.pos[i]>limits.max_pos[i]-limits.pos_margin[i])) {
+            // A violated joint may start outside its normal interval, but
+            // generated recovery motion may only reduce the violation.
+            if(joint_cmd.pos[i]>limits.max_pos[i]-limits.pos_margin[i]) {
+                min_delta_q[i]=std::max(min_delta_q[i],limits.min_pos[i]+limits.pos_margin[i]-joint_cmd.pos[i]);
+                max_delta_q[i]=std::min(0.0,last_joint_cmd_.pos[i]-joint_cmd.pos[i]);max_delta_q_dot[i]=0;
+            } else {
+                max_delta_q[i]=std::min(max_delta_q[i],limits.max_pos[i]-limits.pos_margin[i]-joint_cmd.pos[i]);
+                min_delta_q[i]=std::max(0.0,last_joint_cmd_.pos[i]-joint_cmd.pos[i]);min_delta_q_dot[i]=0;
+            }
+            continue;
+        }
+        if(limits.has_position_limit[i] != 0) {
+            const double cmd_min_pos = limits.min_pos[i] + limits.pos_margin[i];
+            const double cmd_max_pos = limits.max_pos[i] - limits.pos_margin[i];
+            if(joint_cmd.pos[i] < cmd_min_pos || joint_cmd.pos[i] > cmd_max_pos) {
+                min_delta_q[i] = 0.0;
+                max_delta_q[i] = 0.0;
+            }
+            else {
+                min_delta_q[i] = std::max(min_delta_q[i], cmd_min_pos - joint_cmd.pos[i]);
+                max_delta_q[i] = std::min(max_delta_q[i], cmd_max_pos - joint_cmd.pos[i]);
+            }
+        }
+
+        const double max_cmd_vel = limits.max_vel[i];
+        if(joint_cmd.vel[i] < -max_cmd_vel || joint_cmd.vel[i] > max_cmd_vel) {
+            min_delta_q_dot[i] = 0.0;
+            max_delta_q_dot[i] = 0.0;
+        }
+        else {
+            min_delta_q_dot[i] = std::max(min_delta_q_dot[i], -max_cmd_vel - joint_cmd.vel[i]);
+            max_delta_q_dot[i] = std::min(max_delta_q_dot[i], max_cmd_vel - joint_cmd.vel[i]);
+        }
+
+        if(min_delta_q[i] > -admittance_cfg.controller.max_delta_q[i] || max_delta_q[i] < admittance_cfg.controller.max_delta_q[i]) {
+            safety_position_margin_active[i] = 1;
+        }
+        if(min_delta_q_dot[i] > -admittance_cfg.controller.max_delta_q_dot[i] || max_delta_q_dot[i] < admittance_cfg.controller.max_delta_q_dot[i]) {
+            safety_velocity_margin_active[i] = 1;
+        }
+    }
+
+    GeneralizedMomentumInput momentum_input;
+    momentum_input.measured_torque=model_state.tor;
+    momentum_input.gravity=model_snapshot.gravity;
+    momentum_input.coriolis=model_snapshot.coriolis;
+    momentum_input.mass_matrix=model_snapshot.mass_matrix;
+    momentum_input.velocity=model_state.vel;
+    momentum_input.dt=measurement_dt>0?measurement_dt:nominal_dt;
+
+    const auto interaction = interaction_controller_.update(InteractionInput{
+        model_state.tor,
+        interaction_model_torque,
+        joint_cmd,
+        controller_dt,
+        std::move(min_delta_q),
+        std::move(max_delta_q),
+        std::move(min_delta_q_dot),
+        std::move(max_delta_q_dot),
+        model_state.vel,
+        std::move(momentum_input),
+        joint_acc_valid,
+        new_measurement,
+        observation_valid,
+        measurement_dt,
+        admittance_active,
+        drag,
+        model_state.pos,
+        });
+    if(!interaction) {
+        const RobotFault fault = make_interaction_fault(interaction.error());
+        return tl::make_unexpected(fault);
+    }
+    interaction_telemetry = interaction.value();
+    joint_cmd = interaction->corrected_cmd;
+
+    InteractionEvaluation evaluation;
+    evaluation.output=std::move(interaction_telemetry);evaluation.model_snapshot=std::move(model_snapshot);
+    evaluation.observer_state=std::move(observer_state);evaluation.new_measurement=new_measurement;
+    evaluation.observation_valid=observation_valid;evaluation.measurement_dt=measurement_dt;
+    evaluation.feedback_skew_ms=feedback_skew_ms;evaluation.observer_timestamp_ns=observer_timestamp_ns;
+    evaluation.safety_position_margin_active=std::move(safety_position_margin_active);
+    evaluation.safety_velocity_margin_active=std::move(safety_velocity_margin_active);
+    return evaluation;
+}
+
+tl::expected<void,RobotFault> Robot::set_gravity_verification_active(bool active) {
+    if(state_==RobotState::UNCONFIGURED)return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
+    if(active && state_!=RobotState::INACTIVE)return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
+    gravity_verification_active_=active;
+    return {};
+}
+
 tl::expected<void, RobotFault> Robot::set_full_cmd(const JointCtrlCmd& cmd, TimePoint now) {
     if(state_ == RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
     if(state_ != RobotState::ACTIVE) return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
@@ -418,7 +603,6 @@ tl::expected<void, RobotFault> Robot::set_full_cmd(const JointCtrlCmd& cmd, Time
 
     full_command_active_=true;
     continuous_cmd_=true;
-    if(ctrller_.get_impedance_mode()==JointImpedanceMode::DRAG) drag_reference_received_=true;
 
     last_cmd_time_ = now;
     has_external_cmd_ = true;
@@ -581,13 +765,15 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
         return tl::make_unexpected(make_fault(RobotErr::INVALID_TIME));
     }
 
+    if(mode==JointImpedanceMode::DRAG && !cfg_.dynamics.gravity_model_validated && !gravity_verification_active_)
+        return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
+    if(cfg_.runtime.control_path==ControlPath::CSP &&
+       (mode==JointImpedanceMode::DRAG || mode==JointImpedanceMode::COMPLIANT) && !cfg_.capability.admittance.enabled)
+        return tl::make_unexpected(make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED));
     if(mode==ctrller_.get_impedance_mode() && target_policy==HoldTargetPolicy::PRESERVE_NOMINAL) return {};
     clear_calibration_disturbance();
     const auto original_nominal=(accepted_nominal_cmd_.pos.size()==cfg_.joint_names.size())?accepted_nominal_cmd_.pos:joint_state_.pos;
     const auto previous_mode=ctrller_.get_impedance_mode();
-    const bool entering_drag=mode==JointImpedanceMode::DRAG && previous_mode!=JointImpedanceMode::DRAG;
-    const bool pending_on_drag_entry=entering_drag && has_external_cmd_ &&
-        ctrller_.has_pending_reference(original_nominal,1e-6);
     const auto mode_result=ctrller_.set_impedance_mode(mode,joint_state_);
     if(!mode_result) return tl::make_unexpected(make_ctrller_fault(mode_result.error()));
     full_command_active_=false;
@@ -601,21 +787,22 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
     // Anchor the new interaction law to the last accepted physical reference.
     // The nominal command remains available regardless of the interaction mode.
     const bool leaving_drag = previous_mode==JointImpedanceMode::DRAG && mode!=JointImpedanceMode::DRAG;
-    const auto anchor = target_policy==HoldTargetPolicy::CAPTURE_MEASURED ||
-        (leaving_drag && cfg_.runtime.control_path==ControlPath::MIT) ? joint_state_.pos :
+    const auto anchor = target_policy==HoldTargetPolicy::CAPTURE_MEASURED || leaving_drag ? joint_state_.pos :
         (last_joint_cmd_.pos.size()==cfg_.joint_names.size() ? last_joint_cmd_.pos : original_nominal);
     nominal_hold_target_=anchor;
     interaction_controller_.reset_reference();
     interaction_state_.delta_q.assign(cfg_.joint_names.size(),0.0);
     interaction_state_.delta_q_dot.assign(cfg_.joint_names.size(),0.0);
-    if(target_policy==HoldTargetPolicy::CAPTURE_MEASURED || (leaving_drag && !drag_reference_received_)) {
+    if(target_policy==HoldTargetPolicy::CAPTURE_MEASURED || leaving_drag) {
         ctrller_.set_hold_position(anchor);
         const auto anchored=ctrller_.set_cmd(JointPosCmd{anchor});
         if(!anchored) return tl::make_unexpected(make_ctrller_fault(anchored.error()));
         has_external_cmd_=false;
         continuous_cmd_=false;
+        last_joint_cmd_.pos=anchor;last_joint_cmd_.vel.assign(cfg_.joint_names.size(),0.0);
+        const auto history=safety_.reset_cmd_history(joint_state_);
+        if(!history)return tl::make_unexpected(make_safety_fault(history.error()));
     }
-    if(entering_drag) drag_reference_received_=pending_on_drag_entry;
     accepted_nominal_cmd_.pos=anchor;
     accepted_nominal_cmd_.vel.assign(cfg_.joint_names.size(),0.0);
     last_nominal_velocity_.assign(cfg_.joint_names.size(),0.0);
@@ -645,7 +832,7 @@ tl::expected<void, RobotFault> Robot::set_model_feedforward_mode(ModelFeedforwar
 tl::expected<void, RobotFault> Robot::set_admittance_cfg(const AdmittanceCapabilityCfg& admittance_cfg) {
     if(state_ == RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     if(state_ == RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
-    if(admittance_cfg.enabled && !interaction_model_state_) {
+    if((admittance_cfg.observer_enabled || !admittance_cfg.observer.momentum_gain.empty()) && !interaction_model_state_) {
         RobotFault fault = make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED);
         fault.code = RobotErr::INVALID_CFG;
         return tl::make_unexpected(fault);
@@ -653,14 +840,16 @@ tl::expected<void, RobotFault> Robot::set_admittance_cfg(const AdmittanceCapabil
 
     RobotCfg candidate = cfg_;
     candidate.capability.admittance = admittance_cfg;
+    candidate.capability.admittance.observer_enabled=!admittance_cfg.observer.momentum_gain.empty();
+    candidate.capability.admittance.enabled=!admittance_cfg.joint_enabled.empty();
     if(!validate_robot_core_cfg(candidate)) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
 
-    if(state_==RobotState::ACTIVE && admittance_cfg.enabled!=cfg_.capability.admittance.enabled)
+    if(state_==RobotState::ACTIVE && candidate.capability.admittance.enabled!=cfg_.capability.admittance.enabled)
         return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
-    const auto configured=interaction_controller_.reconfigure(make_interaction_cfg(admittance_cfg,cfg_.joint_names.size(),
-        cfg_.hold_compensation.enabled));
+    const auto configured=interaction_controller_.reconfigure(make_interaction_cfg(candidate.capability.admittance,cfg_.joint_names.size(),
+        cfg_.hold_compensation.enabled,friction_velocity_resolution_));
     if(!configured) return tl::make_unexpected(make_interaction_fault(configured.error()));
-    cfg_.capability.admittance=admittance_cfg;
+    cfg_.capability.admittance=candidate.capability.admittance;
     return {};
 }
 
@@ -668,15 +857,15 @@ tl::expected<void, RobotFault> Robot::set_control_path(ControlPath path) {
     if(state_==RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     if(state_!=RobotState::INACTIVE) return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
     if(path!=ControlPath::MIT && path!=ControlPath::CSP) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
-    if(path==ControlPath::CSP && (!interaction_model_state_ || !cfg_.capability.admittance.enabled))
-        return tl::make_unexpected(make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED));
     auto candidate=cfg_;
-    candidate.runtime.control_path=path;
+    candidate.runtime.control_path=path;candidate.ctrller.control_path=path;
     if(!validate_robot_core_cfg(candidate)) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     if(!motor_bus_ || std::any_of(motor_bus_->capabilities().begin(),motor_bus_->capabilities().end(),
         [path](const auto& cap){return path==ControlPath::CSP ? !cap.supports_csp : !cap.supports_mit;}))
         return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
-    cfg_.runtime.control_path=path;
+    const auto configured=ctrller_.configure(candidate.ctrller);
+    if(!configured)return tl::make_unexpected(make_ctrller_fault(configured.error()));
+    cfg_.ctrller.control_path=path;cfg_.runtime.control_path=path;
     interaction_controller_.reset();
     interaction_state_={};
     feedback_aligner_.reset(); observer_sample_ns_=0;
@@ -697,7 +886,7 @@ tl::expected<void,RobotFault> Robot::set_hold_compensation_cfg(const HoldCompens
     auto candidate=cfg_;candidate.hold_compensation=hold;
     if(!validate_robot_core_cfg(candidate))return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     const auto configured=interaction_controller_.reconfigure(make_interaction_cfg(candidate.capability.admittance,candidate.joint_names.size(),
-        hold.enabled));
+        hold.enabled,friction_velocity_resolution_));
     if(!configured)return tl::make_unexpected(make_interaction_fault(configured.error()));
     cfg_.hold_compensation=hold;hold_integral_torque_.assign(cfg_.joint_names.size(),0.0);
     // FAULT cleanup restores configuration without altering fault-hold actuation
@@ -775,8 +964,14 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
 
     const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value(),legacy_read_interval);
     if(!checked_state) {
+        const auto code=checked_state.error().code;
+        if(code==SafetyErr::JOINT_POS_LIMIT || code==SafetyErr::JOINT_VEL_LIMIT) {
+            // These finite, fresh measurements are authoritative even when a
+            // software motion boundary was crossed. Fault hold captures here.
+            actuator_state_=*actuator_state;joint_state_=*joint_state;last_state_time_=state_received_at;
+        }
         const RobotFault fault = make_safety_fault(checked_state.error());
-        enter_fault(fault, safety_.action_for(checked_state.error().code));
+        enter_fault(fault, safety_.action_for(code));
         return tl::make_unexpected(fault);
     }
 
@@ -833,9 +1028,15 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         return tl::make_unexpected(fault);
     }
 
-    const bool interaction_enabled=cfg_.capability.admittance.enabled || cfg_.hold_compensation.enabled;
-    const bool admittance_active=position_path && (selected_mode==JointImpedanceMode::COMPLIANT || selected_mode==JointImpedanceMode::DRAG);
+    const bool interaction_enabled=cfg_.capability.admittance.observer_enabled || cfg_.hold_compensation.enabled;
+    const bool admittance_active=position_path && cfg_.capability.admittance.enabled && (selected_mode==JointImpedanceMode::COMPLIANT || selected_mode==JointImpedanceMode::DRAG);
     JointCtrlCmd nominal_cmd=joint_cmd;
+    if(position_path && !continuous_cmd_ && !full_command_active_ && has_last_joint_cmd_) {
+        auto q=accepted_nominal_cmd_.pos,v=accepted_nominal_cmd_.vel;
+        if(q.size()!=count) {q=last_joint_cmd_.pos;v=last_joint_cmd_.vel;}
+        advance_joint_reference(q,v,nominal_cmd.pos,cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,1.0,controller_dt);
+        nominal_cmd.pos=std::move(q);nominal_cmd.vel=std::move(v);
+    }
     // Kp is zero in MIT drag, so follow the measured position in the
     // transmitted reference. This keeps the reference anchored for the next
     // interaction mode while retaining the independent nominal motion target.
@@ -867,149 +1068,23 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
             (nominal_cmd.vel[i]-last_nominal_velocity_[i])/controller_dt,
             -cfg_.safety.limits.max_acc[i],cfg_.safety.limits.max_acc[i]);
     }
-    bool new_measurement=false,observation_valid=false;
-    double measurement_dt=0.0,feedback_skew_ms=std::numeric_limits<double>::quiet_NaN();
-    MeasuredDynamicsSnapshot model_snapshot;
-    JointState observer_state;
-    std::uint64_t observer_timestamp_ns=0;
-    InteractionOutput interaction_telemetry;
-    std::vector<std::uint8_t> safety_position_margin_active;
-    std::vector<std::uint8_t> safety_velocity_margin_active;
+    InteractionEvaluation interaction_evaluation;
     if(interaction_enabled) {
-        const auto& stamps=actuator_state->feedback_received_ns;
-        const auto& timing=actuator_state->feedback_timing_valid;
-        const auto received_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(state_received_at.time_since_epoch()).count());
-        if(stamps.size()==count && !stamps.empty()) {
-            const auto bounds=std::minmax_element(stamps.begin(),stamps.end());
-            feedback_skew_ms=static_cast<double>(*bounds.second-*bounds.first)/1.0e6;
-        }
-        const auto aligned=feedback_aligner_.update(joint_state.value(),stamps,timing,received_ns,
-            static_cast<std::uint64_t>(cfg_.safety.state_timeout_s*1.0e9),
-            static_cast<std::uint64_t>(2.0*nominal_dt*1.0e9));
-        observation_valid=aligned.valid;
-        new_measurement=aligned.fresh;
-        if(new_measurement) {
-            observer_timestamp_ns=aligned.timestamp_ns;
-            measurement_dt=observer_sample_ns_==0 ? nominal_dt :
-                (observer_timestamp_ns>observer_sample_ns_ ? static_cast<double>(observer_timestamp_ns-observer_sample_ns_)/1.0e9 : 0.0);
-            if(measurement_dt<=0.0 || measurement_dt>cfg_.safety.state_timeout_s) {
-                observation_valid=false;new_measurement=false;observer_sample_ns_=0;
-                feedback_aligner_.reset();
-            } else {
-                observer_state=aligned.state;
-                observer_sample_ns_=observer_timestamp_ns;
-            }
-        } else if(!observation_valid) observer_sample_ns_=0;
-
-        // Dynamics and measured torque/velocity use the same interpolated
-        // joint-side timestamp whenever an observer update is performed.
-        const JointState& model_state=new_measurement ? observer_state : joint_state.value();
-        const auto snapshot=interaction_model_state_(model_state,controller_dt);
-        if(!snapshot) {
-            const auto fault=make_model_fault(snapshot.error());
-            enter_fault(fault,SafetyAction::STOP_HOLD);
-            return tl::make_unexpected(fault);
-        }
-        model_snapshot=*snapshot;
-        bool model_valid=model_snapshot.gravity.size()==count && model_snapshot.coriolis.size()==count &&
-            model_snapshot.mass_matrix.size()==count && finite_vector(model_snapshot.gravity) && finite_vector(model_snapshot.coriolis);
-        if(model_valid) for(std::size_t i=0;i<count;++i)
-            if(model_snapshot.mass_matrix[i].size()!=count || !finite_vector(model_snapshot.mass_matrix[i]) ||
-               model_snapshot.mass_matrix[i][i]<=0.0) {model_valid=false;break;}
-        if(!model_valid) {
-            const auto fault=make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD);
-            enter_fault(fault,SafetyAction::STOP_HOLD);
-            return tl::make_unexpected(fault);
-        }
-        JointVector interaction_model_torque;
-        if(joint_acc_valid) {
-            interaction_model_torque=model_snapshot.gravity;
-            for(std::size_t i=0;i<count;++i) {
-                interaction_model_torque[i]+=model_snapshot.coriolis[i];
-                for(std::size_t j=0;j<count;++j) interaction_model_torque[i]+=model_snapshot.mass_matrix[i][j]*joint_acc[j];
-            }
-        }
-        const std::size_t joints_count = cfg_.joint_names.size();
-        safety_position_margin_active.assign(joints_count, 0);
-        safety_velocity_margin_active.assign(joints_count, 0);
-        JointVector min_delta_q(joints_count, 0.0);
-        JointVector max_delta_q(joints_count, 0.0);
-        JointVector min_delta_q_dot(joints_count, 0.0);
-        JointVector max_delta_q_dot(joints_count, 0.0);
-        const auto& admittance_cfg = cfg_.capability.admittance;
-        const auto& limits = cfg_.safety.limits;
-
-        for(std::size_t i = 0; i < joints_count; ++i) {
-            min_delta_q[i] = -admittance_cfg.controller.max_delta_q[i];
-            max_delta_q[i] = admittance_cfg.controller.max_delta_q[i];
-            min_delta_q_dot[i] = -admittance_cfg.controller.max_delta_q_dot[i];
-            max_delta_q_dot[i] = admittance_cfg.controller.max_delta_q_dot[i];
-
-            if(limits.has_position_limit[i] != 0) {
-                const double cmd_min_pos = limits.min_pos[i] + limits.pos_margin[i];
-                const double cmd_max_pos = limits.max_pos[i] - limits.pos_margin[i];
-                if(joint_cmd.pos[i] < cmd_min_pos || joint_cmd.pos[i] > cmd_max_pos) {
-                    min_delta_q[i] = 0.0;
-                    max_delta_q[i] = 0.0;
-                }
-                else {
-                    min_delta_q[i] = std::max(min_delta_q[i], cmd_min_pos - joint_cmd.pos[i]);
-                    max_delta_q[i] = std::min(max_delta_q[i], cmd_max_pos - joint_cmd.pos[i]);
-                }
-            }
-
-            const double max_cmd_vel = limits.max_vel[i];
-            if(joint_cmd.vel[i] < -max_cmd_vel || joint_cmd.vel[i] > max_cmd_vel) {
-                min_delta_q_dot[i] = 0.0;
-                max_delta_q_dot[i] = 0.0;
-            }
-            else {
-                min_delta_q_dot[i] = std::max(min_delta_q_dot[i], -max_cmd_vel - joint_cmd.vel[i]);
-                max_delta_q_dot[i] = std::min(max_delta_q_dot[i], max_cmd_vel - joint_cmd.vel[i]);
-            }
-
-            if(min_delta_q[i] > -admittance_cfg.controller.max_delta_q[i] || max_delta_q[i] < admittance_cfg.controller.max_delta_q[i]) {
-                safety_position_margin_active[i] = 1;
-            }
-            if(min_delta_q_dot[i] > -admittance_cfg.controller.max_delta_q_dot[i] || max_delta_q_dot[i] < admittance_cfg.controller.max_delta_q_dot[i]) {
-                safety_velocity_margin_active[i] = 1;
-            }
-        }
-
-        GeneralizedMomentumInput momentum_input;
-        momentum_input.measured_torque=model_state.tor;
-        momentum_input.gravity=model_snapshot.gravity;
-        momentum_input.coriolis=model_snapshot.coriolis;
-        momentum_input.mass_matrix=model_snapshot.mass_matrix;
-        momentum_input.velocity=model_state.vel;
-        momentum_input.dt=measurement_dt>0?measurement_dt:nominal_dt;
-
-        const auto interaction = interaction_controller_.update(InteractionInput{
-            model_state.tor,
-            interaction_model_torque,
-            joint_cmd,
-            controller_dt,
-            std::move(min_delta_q),
-            std::move(max_delta_q),
-            std::move(min_delta_q_dot),
-            std::move(max_delta_q_dot),
-            model_state.vel,
-            std::move(momentum_input),
-            joint_acc_valid,
-            new_measurement,
-            observation_valid,
-            measurement_dt,
-            admittance_active,
-            selected_mode==JointImpedanceMode::DRAG,
-            });
-        if(!interaction) {
-            const RobotFault fault = make_interaction_fault(interaction.error());
-            enter_fault(fault, SafetyAction::STOP_HOLD);
-            return tl::make_unexpected(fault);
-        }
-        interaction_telemetry = interaction.value();
-        joint_cmd = interaction->corrected_cmd;
+        auto evaluated=update_interaction(joint_state.value(),actuator_state.value(),joint_acc,joint_acc_valid,
+            joint_cmd,controller_dt,admittance_active,selected_mode==JointImpedanceMode::DRAG);
+        if(!evaluated) {enter_fault(evaluated.error(),SafetyAction::STOP_HOLD);return tl::make_unexpected(evaluated.error());}
+        interaction_evaluation=std::move(*evaluated);
+        joint_cmd=interaction_evaluation.output.corrected_cmd;
     }
+    auto& interaction_telemetry=interaction_evaluation.output;
+    auto& model_snapshot=interaction_evaluation.model_snapshot;
+    auto& observer_state=interaction_evaluation.observer_state;
+    const auto new_measurement=interaction_evaluation.new_measurement;
+    const auto measurement_dt=interaction_evaluation.measurement_dt;
+    const auto feedback_skew_ms=interaction_evaluation.feedback_skew_ms;
+    const auto observer_timestamp_ns=interaction_evaluation.observer_timestamp_ns;
+    const auto& safety_position_margin_active=interaction_evaluation.safety_position_margin_active;
+    const auto& safety_velocity_margin_active=interaction_evaluation.safety_velocity_margin_active;
 
     const auto current_mode=ctrller_.get_impedance_mode();
     const bool positioning_hold=current_mode==JointImpedanceMode::RIGID || current_mode==JointImpedanceMode::COMPLIANT || current_mode==JointImpedanceMode::SERVO_TRACKING;
@@ -1315,45 +1390,31 @@ tl::expected<void, RobotFault> Robot::reset_fault() {
 /**
  * @brief 人工请求进入 FAULT 受限柔性恢复
  */
-tl::expected<void, RobotFault> Robot::enter_fault_compliant_recovery() {
-    if(state_ == RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
-    if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
-    if(!fault_hold_active_) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
-    // CSP position control has no supported compliant fault-recovery command.
-    if(cfg_.runtime.control_path==ControlPath::CSP)
+tl::expected<void, RobotFault> Robot::enter_fault_drag_recovery() {
+    if(state_==RobotState::UNCONFIGURED)return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
+    if(state_!=RobotState::FAULT)return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
+    const auto& policy=cfg_.safety.fault_recovery;
+    if(!fault_hold_active_ || !policy.allow_drag_recovery || !policy.require_operator_request ||
+       !cfg_.dynamics.gravity_model_validated || !is_drag_recovery_fault_allowed())
         return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
-
-    const auto& recovery = cfg_.safety.fault_recovery;
-    // 柔性恢复降低刚度，必须由操作员显式请求；重力模型未验证时低刚度无法作为防坠保障
-    if(!recovery.allow_compliant_recovery || recovery.default_mode != FaultHoldMode::RIGID_HOLD ||
-        !recovery.require_operator_request || !recovery.gravity_model_validated || !is_compliant_recovery_fault_allowed()) {
+    const bool position_path=cfg_.runtime.control_path==ControlPath::CSP;
+    if(position_path ? (!cfg_.capability.admittance.enabled || !interaction_model_state_) :
+        (!model_feedforward_ || cfg_.ctrller.drag_gains.kd.size()!=cfg_.joint_names.size()))
         return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
-    }
-
-    const auto actuator_state = motor_bus_->read();
-    if(!actuator_state) return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED, actuator_state.error()));
-
-    const auto joint_state = mapper_.to_joint_state(actuator_state.value());
-    if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
-
-    const bool position_limit_recovery = current_fault_ &&
-        current_fault_->code == RobotErr::SAFETY_FAILED &&
-        current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
-    const auto checked_state = position_limit_recovery ?
-        check_observed_state(safety_,joint_state.value(),actuator_state.value(),0.0,true) :
-        check_observed_state(safety_,joint_state.value(),actuator_state.value());
-    if(!checked_state) {
-        clear_fault_valid_cycles_ = 0;
-        return tl::make_unexpected(make_safety_fault(checked_state.error()));
-    }
-
-    const auto reference = reset_reference_to_measured(joint_state.value());
-    if(!reference) return tl::make_unexpected(reference.error());
-
-    actuator_state_ = actuator_state.value();
-    joint_state_ = joint_state.value();
-    fault_hold_mode_ = FaultHoldMode::COMPLIANT_RECOVERY;
-    fault_recovery_started_at_ = Clock::now();
+    const auto actuators=motor_bus_->read();
+    if(!actuators)return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED,actuators.error()));
+    const auto joints=mapper_.to_joint_state(*actuators);
+    if(!joints)return tl::make_unexpected(make_mapper_fault(joints.error()));
+    const bool position_recovery=current_fault_ && current_fault_->code==RobotErr::SAFETY_FAILED &&
+        current_fault_->safety_fault.code==SafetyErr::JOINT_POS_LIMIT;
+    const auto checked=check_observed_state(safety_,*joints,*actuators,0,position_recovery);
+    if(!checked)return tl::make_unexpected(make_safety_fault(checked.error()));
+    const auto reset=reset_reference_to_measured(*joints);
+    if(!reset)return reset;
+    const auto mode=ctrller_.set_impedance_mode(JointImpedanceMode::DRAG,*joints);
+    if(!mode)return tl::make_unexpected(make_ctrller_fault(mode.error()));
+    actuator_state_=*actuators;joint_state_=*joints;
+    fault_hold_mode_=FaultHoldMode::DRAG_RECOVERY;fault_recovery_started_at_=Clock::now();
     return maintain_fault_hold();
 }
 
@@ -1363,6 +1424,8 @@ tl::expected<void, RobotFault> Robot::enter_fault_compliant_recovery() {
 tl::expected<void, RobotFault> Robot::return_to_fault_rigid_hold() {
     if(state_ == RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
+    const auto reset=reset_reference_to_measured(joint_state_);
+    if(!reset)return reset;
     fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
     return maintain_fault_hold();
 }
@@ -1374,28 +1437,15 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     if(state_ == RobotState::UNCONFIGURED) return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
     if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
     if(!fault_hold_active_) {
-        // Bus connection / motor activation can fail before the controller
-        // ever reaches ACTIVE (e.g. USB-CAN connected, motors not powered).
-        // The hardware backend already attempted to disable every motor on
-        // the failed activation path. Retry a best-effort disable, then
-        // restore only the lifecycle to INACTIVE; never command motion here
-        const bool startup_failure = current_fault_ &&
-            (current_fault_->code == RobotErr::MOTOR_BUS_CONNECT_FAILED ||
-             current_fault_->code == RobotErr::MOTOR_BUS_ACTIVATE_FAILED) &&
-            !has_completed_cycle_;
-        if(!startup_failure) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
-        (void)motor_bus_->deactivate();
-        clear_calibration_hold_gains();
-        clear_calibration_tracking_gains();
-        ctrller_.reset();
-        interaction_controller_.reset();
-    interaction_state_={};
-        safety_.clear_cmd_history();
-        clear_runtime_state();
-        fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
-        current_fault_.reset();
-        last_fault_.reset();
-        state_ = RobotState::INACTIVE;
+        // Disabled faults keep observing hardware. Clearing one only restores
+        // INACTIVE after fresh healthy feedback; it never re-enables a drive.
+        const auto observed=update_fault_reaction(Clock::now());
+        if(!observed)return observed;
+        if(clear_fault_valid_cycles_<3 || std::any_of(joint_state_.vel.begin(),joint_state_.vel.end(),
+            [&](double v){return std::abs(v)>cfg_.shutdown.velocity_tolerance;}))
+            return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
+        ctrller_.reset();interaction_controller_.reset();safety_.clear_cmd_history();
+        clear_runtime_state();current_fault_.reset();last_fault_.reset();state_=RobotState::INACTIVE;
         return {};
     }
 
@@ -1449,9 +1499,9 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
  */
 tl::expected<void, RobotFault> Robot::maintain_fault_hold() {
     if(state_ != RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
-    if(!fault_hold_active_) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
+    const bool was_holding=fault_hold_active_;
     const auto result = update_fault_reaction(Clock::now());
-    if(!result) {
+    if(!result && was_holding) {
         fault_hold_active_ = false;
         disable_noexcept();
     }
@@ -1695,6 +1745,7 @@ RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noe
  */
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
     clear_calibration_disturbance();
+    gravity_verification_active_=false;
     park_rigid_ramp_started_.reset();
     fault_hold_active_ = false;
     fault_hold_cmd_ = ActuatorCtrlCmd{};
@@ -1759,88 +1810,57 @@ bool Robot::start_fault_hold_noexcept() noexcept {
  * @brief 根据 FAULT 内部模式刷新保持命令
  */
 tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
-    const double nominal_dt = 1.0 / cfg_.runtime.ctrl_frequency_hz;
-    const double dt = last_cycle_time_ == TimePoint{} ? nominal_dt : std::max(nominal_dt, seconds_between(now, last_cycle_time_));
-
-    if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY &&
-        seconds_between(now, fault_recovery_started_at_) > cfg_.safety.fault_recovery.recovery_timeout_s) {
-        fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
-    }
-
-    const auto actuator_state = motor_bus_->read();
-    if(!actuator_state) {
-        const RobotFault fault = make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED, actuator_state.error());
-        current_fault_ = fault;
-        last_fault_ = fault;
-        return tl::make_unexpected(fault);
-    }
-    const auto joint_state = mapper_.to_joint_state(actuator_state.value());
-    if(!joint_state) return tl::make_unexpected(make_mapper_fault(joint_state.error()));
-
-    const bool position_limit_recovery = current_fault_ &&
-        current_fault_->code == RobotErr::SAFETY_FAILED &&
-        current_fault_->safety_fault.code == SafetyErr::JOINT_POS_LIMIT;
-    const auto checked_state = check_observed_state(safety_,joint_state.value(),actuator_state.value());
-    if(!checked_state) {
-        clear_fault_valid_cycles_ = 0;
-        if(checked_state.error().code != SafetyErr::JOINT_POS_LIMIT) {
-            return tl::make_unexpected(make_safety_fault(checked_state.error()));
-        }
-        if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY && position_limit_recovery) {
-            const auto recovery_state = check_observed_state(safety_,joint_state.value(),actuator_state.value(),0.0,true);
-            if(!recovery_state) return tl::make_unexpected(make_safety_fault(recovery_state.error()));
+    fault_feedback_.observer_valid=false;fault_feedback_.new_measurement=false;fault_feedback_.admittance_active=false;
+    fault_feedback_.feedback_age_ms=available_feedback_age_s(actuator_state_,cfg_.joint_names.size())*1000;
+    const double nominal_dt=1.0/cfg_.runtime.ctrl_frequency_hz;
+    const double elapsed=last_cycle_time_==TimePoint{}?nominal_dt:seconds_between(now,last_cycle_time_);
+    const double dt=std::clamp(elapsed,nominal_dt,cfg_.safety.max_dt_s);
+    const auto actuators=motor_bus_->read();
+    if(!actuators) {clear_fault_valid_cycles_=0;return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED,actuators.error()));}
+    const auto joints=mapper_.to_joint_state(*actuators);
+    if(!joints) {clear_fault_valid_cycles_=0;return tl::make_unexpected(make_mapper_fault(joints.error()));}
+    actuator_state_=*actuators;joint_state_=*joints;has_state_=true;
+    fault_feedback_={};fault_feedback_.actuator_state=*actuators;fault_feedback_.joint_state=*joints;
+    const auto n=cfg_.joint_names.size();fault_feedback_.joint_cmd=last_joint_cmd_;
+    for(auto* values:{&fault_feedback_.joint_cmd.pos,&fault_feedback_.joint_cmd.vel,&fault_feedback_.joint_cmd.tor,&fault_feedback_.joint_cmd.kp,&fault_feedback_.joint_cmd.kd})
+        if(values->size()!=n)values->assign(n,0.0);
+    fault_feedback_.control_path=cfg_.runtime.control_path;fault_feedback_.dt=dt;
+    fault_feedback_.interaction_mode=fault_hold_mode_==FaultHoldMode::DRAG_RECOVERY?JointImpedanceMode::DRAG:JointImpedanceMode::RIGID;
+    fault_feedback_.feedback_age_ms=available_feedback_age_s(*actuators,cfg_.joint_names.size())*1000;
+    Safety health=safety_;
+    if(!fault_hold_active_) {auto health_cfg=cfg_.safety;health_cfg.require_all_actuators_enabled=false;
+        const auto configured=health.configure(health_cfg);if(!configured)return tl::make_unexpected(make_safety_fault(configured.error()));}
+    auto checked=check_observed_state(health,*joints,*actuators);
+    if(checked && cfg_.runtime.control_path==ControlPath::CSP) for(std::size_t i=0;i<n;++i) {
+        if(std::abs(joints->tor[i])>cfg_.safety.limits.max_effort[i]+cfg_.safety.numeric_tolerance) {
+            checked=tl::make_unexpected(SafetyFault{SafetyErr::JOINT_EFFORT_LIMIT,i,joints->tor[i],cfg_.safety.limits.max_effort[i]});break;
         }
     }
-    else {
-        ++clear_fault_valid_cycles_;
+    if(checked)++clear_fault_valid_cycles_;else clear_fault_valid_cycles_=0;
+    last_state_time_=now;last_cycle_time_=now;
+    if(!fault_hold_active_)return checked?tl::expected<void,RobotFault>{}:tl::make_unexpected(make_safety_fault(checked.error()));
+    const bool position_recovery=current_fault_ && current_fault_->code==RobotErr::SAFETY_FAILED &&
+        current_fault_->safety_fault.code==SafetyErr::JOINT_POS_LIMIT;
+    if(!checked && !(position_recovery && checked.error().code==SafetyErr::JOINT_POS_LIMIT))
+        return tl::make_unexpected(make_safety_fault(checked.error()));
+    if(fault_hold_mode_==FaultHoldMode::DRAG_RECOVERY &&
+       seconds_between(now,fault_recovery_started_at_)>cfg_.safety.fault_recovery.recovery_timeout_s) {
+        const auto reset=reset_reference_to_measured(*joints);if(!reset)return reset;
+        fault_hold_mode_=FaultHoldMode::RIGID_HOLD;
     }
-
-    if(fault_hold_mode_ == FaultHoldMode::COMPLIANT_RECOVERY) {
-        for(std::size_t i = 0; i < joint_state->vel.size(); ++i) {
-            if(std::abs(joint_state->vel[i]) > cfg_.safety.fault_recovery.compliant_recovery.max_vel[i]) {
-                fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
-                break;
-            }
-        }
-    }
-    const auto joint_cmd = build_fault_joint_cmd(joint_state.value(), fault_hold_mode_, dt);
-    if(!joint_cmd) return tl::make_unexpected(joint_cmd.error());
-    const bool bypass_position_cmd_limit = position_limit_recovery;
-    const auto safe_cmd = bypass_position_cmd_limit ?
-        safety_.check_joint_cmd_for_position_recovery(
-            joint_state.value(), joint_cmd.value(), std::min(dt, cfg_.safety.max_dt_s)) :
-        safety_.check_joint_cmd(joint_state.value(), joint_cmd.value(), std::min(dt, cfg_.safety.max_dt_s));
-    if(!safe_cmd) {
-        fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
-        const auto rigid_cmd = build_fault_joint_cmd(joint_state.value(), FaultHoldMode::RIGID_HOLD, nominal_dt);
-        if(!rigid_cmd) return tl::make_unexpected(rigid_cmd.error());
-        const auto rigid_safe_cmd = safety_.check_joint_cmd(joint_state.value(), rigid_cmd.value(), nominal_dt);
-        if(!rigid_safe_cmd) return tl::make_unexpected(make_safety_fault(rigid_safe_cmd.error()));
-        const auto rigid_actuator_cmd = mapper_.to_actuator_cmd(rigid_safe_cmd.value());
-        if(!rigid_actuator_cmd) return tl::make_unexpected(make_mapper_fault(rigid_actuator_cmd.error()));
-        fault_hold_cmd_ = rigid_actuator_cmd.value();
-        last_joint_cmd_ = rigid_safe_cmd.value();
-        has_last_joint_cmd_ = true;
-    }
-    else {
-        const auto actuator_cmd = mapper_.to_actuator_cmd(safe_cmd.value());
-        if(!actuator_cmd) return tl::make_unexpected(make_mapper_fault(actuator_cmd.error()));
-        fault_hold_cmd_ = actuator_cmd.value();
-        last_joint_cmd_ = safe_cmd.value();
-        has_last_joint_cmd_ = true;
-    }
-
-    const auto result = motor_bus_->write(fault_hold_cmd_);
-    if(!result) {
-        fault_hold_active_ = false;
-        disable_noexcept();
-        return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_WRITE_FAILED, result.error()));
-    }
-
-    actuator_state_ = actuator_state.value();
-    joint_state_ = joint_state.value();
-    last_cycle_time_ = now;
-    last_state_time_ = now;
+    auto command=build_fault_joint_cmd(*joints,fault_hold_mode_,dt);
+    if(!command)return tl::make_unexpected(command.error());
+    const auto safe=position_recovery?safety_.check_joint_cmd_for_position_recovery(*joints,*command,dt):
+        safety_.check_joint_cmd(*joints,*command,dt);
+    if(!safe)return tl::make_unexpected(make_safety_fault(safe.error()));
+    const auto mapped=mapper_.to_actuator_cmd(*safe);
+    if(!mapped)return tl::make_unexpected(make_mapper_fault(mapped.error()));
+    const auto written=motor_bus_->write(*mapped);
+    if(!written)return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_WRITE_FAILED,written.error()));
+    fault_hold_cmd_=*mapped;last_joint_cmd_=*safe;has_last_joint_cmd_=true;
+    fault_feedback_.joint_cmd=*safe;fault_feedback_.actuator_cmd=*mapped;
+    fault_feedback_.accepted_ref_pos=safe->pos;fault_feedback_.accepted_ref_vel=safe->vel;
+    fault_feedback_.command_written_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count());
     return {};
 }
 
@@ -1848,46 +1868,57 @@ tl::expected<void, RobotFault> Robot::update_fault_reaction(TimePoint now) {
  * @brief 构造故障保持 Joint 命令
  */
 tl::expected<JointCtrlCmd, RobotFault> Robot::build_fault_joint_cmd(const JointState& state, FaultHoldMode mode, double dt) {
-    JointCtrlCmd cmd;
-    cmd.path = cfg_.runtime.control_path;
-    if(cmd.path==ControlPath::CSP) cmd.position_speed_limit=cfg_.safety.limits.max_vel;
-    cmd.pos = last_joint_cmd_.pos.size() == cfg_.joint_names.size() ? last_joint_cmd_.pos : state.pos;
-    cmd.vel.assign(cfg_.joint_names.size(), 0.0);
-    cmd.tor.assign(cfg_.joint_names.size(), 0.0);
-    cmd.kp = cfg_.ctrller.rigid_gains.kp;
-    cmd.kd = cfg_.ctrller.rigid_gains.kd;
-
-    if(mode == FaultHoldMode::COMPLIANT_RECOVERY) {
-        cmd.kp = cfg_.safety.fault_recovery.compliant_recovery.kp;
-        cmd.kd = cfg_.safety.fault_recovery.compliant_recovery.kd;
-        const auto& recovery = cfg_.safety.fault_recovery.compliant_recovery;
-        const double reference_dt = std::min(dt, cfg_.safety.max_dt_s);
-        for(std::size_t i = 0; i < cmd.pos.size(); ++i) {
-            const double step = recovery.max_vel[i] * reference_dt;
-            cmd.pos[i] += std::clamp(state.pos[i] - cmd.pos[i], -step, step);
-        }
-        cmd.vel.assign(cfg_.joint_names.size(), 0.0);
+    const auto n=cfg_.joint_names.size();const bool csp=cfg_.runtime.control_path==ControlPath::CSP;
+    const bool drag=mode==FaultHoldMode::DRAG_RECOVERY;
+    JointCtrlCmd cmd;cmd.path=cfg_.runtime.control_path;
+    cmd.pos=last_joint_cmd_.pos.size()==n?last_joint_cmd_.pos:state.pos;
+    cmd.vel.assign(n,0);cmd.tor.assign(n,0);
+    cmd.kp=csp?JointVector(n,0):(drag?JointVector(n,0):cfg_.ctrller.rigid_gains.kp);
+    cmd.kd=csp?JointVector(n,0):(drag?cfg_.ctrller.drag_gains.kd:cfg_.ctrller.rigid_gains.kd);
+    if(csp)cmd.position_speed_limit=cfg_.safety.limits.max_vel;
+    if(drag)cmd.pos=csp?nominal_hold_target_:state.pos;
+    const bool position_recovery=current_fault_ && current_fault_->code==RobotErr::SAFETY_FAILED && current_fault_->safety_fault.code==SafetyErr::JOINT_POS_LIMIT;
+    if(cfg_.capability.admittance.observer_enabled && interaction_model_state_) {
+        auto interaction=update_interaction(state,actuator_state_,JointVector(n,0),false,cmd,dt,csp&&drag,drag,position_recovery);
+        if(!interaction)return tl::make_unexpected(interaction.error());
+        cmd=interaction->output.corrected_cmd;
+        const auto& out=interaction->output;
+        fault_feedback_.observer_valid=out.state.valid;fault_feedback_.new_measurement=interaction->new_measurement;
+        fault_feedback_.observer_state=interaction->observer_state;fault_feedback_.observer_timestamp_ns=interaction->observer_timestamp_ns;
+        fault_feedback_.measurement_dt=interaction->measurement_dt;fault_feedback_.feedback_skew_ms=interaction->feedback_skew_ms;
+        fault_feedback_.tau_ext_hat=out.tau_ext_hat;fault_feedback_.friction_compensated=out.friction_compensated;
+        fault_feedback_.friction_residual_hat=out.friction_residual_hat;fault_feedback_.bias_compensated=out.bias_compensated;
+        fault_feedback_.residual_raw=out.residual.residual;fault_feedback_.residual_filtered=out.residual.residual_filtered;
+        fault_feedback_.delta_q=out.delta_q;fault_feedback_.delta_q_dot=out.delta_q_dot;
+        fault_feedback_.interaction_state=out.state;fault_feedback_.admittance_active=csp&&drag;
     }
-
-    if(cmd.path==ControlPath::CSP) { cmd.kp.assign(cfg_.joint_names.size(),0.0); cmd.kd.assign(cfg_.joint_names.size(),0.0); }
-    if(model_feedforward_ && cmd.path==ControlPath::MIT) {
-        const JointVector zero(cfg_.joint_names.size(), 0.0);
-        const auto gravity = model_feedforward_(ModelFeedforwardMode::GRAVITY, state, zero, zero, dt);
-        if(!gravity) return tl::make_unexpected(make_model_fault(gravity.error()));
-        if(gravity->size() != cfg_.joint_names.size() || !finite_vector(gravity.value())) return tl::make_unexpected(make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD));
-        cmd.tor = gravity.value();
-        if(mode == FaultHoldMode::COMPLIANT_RECOVERY) {
-            for(double& value : cmd.tor) value *= cfg_.safety.fault_recovery.compliant_recovery.effort_scale;
-        }
+    if(!csp && model_feedforward_ && (drag || get_model_feedforward_mode()!=ModelFeedforwardMode::NONE)) {
+        const JointVector zero(n,0);const auto g=model_feedforward_(ModelFeedforwardMode::GRAVITY,state,zero,zero,dt);
+        if(!g)return tl::make_unexpected(make_model_fault(g.error()));
+        if(g->size()!=n || !finite_vector(*g))return tl::make_unexpected(make_fault(RobotErr::INVALID_MODEL_FEEDFORWARD));
+        cmd.tor=*g;
     }
     const auto projected=project_command_gains(cmd,cfg_.safety.limits);
     if(!projected)return tl::make_unexpected(make_safety_fault(projected.error()));
-    for(std::size_t i=0;i<cmd.pos.size();++i) {
+    if(csp && drag) {
+        ReferenceGovernorInput input;input.requested=cmd;input.previous=last_joint_cmd_;input.measured=state;
+        input.requested_acceleration.assign(n,0);input.limits=cfg_.safety.limits;input.dt=dt;
+        if(position_recovery)for(std::size_t i=0;i<n;++i) {
+            const double previous=input.previous.pos[i];
+            if(previous>input.limits.max_pos[i]-input.limits.pos_margin[i])input.limits.max_pos[i]=previous+input.limits.pos_margin[i];
+            if(previous<input.limits.min_pos[i]+input.limits.pos_margin[i])input.limits.min_pos[i]=previous-input.limits.pos_margin[i];
+        }
+        const auto governed=govern_reference(input);
+        if(!governed) {auto fault=make_fault(RobotErr::REFERENCE_GOVERNOR_FAILED);fault.reference_governor_err=governed.error();return tl::make_unexpected(fault);}
+        cmd=governed->accepted;JointVector q(n),v(n);
+        for(std::size_t i=0;i<n;++i){q[i]=cmd.pos[i]-nominal_hold_target_[i];v[i]=cmd.vel[i];}
+        const auto committed=interaction_controller_.accept_reference(q,v);
+        if(!committed)return tl::make_unexpected(make_interaction_fault(committed.error()));
+    }
+    for(std::size_t i=0;i<n;++i) {
         const double total=cmd.tor[i]+cmd.kp[i]*(cmd.pos[i]-state.pos[i])+cmd.kd[i]*(cmd.vel[i]-state.vel[i]);
         if(!std::isfinite(total) || std::abs(total)>cfg_.safety.limits.max_effort[i]+cfg_.safety.numeric_tolerance) {
-            auto fault=make_fault(RobotErr::REFERENCE_GOVERNOR_FAILED);
-            fault.reference_governor_err=ReferenceGovernorErr::INFEASIBLE;
-            return tl::make_unexpected(fault);
+            auto fault=make_fault(RobotErr::REFERENCE_GOVERNOR_FAILED);fault.reference_governor_err=ReferenceGovernorErr::INFEASIBLE;return tl::make_unexpected(fault);
         }
     }
     return cmd;
@@ -1896,12 +1927,13 @@ tl::expected<JointCtrlCmd, RobotFault> Robot::build_fault_joint_cmd(const JointS
 /**
  * @brief 判断当前锁存故障是否允许柔性恢复
  */
-bool Robot::is_compliant_recovery_fault_allowed() const noexcept {
+bool Robot::is_drag_recovery_fault_allowed() const noexcept {
     if(!current_fault_) return false;
     if(current_fault_->code == RobotErr::MOTOR_BUS_READ_FAILED || current_fault_->code == RobotErr::MOTOR_BUS_WRITE_FAILED) return false;
     if(current_fault_->code != RobotErr::SAFETY_FAILED) return false;
     // 通信、供电、执行器内部错误、非有限状态与持续状态超时禁止柔性恢复；软件只能继续尽力刷新最后合法保持命令
     switch(current_fault_->safety_fault.code) {
+        case SafetyErr::CMD_TRACKING_ERROR:
         case SafetyErr::CMD_TIMEOUT:
         case SafetyErr::CMD_POS_LIMIT:
         case SafetyErr::CMD_VEL_LIMIT:

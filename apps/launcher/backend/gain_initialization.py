@@ -244,9 +244,7 @@ def initialize_profile_gains(inspector, core_path, core, urdf_path, hardware, dr
         for group in ('rigid', 'compliant', 'drag'):
             purpose_axes = purpose_suggestions[group]['axes']
             pair = {term:{axis['joint']:axis[term] for axis in purpose_axes} for term in ('kp','kd')}
-            controller[group].update(pair); generated[group] = pair
-        recovery = core['safety_policy']['fault_recovery']['compliant_recovery']
-        recovery.update({term:dict(generated['compliant'][term]) for term in ('kp','kd')})
+            controller.setdefault(group, {}).update(pair); generated[group] = pair
         result.update(configuration_applied=True, configuration_initialized=True,
             runtime_baseline_unchanged=False, generated_controller=generated)
     return result

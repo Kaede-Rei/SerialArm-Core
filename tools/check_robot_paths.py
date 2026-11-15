@@ -7,13 +7,14 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 build = root / 'build/unified/standalone-dm_arm-t1-p1-m0/core'
-link = shlex.split((build / 'CMakeFiles/serial_arm_terminal.dir/link.txt').read_text())
-object_index = next(i for i, value in enumerate(link) if value.endswith('serial_arm_terminal.cpp.o'))
+link = [value for value in shlex.split((build / 'CMakeFiles/serial_arm_terminal.dir/link.txt').read_text()) if value != '-DNDEBUG']
+link[1:1] = ['-std=c++17', '-I' + str(root / 'src/serial_arm/core/include'),
+             '-I' + str(root / 'src/serial_arm/core/third_lib/tl/include')]
 with tempfile.TemporaryDirectory(prefix='serial-arm-robot-paths-') as temp:
-    executable = Path(temp) / 'robot_paths_test'
-    link[object_index] = str(root / 'tools/robot_paths_test.cpp')
-    link[link.index('-o') + 1] = str(executable)
-    link[1:1] = ['-std=c++17', '-I' + str(root / 'src/serial_arm/core/include'),
-                 '-I' + str(root / 'src/serial_arm/core/third_lib/tl/include')]
-    subprocess.run(link, cwd=build, check=True)
-    subprocess.run([str(executable)], check=True)
+    for fixture in ('robot_paths_test', 'interaction_dynamics_test', 'interaction_modes_test', 'position_safety_test'):
+        command = link.copy()
+        executable = Path(temp) / fixture
+        command[next(i for i, value in enumerate(command) if value.endswith('serial_arm_terminal.cpp.o'))] = str(root / 'tools' / (fixture + '.cpp'))
+        command[command.index('-o') + 1] = str(executable)
+        subprocess.run(command, cwd=build, check=True)
+        subprocess.run([str(executable)], check=True)
