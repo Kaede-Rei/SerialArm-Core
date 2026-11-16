@@ -212,3 +212,97 @@ def analyze_interaction_response(window):
     result['joints'] = ([_empty(name, reason) for name in names] if reason else
                         [_identify(samples, i, name, result['sample_dt_s']) for i, name in enumerate(names)])
     return result
+
+
+def validate_admittance_response(window, core):
+    """Qualify tested axes, rather than interpreting a frame count as quality."""
+    names = (core.get('model') or {}).get('joint_names') or []
+    admittance = (core.get('capability') or {}).get('admittance') or {}
+    controller = admittance.get('controller') or {}
+    flags = admittance.get('joint_enabled') or {}
+    samples = window.get('samples') or []
+    returned = verify_return_response(window)
+    result = {'validated': False, 'eligible': False, 'passed_axes': [], 'required_axes': [name for name in names if flags.get(name) is True],
+              'return_verification': returned, 'reason': '', 'source': 'finite_stiffness_release_response'}
+    if window.get('behavior', window.get('control_path')) != 'CSP' or window.get('impedance_mode') != 'COMPLIANT':
+        result['reason'] = '响应验收仅接受 CSP 有限刚度柔性试验'
+        return result
+    if window.get('joint_names') != names or not result['required_axes']:
+        result['reason'] = '响应记录的关节或参与轴不匹配'
+        return result
+    if any(not _number((controller.get('stiffness') or {}).get(name)) or controller['stiffness'][name] <= 0
+           for name in result['required_axes']):
+        result['reason'] = '参与轴必须使用有限正刚度，零刚度拖拽不能替代回位验收'
+        return result
+    if returned.get('joint_pass') is not True or response_condition_change(samples):
+        result['reason'] = returned.get('reason') or '试验条件不一致'
+        return result
+    if any(s.get('reference_limited') or s.get('torque_limited') or
+           any(s.get('reference_limit_flags') or []) or any(s.get('torque_limit_flags') or []) for s in samples):
+        result['reason'] = '记录存在参考或力矩触限，不能作为无触限响应验收'
+        return result
+    if any(s.get('observer_valid') is not True for s in samples):
+        result['reason'] = '响应记录存在无效外力观测'
+        return result
+    velocity_tolerances = (admittance.get('validation') or {}).get('velocity_tolerance') or {}
+    if not isinstance(velocity_tolerances, dict) or any(
+            not _number(velocity_tolerances.get(name)) or velocity_tolerances[name] <= 0 for name in names):
+        result['reason'] = '缺少导纳验收的逐轴速度稳定容差'
+        return result
+    times = [s['time_s'] for s in samples]
+    tail = [s for s in samples if s['time_s'] >= times[-1] - returned['stable_dwell_s']]
+    tolerances = window.get('return_tolerance') or (window.get('summary') or {}).get('tolerance')
+    if not isinstance(tolerances, list): tolerances = [tolerances] * len(names)
+    release = window['release_time_s']
+    before_release = [s for s in samples if s['time_s'] <= release]
+    result['eligible'] = True
+    axes = []
+    for i, name in enumerate(names):
+        if name not in result['required_axes']: continue
+        velocity_tolerance = velocity_tolerances[name]
+        peak = max(abs(s['pos'][i] - samples[0]['nominal'][i]) for s in before_release)
+        tracking = (core.get('safety_policy') or {}).get('max_tracking_error', {}).get(name)
+        tracking_ok = _number(tracking) and tracking > 0 and all(
+            _value(s, 'accepted', i) is not None and abs(s['pos'][i] - s['accepted'][i]) <= tracking for s in samples)
+        velocity_ok = all(_value(s, 'vel', i) is not None and abs(s['vel'][i]) <= velocity_tolerance for s in tail)
+        moved = peak > tolerances[i]
+        passed = moved and velocity_ok and tracking_ok
+        if passed: result['passed_axes'].append(name)
+        axes.append({'joint': name, 'peak_deflection': peak, 'position_tolerance': tolerances[i],
+                     'velocity_tolerance': velocity_tolerance, 'actual_motion': moved,
+                     'stable_velocity': velocity_ok, 'tracking_within_limit': bool(tracking_ok), 'passed': passed})
+    result['axes'] = axes
+    result['validated'] = set(result['passed_axes']) == set(result['required_axes'])
+    result['reason'] = ('全部参与轴完成实际退让、释放与稳定回位' if result['validated'] else
+                        '本次仅记录已实际退让并稳定回位的轴，未覆盖轴仍需试验')
+    return result
+
+
+def native_response_binding(window, events, session):
+    """Tie qualification to actual native telemetry, not renderer assertions."""
+    if not session or session.get('session_id') != window.get('session_id'):
+        return '原始会话不匹配，仅保存历史响应'
+    snapshots = {event.get('data', {}).get('sequence'): event.get('data', {}) for event in events
+                 if event.get('event') == 'telemetry' and isinstance(event.get('data'), dict)}
+    for sample in window.get('samples') or []:
+        native = snapshots.get(sample.get('sequence'))
+        if not native or native.get('valid') is not True or native.get('robot_state') != 'ACTIVE':
+            return '缺少对应原生 ACTIVE 反馈，响应仅保存为历史记录'
+        if native.get('control_path') != 'CSP' or native.get('impedance_mode') != 'COMPLIANT':
+            return '原生试验执行条件不匹配'
+        if native.get('gravity_scale') != window.get('gravity_scale'):
+            return '原生试验期间模型重力比例与记录不一致'
+        if native.get('hardware_connected') is not True or native.get('write_enabled') is not True:
+            return '离线或未连接硬件的记录不授予实机质量许可'
+        if abs(native.get('monotonic_ns', -1) / 1e9 - sample.get('time_s', 0)) > 1e-8:
+            return '响应时间戳与原生记录不匹配'
+        joint = native.get('joint') or {}
+        for key, source in (('pos', 'pos'), ('vel', 'vel'), ('nominal', 'nominal_ref_pos'), ('accepted', 'accepted_ref_pos')):
+            if sample.get(key) != joint.get(source):
+                return '响应数值与原生记录不匹配'
+        if (sample.get('new_measurement') is not (native.get('new_measurement') is True) or
+                sample.get('observer_valid') is not (native.get('observer_valid') is True) or
+                sample.get('reference_limit_flags') != (native.get('reference_limited') or []) or
+                sample.get('torque_limit_flags') != (native.get('torque_limited') or [])):
+            return '响应反馈或触限标志与原生记录不匹配'
+    return ''

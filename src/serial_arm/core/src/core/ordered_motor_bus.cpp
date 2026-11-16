@@ -74,8 +74,10 @@ public:
         return bus_->select_control_path(path,reordered);
     }
     tl::expected<void,MotorBusErr> activate() override {return bus_->activate();}
-    tl::expected<ActuatorState,MotorBusErr> read() override {
-        auto result=bus_->read();if(!result)return result;
+    tl::expected<ActuatorState,MotorBusErr> read() override {return read_feedback(false);}
+    tl::expected<ActuatorState,MotorBusErr> observe() override {return read_feedback(true);}
+    tl::expected<ActuatorState,MotorBusErr> read_feedback(bool observation) {
+        auto result=observation?bus_->observe():bus_->read();if(!result)return result;
         auto& state=*result;
         if(state.pos.size()!=size()||state.vel.size()!=size()||state.tor.size()!=size()||state.online.size()!=size()||state.enabled.size()!=size()||state.err_code.size()!=size())
             return tl::make_unexpected(MotorBusErr::READ_FAILED);
@@ -90,7 +92,7 @@ public:
         reorder(state.pos);reorder(state.vel);reorder(state.tor);reorder(state.online);reorder(state.enabled);reorder(state.err_code);
         return result;
     }
-    tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd& command) override {
+    tl::expected<void,MotorBusErr> prepare_command(const ActuatorCtrlCmd& command) {
         if(command.pos.size()!=size()||command.vel.size()!=size()||command.tor.size()!=size()||command.kp.size()!=size()||command.kd.size()!=size())
             return tl::make_unexpected(MotorBusErr::INVALID_CMD);
         for(std::size_t i=0;i<size();++i){const auto j=order_[i];command_.pos[j]=command.pos[i];command_.vel[j]=command.vel[i];command_.tor[j]=command.tor[i];command_.kp[j]=command.kp[i];command_.kd[j]=command.kd[i];}
@@ -100,6 +102,14 @@ public:
             command_.position_speed_limit.resize(size());
             for(std::size_t i=0;i<size();++i)command_.position_speed_limit[order_[i]]=command.position_speed_limit[i];
         } else command_.position_speed_limit.clear();
+        return {};
+    }
+    tl::expected<void,MotorBusErr> activate(const ActuatorCtrlCmd& initial) override {
+        const auto prepared=prepare_command(initial);if(!prepared)return prepared;
+        return bus_->activate(command_);
+    }
+    tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd& command) override {
+        const auto prepared=prepare_command(command);if(!prepared)return prepared;
         return bus_->write(command_);
     }
     tl::expected<void,MotorBusErr> stop() override {return bus_->stop();}

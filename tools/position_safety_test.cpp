@@ -2,7 +2,7 @@
 #include <cassert>
 using namespace serial_arm;
 int main(){
- SafetyCfg c; c.joints_count=1; auto& l=c.limits;
+ SafetyCfg c; c.joints_count=1;c.fault_recovery.velocity_tolerance={.05}; auto& l=c.limits;
  l.has_position_limit={1};l.min_pos={-2};l.max_pos={2};l.max_vel={1};l.max_acc={2};l.max_effort={4};l.max_kp={500};l.max_kd={5};l.pos_margin={0};l.max_tracking_error={0.2};
  c.require_continuous_cmd=false;
  Safety s;assert(s.configure(c)); JointState state;state.pos={0};state.vel={0};state.tor={0};

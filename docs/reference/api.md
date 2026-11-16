@@ -11,7 +11,7 @@
 | 建立第一个 C++ 应用 | [C++ 配置示例](#c-配置示例) |
 | 从 Python 完成一次移动 | [Python 运动示例](#python-运动示例) |
 | 查单位、向量顺序与命令结构 | [基础类型](#基础类型) |
-| 读取 Profile 与四用途增益 | [配置](#配置) |
+| 读取 Profile、执行路径与交互参数 | [配置](#配置) |
 | 管理使能、周期、目标和快照 | [Robot 与 ControlRuntime](#robot-与-controlruntime) |
 | 计算位姿、Jacobian、重力和惯性 | [Dynamics](#dynamics) |
 | 使用模型导纳与外力观测 | [导纳](#导纳) |
@@ -23,7 +23,7 @@
 
 ### C++ 配置示例
 
-下面从已安装的 `dm_arm_gray` Profile 加载 Backend、配置和模型，构造 `Robot`；示例不调用 `activate()`，可用于核对资源与接口连接
+下面从已安装的 `dm_arm_gray` Profile 加载 Backend、配置和模型，构造 `Robot`，只读连接并观察未使能反馈；示例不调用 `activate()` 或发送运动命令
 
 `Dynamics` 在 `Robot` 之前构造，确保回调引用在 Robot 生命周期内有效；配置字段与路径由所选 Profile 提供
 
@@ -102,7 +102,11 @@ int main() {
     auto configured = robot.configure(
         *config, std::move(*bus), feedforward, model_state);
     if(!configured) return 1;
-    std::cout << "Robot configured\n";
+    if(!robot.connect()) return 1;
+    auto observed = robot.observe();
+    if(!observed) return 1;
+    std::cout << "Observed joints: " << observed->joint_state.pos.size() << '\n';
+    // 根据真实反馈完成映射和边界核对后，由上层单独决定是否 activate()
 }
 ```
 
@@ -200,7 +204,7 @@ with serial_arm.RobotSession.from_profile("dm_arm_gray") as arm:
 | Kp | N·m/rad | N/m | N·m/rad |
 | Kd | N·m·s/rad | N·s/m | N·m·s/rad |
 
-GUI 的 °／mm 显示不改变配置与 API 的 SI 单位；Backend 须先转换编码器计数、RPM、电流等厂商量，再交给 Core
+配置与 API 统一使用 SI 单位；关节类型由模型决定，不通过 UI 单位开关改变；Backend 须先转换编码器计数、RPM、电流等厂商量，再交给 Core
 
 `feedback_received_ns` 为逐轴 `steady_clock` 接收时间戳，空数组表示未知；`feedback_timing_valid` 为可选的时序连续性标志，失效数据不能用于速度微分
 
@@ -251,7 +255,13 @@ CSP 必须提供逐关节正值 `safety_policy.max_tracking_error`；缺失或�
 - `runtime.ctrl_frequency_hz` 控制原生周期频率，`write_enabled` 控制硬件写入授权
 - `ModelFeedforwardMode` 为 `NONE`、`GRAVITY` 或 `FULL_INVERSE_DYNAMICS`，非 `NONE` 需要有效模型回调
 - `DynamicsCfg` 定义 URDF、关节顺序、基座／工具 Frame、重力向量、逐轴 `gravity_scale` 与可选重力校正包，`gravity_scale` 范围为 `[0, 2]`
-- `ShutdownCfg` 描述上层停放策略，配置它不会让 `Robot::deactivate()` 或 `RobotSession.stop()` 自动执行轨迹
+- `ShutdownCfg::mit/csp` 分别保存 `ParkingPathCfg`，`for_path(ControlPath)` 返回对应配置；配置不会让 `Robot::deactivate()` 或 `RobotSession.stop()` 自动执行轨迹
+- `ParkingStrategy` 支持 `RIGID` 与 `COMPLIANT_THEN_RIGID`；后者复用当前路径的交互参数，柔性接近目标并稳定后切刚性，最终满足原逐轴容差与稳定时间后失能；取消或超时会取消轨迹并捕获当前位置，报告停放未完成
+- `park_pos`、`position_tolerance` 和 `velocity_tolerance` 按固定关节顺序使用 `JointVector`，YAML 使用关节名称映射；每轴分别比较本轴 SI 数值
+- YAML 使用 `shutdown.paths.MIT/CSP`；`enabled` 默认 false，关闭时拒绝显式停放；开启且未设置目标时使用零位，零位超限则拒绝配置
+- `enabled` 是唯一停放许可；桌面断开或关闭时，当前路径允许且参数完整则先停放，确认失能后退出；关闭许可或停放失败时先处理状态并失能再退出，不设置额外的自动停放开关
+- 达妙低层 `stop/deactivate` 直接失能并确认状态，不注入独立停止 PD；使能必须提交明确首命令，停放与故障保持由上层完成
+- `SafetyPolicyCfg::position_margin`、保持补偿的位置／速度门限与摩擦 `velocity_transition` 均为逐轴向量；`FaultRecoveryCfg::velocity_tolerance` 和 `AdmittanceValidationCfg::velocity_tolerance` 独立定义恢复静止与响应验收条件
 - `SafetyPolicyCfg` 的 override 与比例只收窄 URDF 和硬件能力的交集，不放宽物理限制
 - continuous 关节可以没有绝对位置限位，不能人为按 `[-pi, pi]` 截断
 - Backend 提供完整且唯一的 `joint_name` 时，Core 按关节名对齐能力、反馈和命令；部分缺名、重名或不匹配会被拒绝，所有轴均无名的旧 Backend 则必须已按 Core 顺序排列
@@ -269,18 +279,25 @@ CSP 必须提供逐关节正值 `safety_policy.max_tracking_error`；缺失或�
 | 操作 | 条件与结果 |
 | --- | --- |
 | `configure(cfg, bus, feedforward, model_state)` | 接管 `std::unique_ptr<MotorBus>`，成功后 `UNCONFIGURED → INACTIVE`，拒绝重复配置 |
-| `activate()` | 连接并使能 Backend，以真实反馈初始化控制器，成功后进入 `ACTIVE` |
+| `connect()` | INACTIVE 中连接并刷新实际硬件能力与限制，不使能或下发运动命令 |
+| `observe()` | 读取 INACTIVE 快照，返回 `RobotCycleOutput`；保留越界、离线和驱动错误供诊断 |
+| `is_connected()` | 当前 Robot 是否已完成硬件连接 |
+| `activate()` | 先连接并观察，验证反馈、当前位首命令及力矩预算，再使能进入 `ACTIVE` |
 | `set_cmd(cmd, now)` | ACTIVE 状态提交运动参考，时间戳须单调 |
 | `set_full_cmd(cmd, now)` | 原生方式且 `allow_full_cmd=true` 才可直接覆盖完整关节命令，仍经过 Safety |
 | `cycle(now)` | 执行一次完整读状态、控制、检查、映射与写命令，返回 `RobotCycleOutput` 或 `RobotFault` |
 | `deactivate()` | 正常停止并失能，成功后回到 `INACTIVE` |
 | `force_deactivate()` | ACTIVE 或 FAULT 中停止并失能，失败仍返回错误 |
 
-Robot 析构尽力失能并释放资源；应用应显式处理停止结果，不能把析构当作停放成功确认
+只读连接允许 MIT 增益组缺失；MIT 首次使能必须已有逐轴正的刚性 Kp/Kd，CSP 仅要求位置执行能力、跟踪误差和运动限制，不使用 MIT 增益
+
+使能前，Core 使用未使能反馈检查在线、错误、时效与限位，构造 `q_ref=q_measured`、`dq_ref=0` 的首命令，经协议增益投影、Safety 与总力矩检查后调用 `MotorBus::activate(initial_cmd)`；失败发生在使能前时保留 INACTIVE，便于继续检查
+
+Robot 析构仅在 ACTIVE 或 FAULT 时尝试失能；纯连接观察的析构只释放资源，Backend 的 cleanup 也须保留该只读语义；应用仍应显式处理实际停止结果
 
 同一 Robot 同时只允许一个周期所有者；直接使用 Robot 的应用负责按配置频率调度，并在同一串行上下文更新命令、模式与模型缓存
 
-`ControlRuntime::run()` 管理固定频率周期；`step()` 执行单步并按 FAULT 状态维护故障保持；`submit_reference()` 提交带接收时间和 `MotionSource` 的参考；`snapshot()` 返回复制后的线程安全快照
+`ControlRuntime::run()` 管理固定频率周期；`step()` 在 ACTIVE 执行控制、在已连接 INACTIVE 观察反馈、在 FAULT 维护故障反应；`RuntimeSnapshot.cycle`、`observation`、`fault_feedback` 分开保存，观察不会触发示教或标定采样；`submit_reference()` 提交带接收时间和 `MotionSource` 的参考，`snapshot()` 返回复制后的线程安全快照
 
 `RuntimeHooks` 的 `before_cycle`、`after_step` 与 Robot 周期在相同串行上下文执行；使用 Terminal、Python 或 ROS2 适配层时，复用它们的原生周期，不另开第二个 Robot 控制循环
 
@@ -296,57 +313,26 @@ Robot 析构尽力失能并释放资源；应用应显式处理停止结果，�
 
 `set_calibration_disturbance(torque, now)` 为独立扰动短测提供有界关节力矩入口，`clear_calibration_disturbance()` 清除该输入；扰动仍经过原有力矩、参考与 Safety 约束，调用方需按周期刷新并在所有退出路径清除；周期输出的 `calibration_disturbance` 记录本周期实际叠加的扰动，不以请求值代替执行值
 
-固定目标扰动保留 `get_hold_target()` 返回的名义目标，只刷新独立扰动；新候选的 `available` 表示参数测量完整，`qualification_complete` 保留证据范围完整度；`validated` 为旧接口兼容字段，新任务固定为 false，不能把仅供参考的指标提升为精度通过，见 [时间与结果语义](calibration.md#时间与结果语义)
+固定目标扰动保留 `get_hold_target()` 的名义目标；独立输入必须与实际已执行的 PD、前馈、参考和新反馈一起记录，不能用请求值代替执行值
 
-自动增益的模型初始化、MIT 闭环短测、候选与预算定义见 [标定参考](calibration.md#自动增益的模型与证据)；旧 `identify()` 的无零点响应假设不作为 MIT 参考速度与前馈试验的物理带宽解释
+MIT 自动增益标定只适用于 MIT 执行路径；模型初值是待测起动参数，CSP 驱动器内部伺服整定与外层 M/D/K 调整均不属于该工具
 
-`model_calibration_gain_plan` 与新任务候选的 `target_budget_s/time_budget_s` 使用同一可信原始 `budget_source_duration_s`：四用途 `gain_mode=all/gain_tuning_mode=quick` 为目标 18T、硬上限 24T，单用途 `gain_tuning_mode=fine` 为目标 12T、硬上限 15T；重定时、导入、补测与局部比较不增加 T，历史候选按原有预算字段读取，不进行倍率迁移
+增益任务记录保留四类时序与证据：源轨迹时间、参考采样时间、命令写入时间和反馈接收时间；学习中的变增益记录与最终固定整组测量分开，`joint_cmd.kp/kd` 表示实际可编码增益
 
-`gain_stage_budget_reservation` 事件保存 `purpose/future_measurements_reserved_s/scope`，说明进入当前用途后仍保留给后续学习、用途比较、固定组测量和退出的成本；预留不等于已经执行或已经测全，实际阶段仍以对应 CSV 和测量结果为准
+| 结果／记录 | 含义 |
+| --- | --- |
+| `available` | 请求用途的基本参数测量完整 |
+| `qualification_complete` / `measurement_complete` | 对应响应窗口和用途证据是否完整 |
+| `validated` / `endpoint_passed` | 新增益任务保留为 false，不把参考精度分析当作实机验收 |
+| `native_validation.online_adaptation` | 区分变增益学习与冻结参数测量 |
+| `termination` | `kind`、`reason`、`blocked_joint_names`、`fault_interrupted` 保持状态与候选一致 |
+| `gain-trajectory-*.csv` | 实际整轨命令、反馈、参数和墙钟记录 |
+| `gain-purpose-*.csv` / `gain-anchor-*.csv` | 内点用途输入及访问记录 |
+| `drag-decay-*.csv` / `drag-taught-release-*.csv` | 零刚度后安静及释放记录 |
 
-新增益任务保存 `acceptance_scope=measured_response_reference_only_v1`、`reference_only=true` 和 `accuracy_thresholds_enabled=false`，取消精度／误差验收阈值；过程峰值、RMS、滞后和 `endpoint_*` 最终目标窗数据均为参考指标；旧 `gain_requirements` 误差目标参数兼容读取但不再用于新任务的流程门槛或通过评分；`available` 继续表示实际完整参数测量，新任务 `validated` 与 `endpoint_passed` 等兼容字段固定为 false；历史标志与范围按原记录保留，不将参考分析自动补成通过；新 Profile 初始化凭据保存 `reference_only=true`、`value_role=unmeasured_model_reference` 和 `accuracy_thresholds_enabled=false`，双对角化初值算法不变
+快速三用途 `gain_mode=all/gain_tuning_mode=quick` 使用原始示教 T 的 18T 目标和 24T 硬预算；单用途精调使用 12T 和 15T，重定时和补测不增加 T；参数模型未知或响应不可分辨时保留原始数据与缺项原因
 
-运动中整定阶段为 `trajectory_adapting`；`online_trajectory_PD_update` 保存 `time_s/source_record_path`、`previous_kp/kd`、`proposed_kp/kd`、`candidate_generated/admission_allowed/installed`、逐轴模型与原因；`installed` 只表示目标组已交给平滑切换，实时有效增益仍读取 `RobotCycleOutput.joint_cmd.kp/kd`；`native_validation.online_adaptation=false` 才是最终冻结整组测量，变增益学习记录不会提前提升为 `available`；整轨 CSV 新增 `planned_independent_disturbance_nm/independent_input_planned_known`，用以核对已知独立输入是否被实时约束削减，缺少这些列的旧数据按旧格式读取
-
-在线模型另外保存 `fresh_samples/command_samples/resampled_samples`、`feedback_interval_min_s/max_s`、`observed_encoder_step_rad` 与 `fit_attempts/rank_rejections/plausibility_rejections/prediction_rejections`；分别区分原始输出、真实命令和等间隔建模点，以及信息秩、作用方向／动态系数与留出预测问题；尚未执行的训练／留出预测 RMS 为 `null`，不以默认零误差填补缺测；旧事件缺少这些字段时界面显示未知
-
-途中用途测量阶段为 `trajectory_purpose_pass`；`taught_path_purpose_dwell` 保存原路径 `source_index/reverse/reference_rad`、`source_duration_s/source_time_s`、实际 `elapsed_s/pause_begin_s/pause_end_s/measurement_dwell_s`、`resumed/completed` 与主记录路径；`arrival_error_gate=false/exact_anchor_arrival_required=false` 明确新鲜反馈不受精确到位门槛阻断；经过该内点时平滑暂停源时钟，测完后继续原方向，最终固定组测量另行保存
-
-内点记录增加 `nearby_response_motion_score/nearby_reference_span_rad/axis_response_weights`；权重来自本次轨迹实测误差与噪声尺度，行程来自候选附近原始示教参考，不把预测能力写成实际反馈运动
-
-用途回调结束后的 `gain-transition-*-passing-resume.csv` 保留接受参考到原示教内点的实际交接；提交跟踪参考前先恢复对应跟踪模式、用途参数和参考行为，允许回调以保持或拖拽模式返回；固定组最终测量仍以独立完成的全程记录为准
-
-用途测量期间中断时 `completed=false/resumed=false`，`pause_end_s` 与尚未提交到源时钟的 `measurement_dwell_s` 可为0；已有有效 `pause_begin_s` 时，以 `elapsed_s-pause_begin_s` 展示中断前已停留用时，保留部分记录，不显示为停留0秒或已经恢复轨迹
-
-`gain-trajectory-{native|compliant}-passing-purpose.csv` 的 `trajectory_source_time_s` 仅表示示教源进度；`time_s/command_time_s/reference_sample_time_s/feedback_time_s` 保留真实墙钟，单独用途测量期间主轨迹 CSV 保留实际采集间隙，不能跨该间隙假装持续运动；用途输入与保持仍使用各自原始 CSV；新快标计划 `max_path_passes=6`、单用途精调为4，单独拖拽继续沿原路径访问内点而不产生整轨测量
-
-`structure/parameter_count/training_span_rad/validation_error_limit_rad` 保存所选局部模型与训练窗预测尺度；用途成本区分跟踪和柔性；`taught_measurement_anchor_visit` 记录原路径源索引、计划和实际成本、引用角及 CSV，`interior_purpose_measurement_skipped` 说明内点或预算缺项且不默认回端点扰动；`rigid_purpose_local_comparison` 与 `compliant_purpose_local_comparison` 保留整组比较，`kept` 不代表性能认证；共享扰动用 `shared_disturbance_evidence` 引用实际源记录
-
-`taught_local_correction_plan` 保存同向短示教段的 `source_index_from/to/reverse/playback_rate/duration_s/complete_comparison_cost_s` 与选择依据记录；`taught_local_complete_group_comparison` 保存实际两组完整 P/D、`changed_joint/coordinate`、共同前馈与负载声明、两条原始 CSV、逐轴前后指标及 `kept`；`reason` 表示提出候选的依据，`comparison_reason` 单独说明实测采用或拒绝的原因，旧记录缺少该字段时不从提案原因推测拒绝结论；初态不一致或未改轴入口偏置时，`taught_local_comparison_repeat` 保存原两份记录、`bounded_repeats=1/raw_metrics_preserved=true`；预算允许才补测完整两组，保留原始误差，不扣除静差后宣布改善；两类事件均保持 `model_identified=false`，不把直接实测比较伪装成局部模型成立；原始 CSV 继续使用 `gain-trajectory-local-*.csv`，沿现有轨迹导出入口保存；局部行程计入任务预算但不计整轨趟数，最终冻结整轨另测
-
-用途短测使用逐轴隔离的已知输入，固定完整 P/D、参考中心和前馈条件；逐周期记录保留被激励轴及其他轴的反馈，输入基线、加载与释放分别解释；直接位移／恢复测量的完整性与参数模型有效性分开，模型未知不删除已完成的直接测量，未发生可分辨运动也不补成刚度、频响或释放测量
-
-用途参数事件沿用 `short_experiment_parameters`，以 `waveform=isolated_smooth_pulse`、`isolation=sequential_single_axis` 和 `pulse_axes` 描述已执行的逐轴窗口；每项保存 `axis_index/attempt`，同轴补测独立成项，`start_s/release_s/end_s` 与同一记录时钟对应；未测轴在逐轴直接测量结果中保留缺项原因；`independent_torque_disturbance` 的 `method=isolated_smooth_torque_pulse`、`model_identified=false` 与直接输入／响应字段分别保存；用途结果的 `disturbance_verification.direct_measurement_complete` 要求各轴直接窗口完整且用途响应 `measurement_complete`；仅有完整输入、响应低于分辨能力时该汇总及相应用途 `qualification_complete` 保持 false，完整参数组仍可 `available`；直接响应测全不等同参数模型成立
-
-用途脉冲参数的 `center_source=completed_taught_anchor_nominal_reference_not_actual_rezero`、`center_rad` 与 `entry_actual_rad` 区分名义参考和实际入口；桌面展示两者以及目标减入口的偏差，旧记录没有这些来源字段时不自动声称使用了示教名义目标
-
-`purpose_input_prior` 事件通过 `record_path` 关联本次用途脉冲，以 `input_priors` 逐轴保存 `valid/independent_samples/low_speed_pd_samples/rejected_samples`、`independent_peak_nm/low_speed_pd_level_nm/seed_nm/low_speed_cutoff_rad_s`、`source/reason/interpretation`，另存实际计划 `planned_input_nm/current_domain_input_ceiling_nm`；`input_allowance_source` 明示既有 Robot 独立注入边界来自用户 Safety 力矩限制的 5%，计划、补测和固定输入复测使用同一边界；原始已知输入与低速主机 PD 尺度分列，来源指向实际轨迹 CSV；无有效先验时保留不足原因，界面不显示默认零值为已测成功
-
-`purpose_input_supplement_decision` 保存本轴 `attempt/previous_input_nm/next_input_nm/reason/next_window_planned`；拟安排不代表已经执行，实际输入与起止时刻仍以 `purpose_pulse_window_parameters`、汇总 `pulse_axes` 和逐周期 CSV 为准；各次补测在同一原 T 预算内，不因新增窗口延长任务上限
-
-`gain-purpose-*.csv` 保存同一固定完整组下的所有轴控制周期，`gain-anchor-*.csv` 保存内点访问／返回；两者与 `drag-decay-*.csv`、`drag-taught-release-*.csv`、`gain-trajectory-*-passing-purpose.csv` 一并进入桌面记录文件清单、任务记录 ZIP 和候选成果 ZIP，导出保留原始 CSV 字节，不修改源任务
-
-拖拽安静窗口必须来自实际输出已完成 Kp＝0／Kd 交接且独立输入为零的周期；静置基本参数结果与可选释放证据分别保存，释放未测不清除已完成的安静结果；新的用途测量仍沿用原 T 预算、用途选择、完整参数组应用与恢复语义
-
-`drag_damping_comparison_conditions` 保存比较姿态的 `comparable/reason/relative_M_change/max_gravity_change_nm`，以完整惯量和已执行重力项判断工况是否可比；`arrival_error_gate=false` 不要求回到同一个编码值；工况未知或变化过大则保留原阻尼，预算不足时保存 `drag_damping_comparison_skipped`
-
-拖拽逐轴 `drag_input_plan`、`drag_input_window` 和 `drag_input_supplement_decision` 分别保存计划、实际已执行窗口和补测决定，包含 `joint/reason/scheduled/input_nm/next_input_nm/input_ceiling_nm/torque_quantum_nm/prior_valid/prior_input_nm/prior_source/duration_s`；未安排输入必须保留实际缺项原因，安静结果不覆盖该原因；`scheduled` 与正幅值均不等于已测得物理释放运动，是否可分辨释放仍读取 `release_decay_measured`
-
-`drag_demonstrated_motion_release` 保存附近示教运动释放的 `source_index_from/source_index_release/preparation_duration_s/actual_zero_stiffness_s/elapsed_s/domain_stopped` 和逐轴测量原因；`actual_zero_stiffness_s` 是实际完整 P0／Kd 交接完成时刻，未知时为 `null`；`drag-taught-release-*.csv` 分别保留正刚度准备与零刚度释放周期；拖拽逐轴 `release_record_path` 指向实际采用的释放证据，`demonstrated_motion_preparation` 区别示教运动准备与独立力矩脉冲，不覆盖原始脉冲记录或安静窗口
-
-保持结果的 `hold_evaluation_scope` 区分内点固定目标分析与整轨终点定位；`target_source=completed_taught_anchor_nominal_reference_not_actual_rezero` 表示保留已发送的示教内点，`target_pos` 与 `entry_actual_pos` 分开保存；`hold_parameters` 同样保存这些入口证据，不以到位误差决定能否测量；增加 `controls_known/reference_fixed/independent_input_zero`，保持 CSV 的 `kp/kd` 为实际周期值并附 `actual_gains_known`；参数过渡与积分建立期继续保留全过程异常运动记录，最终固定参数窗口单独检查；积分尝试的误差窗口按已观测保持静差设置并记录，持续冻结且没有补偿输出时可提前结束该尝试，以 `hold_integral_blocked:<原因>` 保留实际参数和冻结记录，不删除已有基本保持结果
-
-机器接口的增益任务状态与候选使用同一 `termination` 对象，包含 `kind`、`reason`、`blocked_joint_names`、`fault_interrupted`；新任务基本参数测全为 `measured_reference_complete`，缺项为 `insufficient_measurement`，正常无故障测量阶段为 COMPLETE；终止分类及取消语义见 [时间与结果语义](calibration.md#时间与结果语义)；`motion_establishment_probe` 是单频运动证据，逐轴计划 `motion_probe=true` 时只执行频率数组首项，不能作为三频拟合或用途通过依据
+模型初始化、已知输入、整轨学习、用途比较及结果定义见 [标定参考](calibration.md)；历史任务按自身的来源和证据范围读取，不由新 UI 自动提升验证状态
 
 ### 周期输出与读取
 
@@ -435,7 +421,7 @@ print(dynamics.tool_pose)
 
 | 配置／接口 | 契约 |
 | --- | --- |
-| `AdmittanceCapabilityCfg` | 总开关、逐轴开关、动量观测器、标定与控制器参数 |
+| `AdmittanceCapabilityCfg` | 派生能力状态、逐轴开关、动量观测器、标定、M/D/K 与验证标志 |
 | `AdmittanceObserverCfg` | 使用广义动量观测，不显式依赖实测加速度 |
 | `momentum_gain` | MOMENTUM 一阶增益，单位 s⁻¹，逐轴且大于零 |
 | `AdmittanceCalibrationCfg` | 固定 `torque_bias`、速度相关摩擦 residual 模型与 `torque_threshold` |
@@ -448,9 +434,15 @@ print(dynamics.tool_pose)
 
 摩擦标定、交叉验证和运行补偿使用同一低速渐入函数；反馈速度分辨率从硬件 capability 按 `velocity_resolution / abs(pos_ratio)` 映射至关节侧，作为内部标定条件传入，不新增 YAML 参数；此前使用不同渐入函数得到的摩擦系数需重新标定
 
-启用模型导纳需要合法模型回调和配置；挂起导纳会旁路修正并清空观测与 delta 状态，恢复时从已接受参考重锚，正常模式切换不能把受扰退让位置误当作新的名义目标
+CSP 刚性定位不启用导纳；柔性和拖拽除了完整参数，还要求 `validation.observation_validated=true` 与 `validation.response_validated=true`；参数填写完整与验收通过是不同状态
 
-运行时配置过渡保留已接受虚拟状态；Safety 限制对最终参考仍然有效，观测有效性和导纳是否实际激活通过周期输出判定
+首次有限刚度测试使用 `Robot::set_admittance_validation(true)`，条件是外力观测已验证、所有参与轴 K>0；它捕获当前位并进入 COMPLIANT，不允许零刚度拖拽；调用 `false` 返回当前位置 RIGID；该许可仅在当前运行任务中有效，不设置 `response_validated`
+
+更改观测增益、零偏、死区或摩擦参数会清除观测和响应验证；更改 M/D/K、参与轴或退让边界会清除响应验证；在不再满足准入条件时退回当前位 RIGID，避免沿用旧验证运行
+
+观测速度在关节侧使用短位置时间窗处理低速量化，同一处理后状态用于模型、动量与摩擦标定；这可抑制速度码造成的假动量，不能消除驱动上报力矩慢变或静摩擦滞回
+
+运行中同策略参数过渡保留已接受虚拟状态，最终参考仍经过 Safety；零刚度拖拽对持续残差会产生持续运动，必须先完成无接触多姿态、双向到位和释放检查
 
 完整定义见 [导纳配置](../../src/serial_arm/core/include/serial_arm/config/config.hpp)、[控制器](../../src/serial_arm/core/include/serial_arm/interaction/controllers/joint_admittance_controller.hpp)、[运行组合](../../src/serial_arm/core/include/serial_arm/interaction/runtime/interaction_controller.hpp) 与 [标定工具](../../src/serial_arm/core/include/serial_arm/interaction/admittance_calibration.hpp)
 
@@ -483,7 +475,7 @@ print(dynamics.tool_pose)
 | `get_last_fault()` | 返回最近锁存故障，按顶层码选择有意义的子错误 |
 | `is_fault_holding()` / `get_fault_hold_mode()` | 检查故障保持是否有效及其刚性／拖拽恢复状态 |
 | `maintain_fault_hold()` | FAULT 中持续观察反馈；保持有效时刷新受控输出，不执行普通目标 |
-| `enter_fault_drag_recovery()` | 人工请求使用已有 DRAG 参数恢复，需当前模型重力已验证且故障允许受控输出 |
+| `enter_fault_drag_recovery()` | 人工请求使用已有 DRAG 参数恢复，故障须允许受控输出；MIT 要求当前模型重力已验证，CSP 要求观测与响应均已验证 |
 | `return_to_fault_rigid_hold()` | 退出拖拽恢复并返回故障刚性保持 |
 | `clear_fault()` | 保持型故障满足条件后以当前实测位置进入 `ACTIVE + RIGID`；停止输出型故障清到 `INACTIVE`，需重新使能 |
 | `reset_fault()` | 兼容入口，执行与 `clear_fault()` 相同的恢复流程 |
@@ -492,7 +484,7 @@ print(dynamics.tool_pose)
 
 清故障不是无条件清错；通信、反馈、安全状态与恢复配置必须满足条件，成功后重新提交新的运动请求，旧目标不会自动恢复
 
-`FaultHoldMode::DRAG_RECOVERY` 表示 FAULT 锁存中的拖拽恢复，不是第五种交互模式；配置使用 `fault_recovery.allow_drag_recovery`，重力验证放在 `model.gravity_model_validated`，不再提供恢复专属 Kp/Kd、速度或重力缩放
+`FaultHoldMode::DRAG_RECOVERY` 表示 FAULT 锁存中的拖拽恢复，不是第五种交互模式；配置使用 `fault_recovery.allow_drag_recovery`，MIT 重力验证放在 `model.gravity_model_validated`，CSP 依赖导纳的两个质量标志，不要求 MIT 补偿验证标志；不提供恢复专属 Kp/Kd、速度或重力缩放
 
 手动退出 DRAG 会捕获当前实测位置；调用端必须停止旧轨迹和目标生产者，不能在下一周期重新发送拖拽前目标；`ControlRuntime`、Terminal 和 `RobotSession` 使用同一交接语义
 
@@ -532,21 +524,22 @@ Python 线程提交请求，独立 C++ 工作线程串行维护控制周期；Py
 | --- | --- |
 | `RobotSession.from_profile(name, ...)` | 从 Profile 创建会话 |
 | `RobotSession(core_yaml, plugin, hardware_yaml)` | 显式指定配置与驱动 |
-| `start()` | 激活 Robot 并启动原生工作线程 |
+| `connect()` / `observe()` | 停止线程时只读连接并返回 INACTIVE 硬件快照 |
+| `start()` | 执行首命令检查，激活 Robot 并启动原生工作线程 |
 | `stop()` | 停止线程，ACTIVE 调用 `deactivate()`，FAULT 调用 `force_deactivate()`，不执行停放 |
 | `move_to(pos, speed_scale)` | 绝对位置目标，`speed_scale` 在 `(0, 1]`，返回运动编号 |
 | `hold_current()` | 取消位置目标并捕获当前实测位置保持 |
 | `set_impedance_mode(mode)` | 工作线程串行应用任务切换，清除旧目标与用途覆盖 |
-| `set_execution_gain_profile(profile)` / `clear_execution_gain_profile()` | 设置或清除用途覆盖 |
 | `set_control_path(path)` / `set_model_feedforward_mode(mode)` | 在已配置、未启动且 INACTIVE 时选择策略 |
 | `set_hold_compensation_cfg(cfg)` / `set_admittance_cfg(cfg)` | 提交合法参数，运行中等待工作线程应用结果，导纳仅允许同策略更新 |
+| `set_admittance_validation(active)` | 在运行的 CSP 中进入有限 K 测试，或返回当前位置 RIGID |
 | `set_gravity_scale(values)` | 运行时由工作线程应用逐轴重力比例 |
 | `clear_fault()` / `reset_fault()` / `enter_fault_drag_recovery()` / `return_to_fault_rigid_hold()` | 提交给同一工作线程处理的故障恢复请求 |
 | `snapshot` | 线程安全复制的周期、运动、故障与动力学快照 |
 | `state` / `fault_hold_mode` / `configured` / `running` | 会话状态 |
 | `config` / `dynamics_info` / `actuator_info` | 静态配置、模型与执行器能力副本 |
 
-从保持提交合法位置目标时自动转入相应跟踪任务；拖拽需先退出再移动，无效目标不改变当前任务
+交互模式与名义目标独立；`move_to()` 设置目标而不代替模式切换，离开 DRAG 会捕获实测位置并取消旧运动请求
 
 读取 `snapshot` 后先检查 `last_error`、`valid`，再检查具体周期有效标志；`running` 只表示线程状态，不能证明反馈新鲜或机械臂到位
 
@@ -575,11 +568,12 @@ except serial_arm.SerialArmError as exc:
 
 | 生命周期／接口 | 职责 |
 | --- | --- |
-| `on_init()` / `on_configure()` | 读取参数、加载配置和 Backend，建立状态与命令缓存 |
-| `on_activate()` | 显式授权后连接、使能并启动原生控制线程 |
-| `on_deactivate()` | 停止后台线程并请求保持后失能 |
+| `on_init()` | 读取参数、加载配置和 Backend |
+| `on_configure()` | 建立 Robot，连接并读取未使能反馈，不发运动命令 |
+| `on_activate()` | 检查当前位首命令、使能并启动原生控制线程 |
+| `on_deactivate()` | 停止后台线程并失能，不执行停放轨迹 |
 | `export_state_interfaces()` / `export_command_interfaces()` | 向 ros2_control 提供关节状态和参考接口 |
-| `read()` / `write()` | 复制后台快照和上层参考，不在 controller_manager 线程另做完整串口／CAN 控制闭环 |
+| `read()` / `write()` | ACTIVE 复制后台快照和上层参考，INACTIVE 可刷新只读反馈；不另建控制闭环 |
 | `CommandFrame` / `StateFrame` | 适配层与后台工作线程之间的命令／状态缓存 |
 
 适配层复用 `ControlRuntime`；MoveIt 启动与配置见 [使用指南](../guide.md)
@@ -597,17 +591,21 @@ except serial_arm.SerialArmError as exc:
 | --- | --- |
 | `configure(path)` | 解析硬件配置并建立能力，不使能或驱动执行器运动 |
 | `connect()` | 打开总线并允许读取状态，成功不代表已使能 |
-| `read()` | 返回执行器侧状态、在线／使能／故障信息及可用的逐轴反馈时序 |
-| `activate()` | 使能并切换到契约所需的可写控制模式 |
+| `read()` | 控制周期读取执行器状态及逐轴接收时序，不伪造新时间戳 |
+| `observe()` | 未使能观察，可主动请求新反馈；不使能或切换执行模式 |
+| `activate(initial_cmd)` | 接收 Core 已验证的当前位首命令；逐轴使能后立即发保持命令，再等待确认或处理其他轴 |
+| `activate()` | 底层生命周期入口；Robot 正常使能使用带首命令的重载 |
 | `write(cmd)` | 将完整执行器命令转换为厂商协议与单位 |
 | `stop()` / `deactivate()` | 请求停止／安全保持，或退出激活并失能 |
 | `recover()` | 恢复硬件故障，不能替代 Robot 层 `clear_fault()` |
 | `capabilities()` / `size()` | 提供真实型号或明确保守的物理能力与轴数 |
-| `cleanup()` | `noexcept`、可重复调用，释放 Backend 自己持有的逻辑资源 |
+| `cleanup()` | `noexcept`、可重复调用；纯观察连接的释放不发送控制或失能命令 |
 
 `HardwareLoader::load(plugin, path[, overrides])` 返回绑定 Backend 与 DSO 显式引用生命周期的 `unique_ptr<MotorBus>`；析构时先销毁 Backend、释放设备与总线连接，再释放加载句柄；DSO 代码通过 `RTLD_NODELETE` 保留至进程退出，供共享总线注册表中较晚释放的弱引用控制块安全析构，调用方不手动 `dlclose()`
 
 `HardwareConfigOverrides` 只覆盖本次加载的 `serial_port`、`baudrate` 与 `bus`，不回写硬件 YAML
+
+达妙在 MIT 与 CSP 下都以最新未使能位置建立首参考；MIT 首帧使用 Core 已检查的 Kp/Kd/前馈，CSP 使用已选速度上限；新增观察与首命令虚函数改变 Backend ABI，插件必须随当前 Core 重新构建
 
 自定义驱动必须导出三个 C 入口，直接使用当前 SDK 头文件的 ABI 标识；替换 SDK 后重新构建驱动，并保持工具链、标准库和链接配置匹配
 
@@ -695,7 +693,7 @@ if(!output) {
 | `SafetyErr` / `SafetyFault` | dt、命令／反馈时效、在线／使能、限位和数值 |
 | `MotorBusErr` / `HardwareLoaderErr` | 设备通信、硬件状态、配置、共享库符号及 ABI |
 | `ModelFeedforwardErr` / `ReferenceGovernorErr` / `InteractionControllerErr` | 模型回调、参考限幅和导纳配置／运行状态 |
-| `RobotErr` / `RobotFault` | 顶层生命周期与上述模块错误的组合 |
+| `RobotErr` / `RobotFault` | 顶层生命周期与模块错误；`ADMITTANCE_NOT_VALIDATED` 表示当前导纳质量前提尚未满足 |
 | `BusRegistryErr` / `CanErr` / `SerialPort` 异常 | 物理资源冲突、帧通信、串口 I/O 与事务 |
 
 故障恢复条件见 [Safety 与 FAULT](#safety-与-fault)，图形预览错误与机器人连接、运动错误分别处理，不能用重新加载模型代替硬件故障恢复

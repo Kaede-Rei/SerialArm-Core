@@ -40,13 +40,14 @@
 .readiness-reference .readiness-first-steps p { font-size: 12px; line-height: 1.65; }
 
 .profile-settings { container: setup-workspace / inline-size; min-width: 0; }
-.setup-save-context { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; position: sticky; top: 0; z-index: 5; margin-bottom: 24px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-overlay,var(--card)); box-shadow: var(--shadow-panel); }
+.setup-save-context { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; position: sticky; top: 0; z-index: 5; margin-bottom: 24px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--overlay-solid,var(--card)); box-shadow: var(--shadow-panel); }
+.setup-save-context::before { content:""; position:absolute; inset-inline:-1px; bottom:100%; height:24px; background:var(--bg); pointer-events:none; z-index:-1; }
 .setup-save-context > div:first-child { display: grid; gap: 4px; min-width: 0; }
 .setup-save-context b { font-size: 14px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
 #profile-dirty-state { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .setup-save-context .parameter-top-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
-.parameter-layout.setup-editor { grid-template-columns: 180px minmax(0,1fr); gap: 28px; }
-.setup-sidebar { position: sticky; top: 92px; min-width: 0; max-height: calc(100dvh - 230px); overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
+.parameter-layout.setup-editor { min-block-size:var(--setup-editor-min-height,0px); align-items:start; grid-template-columns: 180px minmax(0,1fr); gap: 28px; }
+.setup-sidebar { position: sticky; top: var(--setup-sticky-offset,92px); min-width: 0; max-height: calc(100dvh - 230px); overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; }
 .setup-sidebar .parameter-groups { position: static; gap: 4px; }
 .setup-sidebar .parameter-group { min-height: 38px; border-color: transparent; border-radius: 6px; background: transparent; }
 .setup-sidebar .parameter-group.active { background: var(--tint); border-color: transparent; color: var(--accent-text); }
@@ -144,7 +145,7 @@
 @container setup-workspace (max-width:650px) {
   .setup-save-context { position: relative; flex-direction: column; align-items: stretch; gap: 12px; }
   .setup-save-context .parameter-top-actions { justify-content: flex-start; }
-  .parameter-layout.setup-editor { grid-template-columns: minmax(0,1fr); gap: 20px; }
+  .parameter-layout.setup-editor { min-block-size:var(--setup-editor-min-height,0px); align-items:start; grid-template-columns: minmax(0,1fr); gap: 20px; }
   .setup-sidebar { position: static; max-height: none; overflow: visible; }
   .setup-sidebar .parameter-groups { flex-direction: row; flex-wrap: wrap; gap: 6px; }
   .setup-inspector { padding: 14px; }
@@ -172,19 +173,19 @@
 }
 
 /* Joint parameter tables share one row and one source per axis. */
-.setup-main .profile-control-table { width:100%; table-layout:auto; margin:12px 0; }
-.setup-main .profile-control-table th:first-child { min-width:96px; width:20%; }
-.setup-main .profile-control-table th,
-.setup-main .profile-control-table td { padding:6px 12px; vertical-align:middle; text-align:left; }
-.setup-main .profile-control-table th { white-space:normal; line-height:1.6; }
+:is(.setup-main,.tuning-parameters) .profile-control-table { width:100%; table-layout:auto; margin:12px 0; }
+:is(.setup-main,.tuning-parameters) .profile-control-table th:first-child { min-width:96px; width:20%; }
+:is(.setup-main,.tuning-parameters) .profile-control-table th,
+:is(.setup-main,.tuning-parameters) .profile-control-table td { padding:6px 12px; vertical-align:middle; text-align:left; }
+:is(.setup-main,.tuning-parameters) .profile-control-table th { white-space:normal; line-height:1.6; }
 /* Header text follows the input's text inset, not the far edge of its column. */
-.setup-main .profile-control-table thead th:not(:first-child) { padding-inline:22px; }
+:is(.setup-main,.tuning-parameters) .profile-control-table thead th:not(:first-child) { padding-inline:22px; }
 /* Hidden labels stay inside their field's scroller instead of extending the root page. */
-.setup-main .profile-control-table .parameter-field { position:relative; min-width:96px; gap:0; }
-.setup-main .profile-control-table .parameter-field > span:first-child { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
-.setup-main .profile-control-table .parameter-field > input { width:100%; min-width:0; text-align:left; }
-.setup-main .profile-control-table .parameter-switch { justify-content:flex-start; }
-.setup-main .profile-control-table .parameter-field em { max-width:180px; white-space:normal; }
+:is(.setup-main,.tuning-parameters) .profile-control-table .parameter-field { position:relative; min-width:96px; gap:0; }
+:is(.setup-main,.tuning-parameters) .profile-control-table .parameter-field > span:first-child { position:absolute; width:1px; height:1px; padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+:is(.setup-main,.tuning-parameters) .profile-control-table .parameter-field > input { width:100%; min-width:0; text-align:left; }
+:is(.setup-main,.tuning-parameters) .profile-control-table .parameter-switch { justify-content:flex-start; }
+:is(.setup-main,.tuning-parameters) .profile-control-table .parameter-field em { max-width:180px; white-space:normal; }
 .setup-main .profile-mode-note { margin:12px 0 0; }
 .setup-main .profile-tracking-limits .parameter-empty { margin-top:12px; }
 .setup-main .profile-motion-control > .calibration-step > .parameter-fields { margin:12px 0; }
@@ -192,8 +193,8 @@
 .setup-main .profile-gain-task .profile-control-table { margin:0; }
 .setup-main .profile-gain-purpose-grid { grid-template-columns:minmax(0,1fr); }
 
-.setup-main .profile-control-table tbody th { position:static; background:transparent; }
-.setup-main .profile-control-table tbody tr:last-child > :is(th,td) { border-bottom:0; }
+:is(.setup-main,.tuning-parameters) .profile-control-table tbody th { position:static; background:transparent; }
+:is(.setup-main,.tuning-parameters) .profile-control-table tbody tr:last-child > :is(th,td) { border-bottom:0; }
 /* Configuration summaries share one compact baseline */
 .parameter-si-note { margin:0 0 12px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; color:var(--muted); background:var(--subtle); font-size:12px; line-height:1.6; }
 .parameter-si-note summary { cursor:pointer; font-size:12px; color:var(--muted); }
@@ -252,3 +253,117 @@
 }
 
 .new-arm-stages .section-title { font-size:20px; }
+
+/* Commissioning keeps saved evidence, operator records and current feedback separate. */
+.commissioning-groups { display:grid; gap:20px; margin-bottom:24px; }
+.readiness-workspace .commissioning-group { min-width:0; border:1px solid var(--line); border-radius:12px; background:var(--card); box-shadow:var(--shadow-panel); }
+.readiness-workspace .commissioning-group > .readiness-fold { border:0; border-radius:inherit; }
+.readiness-workspace .commissioning-group > .readiness-fold > summary { padding:20px; }
+.readiness-workspace .commissioning-group > .readiness-fold > summary .readiness-fold-title { font-size:16px; }
+.readiness-workspace .commissioning-group > .readiness-fold > .readiness-fold-body { padding:0 20px 8px; }
+.readiness-workspace .readiness-fold > summary { grid-template-columns:14px minmax(0,1fr) auto; }
+.readiness-fold-status { grid-column:3; grid-row:1; }
+.readiness-fold-description { grid-column:2 / -1; }
+.commissioning-group .readiness-fold-body > .readiness-fold { border-radius:0; border-bottom:1px solid var(--line); }
+.commissioning-group .readiness-fold-body > .readiness-fold:last-child { border-bottom:0; }
+.readiness-workspace .commissioning-group .readiness-fold-body > .readiness-fold > summary { padding:18px 0; }
+.readiness-workspace .commissioning-group .readiness-fold-body > .readiness-fold > .readiness-fold-body { padding:0 0 20px 26px; }
+.commissioning-group .readiness-status-dot { margin-top:7px; }
+.commissioning-group .readiness-fold-status .readiness-status-dot { margin-top:0; }
+.commissioning-group .readiness-fold-body > .workspace-actions { margin-top:16px; }
+.commission-artifact { display:block; overflow-wrap:anywhere; word-break:break-word; color:var(--muted); font-size:12px; line-height:1.6; }
+.readiness-record .hint { margin:6px 0; }
+.tuning-parameters > summary { font-weight:550; }
+.tuning-parameters-body { min-width:0; padding-top:16px; }
+.tuning-parameters .calibration-step:first-child { margin-top:0; }
+.tuning-parameters .profile-motion-control { gap:20px; }
+.tuning-workspace,.observation-workspace { display:grid; gap:24px; min-width:0; }
+.tuning-workspace > .workspace-section,.observation-workspace > .workspace-section { margin:0; }
+.observation-workspace .single-calibration-tools-body { display:grid; gap:20px; }
+.response-history .readiness-inspection-records { margin-top:16px; }
+.readiness-workspace > .readiness-fold { margin-top:8px; }
+@container readiness-workspace (max-width:500px) {
+ .readiness-workspace .commissioning-group > .readiness-fold > summary { padding:16px; }
+ .readiness-workspace .commissioning-group > .readiness-fold > .readiness-fold-body { padding:0 16px 8px; }
+ .readiness-fold-status { grid-column:2 / -1; grid-row:auto; }
+ .readiness-fold-description { grid-column:2 / -1; }
+}
+
+.app.atil-shell .sidebar .nav-item[data-page="calibration"] { padding-block:8px; height:auto; min-height:36px; }
+.app.atil-shell .sidebar .nav-item[data-page="calibration"] span { white-space:normal; overflow:visible; text-overflow:clip; line-height:1.6; }
+.studio-page > .page-head:has(.workspace-connection) .page-head-actions { flex:1 1 430px; max-width:100%; }
+.studio-page > .page-head .page-head-actions > .button { flex:none; }
+.tuning-parameters-body > .calibration-step { background:transparent; border:0; padding:0; }
+
+/* One 24-unit outline family, with unchanged weight on hover and selection. */
+.app.atil-shell .sidebar .nav-item > svg { width:21px; height:21px; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; fill:none; flex:none; }
+
+.measurement-feedback { margin-top:16px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--subtle); }
+.measurement-feedback .hint { margin:8px 0 0; }
+
+.commissioning-path-selection { padding:2px 0 20px; border-bottom:1px solid var(--line); }
+.commissioning-path-selection .segmented { max-width:560px; }
+.commissioning-path-selection .segmented button { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:6px 10px; padding:8px 12px; }
+.commissioning-path-selection small { font-size:12px; color:var(--info); font-weight:450; }
+.commissioning-path-context { display:flex; align-items:center; justify-content:space-between; gap:12px 20px; flex-wrap:wrap; margin-top:12px; }
+.commissioning-path-context .hint { margin:0; }
+.commissioning-path-selection > .hint { margin:12px 0 0; }
+
+/* Path selection stays next to its shared response draft. */
+.setup-main .profile-execution-settings { padding-bottom:24px; border-bottom:1px solid var(--line); }
+.profile-path-response { display:flex; flex-direction:column; gap:28px; min-width:0; }
+.profile-path-response > .calibration-step { margin:0; padding:0; border:0; border-radius:0; background:none; }
+.profile-path-response > .calibration-step + .calibration-step { padding-top:24px; border-top:1px solid var(--line); }
+
+/* Each commissioning task has one procedure, one set of conditions and one result. */
+.commission-task { display:grid; gap:24px; min-width:0; padding:2px 0 4px; }
+.commission-task-section { min-width:0; }
+.commission-task-section + .commission-task-section { padding-top:20px; border-top:1px solid var(--line); }
+.commission-task-section h4 { margin:0 0 12px; font-size:14px; font-weight:600; line-height:1.6; }
+.commission-instructions { display:grid; gap:8px; margin:0; padding-left:22px; color:var(--muted); font-size:14px; line-height:1.7; }
+.commission-instructions li { padding-left:4px; }
+.commission-conditions { display:grid; gap:0; margin:0; padding:0; list-style:none; }
+.commission-condition { display:flex; align-items:flex-start; justify-content:space-between; gap:12px 24px; min-width:0; padding:10px 0; font-size:14px; line-height:1.65; }
+.commission-condition + .commission-condition { border-top:1px solid var(--line); }
+.commission-condition > span:first-child { flex:1; min-width:0; }
+.commission-condition > [data-readiness-live] { flex:none; }
+.commission-condition label { display:flex; align-items:flex-start; gap:10px; cursor:pointer; }
+.commission-condition input { flex:none; margin-top:5px; accent-color:var(--accent); }
+.commission-condition-state { color:var(--info); white-space:nowrap; }
+.commission-task .is-complete { color:var(--green); }
+.commission-task .is-warning { color:var(--warning); }
+.commission-task-section > .workspace-actions { margin-bottom:14px; }
+.commission-note { display:grid; gap:8px; margin:16px 0 12px; color:var(--muted); font-size:12px; line-height:1.6; }
+.commission-note textarea { width:100%; min-width:0; min-height:64px; resize:vertical; color:var(--text); font:inherit; font-size:14px; }
+.commission-task [data-commissioning-remaining] { margin:10px 0 0; }
+.commission-result { margin:14px 0 0; font-size:14px; line-height:1.7; }
+.commission-blockers { display:grid; gap:6px; margin:14px 0 0; padding-left:18px; color:var(--muted); font-size:12px; line-height:1.65; }
+.commission-context { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px 24px; margin-bottom:20px; padding:14px 16px; border:1px solid var(--line); border-radius:8px; background:var(--subtle); }
+.commission-context > div { display:grid; gap:4px; min-width:0; }
+.commission-context span { color:var(--muted); font-size:12px; }
+.commission-context strong { font-size:14px; font-weight:500; line-height:1.6; }
+@container readiness-workspace (max-width:650px) {
+ .commission-condition { gap:8px 16px; }
+ .commission-task { gap:20px; }
+}
+
+.setup-save-context[data-studio-content-enter] { translate:none; }
+#profile-guide-container { display:flow-root; }
+
+/* Saved defaults, editable draft and connected runtime are separate sources. */
+.profile-value-states { display:flex; flex-wrap:wrap; gap:6px 16px; min-width:0; color:var(--muted); font-size:12px; line-height:1.5; }
+.profile-value-states > span { display:inline-flex; flex-wrap:wrap; gap:6px; }
+.profile-value-states small { color:var(--muted); font-size:12px; }
+.profile-value-states > span > span { color:var(--text); }
+.parking-target-state { display:grid; gap:6px; margin:16px 0; padding:12px 16px; border-inline-start:3px solid var(--line-strong); background:var(--subtle); font-size:14px; line-height:1.6; }
+.parameter-field > em[id$="-hint"] { font-size:12px; line-height:1.55; color:var(--muted); font-style:inherit; }
+@container setup-workspace (max-width:850px) { .profile-value-states { gap:4px 12px; } }
+
+.profile-parking { display:grid; gap:20px; min-width:0; }
+.profile-parking > .hint { margin:0; }
+.profile-parking-path-tabs { max-width:560px; }
+.profile-parking-path-tabs > button { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:4px 10px; min-height:44px; }
+.profile-parking-path-tabs small { font-size:12px; color:var(--info); }
+.profile-parking-path-panel { min-width:0; display:flow-root; }
+.profile-parking-path-panel .calibration-step { margin:0; padding:0; border:0; background:none; }
+.profile-parking-path-panel h4 { margin:24px 0 12px; font-size:14px; font-weight:550; }

@@ -139,11 +139,13 @@ def gain_candidate_targets(gain, cfg, joints, gain_purposes=None, hardware=None)
                     encoded = _gain_map(joints, values, policy.get('max_effort_override') if field == 'max_torque' else None)
                     hold_compensation[field] = yaml.safe_load(encoded)
                 for field in ('velocity_threshold', 'error_threshold'):
-                    value = compensation.get(field)
-                    if value is None and not compensation['enabled']: continue
-                    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                    values = compensation.get(field)
+                    if values is None and not compensation['enabled']: continue
+                    if not isinstance(values, list) or len(values) != len(joints) or any(
+                            isinstance(value, bool) or not isinstance(value, (int, float)) or
+                            not math.isfinite(value) or value <= 0 for value in values):
                         raise ValueError('定位补偿阈值无效: ' + field)
-                    hold_compensation[field] = value
+                    hold_compensation[field] = dict(zip(joints, values))
                 for key, value in hold_compensation.items():
                     targets[('control', 'hold_compensation', key)] = yaml.safe_dump(value, default_flow_style=True).strip().removesuffix('\n...')
     return targets, hold_compensation
@@ -375,7 +377,7 @@ def _gravity_export(record,dest,candidate_source=None,candidate_path=None):
              ('capability','admittance','calibration','torque_bias'):_gain_map_signed(joints,residual['torque_bias']),
              ('capability','admittance','calibration','torque_threshold'):_gain_map(joints,residual['torque_threshold']),
              ('capability','admittance','calibration','friction','enabled'):'true' if friction_verified else 'false',
-             ('capability','admittance','calibration','friction','velocity_transition'):str(float(friction['velocity_transition']))}
+             ('capability','admittance','calibration','friction','velocity_transition'):_gain_map(joints,friction['velocity_transition'])}
     for name in ('positive_coulomb','positive_viscous','negative_coulomb','negative_viscous'):
         targets[('capability','admittance','calibration','friction',name)]=_gain_map_signed(joints,friction[name])
     core_text=core.read_text(encoding='utf-8')

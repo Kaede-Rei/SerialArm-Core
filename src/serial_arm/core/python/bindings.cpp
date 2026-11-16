@@ -402,6 +402,7 @@ void bind_enums(py::module_& module) {
         .value("REFERENCE_GOVERNOR_FAILED",RobotErr::REFERENCE_GOVERNOR_FAILED)
         .value("MOTION_SOURCE_BUSY",RobotErr::MOTION_SOURCE_BUSY)
         .value("CALIBRATION_RESPONSE_UNSTABLE",RobotErr::CALIBRATION_RESPONSE_UNSTABLE)
+        .value("ADMITTANCE_NOT_VALIDATED",RobotErr::ADMITTANCE_NOT_VALIDATED)
         .value("FAULT_RECOVERY_NOT_ALLOWED", RobotErr::FAULT_RECOVERY_NOT_ALLOWED);
 
     py::enum_<RobotState>(module, "RobotState")
@@ -602,7 +603,8 @@ void bind_config(py::module_& module) {
         .def_readwrite("default_mode", &FaultRecoveryCfg::default_mode)
         .def_readwrite("allow_drag_recovery", &FaultRecoveryCfg::allow_drag_recovery)
         .def_readwrite("require_operator_request", &FaultRecoveryCfg::require_operator_request)
-        .def_readwrite("recovery_timeout_s", &FaultRecoveryCfg::recovery_timeout_s);
+        .def_readwrite("recovery_timeout_s", &FaultRecoveryCfg::recovery_timeout_s)
+        .def_readwrite("velocity_tolerance", &FaultRecoveryCfg::velocity_tolerance);
 
     py::class_<SafetyCfg>(module, "SafetyCfg")
         .def(py::init<>())
@@ -625,16 +627,24 @@ void bind_config(py::module_& module) {
         .def_readwrite("model_feedforward_mode", &RuntimeCfg::model_feedforward_mode)
         .def_readwrite("control_path", &RuntimeCfg::control_path);
 
+    py::enum_<ParkingStrategy>(module, "ParkingStrategy")
+        .value("RIGID", ParkingStrategy::RIGID)
+        .value("COMPLIANT_THEN_RIGID", ParkingStrategy::COMPLIANT_THEN_RIGID);
+    py::class_<ParkingPathCfg>(module, "ParkingPathCfg")
+        .def(py::init<>())
+        .def_readwrite("enabled", &ParkingPathCfg::enabled)
+        .def_readwrite("strategy", &ParkingPathCfg::strategy)
+        .def_readwrite("park_pos", &ParkingPathCfg::park_pos)
+        .def_readwrite("speed_scale", &ParkingPathCfg::speed_scale)
+        .def_readwrite("position_tolerance", &ParkingPathCfg::position_tolerance)
+        .def_readwrite("velocity_tolerance", &ParkingPathCfg::velocity_tolerance)
+        .def_readwrite("settle_time_s", &ParkingPathCfg::settle_time_s)
+        .def_readwrite("timeout_s", &ParkingPathCfg::timeout_s);
     py::class_<ShutdownCfg>(module, "ShutdownCfg")
         .def(py::init<>())
-        .def_readwrite("park_before_disable", &ShutdownCfg::park_before_disable)
-        .def_readwrite("park_pos", &ShutdownCfg::park_pos)
-        .def_readwrite("speed_scale", &ShutdownCfg::speed_scale)
-        .def_readwrite("position_tolerance", &ShutdownCfg::position_tolerance)
-        .def_readwrite("velocity_tolerance", &ShutdownCfg::velocity_tolerance)
-        .def_readwrite("settle_time_s", &ShutdownCfg::settle_time_s)
-        .def_readwrite("relaxed_tolerance_ratio", &ShutdownCfg::relaxed_tolerance_ratio)
-        .def_readwrite("timeout_s", &ShutdownCfg::timeout_s);
+        .def_readwrite("mit", &ShutdownCfg::mit)
+        .def_readwrite("csp", &ShutdownCfg::csp)
+        .def("for_path", [](ShutdownCfg& cfg, ControlPath path)->ParkingPathCfg& {return cfg.for_path(path);}, py::return_value_policy::reference_internal);
 
     py::class_<DynamicsCfg>(module, "DynamicsCfg")
         .def(py::init<>())
@@ -674,8 +684,15 @@ void bind_config(py::module_& module) {
         .def_readwrite("max_delta_q",&AdmittanceControllerCfg::max_delta_q)
         .def_readwrite("max_delta_q_dot",&AdmittanceControllerCfg::max_delta_q_dot);
 
+    py::class_<AdmittanceValidationCfg>(module,"AdmittanceValidationCfg")
+        .def(py::init<>())
+        .def_readwrite("observation_validated",&AdmittanceValidationCfg::observation_validated)
+        .def_readwrite("response_validated",&AdmittanceValidationCfg::response_validated)
+        .def_readwrite("velocity_tolerance",&AdmittanceValidationCfg::velocity_tolerance);
+
     py::class_<AdmittanceCapabilityCfg>(module,"AdmittanceCapabilityCfg")
         .def(py::init<>())
+        .def_readwrite("validation",&AdmittanceCapabilityCfg::validation)
         .def_readonly("observer_enabled",&AdmittanceCapabilityCfg::observer_enabled)
         .def_readonly("enabled",&AdmittanceCapabilityCfg::enabled)
         .def_readwrite("joint_enabled",&AdmittanceCapabilityCfg::joint_enabled)
@@ -990,6 +1007,8 @@ void bind_robot_session(py::module_& module) {
             py::arg("baudrate") = py::none(),
             py::arg("bus") = py::none(),
             py::call_guard<py::gil_scoped_release>())
+        .def("connect", &PyRobotSession::connect, py::call_guard<py::gil_scoped_release>())
+        .def("observe", &PyRobotSession::observe, py::call_guard<py::gil_scoped_release>())
         .def("start", &PyRobotSession::start, py::call_guard<py::gil_scoped_release>())
         .def("stop", &PyRobotSession::stop, py::call_guard<py::gil_scoped_release>())
         .def("reset_fault", &PyRobotSession::reset_fault, py::call_guard<py::gil_scoped_release>())
@@ -1000,6 +1019,7 @@ void bind_robot_session(py::module_& module) {
         .def("set_hold_compensation_cfg",&PyRobotSession::set_hold_compensation_cfg,py::call_guard<py::gil_scoped_release>())
         .def("set_control_path",&PyRobotSession::set_control_path)
         .def("set_admittance_cfg",&PyRobotSession::set_admittance_cfg,py::call_guard<py::gil_scoped_release>())
+        .def("set_admittance_validation",&PyRobotSession::set_admittance_validation,py::call_guard<py::gil_scoped_release>())
         .def("set_model_feedforward_mode", &PyRobotSession::set_model_feedforward_mode)
         .def("set_gravity_scale", &session_set_gravity_scale)
         .def("move_to", &session_move_to, py::arg("pos"), py::arg("speed_scale") = 0.2)

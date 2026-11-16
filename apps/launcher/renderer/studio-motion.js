@@ -84,6 +84,13 @@
             else targets.push(node);
         }
         // Keep the page header, navigation, preview and safety controls fixed.
+        const setup=host.querySelector('.profile-settings');
+        if(setup){
+            for(const selector of ['.setup-save-context','.setup-inspector','.setup-main']){
+                const node=setup.querySelector(selector);if(node)visit(node);
+            }
+            return targets;
+        }
         const panel=host.querySelector('[data-studio-subpage-panel],.setup-main');
         if(panel)visit(panel);
         else for(const node of (host.querySelector(':scope > .studio-page-body')||host).children)visit(node);
@@ -128,6 +135,24 @@
         move(host,1,{channel:record.channel,from:record.from,response:panelResponse,min:0,max:1,staticValue:1,
             apply:value=>{for(const node of record.targets)node.style.setProperty('--studio-content-progress',String(value));},
             settled:()=>clearContentPresentation(record)});
+    }
+    function resizeContent(node, mutate) {
+        if(!node){mutate();return;}
+        const scroll=[];
+        for(let parent=node.parentElement;parent;parent=parent.parentElement)if(parent.scrollTop||parent.scrollLeft)scroll.push({node:parent,top:parent.scrollTop,left:parent.scrollLeft});
+        const current=motions.get(node)?.value ?? node.getBoundingClientRect().height;
+        node.style.removeProperty('block-size');node.style.removeProperty('overflow');
+        mutate();
+        const natural=()=>node.firstElementChild?.getBoundingClientRect().height || 0,target=natural();
+        if(motionReduced()||Math.abs(target-current)<.5){
+            motions.delete(node);delete node.dataset.studioLayoutResizing;
+            for(const item of scroll){item.node.scrollTop=item.top;item.node.scrollLeft=item.left;}
+            return;
+        }
+        node.dataset.studioLayoutResizing='true';node.style.blockSize=`${current}px`;node.style.overflow='clip';
+        move(node,target,{from:current,response:panelResponse,min:0,max:Math.max(current,target),staticValue:target,positionEpsilon:.1,velocityEpsilon:.5,measureTarget:natural,
+            apply:value=>{node.style.blockSize=`${value}px`;},settled:()=>{delete node.dataset.studioLayoutResizing;node.style.removeProperty('block-size');node.style.removeProperty('overflow');}});
+        for(const item of scroll){item.node.scrollTop=item.top;item.node.scrollLeft=item.left;}
     }
     function enterPage() { /* The render hooks hand off only eligible content. */ }
     function anchorPopover(menu, trigger) {
@@ -313,7 +338,7 @@
     document.addEventListener('change',event=>{if(event.target.matches('input[type=radio],input[role=switch]'))refreshMotion();});
     window.addEventListener('resize',refreshMotion);
     document.fonts.ready.then(refreshMotion); enhanceInteractiveMotion();
-    window.serialArmStudio = {enterPage,anchorPopover,prepareContentChange,finishContentChange};
+    window.serialArmStudio = {enterPage,anchorPopover,prepareContentChange,finishContentChange,resizeContent};
 })();
 
 // Progressive enhancement keeps the original selects and their change handlers

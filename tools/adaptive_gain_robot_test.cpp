@@ -39,13 +39,13 @@ public:
 };
 RobotCfg configuration(bool integral=false) {
     RobotCfg c;c.joint_names={"a","b"};c.runtime.write_enabled=true;c.runtime.ctrl_frequency_hz=200;
-    c.shutdown.park_before_disable=false;c.shutdown.park_pos={0,0};
+
     c.ctrller.joints_count=2;
     const JointImpedanceGains g{{2,2},{.2,.2}};
     c.ctrller.rigid_gains=c.ctrller.compliant_gains=g;
     c.ctrller.drag_gains={{0,0},{.2,.2}};
     c.mapper={2,{1,1},{1,1},{1,1},{0,0},{0,0}};
-    c.safety.joints_count=2;c.safety.max_dt_s=.2;c.safety.state_timeout_s=.5;
+    c.safety.joints_count=2;c.safety.fault_recovery.velocity_tolerance={.05,.05};c.safety.max_dt_s=.2;c.safety.state_timeout_s=.5;
     c.safety.limits.has_position_limit={1,1};
     c.safety.limits.min_pos={-2,-2}; c.safety.limits.max_pos={2,2};
     c.safety.limits.max_vel={2,2}; c.safety.limits.max_acc={100,100};
@@ -54,8 +54,8 @@ RobotCfg configuration(bool integral=false) {
 
     c.dynamics.urdf_path="memory-only-not-loaded.urdf";c.dynamics.joint_names=c.joint_names;c.dynamics.gravity_scale={1,1};
     if(integral) {
-        c.hold_compensation={true,{1,1},{.1,.1},{1,1},{.2,.2},.02,.03};
-        auto& a=c.capability.admittance;a.joint_enabled={1,1};a.observer.momentum_gain={5,5};
+        c.hold_compensation={true,{1,1},{.1,.1},{1,1},{.2,.2},{.02,.02},{.03,.03}};
+        auto& a=c.capability.admittance;a.validation.velocity_tolerance={.05,.05};a.joint_enabled={1,1};a.observer.momentum_gain={5,5};
         a.calibration.torque_bias={0,0};a.calibration.torque_threshold={.01,.01};
         a.controller.mass={1,1};a.controller.damping={1,1};a.controller.stiffness={1,1};
         a.controller.max_delta_q={.1,.1};a.controller.max_delta_q_dot={.2,.2};
@@ -241,18 +241,20 @@ int main() {
         check(!servo_tuning::measured_probe_center(fresh.joint_state.pos,fresh.actuator_state.feedback_received_ns,now_ns+31000000),"stale actual positions must not become establishment center");
 
         Fixture integral(true);
-        integral.cycle();integral.bus->state.pos[0]=-.001;integral.bus->state.vel[1]=.03;
+        auto per_axis=integral.robot.get_hold_compensation_cfg();per_axis.velocity_threshold={.02,.002};
+        check(bool(integral.robot.set_hold_compensation_cfg(per_axis)),"per-axis holding gate setup failed");
+        integral.cycle();integral.bus->state.pos[0]=-.001;integral.bus->state.vel[1]=.003;
         integral.cycle();auto held=integral.cycle();
         check(held.hold_integrator_freeze_reasons.size()==2 && held.hold_integral_torque.size()==2,"integrator must expose per-axis actual state");
         check(held.hold_integrator_freeze_reasons[0]=="integrating" && held.hold_integrator_freeze_reasons[1]=="moving","one moving joint must freeze only its integrator");
         check(held.hold_integral_torque[0]>0 && held.hold_integral_torque[1]==0,"actual per-axis integral compensation must match freeze reason");
         Fixture offset_hold(true);offset_hold.cycle();offset_hold.bus->state.pos[0]=-.071;
-        auto offset_cfg=offset_hold.robot.get_hold_compensation_cfg();offset_cfg.error_threshold=.01;
+        auto offset_cfg=offset_hold.robot.get_hold_compensation_cfg();offset_cfg.error_threshold.assign(offset_cfg.error_threshold.size(),.01);
         check(bool(offset_hold.robot.set_hold_compensation_cfg(offset_cfg)),"small integral window setup failed");
         auto offset_output=offset_hold.cycle();
         check(offset_output.hold_integrator_freeze_reasons[0]=="outside_error_window" && offset_output.hold_integral_torque[0]==0,
             "recorded stationary offset must reproduce a non-acting integral trial");
-        offset_cfg.error_threshold=1.25*.071;
+        offset_cfg.error_threshold.assign(offset_cfg.error_threshold.size(),1.25*.071);
         check(bool(offset_hold.robot.set_hold_compensation_cfg(offset_cfg)),"measured-offset integral trial setup failed");
         offset_output=offset_hold.cycle();
         check(offset_output.hold_integrator_freeze_reasons[0]=="integrating" && offset_output.hold_integral_torque[0]>0 &&

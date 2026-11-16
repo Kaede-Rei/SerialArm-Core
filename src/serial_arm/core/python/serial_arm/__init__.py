@@ -55,12 +55,15 @@ from ._serial_arm import RobotSessionSnapshot
 from ._serial_arm import RobotState
 from ._serial_arm import ReferenceGovernorErr
 from ._serial_arm import AdmittanceCapabilityCfg
+from ._serial_arm import AdmittanceValidationCfg
 from ._serial_arm import AdmittanceObserverCfg
 from ._serial_arm import AdmittanceControllerCfg
 from ._serial_arm import AdmittanceCalibrationCfg
 from ._serial_arm import FrictionResidualModelCfg
 from ._serial_arm import CapabilityCfg
 from ._serial_arm import RuntimeCfg
+from ._serial_arm import ParkingStrategy
+from ._serial_arm import ParkingPathCfg
 from ._serial_arm import ShutdownCfg
 from ._serial_arm import Safety
 from ._serial_arm import SafetyAction
@@ -157,6 +160,14 @@ class RobotSession:
             bus=bus,
         )
 
+    def connect(self) -> None:
+        """连接硬件并读取实际能力，不使能或启动控制线程"""
+        self._session.connect()
+
+    def observe(self) -> RobotSessionSnapshot:
+        """读取未使能硬件快照，供首次接入核对映射"""
+        return self._session.observe()
+
     def start(self) -> None:
         """激活后端并启动 C++ 控制线程"""
         self._session.start()
@@ -196,6 +207,10 @@ class RobotSession:
     def set_admittance_cfg(self, config: AdmittanceCapabilityCfg) -> None:
         """提交导纳配置并等待控制线程确认；运行中保留虚拟状态平滑调参"""
         self._session.set_admittance_cfg(config)
+
+    def set_admittance_validation(self, active: bool) -> None:
+        """开始或结束 CSP 有限刚度试验；需要外力估计验证通过"""
+        self._session.set_admittance_validation(active)
 
     def set_model_feedforward_mode(self, mode: ModelFeedforwardMode) -> None:
         """在 INACTIVE 状态下设置模型前馈模式"""
@@ -276,6 +291,7 @@ __all__ = [
     "JointMotionStatus", "JointGainProfile", "GainSource", "HoldCompensationCfg",
     "ReferenceGovernorErr",
     "AdmittanceCapabilityCfg",
+    "AdmittanceValidationCfg",
     "AdmittanceObserverCfg",
     "AdmittanceControllerCfg",
     "AdmittanceCalibrationCfg",
@@ -322,6 +338,8 @@ __all__ = [
     "RobotSessionSnapshot",
     "RobotState",
     "RuntimeCfg",
+    "ParkingStrategy",
+    "ParkingPathCfg",
     "ShutdownCfg",
     "Safety",
     "SafetyAction",

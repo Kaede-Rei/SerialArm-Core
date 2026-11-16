@@ -88,6 +88,9 @@ public:
         const std::string& hardware_plugin,
         const std::string& hardware_config,
         const HardwareConfigOverrides& hardware_overrides = {});
+    /** Connect and inspect disabled hardware without starting control */
+    void connect();
+    RobotSessionSnapshot observe();
     /**
      * @brief 激活真机并启动 C++ 控制线程
      */
@@ -121,6 +124,7 @@ public:
     void set_control_path(ControlPath path);
     void set_hold_compensation_cfg(const HoldCompensationCfg& cfg);
     void set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
+    void set_admittance_validation(bool active);
     /**
      * @brief 请求切换模型前馈模式
      * @param mode 目标模型前馈模式

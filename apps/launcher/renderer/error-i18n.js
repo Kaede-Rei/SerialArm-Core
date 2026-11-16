@@ -52,6 +52,7 @@
         [/model\.gravity_model_validated is false/i, '尚未确认重力补偿效果，无法进入故障拖拽恢复；请先支撑机械臂并验证重力补偿，通过当前负载的专用重力模型验证后再试'],
         [/fault_recovery\.allow_drag_recovery is false/i, '当前配置未开放故障拖拽恢复；请在安全策略中检查，保存后重新连接生效'],
         [/fault type is not eligible for drag recovery/i, '当前故障类型不允许拖拽恢复，请先处理电机或通信故障'],
+        [/ADMITTANCE_NOT_VALIDATED/i, 'CSP 导纳尚未通过外力与响应验收 请先完成外力独立验证，再进行有限刚度释放回位试验'],
         [/FAULT_RECOVERY_NOT_ALLOWED/i, '当前故障不满足拖拽恢复条件 请检查重力模型可信标志、故障保持及实际故障类型'],
         [/\bFAULTED\b/i, '机械臂处于故障状态，请处理原因、清除故障后再使能'],
         [/\bNOT_FAULTED\b/i, '当前机械臂没有故障，无需清除'],
@@ -191,7 +192,7 @@
         set_model_feedforward_mode: '切换模型前馈模式',
         set_reference_behavior: '切换控制方式', set_admittance: '调整导纳参数',
     };
-    const codePattern = /\b(?:CALIBRATION_RESPONSE_UNSTABLE|MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|REFERENCE_GOVERNOR_FAILED|INFEASIBLE|INVALID_INPUT|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|MODE_SWITCH_FAILED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
+    const codePattern = /\b(?:CALIBRATION_RESPONSE_UNSTABLE|MOTOR_BUS_[A-Z_]+|ACTUATOR_[A-Z_]+|STATE_TIMEOUT|CMD_TIMEOUT|INVALID_DT|JOINT_[A-Z_]+|REFERENCE_GOVERNOR_FAILED|INFEASIBLE|INVALID_INPUT|ADMITTANCE_NOT_VALIDATED|FAULT_RECOVERY_NOT_ALLOWED|FAULTED|NOT_FAULTED|ALREADY_ACTIVE|NOT_ACTIVE|NOT_INACTIVE|SAFETY_FAILED|WRITE_DISABLED|MODE_SWITCH_FAILED|ENABLE_FAILED|DISABLE_FAILED|OPEN_FAILED|TIMEOUT|EPIPE)\b/g;
     function trajectoryRangeMessage(clean, lang) {
         const match=clean.match(/trajectory_range_violation:([^\r\n]*)/i);
         if(!match)return null;

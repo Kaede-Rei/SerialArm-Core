@@ -13,6 +13,7 @@
 #include "serial_arm/interaction/runtime/interaction_state.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
 #include "serial_arm/interaction/runtime/feedback_aligner.hpp"
+#include "serial_arm/interaction/runtime/observation_velocity.hpp"
 
 #include <chrono>
 #include <functional>
@@ -78,6 +79,7 @@ enum class RobotErr {
     REFERENCE_GOVERNOR_FAILED,
     MOTION_SOURCE_BUSY,
     CALIBRATION_RESPONSE_UNSTABLE, ///< 标定监督器确认参考未要求的持续位置往复
+    ADMITTANCE_NOT_VALIDATED, ///< 当前 CSP 外力或响应验收未完成
 };
 
 /**
@@ -200,8 +202,13 @@ public:
         std::unique_ptr<MotorBus> motor_bus,
         ModelFeedforwardFn model_feedforward = {},
         InteractionModelStateFn interaction_model_state = {});
+    /** 打开硬件连接并刷新实际能力，不使能或发送运动命令 */
+    tl::expected<void, RobotFault> connect();
+    /** 读取 INACTIVE 硬件反馈，不使能；越界和驱动故障仍可用于诊断 */
+    tl::expected<RobotCycleOutput, RobotFault> observe();
+    bool is_connected() const noexcept { return connected_; }
     /**
-     * @brief 连接、使能并用真实状态初始化控制器
+     * @brief 先验证未使能反馈，再以当前位首命令使能并初始化控制器
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> activate();
@@ -220,7 +227,7 @@ public:
      * @return 成功返回空 expected，失败返回 RobotFault
      */
     tl::expected<void, RobotFault> set_gravity_verification_active(bool active);
-    void invalidate_gravity_validation() noexcept { cfg_.dynamics.gravity_model_validated=false; }
+    void invalidate_gravity_validation() noexcept { cfg_.dynamics.gravity_model_validated=false; cfg_.capability.admittance.validation={}; }
     tl::expected<void, RobotFault> set_full_cmd(const JointCtrlCmd& cmd, TimePoint now = Clock::now());
     /**
      * @brief 切换阻抗模式
@@ -257,12 +264,6 @@ public:
     // Reject an observed unstable calibration response through the existing
     // latched STOP_HOLD reaction; never retain the rejected candidate gains.
     tl::expected<void, RobotFault> stop_calibration_response();
-    /** Shutdown-only compliant-to-rigid Kp/Kd handover. The current reference
-     * is reset to measured q by set_impedance_mode before calling this.
-     * Ordinary tracking and calibration gains are not changed
-     */
-    bool begin_park_rigid_gain_ramp(double duration_s, TimePoint now = Clock::now());
-
     /**
      * @brief 设置模型前馈模式
      * @param mode 目标模型前馈模式
@@ -273,6 +274,8 @@ public:
      * @brief 更新导纳配置；ACTIVE 仅允许同策略调参，M/D/K 连续过渡并保留已接受虚拟状态
      */
     tl::expected<void, RobotFault> set_admittance_cfg(const AdmittanceCapabilityCfg& cfg);
+    tl::expected<void, RobotFault> set_admittance_validation(bool active);
+    bool is_admittance_validation_active() const noexcept { return admittance_validation_active_; }
     tl::expected<void, RobotFault> set_control_path(ControlPath path);
     ControlPath get_control_path() const noexcept { return cfg_.runtime.control_path; }
     /**
@@ -510,6 +513,8 @@ private:
     tl::expected<InteractionEvaluation,RobotFault> update_interaction(const JointState&,const ActuatorState&,const JointVector&,bool,JointCtrlCmd,double,bool,bool,bool position_recovery=false);
     RobotCycleOutput fault_feedback_;
     JointVector friction_velocity_resolution_;
+    ObservationVelocity observation_velocity_;
+    bool admittance_validation_active_{false};
     bool gravity_verification_active_{false};
     /**
      * @brief 清除外部命令并把参考重置为实测位置
@@ -555,6 +560,7 @@ private:
     InteractionModelStateFn interaction_model_state_; ///< 每个实测样本独立更新的模型快照
 
     RobotState state_{ RobotState::UNCONFIGURED };  ///< Robot 生命周期状态
+    bool connected_{ false };
     JointState joint_state_;                        ///< 最近一次合法 JointState
     JointVector joint_acc_;                         ///< 最近一次关节加速度估计
     JointVector joint_ref_acc_;                     ///< 最近一次关节参考加速度
@@ -581,8 +587,6 @@ private:
     std::optional<JointImpedanceGains> calibration_tracking_gains_;
     std::optional<JointImpedanceGains> calibration_tracking_source_;
     JointImpedanceMode calibration_tracking_mode_{JointImpedanceMode::RIGID};
-    std::optional<TimePoint> park_rigid_ramp_started_;
-    double park_rigid_ramp_duration_s_{0.65};
     TimePoint calibration_tracking_started_{};
     TimePoint calibration_hold_started_{};
     FeedbackAligner feedback_aligner_;

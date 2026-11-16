@@ -46,7 +46,7 @@ public:
      */
     hardware_interface::CallbackReturn on_init(const hardware_interface::HardwareInfo& info) override;
     /**
-     * @brief 配置动力学、达妙总线与 Robot，但不连接或使能真机
+     * @brief 配置并连接硬件、读取失能反馈，不使能真机
      * @param previous_state 生命周期切换前状态
      * @return 配置成功返回 SUCCESS，否则返回 ERROR
      */
@@ -58,7 +58,7 @@ public:
      */
     hardware_interface::CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
     /**
-     * @brief 停止控制线程并请求刚性保持后失能真机
+     * @brief 停止控制线程并直接失能，不执行停放轨迹
      * @param previous_state 生命周期切换前状态
      * @return 失能成功返回 SUCCESS，否则返回 ERROR
      */
@@ -118,11 +118,6 @@ private:
      * @brief 请求后台控制线程退出并等待结束
      */
     void stop_worker();
-    /**
-     * @brief 按 shutdown 配置回到停放姿态
-     * @return 停放姿态满足判据返回 true，否则返回 false
-     */
-    bool park_before_deactivate();
     /**
      * @brief 清除外部命令并切换为最近状态位置保持
      */

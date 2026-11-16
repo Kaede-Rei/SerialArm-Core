@@ -35,7 +35,7 @@ def prepare(directory, terminal, recorded_t):
     urdf = directory / 'declared-endpoint.urdf'
     model.write(urdf, encoding='utf-8', xml_declaration=True)
     document['model']['urdf_path'] = str(urdf)
-    document['safety_policy']['position_margin'] = 0
+    document['safety_policy']['position_margin'] = dict.fromkeys(document['model']['joint_names'], 0)
     config.write_text(json.dumps(document))
     storage = directory / 'storage'
     storage.mkdir()

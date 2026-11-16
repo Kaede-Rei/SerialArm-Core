@@ -34,9 +34,18 @@ def canonical_core(core):
         policy.pop('max_kp_override', None)
         policy.pop('max_kd_override', None)
     names = (result.get('model') or {}).get('joint_names') or []
+    shutdown = result.get('shutdown') or {}
+    if not isinstance(shutdown, dict) or set(shutdown) - {'paths'}:
+        raise ValueError('shutdown 仅支持 paths.MIT 与 paths.CSP')
+    paths = shutdown.get('paths') or {}
+    if not isinstance(paths, dict) or set(paths) - {'MIT', 'CSP'}:
+        raise ValueError('shutdown.paths 仅支持 MIT 与 CSP')
+    for plan in paths.values():
+        if isinstance(plan, dict) and plan.get('enabled') is True and ('park_pos' not in plan or plan['park_pos'] == {}):
+            plan['park_pos'] = dict.fromkeys(names, 0.0)
     admittance = (result.get('capability') or {}).get('admittance')
     if isinstance(admittance, dict):
-        unknown = set(admittance) - {'joint_enabled', 'observer', 'calibration', 'controller'}
+        unknown = set(admittance) - {'joint_enabled', 'observer', 'calibration', 'controller', 'validation'}
         if unknown:
             raise ValueError('capability.admittance 含已移除或未知参数: ' + ', '.join(sorted(unknown)))
         observer = admittance.get('observer')
@@ -60,8 +69,8 @@ def canonical_core(core):
         hold.setdefault('enabled', False)
         for key, value in (('integral_gain', .15), ('max_torque', .15), ('max_rate', .05), ('contact_threshold', .2)):
             if names: hold.setdefault(key, {name: value for name in names})
-        hold.setdefault('velocity_threshold', .02)
-        hold.setdefault('error_threshold', .03)
+        for key, value in (('velocity_threshold', .02), ('error_threshold', .03)):
+            if names: hold.setdefault(key, {name: value for name in names})
     controller = (result.get('control') or {}).get('controller')
     if controller is None:
         return result
@@ -81,8 +90,13 @@ def interaction_configuration(core):
     if not isinstance(admittance, dict):
         raise ValueError('capability.admittance 必须为映射')
     prefix = 'capability.admittance.'
-    if set(admittance) - {'observer', 'calibration', 'controller', 'joint_enabled'}:
+    if set(admittance) - {'observer', 'calibration', 'controller', 'joint_enabled', 'validation'}:
         raise ValueError('capability.admittance 含未知参数')
+    validation = admittance.get('validation', {})
+    if (not isinstance(validation, dict) or
+            set(validation) - {'observation_validated', 'response_validated', 'velocity_tolerance'} or
+            any(not isinstance(value, bool) for key, value in validation.items() if key != 'velocity_tolerance')):
+        raise ValueError(prefix + 'validation 仅支持质量许可与逐轴速度稳定容差')
 
     def mapping(value, path, keys):
         if not isinstance(value, dict) or set(value) != set(keys):
@@ -109,13 +123,14 @@ def interaction_configuration(core):
             raise ValueError(prefix + 'calibration.friction 含未知字段')
         if not isinstance(friction.get('enabled', False), bool):
             raise ValueError(prefix + 'calibration.friction.enabled 必须为布尔值')
-        transition = friction.get('velocity_transition', .03)
-        if isinstance(transition, bool) or not isinstance(transition, (int, float)) or not math.isfinite(transition) or transition <= 0:
-            raise ValueError(prefix + 'calibration.friction.velocity_transition 必须为正数')
+        if 'velocity_transition' in friction or friction.get('enabled'):
+            joint_map(friction.get('velocity_transition'), 'calibration.friction.velocity_transition', 0, True)
         for key in ('positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
             if key in friction or friction.get('enabled'):
                 joint_map(friction.get(key), 'calibration.friction.' + key)
     modeled = 'controller' in admittance or 'joint_enabled' in admittance
+    if modeled or 'velocity_tolerance' in validation:
+        joint_map(validation.get('velocity_tolerance'), 'validation.velocity_tolerance', 0, True)
     if modeled:
         if not observed:
             raise ValueError('导纳需要先配置 capability.admittance.observer 和 calibration')
@@ -131,6 +146,37 @@ def interaction_configuration(core):
             if any(flags[name] and controller[key][name] <= 0 for name in names):
                 raise ValueError(prefix + 'controller.' + key + ' 参与轴必须为正数')
     return {'observation_configured': observed, 'admittance_configured': modeled}
+
+
+def interaction_validation_contexts(core):
+    model = deepcopy(core.get('model') or {})
+    model.pop('gravity_model_validated', None)
+    admittance = (core.get('capability') or {}).get('admittance') or {}
+    runtime = (core.get('control') or {}).get('runtime') or {}
+    observation = {'model': model, 'mapping': core.get('calibration'),
+        'observer': admittance.get('observer'), 'calibration': admittance.get('calibration'),
+        'runtime': {key: runtime.get(key) for key in ('ctrl_frequency_hz', 'joint_acc_filter_alpha', 'control_path')}}
+    safety = core.get('safety_policy') or {}
+    response = {'observation': observation, 'controller': admittance.get('controller'),
+        'joint_enabled': admittance.get('joint_enabled'),
+        'velocity_tolerance': (admittance.get('validation') or {}).get('velocity_tolerance'),
+        'safety': {key: safety.get(key) for key in ('max_tracking_error', 'max_acc', 'max_effort_override')}}
+    return observation, response
+
+
+def revoke_changed_interaction_validation(before, after):
+    """Revoke only the affected quality flags; historical receipts stay intact."""
+    previous = interaction_validation_contexts(before)
+    current = interaction_validation_contexts(after)
+    admittance = (after.get('capability') or {}).get('admittance') or {}
+    validation = admittance.get('validation') or {}
+    reset = []
+    for key, changed in zip(('observation_validated', 'response_validated'),
+                            (previous[0] != current[0], previous[1] != current[1])):
+        if validation.get(key) is True and changed:
+            validation[key] = False
+            reset.append(key)
+    return reset
 
 
 GAIN_PURPOSE_KEYS = ('rigid', 'compliant', 'drag')

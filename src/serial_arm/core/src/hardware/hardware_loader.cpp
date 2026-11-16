@@ -179,6 +179,9 @@ public:
     tl::expected<ActuatorState, MotorBusErr> read() override {
         return bus_->read();
     }
+    tl::expected<ActuatorState, MotorBusErr> observe() override {
+        return bus_->observe();
+    }
 
     tl::expected<void, MotorBusErr> select_control_path(
         ControlPath path, const ActuatorVector& position_speed_limit = {}) override {
@@ -187,6 +190,9 @@ public:
 
     tl::expected<void, MotorBusErr> activate() override {
         return bus_->activate();
+    }
+    tl::expected<void, MotorBusErr> activate(const ActuatorCtrlCmd& initial_cmd) override {
+        return bus_->activate(initial_cmd);
     }
 
     tl::expected<void, MotorBusErr> write(const ActuatorCtrlCmd& cmd) override {

@@ -17,8 +17,12 @@ import sys
 import yaml
 
 from profiles import Inspector, config_values, read_yaml, text
-from control_parameters import canonical_core, four_mode_core, four_mode_control_text, effective_hardware, interaction_configuration, complete_mapping_values
+from control_parameters import canonical_core, four_mode_core, four_mode_control_text, effective_hardware, interaction_configuration, complete_mapping_values, revoke_changed_interaction_validation
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted
+from parameter_contract import field_constraints, constraint_errors, parking_complete, parking_plan
+from commissioning import (REVIEWS as COMMISSIONING_REVIEWS, FOUNDATION, PATH_STEPS,
+    OPTIONAL as COMMISSIONING_OPTIONAL, stage_key as commissioning_stage_key,
+    review_requirements, task_answers, observation_confirmed, snapshot as commissioning_snapshot)
 
 
 def _sha(path):
@@ -181,7 +185,7 @@ class ProfileLibrary:
             'mapping_calibration': mapping_hash, 'geometry_calibration': geometry_hash,
             'gravity_verification': gravity_hash, 'dynamics_calibration': dynamics_hash,
             'validation': self._digest(mapping_hash, geometry_hash, safety, shutdown,
-                                       controller.get('rigid'), controller.get('rigid')),
+                                       controller.get('rigid'), controller.get('compliant')),
             'startup_hold': startup_hash,
         }
         scopes['modes'] = {name: self._digest(model_hash, mapping_hash,
@@ -194,6 +198,51 @@ class ProfileLibrary:
             {name: controller.get(name) for name in gain_keys},
             (core.get('control') or {}).get('hold_compensation', {'enabled': False}) if purpose == 'RIGID' else None)
             for purpose, (_, gain_keys, _) in self._GAIN_PURPOSES.items()}
+        # Commissioning receipts are invalidated by their own physical inputs,
+        # not optional calibration work or an unrelated interaction parameter.
+        try:
+            tree = ET.parse(urdf_path).getroot()
+            kinematics = {'links': [node.get('name') for node in tree.findall('link')],
+                          'joints': [ET.tostring(node, encoding='unicode') for node in tree.findall('joint')]}
+        except (OSError, ET.ParseError):
+            kinematics = None
+        geometry = self._digest(info['profile'], str(info['profile_file']), kinematics,
+                               {key: model.get(key) for key in ('joint_names', 'base_frame', 'tool_frame')})
+        hardware_mapping = {key: value for key, value in hardware.items() if key != 'buses'}
+        mapping = self._digest(geometry, calibration, info.get('hardware_plugin'), hardware_mapping)
+        admittance = capability.get('admittance') or {}
+        observation = self._digest(gravity_hash, mapping, admittance.get('observer'), admittance.get('calibration'),
+                                   {key: runtime.get(key) for key in ('ctrl_frequency_hz', 'joint_acc_filter_alpha', 'control_path')})
+        response = self._digest(observation, admittance.get('joint_enabled'), admittance.get('controller'),
+                                (admittance.get('validation') or {}).get('velocity_tolerance'),
+                                safety.get('max_tracking_error'), safety.get('max_acc'), safety.get('max_effort_override'))
+        for path in ('MIT', 'CSP'):
+            hold_scope = self._digest(mapping, path, controller.get('rigid') if path == 'MIT' else safety.get('max_tracking_error'))
+            domain = {'model_check': geometry, 'mapping_calibration': mapping,
+                'bringup': self._digest(mapping, effective_hardware(hardware, info.get('connection_overrides'))),
+                'safety_setup': self._digest(hold_scope, safety), 'startup_hold': hold_scope,
+                'stop_fault_check': self._digest(hold_scope, safety.get('fault_recovery')),
+                'gravity_verification': gravity_hash,
+                'observation_calibration': observation, 'observation_validation': observation,
+                'admittance_response': response, 'admittance_release': response,
+                'effort_model_validation': self._digest(gravity_hash, mapping),
+                'csp_execution_validation': hold_scope,
+                'mit_drag_validation': self._digest(gravity_hash, mapping, controller.get('drag')),
+                'mit_tracking_validation': hold_scope,
+                'mit_mode_validation': self._digest(mapping, controller, gravity_hash),
+                'csp_drag_validation': response,
+                'upper_layer_validation': self._digest(hold_scope, safety, response if path == 'CSP' else controller),
+                'parking_validation': self._digest(hold_scope,
+                    {key: value for key, value in parking_plan(core, path).items() if key != 'enabled'},
+                    controller.get('compliant') if path == 'MIT' and parking_plan(core, path).get('strategy') == 'COMPLIANT_THEN_RIGID' else None,
+                    response if path == 'CSP' and parking_plan(core, path).get('strategy') == 'COMPLIANT_THEN_RIGID' else None, gravity_hash, safety,
+                    {key: runtime.get(key) for key in ('ctrl_frequency_hz', 'joint_acc_filter_alpha', 'model_feedforward_mode')}),
+                'gravity_correction': gravity_hash, 'dynamics_calibration': dynamics_hash,
+                'geometry_calibration': self._digest(geometry, calibration),
+                'position_repeatability': self._digest(hold_scope, geometry, model.get('tool_frame')),
+                'absolute_accuracy': self._digest(geometry, calibration)}
+            for stage, scope in domain.items():
+                scopes[commissioning_stage_key(stage, path)] = scope
         return scopes
 
     def _readiness_meta(self, info, scopes=None):
@@ -230,7 +279,7 @@ class ProfileLibrary:
                             ((scopes or {}).get(category) or {}).get(key))
                         if expected and isinstance(item, dict) and item.get('scope') == expected:
                             selected.setdefault(category, {})[key] = item
-            for category in ('stages', 'modes', 'gain_purposes'):
+            for category in ('stages', 'modes', 'gain_purposes', 'measurements'):
                 entries = selected.get(category) or {}
                 if isinstance(entries, dict):
                     for key, item in entries.items():
@@ -239,7 +288,7 @@ class ProfileLibrary:
                         meta.setdefault(category, {}).setdefault(key, item)
             if source == path:
                 for key, value in record.items():
-                    if key not in ('stages', 'modes', 'gain_purposes') and key not in meta:
+                    if key not in ('stages', 'modes', 'gain_purposes', 'measurements') and key not in meta:
                         meta[key] = value
         if meta:
             meta['profile'] = info['profile']
@@ -347,6 +396,8 @@ class ProfileLibrary:
         stages = meta.get('stages') or {}
         modes = meta.get('modes') or {}
         def status(item, scope):
+            if isinstance(item, dict) and item.get('result') == 'failed':
+                return 'failed' if item.get('scope') == scope else 'stale'
             if not isinstance(item, dict) or item.get('result') not in ('passed', 'recorded', 'warning'):
                 return 'pending'
             if item.get('result') == 'warning' and item.get('kind') != 'measured_gain_purpose':
@@ -360,7 +411,8 @@ class ProfileLibrary:
             if (item.get('kind') == 'operator_and_live' and
                     (item.get('runtime') or {}).get('sample_count', 0) >= 3):
                 return 'verified'
-            if item.get('result') == 'recorded' or str(item.get('kind', '')).startswith('operator_'):
+            if (item.get('result') == 'recorded' and not str(item.get('kind', '')).startswith(('measured_', 'passive_')) or
+                    str(item.get('kind', '')).startswith('operator_')):
                 observations = item.get('observations') or {}
                 if observations and all(v is True for v in observations.values()):
                     return 'recorded'
@@ -371,7 +423,15 @@ class ProfileLibrary:
                 path = Path(candidate_path)
                 if not path.is_file() or _sha(path) != item.get('candidate_sha256'):
                     return 'stale'
-            return 'warning' if item.get('result') == 'warning' else 'verified'
+            artifact = item.get('artifact_path')
+            if artifact and (not Path(artifact).is_file() or _sha(artifact) != item.get('artifact_sha256')):
+                return 'stale'
+            if any(not Path(path).is_file() or _sha(path) != digest
+                   for path, digest in (item.get('artifact_files') or {}).items()):
+                return 'stale'
+            if item.get('kind') == 'passive_response_record':
+                return 'historical'
+            return 'warning' if item.get('result') == 'warning' else 'partial' if item.get('result') == 'recorded' else 'verified'
         values = {
             'description': 'verified' if model_valid else 'failed',
             'profile_setup': 'verified' if profile_setup else 'pending',
@@ -472,7 +532,8 @@ class ProfileLibrary:
             'urdf_limits': urdf_limits,
             'min_pos': [item[0] for item in position_ranges],
             'max_pos': [item[1] for item in position_ranges],
-            'pos_margin': [safety.get('position_margin', 0)] * len(joints),
+            'pos_margin': [safety['position_margin'].get(name, 0) if isinstance(safety.get('position_margin'), dict)
+                           else None for name in joints],
             'has_position_limit': [all(value is not None and math.isfinite(value) for value in item) for item in position_ranges],
         }
         prerequisites = []
@@ -505,20 +566,82 @@ class ProfileLibrary:
         calibration_ready = profile_setup and all(item['ready'] for item in prerequisites)
         selected_path = runtime.get('control_path', 'MIT')
         trusted = gravity_trusted(core)
+        validation = ((core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
         operation_readiness = {
             'basic_control': {'ready': profile_setup and mode_states.get('RIGID') != 'unconfigured',
                               'reason': reason or ('' if mode_states.get('RIGID') != 'unconfigured' else '请配置当前执行路径的刚性控制参数')},
             'gravity_verification': {'ready': calibration_ready,
                 'reason': '' if calibration_ready else '请补齐当前路径的基础控制、模型和采样参数'},
-            'drag': {'ready': profile_setup and trusted and mode_states.get('DRAG') != 'unconfigured',
-                'reason': '请先验证当前模型与负载的重力补偿' if not trusted else
-                    '' if mode_states.get('DRAG') != 'unconfigured' else '请配置当前执行路径的拖拽参数'},
+            'drag': {'ready': profile_setup and mode_states.get('DRAG') != 'unconfigured' and
+                              (trusted if selected_path == 'MIT' else all(validation.get(key) is True for key in ('observation_validated', 'response_validated'))),
+                'reason': ('请先验证当前模型与负载的重力补偿' if selected_path == 'MIT' and not trusted else
+                           '请先完成独立外力和有限刚度响应验收' if selected_path == 'CSP' and not all(validation.get(key) is True for key in ('observation_validated', 'response_validated')) else
+                           '' if mode_states.get('DRAG') != 'unconfigured' else '请配置当前执行路径的拖拽参数')},
             'observation': {'ready': profile_setup and interaction['observation_configured'],
                 'reason': '' if interaction['observation_configured'] else '请显式配置观察器与外力校准参数',
-                'calibration_status': 'unverified' if interaction['observation_configured'] else 'unconfigured'},
-            'admittance': {'ready': csp_ready and interaction['admittance_configured'],
-                'reason': '' if csp_ready and interaction['admittance_configured'] else '需要 CSP、跟踪误差限制及完整观察与 MDK 参数'},
+                'calibration_status': 'unverified' if interaction['observation_configured'] else 'unconfigured',
+                'validated': validation.get('observation_validated') is True},
+            'admittance': {'ready': csp_ready and interaction['admittance_configured'] and
+                                   validation.get('observation_validated') is True and validation.get('response_validated') is True,
+                'configured': csp_ready and interaction['admittance_configured'],
+                'reason': '' if csp_ready and interaction['admittance_configured'] and all(validation.get(key) is True for key in ('observation_validated', 'response_validated'))
+                          else '需要 CSP、跟踪误差限制、观察与 MDK 参数及独立外力和响应验收'},
         }
+        parking_by_path = {}
+        for path in ('MIT', 'CSP'):
+            plan = parking_plan(core, path)
+            strategy = plan.get('strategy', 'RIGID')
+            flexible = strategy == 'COMPLIANT_THEN_RIGID'
+            complete = parking_complete(core, path)
+            rigid_ready = modes_by_path[path].get('RIGID') != 'unconfigured'
+            flexible_ready = modes_by_path[path].get('COMPLIANT') != 'unconfigured' and (
+                path == 'MIT' or all(validation.get(key) is True for key in ('observation_validated', 'response_validated')))
+            configured = profile_setup and complete and rigid_ready and (not flexible or flexible_ready)
+            enabled = plan.get('enabled') is True
+            receipt = stages.get(commissioning_stage_key('parking_validation', path)) or {}
+            validated = status(receipt, scopes.get(commissioning_stage_key('parking_validation', path))) not in ('pending', 'stale', 'failed') and all(
+                (receipt.get('observations') or {}).get(key) is True for key, _ in COMMISSIONING_REVIEWS['parking_validation'][2])
+            parking_by_path[path] = {'enabled': enabled, 'configured': bool(configured), 'strategy': strategy,
+                'validated': validated,
+                'reason': ('请在停放与退出策略中允许当前路径先停放再失能' if not enabled else
+                    '请补齐停放目标、逐轴容差与时间参数' if not complete else
+                    '请配置当前路径的刚性保持参数' if not rigid_ready else
+                    '请配置 MIT 柔性增益' if flexible and not flexible_ready and path == 'MIT' else
+                    'CSP 柔性停放需要导纳参数及外力、响应验收' if flexible and not flexible_ready else
+                    '当前 Profile 配置尚未就绪' if not profile_setup else '')}
+        configuration = {'source': 'saved_profile', 'core_path': info['resources']['core'],
+            'control_path': selected_path, 'joint_names': joints, 'model': bool(model_valid),
+            'hardware': bool(profile_setup), 'safety': bool(safety_configured and profile_setup),
+            'hold': bool(joints) and mode_states.get('RIGID') in ('configured', 'verified', 'warning', 'stale'),
+            'gravity': bool(gravity_ready), 'observation': bool(interaction['observation_configured']),
+            'response': bool(interaction['admittance_configured']),
+            'drag': bool(joints) and mode_states.get('DRAG') in ('configured', 'verified', 'warning', 'stale'),
+            'mit_modes': all(modes_by_path['MIT'].get(mode) != 'unconfigured' for mode in self._MODES),
+            'parking': parking_by_path[selected_path]['configured'], 'parking_by_path': parking_by_path,
+            'validation': dict(validation)}
+        commissioning = commissioning_snapshot(core, configuration, meta, scopes, status,
+                                               gravity_validated=trusted, modes_by_path=modes_by_path)
+        parking = parking_by_path[selected_path]
+        operation_readiness['parking'] = {'allowed': parking['enabled'] and parking['configured'],
+            'reason': parking['reason'], 'strategy': parking['strategy'], 'control_path': selected_path}
+        for stage in COMMISSIONING_REVIEWS:
+            key = commissioning_stage_key(stage, selected_path)
+            entry = stages.get(key) or stages.get(stage)
+            if stage == 'startup_hold' and not entry:
+                entry = modes.get('RIGID')
+                values[stage] = status(entry, scopes.get('startup_hold'))
+            else:
+                values[stage] = status(entry, scopes.get(key))
+        required_steps = [step for group in commissioning['groups'] if group['required'] for step in group['steps']]
+        verification_state = ('verified' if commissioning['completed'] else
+            'stale' if any(step['evidence_status'] == 'stale' for step in required_steps) else
+            'partial' if any(step['evidence_status'] in ('recorded', 'partial', 'verified') for step in required_steps) else 'pending')
+        response_records = []
+        for record in meta.get('response_records') or []:
+            if not isinstance(record, dict): continue
+            item = dict(record)
+            item['status'] = status(item, scopes.get(commissioning_stage_key('admittance_response', item.get('control_path', selected_path))))
+            response_records.append(item)
         return {'state': state, 'verification_state': verification_state, 'next_stage': 'profile_setup' if not profile_setup else 'ready',
                 'checks': values, 'modes': mode_states, 'modes_by_path': modes_by_path, 'reason': reason,
                 'gain_initialization': meta.get('gain_initialization'),
@@ -533,6 +656,8 @@ class ProfileLibrary:
                     'next_actions': [item['action'] for item in prerequisites if not item['ready']]},
                 'setup_issues': setup_issues, 'next_actions': next_actions, 'gain_purposes': gain_purposes,
                 'source_trusted': self._is_official_profile(info),
+                'configuration_summary': configuration, 'commissioning': commissioning,
+                'review_requirements': review_requirements(selected_path, joints), 'response_records': response_records,
                 'evidence': {k: {'kind': v.get('kind'), 'note': v.get('note', ''),
                                  'observations': v.get('observations') or {}}
                              for k, v in stages.items() if isinstance(v, dict)}}
@@ -587,32 +712,235 @@ class ProfileLibrary:
         # A bundled configuration is trusted as a source, never as proof of this machine's tests
         return self._readiness(config)
 
-    def record_stage(self, config, stage, answers, native=None, native_fingerprint=None):
-        """Store optional operator notes without turning them into runtime admission
+    @staticmethod
+    def _matches_admittance_snapshot(core, runtime, *, response=False):
+        if not isinstance(runtime, dict): return False
+        names = (core.get('model') or {}).get('joint_names') or []
+        admittance = (core.get('capability') or {}).get('admittance') or {}
+        for section, fields in (('observer', ('momentum_gain',)),
+                                ('calibration', ('torque_bias', 'torque_threshold')),
+                                ('controller', ('mass', 'damping', 'stiffness', 'max_delta_q', 'max_delta_q_dot') if response else ())):
+            for field in fields:
+                expected = (admittance.get(section) or {}).get(field)
+                if not isinstance(expected, dict) or runtime.get(field) != [expected.get(name) for name in names]:
+                    return False
+        friction = (admittance.get('calibration') or {}).get('friction') or {}
+        actual_friction = runtime.get('friction') or {}
+        if actual_friction.get('enabled', False) != friction.get('enabled', False): return False
+        if friction.get('enabled'):
+            for field in ('velocity_transition', 'positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
+                if actual_friction.get(field) != [(friction.get(field) or {}).get(name) for name in names]: return False
+        if response:
+            if [bool(value) for value in runtime.get('joint_enabled', [])] != [(admittance.get('joint_enabled') or {}).get(name) for name in names]:
+                return False
+        return True
 
-        A checklist is not a native robot measurement. Opening or recording a
-        checklist must not require ACTIVE, a workbench, or prior stage results.
-        Native measurement/verification tasks keep their independent safeguards
+    @staticmethod
+    def _validation_text(core_text, changes):
+        from persistence import patch_text
+        additions = {'capability': {'admittance': {'validation': {key: False for key in changes}}}}
+        expanded = complete_mapping_values(core_text, (), additions)
+        return patch_text(expanded, {('capability', 'admittance', 'validation', key): 'true' if value else 'false'
+                                     for key, value in changes.items()})
+
+    def record_observation_measurement(self, config, native, native_fingerprint):
+        """Record only the independent native validation, never a fitted result."""
+        info = self.inspector.inspect(config)
+        if native is None or native_fingerprint != info.get('fingerprint'):
+            raise ValueError('独立外力验收要求与当前 Profile 配置一致的原生会话')
+        core_path = Path(info['resources']['core'])
+        core_text = core_path.read_text(encoding='utf-8')
+        core = canonical_core(yaml.safe_load(core_text))
+        status = native.request('status', {}, timeout=8)
+        overrides = native.request('candidate_overrides', {}, timeout=8)
+        calibration = status.get('calibration') or {}
+        validation = calibration.get('validation') or {}
+        if (info.get('write_enabled') is not True or status.get('hardware_connected') is not True or
+                status.get('control_path') != 'CSP' or core['control']['runtime']['control_path'] != 'CSP' or
+                (calibration.get('kind') != 'validation' and calibration.get('completed_kind') != 'validation') or
+                calibration.get('phase') not in ('complete', 'completed') or
+                validation.get('independent') is not True):
+            raise ValueError('请先在真实硬件上完成独立静态验证；拟合和人工自查不授予外力质量许可')
+        raw = native.request('calibration_samples', {}, timeout=15)
+        count = len((core.get('model') or {}).get('joint_names') or [])
+        period = 1.0 / core['control']['runtime']['ctrl_frequency_hz']
+        maximum_sample_gap = core['safety_policy']['state_timeout_s']
+        poses = raw.get('poses') or []
+        raw_complete = len(poses) >= 5
+        for pose in poses:
+            samples = pose.get('samples') or []
+            times = [sample.get('time_s') for sample in samples]
+            if (len(times) < 3 or any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in times) or
+                    any(b <= a or b - a > maximum_sample_gap for a, b in zip(times, times[1:])) or
+                    times[-1] - times[0] < 15 - 2 * period or
+                    any(not isinstance(sample.get(field), list) or len(sample[field]) != count or
+                        any(not isinstance(value, (int, float)) or not math.isfinite(value) for value in sample[field])
+                        for sample in samples for field in ('position', 'gravity', 'measured_torque'))):
+                raw_complete = False
+        passed = validation.get('pass')
+        qualified = (validation.get('validated') is True and validation.get('pose_count', 0) >= 5 and
+                     validation.get('static_window_s', 0) >= 15 and isinstance(passed, list) and len(passed) == count and
+                     all(value in (True, 1) for value in passed) and raw_complete and
+                     not any(overrides.get(kind + '_applied') for kind in ('gain', 'gravity', 'dynamics')) and
+                     status.get('joint_names') == core['model']['joint_names'] and
+                     status.get('gravity_scale') == [core['model']['gravity_scale'][name] for name in core['model']['joint_names']] and
+                     self._matches_admittance_snapshot(core, validation.get('scope_config')))
+        reason = validation.get('reason') or ''
+        if not raw_complete:
+            reason = '原始采样未覆盖 5 个独立姿态、每姿态 15 s 连续有效数据，请检查采样间隔和反馈超时'
+        elif any(overrides.get(kind + '_applied') for kind in ('gain', 'gravity', 'dynamics')):
+            reason = '临时模型或增益候选不能授予已保存配置的质量许可'
+        elif status.get('joint_names') != core['model']['joint_names']:
+            reason = '实测关节与已保存模型不一致'
+        elif (status.get('gravity_scale') != [core['model']['gravity_scale'][name] for name in core['model']['joint_names']] or
+              not self._matches_admittance_snapshot(core, validation.get('scope_config'))):
+            reason = '实测模型或外力估计参数与已保存配置不一致'
+        hardware = read_yaml(info['resources']['hardware'])
+        scopes = self._dependencies(info, core, hardware)
+        key = commissioning_stage_key('observation_validation', 'CSP')
+        path, meta = self._readiness_meta(info, scopes)
+        artifact = path.parent / ('observation-' + str(time.time_ns()) + '.json')
+        document = {'profile': info['profile'], 'control_path': 'CSP', 'scope': scopes[key],
+                    'recorded_at': time.time(), 'validation': validation, 'raw': raw}
+        _atomic_yaml_text(artifact, json.dumps(document, ensure_ascii=False, allow_nan=False))
+        previous = (meta.get('measurements') or {}).get(key)
+        if previous: meta.setdefault('measurement_history', []).append({'stage': key, **previous})
+        receipt = {'kind': 'measured_observation_validation', 'result': 'passed' if qualified else 'failed',
+            'scope': scopes[key], 'recorded_at': document['recorded_at'], 'control_path': 'CSP',
+            'artifact_path': str(artifact), 'artifact_sha256': _sha(artifact),
+            'summary': {**validation, 'validated': qualified, 'direction_check': 'operator_report_separate', 'reason': reason}}
+        meta.setdefault('measurements', {})[key] = receipt
+        _atomic_yaml(path, meta)
+        if _sha(core_path) != hashlib.sha256(core_text.encode()).hexdigest():
+            raise ValueError('保存验收期间配置已变化，原始记录已保留，请重新验证')
+        # Static measurements cannot establish whether a human applied load in
+        # the intended direction or whether the mechanism was contact-free.
+        permitted = qualified and observation_confirmed(meta.get('stages') or {}, scopes)
+        changes = {'observation_validated': permitted, 'response_validated': False}
+        current = ((core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
+        updates = {key: value for key, value in changes.items() if (current.get(key) is True) != value}
+        if updates: _atomic_yaml_text(core_path, self._validation_text(core_text, changes))
+        result = self._readiness(config)
+        result.update(measurement=receipt, requires_reconnect=bool(updates), observation_validated=permitted)
+        self._inspection_result(result, 'observation_validation', updates)
+        return result
+
+    @staticmethod
+    def _observation_permission(meta, scopes):
+        key = commissioning_stage_key('observation_validation', 'CSP')
+        receipt = (meta.get('measurements') or {}).get(key) or {}
+        artifact = Path(receipt.get('artifact_path') or '/missing')
+        return (receipt.get('kind') == 'measured_observation_validation' and receipt.get('result') == 'passed' and
+                receipt.get('scope') == scopes.get(key) and (receipt.get('summary') or {}).get('validated') is True and
+                artifact.is_file() and _sha(artifact) == receipt.get('artifact_sha256') and
+                observation_confirmed(meta.get('stages') or {}, scopes))
+
+    @staticmethod
+    def _inspection_result(readiness, task, changes=None):
+        step = next((item for group in (readiness.get('commissioning') or {}).get('groups', [])
+                     for item in group['steps'] if item['id'] == task or task in item['review_stages']), None)
+        readiness['inspection_result'] = {'task_id': step['id'] if step else task,
+            'status': step['evidence_status'] if step else 'partial', 'completed': bool(step and step['completed']),
+            'remaining': step['blockers'] if step else [], 'permission_updates': changes or {}}
+
+    def record_response_measurement(self, config, window, export_path, *, native=None, native_fingerprint=None):
+        from interaction_response import validate_admittance_response, native_response_binding
+        info = self.inspector.inspect(config)
+        core_path = Path(info['resources']['core'])
+        core_text = core_path.read_text(encoding='utf-8')
+        core = canonical_core(yaml.safe_load(core_text))
+        hardware = read_yaml(info['resources']['hardware'])
+        scopes = self._dependencies(info, core, hardware)
+        control_path = window.get('behavior', window.get('control_path', 'MIT'))
+        key = commissioning_stage_key('admittance_response', control_path)
+        binding_error = ''
+        if (window.get('profile') != info['profile'] or window.get('joint_names') != core['model']['joint_names'] or
+                Path(window.get('core') or '/missing').resolve() != core_path.resolve()):
+            binding_error = '记录不属于当前 Profile，仅保留历史数据'
+        elif native is None or native_fingerprint != info.get('fingerprint'):
+            binding_error = '当前配置与原生会话未绑定，仅保留历史数据'
+        elif not self._matches_admittance_snapshot(core, window.get('parameters'), response=True):
+            binding_error = '试验参数与已保存参数不一致，请先保存并重新验证'
+        elif window.get('gravity_scale') != [core['model']['gravity_scale'][name] for name in core['model']['joint_names']]:
+            binding_error = '试验重力模型比例与已保存配置不一致'
+        else:
+            overrides = native.request('candidate_overrides', {}, timeout=8)
+            binding_error = ('临时模型或增益候选不能授予已保存配置的质量许可'
+                if any(overrides.get(kind + '_applied') for kind in ('gain', 'gravity', 'dynamics')) else
+                native_response_binding(window, native.telemetry(), native.status()))
+        quality = validate_admittance_response(window, core)
+        quality['binding_error'] = binding_error
+        path, meta = self._readiness_meta(info, scopes)
+        artifact = Path(export_path).resolve()
+        receipt = {'id': artifact.stem, 'kind': 'passive_response_record' if binding_error else 'measured_admittance_response',
+            'result': 'recorded' if binding_error else 'passed' if quality.get('passed_axes') else 'failed',
+            'scope': scopes.get(key, ''), 'recorded_at': time.time(), 'control_path': control_path,
+            'artifact_path': str(artifact), 'path': str(artifact), 'artifact_sha256': _sha(artifact),
+            'sample_count': len(window.get('samples') or []), 'summary': quality}
+        meta.setdefault('response_records', []).append(receipt)
+        qualified = False
+        if not binding_error:
+            previous = (meta.get('measurements') or {}).get(key) or {}
+            covered, files = set(), {}
+            if (quality.get('eligible') and previous.get('scope') == scopes.get(key) and
+                    all(Path(name).is_file() and _sha(name) == digest for name, digest in (previous.get('artifact_files') or {}).items())):
+                covered.update((previous.get('summary') or {}).get('passed_axes') or [])
+                files.update(previous.get('artifact_files') or {})
+            covered.update(quality.get('passed_axes') or [])
+            if quality.get('passed_axes'): files[str(artifact)] = _sha(artifact)
+            qualified = bool(quality.get('eligible') and quality.get('required_axes') and set(quality['required_axes']) <= covered)
+            receipt['summary'] = {**quality, 'window_passed_axes': quality.get('passed_axes', []),
+                                  'passed_axes': sorted(covered), 'validated': qualified}
+            receipt['artifact_files'] = files
+            receipt['result'] = 'passed' if qualified else 'recorded' if covered else 'failed'
+            if previous: meta.setdefault('measurement_history', []).append({'stage': key, **previous})
+            meta.setdefault('measurements', {})[key] = receipt
+        _atomic_yaml(path, meta)
+        if not binding_error and _sha(core_path) == hashlib.sha256(core_text.encode()).hexdigest():
+            validation = ((core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
+            qualified = qualified and validation.get('observation_validated') is True
+            _atomic_yaml_text(core_path, self._validation_text(core_text, {'response_validated': qualified}))
+        return {'receipt': receipt, 'requires_reconnect': not bool(binding_error), 'response_validated': qualified}
+
+    def record_stage(self, config, stage, answers, native=None, native_fingerprint=None):
+        """Save scoped inspections without requiring an active hardware session.
+
+        Measured permission combines valid native proof with its required
+        operator confirmations; a checklist alone cannot supply that proof.
         """
-        requirements = {
-            'model_check': ('chain', 'limits', 'inertial'),
-            'bringup': ('connection',),
-            'startup_hold': ('hold_gains', 'supported', 'emergency_stop'),
-            'mapping_calibration': ('joint_ids', 'directions', 'offsets'),
-            'geometry_calibration': ('frames', 'zero_pose', 'tool_pose'),
-            'gravity_verification': ('distinct_poses', 'support', 'restored'),
-            'validation': ('tracking', 'stopping', 'faults'),
-        }
-        if stage not in requirements:
-            raise ValueError('当前项目不支持人工自查记录')
         if not isinstance(answers, dict):
             raise ValueError('检查内容必须是对象')
+        info = self.inspector.inspect(config)
+        core = read_yaml(info['resources']['core'])
+        selected_path = ((core.get('control') or {}).get('runtime') or {}).get('control_path', 'MIT')
+        records = task_answers(stage, answers, selected_path, (core.get('model') or {}).get('joint_names') or [])
+        if records is not None:
+            hardware = read_yaml(info['resources']['hardware'])
+            scopes = self._dependencies(info, core, hardware)
+            _, meta = self._readiness_meta(info, scopes)
+            changed, reconnect = {}, False
+            for source, fields in records.items():
+                key = commissioning_stage_key(source, selected_path)
+                previous = (meta.get('stages') or {}).get(key) or {}
+                # Retain old fields only while their physical scope still fits.
+                existing = previous.get('observations') or {} if previous.get('scope') == scopes.get(key) else {}
+                result = self.record_stage(config, source, {**existing, **fields, 'note': answers.get('note', '')}, native, native_fingerprint)
+                changed.update((result.get('inspection_result') or {}).get('permission_updates') or {})
+                reconnect |= result.get('requires_reconnect') is True
+            result = self._readiness(config)
+            result['requires_reconnect'] = reconnect
+            self._inspection_result(result, stage, changed)
+            return result
+        requirements = {key: tuple(item[0] for item in review[2]) for key, review in COMMISSIONING_REVIEWS.items()}
+        requirements['startup_hold'] += tuple('joint:' + name for name in (core.get('model') or {}).get('joint_names') or [])
+        if stage not in requirements:
+            raise ValueError('当前项目不支持人工自查记录')
         note = str(answers.get('note') or '').strip()
         if len(note) > 600:
             raise ValueError('检查备注不能超过 600 字')
         checked = {}
         for key in requirements[stage]:
-            value = answers.get(key, False)
+            value = answers.get(key, answers.get('bidirectional') is True if stage == 'startup_hold' and key.startswith('joint:') else False)
             if not isinstance(value, bool):
                 raise ValueError(f'检查项 {key} 必须为布尔值')
             checked[key] = value
@@ -628,20 +956,26 @@ class ProfileLibrary:
         scopes = self._dependencies(info, core, hardware)
         path, data = self._readiness_meta(info, scopes)
         data['profile'] = info['profile']
-        field = 'modes' if stage == 'startup_hold' else 'stages'
-        key = 'RIGID' if stage == 'startup_hold' else stage
+        # Notes and configured MIT gains have independent lifetimes. A startup
+        # checklist must never replace a measured gain receipt in modes.RIGID.
+        field = 'stages'
+        selected_path = ((core.get('control') or {}).get('runtime') or {}).get('control_path', 'MIT')
+        key = commissioning_stage_key(stage, selected_path)
+        scope = scopes.get(key, scopes.get(stage))
         previous = (data.get(field) or {}).get(key)
         # Updating optional notes must not erase independent native proof
         # that still matches the current configuration
         keep_native = (stage == 'gravity_verification' and isinstance(previous, dict)
             and previous.get('result') == 'passed'
-            and previous.get('scope') == scopes[stage]
+            and previous.get('scope') == scope
             and previous.get('kind') in ('native_gravity_completed', 'operator_and_live')
             and (previous.get('runtime') or {}).get('sample_count', 0) >= 3)
         entry = dict(previous) if keep_native else {
-            'result': 'recorded', 'scope': scopes[stage], 'kind': 'operator_note',
+            'result': 'recorded', 'scope': scope, 'kind': 'operator_note',
         }
-        entry.update({'note': note, 'observations': checked, 'recorded_at': time.time()})
+        if isinstance(previous, dict) and previous.get('scope') != scope:
+            data.setdefault('stage_history', []).append({'stage': key, **previous})
+        entry.update({'note': note, 'observations': checked, 'recorded_at': time.time(), 'control_path': selected_path})
         data.setdefault(field, {})[key] = entry
         # A real completed native gravity task may provide stronger evidence.
         # Missing, stale or unrelated sessions never block saving a note and
@@ -688,6 +1022,17 @@ class ProfileLibrary:
                 # There is no usable live native proof; keep only the note
                 pass
         _atomic_yaml(path, data)
+        permission_changes = {}
+        if stage in ('observation_validation', 'observation_calibration', 'effort_model_validation') and selected_path == 'CSP':
+            permitted = self._observation_permission(data, scopes)
+            current = ((core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
+            changes = {'observation_validated': permitted,
+                       'response_validated': current.get('response_validated') is True and permitted}
+            permission_changes = {key: value for key, value in changes.items() if (current.get(key) is True) != value}
+            if permission_changes:
+                if _sha(core_path) != core_sha:
+                    raise ValueError('保存检查期间配置已变化，记录已保留，请重新检查')
+                _atomic_yaml_text(core_path, self._validation_text(core_text, changes))
         trust_saved = accept_gravity and not gravity_trusted(core)
         if trust_saved:
             # The dedicated task measured this bound model; the final operator
@@ -700,7 +1045,9 @@ class ProfileLibrary:
             trusted_text = patch_text(trusted_text, {('model', 'gravity_model_validated'): 'true'})
             _atomic_yaml_text(core_path, trusted_text)
         readiness = self._readiness(config)
-        readiness.update(gravity_validation_saved=trust_saved, requires_reconnect=trust_saved)
+        if trust_saved: permission_changes['gravity_model_validated'] = True
+        readiness.update(gravity_validation_saved=trust_saved, requires_reconnect=trust_saved or bool(permission_changes))
+        self._inspection_result(readiness, stage, permission_changes)
         return readiness
 
     @staticmethod
@@ -1081,22 +1428,17 @@ class ProfileLibrary:
             base=text(options.get('base_frame')); tool=text(options.get('tool_frame'))
             if base not in analysis['links'] or tool not in analysis['links']: raise ValueError('base/tool frame must exist in the Description')
             zeros=self._joint_map(joints,0.0); ones=self._joint_map(joints,1.0)
-            limits = {item['name']: item.get('limit') or {} for item in analysis['joints']}
-            park = {}
-            for name in joints:
-                low, high = limits[name].get('lower'), limits[name].get('upper')
-                if low is not None and high is not None:
-                    if float(low) > float(high): raise ValueError(f'{name} URDF 关节限位上下界错误')
-                    park[name] = max(float(low), min(float(high), 0.0))
-                else: park[name] = 0.0
             # Zero placeholders are replaced by model-derived per-axis suggestions below
             kp_rigid=zeros.copy(); kd_rigid=zeros.copy(); kp_soft=zeros.copy(); kd_soft=zeros.copy()
             core={
               'model':{'urdf_path':'../../'+analysis['urdf_relative'].replace('\\','/'),'joint_names':joints,'base_frame':base,'tool_frame':tool,'gravity':[0.0,0.0,-9.81],'gravity_scale':ones,'gravity_model_validated':False},
               'calibration':{'joints':{j:{'direction':1.0,'pos_ratio':1.0,'tor_ratio':1.0,'joint_zero_offset':0.0,'actuator_zero_offset':0.0} for j in joints}},
               'control':{'runtime':{'ctrl_frequency_hz':200.0,'joint_acc_filter_alpha':0.2,'write_enabled':False,'model_feedforward_mode':'GRAVITY','control_path':'MIT'},'controller':{'allow_full_cmd':False,'rigid':{'kp':kp_rigid,'kd':kd_rigid},'compliant':{'kp':kp_soft,'kd':kd_soft},'drag':{'kp':zeros,'kd':zeros.copy()}}},
-              'safety_policy':{'position_margin':0.0,'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_drag_recovery':True,'require_operator_request':True,'recovery_timeout_s':30.0}},
-              'shutdown':{'park_before_disable':True,'park_pos':park,'speed_scale':0.05,'position_tolerance':0.05,'velocity_tolerance':0.05,'settle_time_s':0.25,'relaxed_tolerance_ratio':2.0,'timeout_s':10.0},
+              'safety_policy':{'position_margin':zeros.copy(),'cmd_vel_scale':0.25,'state_vel_scale':1.0,'max_acc':self._joint_map(joints,2.0),'max_dt_s':0.02,'state_timeout_s':0.05,'cmd_timeout_s':0.10,'require_all_actuators_online':True,'require_all_actuators_enabled':True,'reject_motor_error':True,'require_continuous_cmd':False,'fault_recovery':{'default_mode':'rigid_hold','allow_drag_recovery':True,'require_operator_request':True,'recovery_timeout_s':30.0,'velocity_tolerance':self._joint_map(joints,.05)}},
+              'shutdown': {'paths': {path: {'enabled': False, 'strategy': 'RIGID',
+                  'park_pos': self._joint_map(joints, 0.0), 'speed_scale': 0.05,
+                  'position_tolerance': self._joint_map(joints, .05), 'velocity_tolerance': self._joint_map(joints, .05),
+                  'settle_time_s': 0.25, 'timeout_s': 10.0} for path in ('MIT', 'CSP')}},
 
             }
             # If the Description already supplies a robot-specific Core config,
@@ -1135,7 +1477,7 @@ class ProfileLibrary:
                 if len(actuators)!=len(joints):
                     actuators = list(actuators[:len(joints)]) + [{} for _ in range(max(0,len(joints)-len(actuators)))]
                 bus=text(options.get('bus')) or 'main_can'; device=text(options.get('device')) or '/dev/ttyACM0'; baud=int(options.get('baudrate') or 921600)
-                hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'stop_kp':10.0,'stop_kd':0.15,'stop_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
+                hardware={'buses':{bus:{'type':'can','backend':'damiao_usb2can','device':device,'baudrate':baud}},'damiao':{'bus':bus,'refresh_state_in_read':False,'feedback_timeout_s':0.05,'activation_retries':3,'startup_read_cycles':5,'actuators':{j:{'name':text(a.get('name')) or f'actuator{i+1}','motor_id':int(a.get('motor_id') or i+1),'master_id':int(a.get('master_id') or 0),'motor_type':text(a.get('motor_type'))} for i,(j,a) in enumerate(zip(joints,actuators))}}}
             _atomic_yaml(config_dir/'hardware.yaml',hardware)
             initialization = None
             if not authored_config.is_file():
@@ -1235,12 +1577,20 @@ class ProfileLibrary:
                     issue('mapping', f'core.calibration.joints.{joint}.{key}',
                           f'{joint} 的映射参数 {key} ' + ('必须为 1 或 -1' if key == 'direction' else '必须为正数，方向由 direction 指定' if key in ('pos_ratio', 'tor_ratio') else '必须为有限数值'))
         safety = core.get('safety_policy') or {}
-        for key in ('position_margin', 'max_dt_s', 'state_timeout_s', 'cmd_timeout_s', 'cmd_vel_scale', 'state_vel_scale'):
+        for key in ('max_dt_s', 'state_timeout_s', 'cmd_timeout_s', 'cmd_vel_scale', 'state_vel_scale'):
             value = safety.get(key)
             valid = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
-            valid = valid and (value >= 0 if key == 'position_margin' else value > 0)
-            if key.endswith('vel_scale'): valid = valid and value <= 1
-            if not valid: issue('safety', 'core.safety_policy.' + key, f'安全参数 {key} ' + ('必须在 0 到 1 之间且大于零' if key.endswith('vel_scale') else '缺失或无效'))
+            valid = valid and value > 0
+            if key == 'cmd_vel_scale': valid = valid and value <= 1
+            if not valid: issue('safety', 'core.safety_policy.' + key, f'安全参数 {key} 缺失或无效')
+        for key in ('position_margin', 'fault_recovery.velocity_tolerance'):
+            node = safety
+            for part in key.split('.'): node = node.get(part, {}) if isinstance(node, dict) else {}
+            if not isinstance(node, dict) or set(node) != set(names):
+                issue('safety', 'core.safety_policy.' + key, '请为每个受控关节填写 ' + key)
+        for path, reason in constraint_errors(core, hardware, entry):
+            group = self._field_issue(path)['group']
+            issue(group, path, reason)
         acceleration = safety.get('max_acc') or {}
         if not isinstance(acceleration, dict) or set(acceleration) != set(names):
             issue('safety','core.safety_policy.max_acc','Safety 必须为全部受控关节提供最大加速度 max_acc')
@@ -1295,6 +1645,7 @@ class ProfileLibrary:
             'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits,
             'urdf_joint_limits': urdf_joint_limits, 'core': core, 'hardware': hardware,
             'profile_entry': profile,
+            'field_constraints': field_constraints(core, hardware, profile, urdf_joint_limits),
             'original_gravity_model_validated': gravity_trusted(core),
             'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
             'setup_issues': self._setup_issues(core, hardware, profile),
@@ -1332,7 +1683,7 @@ class ProfileLibrary:
         return editor
 
     @staticmethod
-    def _finite(value, path, minimum=None, maximum=None, integer=False):
+    def _finite(value, path, minimum=None, maximum=None, integer=False, positive=False):
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
             raise ValueError(f'{path} 必须是有限数值')
         if integer and int(value) != value:
@@ -1341,6 +1692,8 @@ class ProfileLibrary:
             raise ValueError(f'{path} 不能小于 {minimum}')
         if maximum is not None and value > maximum:
             raise ValueError(f'{path} 不能大于 {maximum}')
+        if positive and value <= 0:
+            raise ValueError(f'{path} 必须大于 0')
 
     @staticmethod
     def _same_structure(original, candidate, path=''):
@@ -1382,14 +1735,14 @@ class ProfileLibrary:
                     raise ValueError(f'{path} 缺少必需的配置字段')
                 node = node[part]
             return node
-        def scalar(path, minv=None, maxv=None, integer=False):
-            self._finite(section(path), path, minv, maxv, integer)
-        def joint_map(path, minv=None, maxv=None, integer=False, nonzero=False):
+        def scalar(path, minv=None, maxv=None, integer=False, positive=False):
+            self._finite(section(path), path, minv, maxv, integer, positive)
+        def joint_map(path, minv=None, maxv=None, integer=False, nonzero=False, positive=False):
             values = section(path)
             if not isinstance(values, dict) or set(values) != set(names):
                 raise ValueError(f'{path} 关节名称与 model.joint_names 不一致')
             for name in names:
-                self._finite(values[name], path + '.' + name, minv, maxv, integer)
+                self._finite(values[name], path + '.' + name, minv, maxv, integer, positive)
                 if nonzero and values[name] == 0: raise ValueError(f'{path}.{name} 不能为零')
         model = core['model']
         urdf = (core_path.parent / model['urdf_path']).resolve()
@@ -1442,7 +1795,8 @@ class ProfileLibrary:
                       'safety_policy.reject_motor_error', 'safety_policy.require_continuous_cmd',
                       'safety_policy.fault_recovery.allow_drag_recovery',
                       'safety_policy.fault_recovery.require_operator_request',
-                      'model.gravity_model_validated', 'shutdown.park_before_disable',
+                      'model.gravity_model_validated',
+                      *(f'shutdown.paths.{path}.{key}' for path in ('MIT', 'CSP') for key in ('enabled',)),
                       'capability.admittance.calibration.friction.enabled'):
             value = core
             for part in field.split('.'):
@@ -1452,7 +1806,7 @@ class ProfileLibrary:
                 value = value[part]
             if value is not absent_boolean and not isinstance(value, bool):
                 raise ValueError(f'{field} 必须是布尔值')
-        scalar('control.runtime.ctrl_frequency_hz',1)
+        scalar('control.runtime.ctrl_frequency_hz',positive=True)
         scalar('control.runtime.joint_acc_filter_alpha',0,1)
         if runtime['model_feedforward_mode'] not in ('NONE','GRAVITY','FULL_INVERSE_DYNAMICS'):
             raise ValueError('control.runtime.model_feedforward_mode 无效')
@@ -1462,8 +1816,8 @@ class ProfileLibrary:
         for mode in ('rigid', 'compliant', 'drag'):
             if mode in controller:
                 for axis in ('kp','kd'): joint_map(f'control.controller.{mode}.{axis}',0)
-        if runtime['control_path'] == 'MIT' and 'rigid' not in controller:
-            raise ValueError('MIT 基础运行需要 control.controller.rigid')
+        # A disabled observation session needs no synthesized MIT PD gains.
+        # Real activation independently requires a complete positive RIGID set.
         if 'drag' in controller and any(controller['drag']['kp'][name] != 0 for name in names):
             raise ValueError('拖拽模式 Kp 必须为零')
         hold = core['control'].get('hold_compensation')
@@ -1476,23 +1830,25 @@ class ProfileLibrary:
             for field in ('integral_gain', 'max_torque', 'max_rate', 'contact_threshold'):
                 joint_map('control.hold_compensation.' + field, 0)
             for field in ('velocity_threshold', 'error_threshold'):
-                scalar('control.hold_compensation.' + field, 1e-9)
+                joint_map('control.hold_compensation.' + field, positive=True)
         safety = section('safety_policy')
         if runtime['control_path'] == 'CSP':
             bounds = safety.get('max_tracking_error')
             missing = [name for name in names if not isinstance(bounds, dict) or name not in bounds]
             if missing:
                 raise ValueError('CSP 缺少 safety_policy.max_tracking_error，请填写关节的最大跟踪误差: ' + ', '.join(missing))
-        for key in ('position_margin', 'max_dt_s','state_timeout_s','cmd_timeout_s'):
-            scalar('safety_policy.'+key, 0 if key=='position_margin' else 1e-7)
-        for key in ('cmd_vel_scale','state_vel_scale'):
-            scalar('safety_policy.'+key,1e-7,1)
+        joint_map('safety_policy.position_margin',0)
+        for key in ('max_dt_s','state_timeout_s','cmd_timeout_s'):
+            scalar('safety_policy.'+key,positive=True)
+        scalar('safety_policy.cmd_vel_scale',maxv=1,positive=True)
+        scalar('safety_policy.state_vel_scale',positive=True)
         for field in ('max_acc','max_tracking_error','max_effort_override'):
-            if field in safety: joint_map('safety_policy.'+field,1e-7)
+            if field in safety: joint_map('safety_policy.'+field,positive=True)
         recovery = section('safety_policy.fault_recovery')
         if recovery['default_mode'] != 'rigid_hold':
             raise ValueError('safety_policy.fault_recovery.default_mode 仅支持 rigid_hold')
-        scalar('safety_policy.fault_recovery.recovery_timeout_s',1e-7)
+        scalar('safety_policy.fault_recovery.recovery_timeout_s',positive=True)
+        joint_map('safety_policy.fault_recovery.velocity_tolerance',positive=True)
         if not isinstance(recovery.get('allow_drag_recovery'), bool):
             raise ValueError('fault_recovery.allow_drag_recovery 必须为布尔值')
         if recovery.get('require_operator_request') is not True:
@@ -1509,19 +1865,45 @@ class ProfileLibrary:
                 effort = safety.get('max_effort_override', {}).get(name)
                 if effort is not None and hold['max_torque'][name] > effort:
                     raise ValueError(f'control.hold_compensation.max_torque.{name} 超出总力矩预算')
-        shut = section('shutdown')
-        joint_map('shutdown.park_pos')
-        for key in ('speed_scale','compliant_phase_ratio'):
-            if key in shut: scalar('shutdown.'+key,1e-7,1)
-        for key in ('position_tolerance','velocity_tolerance','settle_time_s','relaxed_tolerance_ratio','timeout_s'):
-            scalar('shutdown.'+key,0 if key=='settle_time_s' else 1e-7)
+        shut = core.get('shutdown') or {}
+        if not isinstance(shut, dict) or set(shut) - {'paths'}:
+            raise ValueError('shutdown 仅支持 paths.MIT 与 paths.CSP')
+        plans = shut.get('paths', {})
+        if not isinstance(plans, dict) or set(plans) - {'MIT', 'CSP'}:
+            raise ValueError('shutdown.paths 仅支持 MIT 与 CSP')
+        allowed = {'enabled', 'strategy', 'park_pos', 'speed_scale',
+                   'position_tolerance', 'velocity_tolerance', 'settle_time_s', 'timeout_s'}
+        for path, plan in plans.items():
+            prefix = 'shutdown.paths.' + path + '.'
+            if not isinstance(plan, dict) or set(plan) - allowed:
+                raise ValueError(prefix[:-1] + ' 含未知停放字段')
+            if plan.get('strategy', 'RIGID') not in ('RIGID', 'COMPLIANT_THEN_RIGID'):
+                raise ValueError(prefix + 'strategy 必须为 RIGID 或 COMPLIANT_THEN_RIGID')
+            enabled = plan.get('enabled') is True
+            if enabled and not plan.get('park_pos'):
+                plan['park_pos'] = dict.fromkeys(names, 0.0)
+            if enabled and not parking_complete(core, path):
+                raise ValueError(prefix[:-1] + ' 停放需要完整目标、逐轴容差、速度和时间参数')
+            for key in ('park_pos', 'position_tolerance', 'velocity_tolerance'):
+                if plan.get(key) or enabled: joint_map(prefix + key, positive=key != 'park_pos')
+                elif key in plan and not isinstance(plan[key], dict):
+                    raise ValueError(prefix + key + ' 必须为逐关节映射')
+            if 'speed_scale' in plan: scalar(prefix + 'speed_scale', maxv=1, positive=True)
+            if 'settle_time_s' in plan: scalar(prefix + 'settle_time_s', 0)
+            if 'timeout_s' in plan: scalar(prefix + 'timeout_s', positive=True)
         for name in names:
             lim = joints_xml[name].find('limit')
             if lim is not None and lim.get('lower') is not None and lim.get('upper') is not None:
-                lo,hi = float(lim.get('lower')),float(lim.get('upper'))
-                pos = shut['park_pos'][name]
-                if not lo+safety['position_margin'] <= pos <= hi-safety['position_margin']:
-                    raise ValueError(f'shutdown.park_pos.{name} 超出 URDF 有效限位')
+                lo, hi = float(lim.get('lower')), float(lim.get('upper'))
+                margin = safety['position_margin'][name]
+                if lo + margin >= hi - margin:
+                    raise ValueError(f'safety_policy.position_margin.{name} 压空 URDF 有效行程')
+                for path, plan in plans.items():
+                    pos = (plan.get('park_pos') or {}).get(name)
+                    if plan.get('enabled') is True and pos is not None and not lo + margin <= pos <= hi - margin:
+                        raise ValueError(f'shutdown.paths.{path}.park_pos.{name} 超出 URDF 有效限位')
+        for path, reason in constraint_errors(core, hardware, entry):
+            raise ValueError(f'{path} {reason}')
         interaction = interaction_configuration(core)
         if hold and hold.get('enabled') and not interaction['observation_configured']:
             raise ValueError('刚性定位积分补偿需要 capability.admittance.observer 和 calibration')
@@ -1536,11 +1918,11 @@ class ProfileLibrary:
                     return
                 raise ValueError('hardware.damiao.bus 必须对应 hardware.buses 中的总线')
             for key in ('feedback_timeout_s',):
-                self._finite(damiao.get(key), 'hardware.damiao.'+key,1e-7)
-            for key in ('activation_retries','startup_read_cycles','stop_cycles'):
-                self._finite(damiao.get(key), 'hardware.damiao.'+key,0,integer=True)
-            for key in ('stop_kp','stop_kd'):
-                self._finite(damiao.get(key), 'hardware.damiao.'+key,0)
+                self._finite(damiao.get(key), 'hardware.damiao.'+key,positive=True)
+            removed = set(damiao) & {'stop_kp', 'stop_kd', 'stop_cycles'}
+            if removed: raise ValueError('hardware.damiao 含已移除字段 ' + ', '.join(sorted(removed)))
+            for key in ('activation_retries','startup_read_cycles'):
+                self._finite(damiao.get(key), 'hardware.damiao.'+key,1,integer=True)
             self._finite(buses[bus].get('baudrate'), f'hardware.buses.{bus}.baudrate',1,integer=True)
             if not buses[bus].get('device'): raise ValueError(f'hardware.buses.{bus}.device 不能为空')
             acts = damiao.get('actuators') or {}
@@ -1603,11 +1985,12 @@ class ProfileLibrary:
             document.pop('capability', None)
             document['model'].pop('gravity_model_validated', None)
             document['control'].pop('controller', None)
+            document.pop('shutdown', None)
         self._same_structure(before_structure,next_structure)
         for section, allowed in {
             'model': {'gravity_correction_path', 'gravity_model_validated'},
             'safety_policy': {'max_effort_override', 'max_tracking_error'},
-            'shutdown': {'compliant_phase_ratio'},
+            'shutdown': {'paths'},
         }.items():
             extra = set(core.get(section, {})) - set(before_core.get(section, {}))
             if not extra.issubset(allowed):
@@ -1628,6 +2011,16 @@ class ProfileLibrary:
             raise ValueError('启用拖拽前必须确认重力模型已在当前机械臂和负载上完成验证')
         if gravity_status['gravity_validation_reset']:
             core['model']['gravity_model_validated'] = False
+        original_quality = ((before_core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
+        requested_quality = ((core.get('capability') or {}).get('admittance') or {}).get('validation') or {}
+        if any(value is True and original_quality.get(key) is not True for key, value in requested_quality.items()):
+            raise ValueError('外力与导纳质量许可只能由独立测量验收保存，不能在参数编辑中手动开启')
+        interaction_reset = revoke_changed_interaction_validation(before_core, core)
+        if gravity_status['gravity_validation_changes'] or hardware != before_hw or entry.get('hardware') != original_entry.get('hardware'):
+            for key in ('observation_validated', 'response_validated'):
+                if requested_quality.get(key) is True:
+                    requested_quality[key] = False
+                    interaction_reset.append(key)
         if payload.get('hardware_imported') is not True:
             self._same_structure(before_hw,hardware,'hardware')
         self._same_structure(original_entry,entry,'profile')
@@ -1698,4 +2091,5 @@ class ProfileLibrary:
                     tmp = path.with_suffix(path.suffix+'.rollback')
                     tmp.write_bytes(content); tmp.replace(path)
             raise
-        return {**self.profile_editor_load(config), **gravity_status}
+        return {**self.profile_editor_load(config), **gravity_status,
+                'interaction_validation_reset': list(dict.fromkeys(interaction_reset))}

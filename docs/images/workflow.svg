@@ -1,46 +1,61 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="495" viewBox="0 0 1540 495" role="img" aria-labelledby="wt wd"><title id="wt">新机械臂接入流程</title><desc id="wd">导入模型，填写配置，检查硬件，按用途标定和验证，使用控制工作台</desc>
-<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="7" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L0 6 L8 3 z" fill="#9AAABF"/></marker><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#F8FAFD"/><stop offset="1" stop-color="#EFF3F8"/></linearGradient><linearGradient id="dark" x1="0" x2="1"><stop stop-color="#182A43"/><stop offset="1" stop-color="#293C55"/></linearGradient></defs>
-<rect x="0" y="0" width="1540" height="495" rx="26" fill="url(#bg)" stroke="none"/>
-<rect x="0" y="0" width="1540" height="88" rx="26" fill="url(#dark)" stroke="none"/>
-<rect x="0" y="55" width="1540" height="33" rx="0" fill="url(#dark)" stroke="none"/>
-<text x="48" y="50" text-anchor="start" font-size="24" font-weight="700" letter-spacing="2" fill="#E6EDF5" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">ROBOT ONBOARDING</text>
-<text x="49" y="122" text-anchor="start" font-size="28" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">从模型到真机控制</text>
-<text x="49" y="161" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#718097" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">连接前配置、运行检查、基础与专项标定分别记录</text>
-<rect x="47" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="63" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="84" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">01</text>
-<text x="65" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">模型导入</text>
-<text x="65" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">URDF / Description</text>
-<path d="M270 300 L288 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
-<rect x="295" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="311" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="332" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">02</text>
-<text x="313" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Profile 配置</text>
-<text x="313" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Frame / Hardware</text>
-<path d="M518 300 L536 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
-<rect x="543" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="559" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="580" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">03</text>
-<text x="561" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">硬件检查</text>
-<text x="561" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">连接 / 安全约束</text>
-<path d="M766 300 L784 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
-<rect x="791" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="807" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="828" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">04</text>
-<text x="809" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">基础标定</text>
-<text x="809" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">重力验证 / 增益</text>
-<path d="M1014 300 L1032 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
-<rect x="1039" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="1055" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="1076" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">05</text>
-<text x="1057" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">专项标定</text>
-<text x="1057" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">按任务选用</text>
-<path d="M1262 300 L1280 300" fill="none" stroke="#A3B0C1" stroke-width="3" stroke-linecap="round" marker-end="url(#arrow)"/>
-<rect x="1287" y="213" width="216" height="179" rx="18" fill="#FFFFFF" stroke="#DDE5EF"/>
-<rect x="1303" y="230" width="42" height="36" rx="10" fill="#FFF2E5" stroke="none"/>
-<text x="1324" y="255" text-anchor="middle" font-size="17" font-weight="700" letter-spacing="0" fill="#D67810" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">06</text>
-<text x="1305" y="307" text-anchor="start" font-size="23" font-weight="700" letter-spacing="0" fill="#17283F" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">控制工作台</text>
-<text x="1305" y="343" text-anchor="start" font-size="16" font-weight="400" letter-spacing="0" fill="#738397" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">Core / ROS2</text>
-<rect x="47" y="423" width="1446" height="44" rx="11" fill="#EAF0F7" stroke="none"/>
-<text x="70" y="451" text-anchor="start" font-size="17" font-weight="400" letter-spacing="0" fill="#435872" font-family="Noto Sans CJK SC, Noto Sans SC, Microsoft YaHei, PingFang SC, Arial, sans-serif">配置检查支持连接，标定记录说明验证范围；运动由当前反馈与 Core 安全检查决定</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="632" viewBox="0 0 1320 632" role="img" aria-labelledby="title desc">
+  <title id="title">机械臂接入与调试</title>
+  <desc id="desc">先完成共同基础四项任务，再按 MIT 或 CSP 完成三项路径任务；六项可选提升分别记录，历史结果重启后保留</desc>
+  <rect width="1320" height="632" rx="24" fill="#faf9f5"/>
+  <g font-family="Maple Mono NF CN, Noto Sans CJK SC, sans-serif" fill="#2f312d">
+    <text x="36" y="52" font-size="27" font-weight="600">机械臂接入与调试</text>
+    <text x="36" y="85" font-size="16" fill="#74756e">核对模型与硬件，完成基础运动检查，再验证所选控制路径</text>
+    <rect x="36" y="116" width="396" height="444" rx="16" fill="#fffefa" stroke="#e4e1d9"/>
+    <rect x="56" y="137" width="32" height="32" rx="10" fill="#ff7b35"/>
+    <text x="72" y="160" text-anchor="middle" font-size="17" fill="#fff">一</text>
+    <text x="102" y="160" font-size="23" font-weight="600">共同基础</text>
+    <g font-size="17" font-weight="600">
+      <text x="58" y="215">模型与硬件连接</text>
+      <text x="58" y="291">关节映射与安全边界</text>
+      <text x="58" y="367">刚性保持与逐轴运动</text>
+      <text x="58" y="443">停止与故障处理</text>
+    </g>
+    <g font-size="14" fill="#74756e">
+      <text x="58" y="240">查看模型，连接并核对失能反馈</text>
+      <text x="58" y="316">填写映射、运动边界和初始保持参数</text>
+      <text x="58" y="392">受限正反运动，实测模型与真机对应</text>
+      <text x="58" y="468">检查停止、失能与故障恢复条件</text>
+    </g>
+    <path d="M58 497H410" stroke="#e4e1d9"/>
+    <text x="58" y="530" font-size="15" fill="#74756e">填写检查项并保存结果</text>
+    <rect x="462" y="116" width="396" height="444" rx="16" fill="#fffefa" stroke="#e4e1d9"/>
+    <rect x="482" y="137" width="32" height="32" rx="10" fill="#ff7b35"/>
+    <text x="498" y="160" text-anchor="middle" font-size="17" fill="#fff">二</text>
+    <text x="528" y="160" font-size="23" font-weight="600">路径专项</text>
+    <text x="484" y="210" font-size="18" font-weight="600">阻抗 + MIT</text>
+    <g font-size="16">
+      <text x="484" y="243">1　重力补偿验证</text>
+      <text x="484" y="275">2　增益与轨迹跟踪</text>
+      <text x="484" y="307">3　拖拽、模式切换与上层接口</text>
+    </g>
+    <path d="M484 330H836" stroke="#e4e1d9"/>
+    <text x="484" y="366" font-size="18" font-weight="600">导纳 + CSP</text>
+    <g font-size="16">
+      <text x="484" y="399">1　外力估计校准与验收</text>
+      <text x="484" y="431">2　导纳退让与释放回位</text>
+      <text x="484" y="463">3　拖拽、模式切换与上层接口</text>
+    </g>
+    <path d="M484 497H836" stroke="#e4e1d9"/>
+    <text x="484" y="530" font-size="15" fill="#74756e">独立验证外力，完整记录退让与释放</text>
+    <rect x="888" y="116" width="396" height="444" rx="16" fill="#fffefa" stroke="#e4e1d9"/>
+    <rect x="908" y="137" width="32" height="32" rx="10" fill="#ff7b35"/>
+    <text x="924" y="160" text-anchor="middle" font-size="17" fill="#fff">三</text>
+    <text x="954" y="160" font-size="23" font-weight="600">可选提升</text>
+    <g font-size="17">
+      <text x="910" y="215">自动停放验收</text>
+      <text x="910" y="263">重力模型校正</text>
+      <text x="910" y="311">完整动力学辨识</text>
+      <text x="910" y="359">TCP 与几何标定</text>
+      <text x="910" y="407">重复到位与重复定位</text>
+      <text x="910" y="455">绝对定位精度</text>
+    </g>
+    <path d="M910 497H1262" stroke="#e4e1d9"/>
+    <text x="910" y="530" font-size="15" fill="#74756e">按任务采用，分别保存方法与结果</text>
+    <text x="36" y="602" font-size="16" fill="#74756e">重启保留记录；相关参数变化后复查对应任务；本次连接状态单独显示</text>
+  </g>
 </svg>

@@ -90,21 +90,12 @@ InteractionController::update(const InteractionInput& input) {
         JointVector measured_velocity=input.measured_velocity;
         if(measured_velocity.empty()) measured_velocity.assign(cfg_.external_torque.joints_count,0.0);
         const auto n=cfg_.external_torque.joints_count;
-        if(input.measured_position.size()==n) {
-            const auto& resolution=cfg_.external_torque.friction.velocity_resolution;
-            if(resolution.size()==n) for(std::size_t i=0;i<n;++i) {
-                const double h=input.measurement_dt>0?input.measurement_dt:input.dt;
-                const bool no_history=last_measured_position_.size()!=n;
-                const bool unchanged=no_history || std::abs(input.measured_position[i]-last_measured_position_[i])<=resolution[i]*h*.25;
-                if(resolution[i]>0 && unchanged && std::abs(measured_velocity[i])<=3.0*resolution[i]) measured_velocity[i]=0.0;
-            }
-            last_measured_position_=input.measured_position;
-        }
         TorqueResidualEstimate zero;zero.residual.assign(n,0.0);
         auto correction=external_torque_observer_.update(zero,measured_velocity);
         if(!correction) return tl::make_unexpected(InteractionControllerErr::EXTERNAL_FAILED);
         auto momentum_input=input.momentum_input;
         momentum_input.dt=input.measurement_dt>0?input.measurement_dt:input.dt;
+        momentum_input.velocity=measured_velocity;
         momentum_input.known_residual.resize(n);
         for(std::size_t i=0;i<n;++i) momentum_input.known_residual[i]=
             (cfg_.external_torque.torque_bias.empty()?0.0:cfg_.external_torque.torque_bias[i])+
@@ -212,7 +203,7 @@ InteractionController::reconfigure(const InteractionControllerCfg& cfg) {
         raw_momentum_observer_=std::move(validated.raw_momentum_observer_);
         net_external_torque_observer_=std::move(validated.net_external_torque_observer_);
         external_torque_observer_=std::move(validated.external_torque_observer_);
-        observation_initialized_=false;last_measured_position_.clear();
+        observation_initialized_=false;
     }
     cfg_=cfg;
     return {};
@@ -237,7 +228,6 @@ void InteractionController::reset() {
     external_torque_observer_.reset();
     admittance_controller_.reset();
     observation_initialized_=false;
-    last_measured_position_.clear();
     last_observation_={};
 }
 

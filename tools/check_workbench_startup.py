@@ -92,6 +92,30 @@ def main():
         try:
             info = bridge.request('inspect', config)
             assert info['write_enabled'] is False and info['available']['workbench'], info
+            readiness = bridge.request('readiness', {'config': config})
+            commissioning = readiness['commissioning']
+            foundation = next(group for group in commissioning['groups'] if group['id'] == 'foundation')
+            assert [step['id'] for step in foundation['steps']] == [
+                'model_connection', 'mapping_safety', 'startup_hold', 'stop_fault_check'], foundation
+            requirements = readiness['review_requirements']['model_connection']['keys']
+            assert len(requirements) > 1, requirements
+            partial = bridge.request('readiness_record', {
+                'config': config, 'stage': 'model_connection',
+                'answers': {requirements[0][0]: True}})
+            task = partial['commissioning']['groups'][0]['steps'][0]
+            assert not task['completed'] and task['blockers'], task
+            complete = bridge.request('readiness_record', {
+                'config': config, 'stage': 'model_connection',
+                'answers': {key: True for key, _ in requirements}})
+            task = complete['commissioning']['groups'][0]['steps'][0]
+            assert task['completed'] and not task['blockers'], task
+            for path, expected in {
+                'MIT': ['gravity_verification', 'mit_tracking_validation', 'mit_interaction'],
+                'CSP': ['observation_validation', 'admittance_response', 'csp_interaction'],
+            }.items():
+                steps = commissioning['paths'][path]['steps']
+                assert [step['id'] for step in steps] == expected, steps
+                assert all(step['control_path'] == path for step in steps), steps
             session = bridge.request('workbench_start', {
                 'config': config, 'fingerprint': info['fingerprint'], 'confirmed': False})
             assert session['state'] == 'running' and session['devices'] == [], session
@@ -100,6 +124,17 @@ def main():
             native = bridge.request('workbench_request', {'method': 'status'})
             assert native['write_enabled'] is False and native['robot_state'] == 'INACTIVE', native
             assert native['joint_names'] == names, native
+            bridge.request('workbench_request', {'method': 'connect'})
+            observed = bridge.request('workbench_request', {'method': 'observe'})
+            assert observed['hardware_connected'] is True, observed
+            assert observed['robot_state'] == 'INACTIVE' and observed['valid'], observed
+            assert observed['actuator']['enabled'] == [0] * len(names), observed
+            assert observed['observer_valid'] is False and observed['admittance_active'] is False, observed
+            sequence = observed['sequence']
+            time.sleep(.08)
+            updated = bridge.request('workbench_request', {'method': 'status'})
+            assert updated['sequence'] > sequence and updated['robot_state'] == 'INACTIVE', updated
+            assert updated['actuator']['enabled'] == [0] * len(names), updated
             bridge.request('workbench_stop')
             deadline = time.monotonic() + 3
             while True:

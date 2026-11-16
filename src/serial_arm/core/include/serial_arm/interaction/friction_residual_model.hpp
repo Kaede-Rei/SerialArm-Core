@@ -27,7 +27,7 @@ inline double friction_residual_blend(double velocity, double transition, double
  */
 struct FrictionResidualModelCfg {
     bool enabled{ false };                 ///< 是否启用动态摩擦 residual 补偿
-    double velocity_transition{ 0.03 };    ///< rad/s；完整渐入速度不低于 4 个反馈速度步进
+    JointVector velocity_transition;      ///< 各关节 SI 渐入速度；不低于 4 个反馈速度步进
     JointVector positive_coulomb;          ///< dq>0 时 signed Coulomb residual Nm
     JointVector positive_viscous;          ///< dq>0 时 signed viscous residual Nm/(rad/s)
     JointVector negative_coulomb;          ///< dq<0 时 signed Coulomb residual Nm

@@ -109,7 +109,6 @@ def prepare_config(directory: Path, old_gain_scale: float = 1) -> tuple[Path, li
     config = yaml.safe_load(EXAMPLE.read_text())
     config['model']['urdf_path'] = str((EXAMPLE.parent / config['model']['urdf_path']).resolve())
     config['control']['runtime']['write_enabled'] = False
-    config['shutdown']['park_before_disable'] = False
     def scale_gains(value):
         if not isinstance(value, dict):
             return

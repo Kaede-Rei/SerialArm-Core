@@ -1,5 +1,4 @@
 #include "serial_arm/robot.hpp"
-#include "serial_arm/core/park_policy.hpp"
 #include "serial_arm/core/reference_governor.hpp"
 #include "serial_arm/core/gain_quantization.hpp"
 #include "serial_arm/runtime/control_runtime.hpp"
@@ -87,6 +86,25 @@ static tl::expected<void,SafetyFault> check_observed_state(
     return result;
 }
 
+bool same_observation_parameters(const AdmittanceCapabilityCfg& a, const AdmittanceCapabilityCfg& b) {
+    const auto& x=a.calibration.friction;
+    const auto& y=b.calibration.friction;
+    return a.observer.momentum_gain==b.observer.momentum_gain &&
+        a.calibration.torque_bias==b.calibration.torque_bias &&
+        a.calibration.torque_threshold==b.calibration.torque_threshold &&
+        x.enabled==y.enabled && x.velocity_transition==y.velocity_transition &&
+        x.positive_coulomb==y.positive_coulomb && x.positive_viscous==y.positive_viscous &&
+        x.negative_coulomb==y.negative_coulomb && x.negative_viscous==y.negative_viscous;
+}
+
+bool same_response_parameters(const AdmittanceCapabilityCfg& a, const AdmittanceCapabilityCfg& b) {
+    return a.joint_enabled==b.joint_enabled && a.controller.mass==b.controller.mass &&
+        a.controller.damping==b.controller.damping && a.controller.stiffness==b.controller.stiffness &&
+        a.controller.max_delta_q==b.controller.max_delta_q &&
+        a.controller.max_delta_q_dot==b.controller.max_delta_q_dot &&
+        a.validation.velocity_tolerance==b.validation.velocity_tolerance;
+}
+
 InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& admittance, std::size_t joints_count, bool shadow_required=false, const JointVector& velocity_resolution={}) {
     InteractionControllerCfg interaction_cfg;
     interaction_cfg.enabled = admittance.observer_enabled || !admittance.observer.momentum_gain.empty() || shadow_required;
@@ -120,7 +138,7 @@ InteractionControllerCfg make_interaction_cfg(const AdmittanceCapabilityCfg& adm
  */
 Robot::~Robot() {
     if(motor_bus_) {
-        disable_noexcept();
+        if(state_==RobotState::ACTIVE || state_==RobotState::FAULT)disable_noexcept();
         motor_bus_->cleanup();
     }
 }
@@ -221,6 +239,64 @@ tl::expected<void, RobotFault> Robot::configure(
     return {};
 }
 
+/** Connect and refresh actual hardware limits without enabling any axis */
+tl::expected<void, RobotFault> Robot::connect() {
+    if(state_==RobotState::UNCONFIGURED)return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
+    if(state_!=RobotState::INACTIVE)return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
+    const auto connected = motor_bus_->connect();
+    if(!connected) {
+        const RobotFault fault = make_bus_fault(RobotErr::MOTOR_BUS_CONNECT_FAILED, connected.error());
+        return tl::make_unexpected(fault);
+    }
+
+    RobotCfg requested=cfg_;
+    requested.safety=requested_safety_;
+    const auto limits=resolve_connected_safety_cfg(requested,motor_bus_->capabilities());
+    if(!limits) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    Safety replacement;
+    const auto configured=replacement.configure(*limits);
+    if(!configured) return tl::make_unexpected(make_safety_fault(configured.error()));
+
+    // Connecting may refresh drive ranges and their feedback quantization.
+    // Use those actual joint-side steps for the runtime friction model too.
+    JointVector velocity_resolution(cfg_.joint_names.size());
+    const auto& capabilities=motor_bus_->capabilities();
+    for(std::size_t i=0;i<velocity_resolution.size();++i)
+        velocity_resolution[i]=capabilities[i].velocity_resolution/std::abs(cfg_.mapper.pos_ratio[i]);
+    const auto interaction=interaction_controller_.reconfigure(make_interaction_cfg(
+        cfg_.capability.admittance,cfg_.joint_names.size(),cfg_.hold_compensation.enabled,velocity_resolution));
+    if(!interaction) return tl::make_unexpected(make_interaction_fault(interaction.error()));
+    friction_velocity_resolution_=std::move(velocity_resolution);
+    safety_=std::move(replacement);
+    cfg_.safety=*limits;
+
+    connected_=true;
+    return {};
+}
+
+/** Observation deliberately does not apply motion admission: out-of-range
+ * positions and driver error flags must remain visible before first enable */
+tl::expected<RobotCycleOutput, RobotFault> Robot::observe() {
+    if(state_==RobotState::UNCONFIGURED)return tl::make_unexpected(make_fault(RobotErr::NOT_CONFIGURED));
+    if(state_!=RobotState::INACTIVE)return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
+    if(!connected_)return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED,MotorBusErr::NOT_CONNECTED));
+    const auto actuators=motor_bus_->observe();
+    if(!actuators)return tl::make_unexpected(make_bus_fault(RobotErr::MOTOR_BUS_READ_FAILED,actuators.error()));
+    const auto joints=mapper_.to_joint_state(*actuators);
+    if(!joints)return tl::make_unexpected(make_mapper_fault(joints.error()));
+    actuator_state_=*actuators;joint_state_=*joints;has_state_=true;last_state_time_=Clock::now();
+    RobotCycleOutput out;out.actuator_state=*actuators;out.joint_state=*joints;
+    const auto n=cfg_.joint_names.size();
+    out.control_path=cfg_.runtime.control_path;out.joint_cmd.path=cfg_.runtime.control_path;
+    out.joint_cmd.pos=joints->pos;out.joint_cmd.vel.assign(n,0);out.joint_cmd.tor.assign(n,0);
+    out.joint_cmd.kp.assign(n,0);out.joint_cmd.kd.assign(n,0);
+    out.joint_acc.assign(n,0);out.joint_ref_acc.assign(n,0);out.model_feedforward.assign(n,0);
+    out.hold_target_pos=joints->pos;
+    out.feedback_age_ms=actuators->feedback_received_ns.empty()?std::numeric_limits<double>::quiet_NaN():
+        1000.0*available_feedback_age_s(*actuators,n);
+    return out;
+}
+
 /**
  * @brief 连接、使能并用真实状态初始化控制器
  * @return 成功返回空 expected，失败返回 RobotFault
@@ -248,33 +324,44 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(make_fault(RobotErr::WRITE_DISABLED));
     }
 
-    const auto connected = motor_bus_->connect();
-    if(!connected) {
-        const RobotFault fault = make_bus_fault(RobotErr::MOTOR_BUS_CONNECT_FAILED, connected.error());
-        enter_fault(fault, SafetyAction::DISABLE);
-        return tl::make_unexpected(fault);
+    const auto connected=connect();
+    if(!connected) return connected;
+    const auto observation=observe();
+    if(!observation)return tl::make_unexpected(observation.error());
+    Safety preflight;
+    auto preflight_cfg=cfg_.safety;preflight_cfg.require_all_actuators_enabled=false;
+    const auto prepared=preflight.configure(preflight_cfg);
+    if(!prepared)return tl::make_unexpected(make_safety_fault(prepared.error()));
+    const auto healthy=check_observed_state(preflight,observation->joint_state,observation->actuator_state);
+    if(!healthy)return tl::make_unexpected(make_safety_fault(healthy.error()));
+
+    // Validate the complete first command before any axis is enabled.
+    const auto n=cfg_.joint_names.size();const JointVector zero(n,0.0);
+    JointCtrlCmd initial;initial.path=cfg_.runtime.control_path;
+    initial.pos=observation->joint_state.pos;initial.vel=zero;initial.tor=zero;
+    initial.kp=zero;initial.kd=zero;
+    if(initial.path==ControlPath::CSP)initial.position_speed_limit=cfg_.safety.limits.max_vel;
+    else {
+        initial.kp=cfg_.ctrller.rigid_gains.kp;initial.kd=cfg_.ctrller.rigid_gains.kd;
+        if(initial.kp.size()!=n || initial.kd.size()!=n ||
+           std::any_of(initial.kp.begin(),initial.kp.end(),[](double v){return !std::isfinite(v)||v<=0;}) ||
+           std::any_of(initial.kd.begin(),initial.kd.end(),[](double v){return !std::isfinite(v)||v<=0;}))
+            return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+        const auto feed=compute_model_feedforward(observation->joint_state,zero,zero,1.0/cfg_.runtime.ctrl_frequency_hz);
+        if(!feed)return tl::make_unexpected(feed.error());
+        initial.tor=*feed;
     }
-
-    RobotCfg requested=cfg_;
-    requested.safety=requested_safety_;
-    const auto limits=resolve_connected_safety_cfg(requested,motor_bus_->capabilities());
-    if(!limits) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
-    Safety replacement;
-    const auto configured=replacement.configure(*limits);
-    if(!configured) return tl::make_unexpected(make_safety_fault(configured.error()));
-
-    // Connecting may refresh drive ranges and their feedback quantization.
-    // Use those actual joint-side steps for the runtime friction model too.
-    JointVector velocity_resolution(cfg_.joint_names.size());
-    const auto& capabilities=motor_bus_->capabilities();
-    for(std::size_t i=0;i<velocity_resolution.size();++i)
-        velocity_resolution[i]=capabilities[i].velocity_resolution/std::abs(cfg_.mapper.pos_ratio[i]);
-    const auto interaction=interaction_controller_.reconfigure(make_interaction_cfg(
-        cfg_.capability.admittance,cfg_.joint_names.size(),cfg_.hold_compensation.enabled,velocity_resolution));
-    if(!interaction) return tl::make_unexpected(make_interaction_fault(interaction.error()));
-    friction_velocity_resolution_=std::move(velocity_resolution);
-    safety_=std::move(replacement);
-    cfg_.safety=*limits;
+    const auto projected=project_command_gains(initial,cfg_.safety.limits);
+    if(!projected)return tl::make_unexpected(make_safety_fault(projected.error()));
+    const auto initial_checked=preflight.check_joint_cmd(observation->joint_state,initial,1.0/cfg_.runtime.ctrl_frequency_hz);
+    if(!initial_checked)return tl::make_unexpected(make_safety_fault(initial_checked.error()));
+    for(std::size_t i=0;i<n;++i) {
+        const double total=initial.tor[i]-initial.kd[i]*observation->joint_state.vel[i];
+        if(!std::isfinite(total) || std::abs(total)>cfg_.safety.limits.max_effort[i]+cfg_.safety.numeric_tolerance)
+            return tl::make_unexpected(make_safety_fault({SafetyErr::CMD_EFFORT_LIMIT,i,total,cfg_.safety.limits.max_effort[i]}));
+    }
+    const auto initial_actuator=mapper_.to_actuator_cmd(*initial_checked);
+    if(!initial_actuator)return tl::make_unexpected(make_mapper_fault(initial_actuator.error()));
 
     ActuatorVector startup_speed_limit;
     if(cfg_.runtime.control_path==ControlPath::CSP) {
@@ -289,7 +376,7 @@ tl::expected<void, RobotFault> Robot::activate() {
         return tl::make_unexpected(fault);
     }
 
-    const auto active = motor_bus_->activate();
+    const auto active = motor_bus_->activate(*initial_actuator);
     if(!active) {
         const RobotFault fault = make_bus_fault(RobotErr::MOTOR_BUS_ACTIVATE_FAILED, active.error());
         enter_fault(fault, SafetyAction::DISABLE);
@@ -357,7 +444,7 @@ tl::expected<void, RobotFault> Robot::activate() {
     last_joint_cmd_.kd.assign(cfg_.joint_names.size(), 0.0);
 
     has_state_ = true;
-    feedback_aligner_.reset();observer_sample_ns_=0;
+    feedback_aligner_.reset();observation_velocity_.reset();observer_sample_ns_=0;
 
     accepted_nominal_cmd_=JointCtrlCmd{};
     last_nominal_velocity_.assign(cfg_.joint_names.size(),0.0);
@@ -455,12 +542,14 @@ tl::expected<Robot::InteractionEvaluation,RobotFault> Robot::update_interaction(
             (observer_timestamp_ns>observer_sample_ns_ ? static_cast<double>(observer_timestamp_ns-observer_sample_ns_)/1.0e9 : 0.0);
         if(measurement_dt<=0.0 || measurement_dt>cfg_.safety.state_timeout_s) {
             observation_valid=false;new_measurement=false;observer_sample_ns_=0;
-            feedback_aligner_.reset();
+            feedback_aligner_.reset();observation_velocity_.reset();
         } else {
             observer_state=aligned.state;
+            observer_state.vel=observation_velocity_.update(observer_state.pos,observer_state.vel,
+                friction_velocity_resolution_,measurement_dt);
             observer_sample_ns_=observer_timestamp_ns;
         }
-    } else if(!observation_valid) observer_sample_ns_=0;
+    } else if(!observation_valid) { observer_sample_ns_=0; observation_velocity_.reset(); }
 
     // Dynamics and measured torque/velocity use the same interpolated
     // joint-side timestamp whenever an observer update is performed.
@@ -755,18 +844,6 @@ bool Robot::set_runtime_impedance_gains(JointImpedanceMode mode, const JointImpe
     return true;
 }
 
-bool Robot::begin_park_rigid_gain_ramp(double duration_s, TimePoint now) {
-    if(state_!=RobotState::ACTIVE ||
-       ctrller_.get_impedance_mode()!=JointImpedanceMode::RIGID ||
-       !std::isfinite(duration_s) || duration_s < 0.1 || duration_s > 2.0 ||
-       now < last_cycle_time_) return false;
-    // A calibration override must not supersede the shutdown gain handover
-    clear_calibration_tracking_gains();
-    park_rigid_ramp_started_=now;
-    park_rigid_ramp_duration_s_=duration_s;
-    return true;
-}
-
 tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode, TimePoint now, HoldTargetPolicy target_policy) {
     if(state_ == RobotState::FAULT) return tl::make_unexpected(make_fault(RobotErr::FAULTED));
     if(state_ != RobotState::ACTIVE || !has_state_) return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
@@ -776,11 +853,19 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
         return tl::make_unexpected(make_fault(RobotErr::INVALID_TIME));
     }
 
-    if(mode==JointImpedanceMode::DRAG && !cfg_.dynamics.gravity_model_validated && !gravity_verification_active_)
+    if(mode==JointImpedanceMode::DRAG && cfg_.runtime.control_path==ControlPath::MIT &&
+       !cfg_.dynamics.gravity_model_validated && !gravity_verification_active_)
         return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
     if(cfg_.runtime.control_path==ControlPath::CSP &&
        (mode==JointImpedanceMode::DRAG || mode==JointImpedanceMode::COMPLIANT) && !cfg_.capability.admittance.enabled)
         return tl::make_unexpected(make_model_fault(ModelFeedforwardErr::NOT_CONFIGURED));
+    if(cfg_.runtime.control_path==ControlPath::CSP &&
+       (mode==JointImpedanceMode::DRAG || mode==JointImpedanceMode::COMPLIANT)) {
+        const auto& validation=cfg_.capability.admittance.validation;
+        const bool bounded_test=admittance_validation_active_ && mode==JointImpedanceMode::COMPLIANT;
+        if(!validation.observation_validated || (!validation.response_validated && !bounded_test))
+            return tl::make_unexpected(make_fault(RobotErr::ADMITTANCE_NOT_VALIDATED));
+    }
     if(mode==ctrller_.get_impedance_mode() && target_policy==HoldTargetPolicy::PRESERVE_NOMINAL) return {};
     clear_calibration_disturbance();
     const auto original_nominal=(accepted_nominal_cmd_.pos.size()==cfg_.joint_names.size())?accepted_nominal_cmd_.pos:joint_state_.pos;
@@ -792,7 +877,6 @@ tl::expected<void, RobotFault> Robot::set_impedance_mode(JointImpedanceMode mode
     handover_source_gains_=JointImpedanceGains{last_joint_cmd_.kp,last_joint_cmd_.kd};
     handover_started_=now;
     clear_calibration_hold_gains();clear_calibration_tracking_gains();
-    park_rigid_ramp_started_.reset();
     hold_integral_torque_.assign(cfg_.joint_names.size(),0.0);
 
     // Anchor the new interaction law to the last accepted physical reference.
@@ -853,15 +937,54 @@ tl::expected<void, RobotFault> Robot::set_admittance_cfg(const AdmittanceCapabil
     candidate.capability.admittance = admittance_cfg;
     candidate.capability.admittance.observer_enabled=!admittance_cfg.observer.momentum_gain.empty();
     candidate.capability.admittance.enabled=!admittance_cfg.joint_enabled.empty();
+    const bool observation_changed=!same_observation_parameters(cfg_.capability.admittance,admittance_cfg);
+    const bool response_changed=!same_response_parameters(cfg_.capability.admittance,admittance_cfg);
+    bool finite_stiffness=true;
+    for(std::size_t i=0;i<candidate.capability.admittance.joint_enabled.size();++i)
+        if(i>=candidate.capability.admittance.controller.stiffness.size() ||
+           (candidate.capability.admittance.joint_enabled[i] && candidate.capability.admittance.controller.stiffness[i]<=0.0)) finite_stiffness=false;
+    if(admittance_validation_active_ && !finite_stiffness)
+        return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    auto& validation=candidate.capability.admittance.validation;
+    if(observation_changed) {validation.observation_validated=false;validation.response_validated=false;}
+    else if(response_changed) validation.response_validated=false;
+    if(validation.response_validated && !validation.observation_validated)
+        return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     if(!validate_robot_core_cfg(candidate)) return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
 
     if(state_==RobotState::ACTIVE && candidate.capability.admittance.enabled!=cfg_.capability.admittance.enabled)
         return tl::make_unexpected(make_fault(RobotErr::NOT_INACTIVE));
+    if(state_==RobotState::ACTIVE && cfg_.runtime.control_path==ControlPath::CSP &&
+       (ctrller_.get_impedance_mode()==JointImpedanceMode::COMPLIANT || ctrller_.get_impedance_mode()==JointImpedanceMode::DRAG) &&
+       (!validation.observation_validated || (!validation.response_validated && !admittance_validation_active_))) {
+        const auto held=set_impedance_mode(JointImpedanceMode::RIGID,Clock::now(),HoldTargetPolicy::CAPTURE_MEASURED);
+        if(!held) return held;
+    }
+    if(observation_changed) admittance_validation_active_=false;
     const auto configured=interaction_controller_.reconfigure(make_interaction_cfg(candidate.capability.admittance,cfg_.joint_names.size(),
         cfg_.hold_compensation.enabled,friction_velocity_resolution_));
     if(!configured) return tl::make_unexpected(make_interaction_fault(configured.error()));
     cfg_.capability.admittance=candidate.capability.admittance;
     return {};
+}
+
+tl::expected<void, RobotFault> Robot::set_admittance_validation(bool active) {
+    if(state_!=RobotState::ACTIVE || cfg_.runtime.control_path!=ControlPath::CSP)
+        return tl::make_unexpected(make_fault(RobotErr::NOT_ACTIVE));
+    const auto& a=cfg_.capability.admittance;
+    if(active) {
+        if(!a.enabled || !a.validation.observation_validated)
+            return tl::make_unexpected(make_fault(RobotErr::ADMITTANCE_NOT_VALIDATED));
+        for(std::size_t i=0;i<a.joint_enabled.size();++i)
+            if(a.joint_enabled[i] && a.controller.stiffness[i]<=0.0)
+                return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
+    }
+    const bool previous=admittance_validation_active_;
+    admittance_validation_active_=active;
+    const auto mode=set_impedance_mode(active?JointImpedanceMode::COMPLIANT:JointImpedanceMode::RIGID,
+        Clock::now(),HoldTargetPolicy::CAPTURE_MEASURED);
+    if(!mode) admittance_validation_active_=previous;
+    return mode;
 }
 
 tl::expected<void, RobotFault> Robot::set_control_path(ControlPath path) {
@@ -876,10 +999,14 @@ tl::expected<void, RobotFault> Robot::set_control_path(ControlPath path) {
         return tl::make_unexpected(make_fault(RobotErr::INVALID_CFG));
     const auto configured=ctrller_.configure(candidate.ctrller);
     if(!configured)return tl::make_unexpected(make_ctrller_fault(configured.error()));
+    if(cfg_.runtime.control_path!=path) {
+        cfg_.capability.admittance.validation.observation_validated=false;
+        cfg_.capability.admittance.validation.response_validated=false;
+    }
     cfg_.ctrller.control_path=path;cfg_.runtime.control_path=path;
     interaction_controller_.reset();
     interaction_state_={};
-    feedback_aligner_.reset(); observer_sample_ns_=0;
+    feedback_aligner_.reset();observation_velocity_.reset(); observer_sample_ns_=0;
     return {};
 }
 
@@ -1041,6 +1168,15 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
 
     const bool interaction_enabled=cfg_.capability.admittance.observer_enabled || cfg_.hold_compensation.enabled;
     const bool admittance_active=position_path && cfg_.capability.admittance.enabled && (selected_mode==JointImpedanceMode::COMPLIANT || selected_mode==JointImpedanceMode::DRAG);
+    if(admittance_active) {
+        const auto& validation=cfg_.capability.admittance.validation;
+        if(!validation.observation_validated ||
+           (!validation.response_validated && !(admittance_validation_active_ && selected_mode==JointImpedanceMode::COMPLIANT))) {
+            const auto fault=make_fault(RobotErr::ADMITTANCE_NOT_VALIDATED);
+            enter_fault(fault,SafetyAction::STOP_HOLD);
+            return tl::make_unexpected(fault);
+        }
+    }
     JointCtrlCmd nominal_cmd=joint_cmd;
     if(position_path && !continuous_cmd_ && !full_command_active_ && has_last_joint_cmd_) {
         auto q=accepted_nominal_cmd_.pos,v=accepted_nominal_cmd_.vel;
@@ -1144,8 +1280,8 @@ tl::expected<RobotCycleOutput, RobotFault> Robot::cycle(TimePoint now) {
         for(std::size_t i=0;i<count;++i) {
             auto& reason=hold_integrator_freeze_reasons_[i];reason="integrating";
             if(!interaction_telemetry.state.valid || interaction_telemetry.tau_ext_hat.size()!=count)reason="observer_invalid";
-            else if(std::abs(joint_state->vel[i])>hold_cfg.velocity_threshold || std::abs(joint_cmd.vel[i])>hold_cfg.velocity_threshold)reason="moving";
-            else if(std::abs(nominal_hold_target_[i]-joint_state->pos[i])>hold_cfg.error_threshold)reason="outside_error_window";
+            else if(std::abs(joint_state->vel[i])>hold_cfg.velocity_threshold[i] || std::abs(joint_cmd.vel[i])>hold_cfg.velocity_threshold[i])reason="moving";
+            else if(std::abs(nominal_hold_target_[i]-joint_state->pos[i])>hold_cfg.error_threshold[i])reason="outside_error_window";
             else if(std::abs(interaction_telemetry.tau_ext_hat[i])>hold_cfg.contact_threshold[i])reason="contact";
             const bool quiet=reason=="integrating";hold_integrator_frozen_=hold_integrator_frozen_ || !quiet;
             const double pd=joint_cmd.kp[i]*(joint_cmd.pos[i]-joint_state->pos[i])+joint_cmd.kd[i]*(joint_cmd.vel[i]-joint_state->vel[i]);
@@ -1351,7 +1487,6 @@ tl::expected<void, RobotFault> Robot::deactivate() {
 
     clear_calibration_hold_gains();
     clear_calibration_tracking_gains();
-    park_rigid_ramp_started_.reset();
     ctrller_.reset();
     interaction_controller_.reset();
     interaction_state_={};
@@ -1381,7 +1516,6 @@ tl::expected<void, RobotFault> Robot::force_deactivate() {
 
     clear_calibration_hold_gains();
     clear_calibration_tracking_gains();
-    park_rigid_ramp_started_.reset();
     ctrller_.reset();
     interaction_controller_.reset();
     interaction_state_={};
@@ -1406,10 +1540,12 @@ tl::expected<void, RobotFault> Robot::enter_fault_drag_recovery() {
     if(state_!=RobotState::FAULT)return tl::make_unexpected(make_fault(RobotErr::NOT_FAULTED));
     const auto& policy=cfg_.safety.fault_recovery;
     if(!fault_hold_active_ || !policy.allow_drag_recovery || !policy.require_operator_request ||
-       !cfg_.dynamics.gravity_model_validated || !is_drag_recovery_fault_allowed())
+       (cfg_.runtime.control_path==ControlPath::MIT && !cfg_.dynamics.gravity_model_validated) || !is_drag_recovery_fault_allowed())
         return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
     const bool position_path=cfg_.runtime.control_path==ControlPath::CSP;
-    if(position_path ? (!cfg_.capability.admittance.enabled || !interaction_model_state_) :
+    if(position_path ? (!cfg_.capability.admittance.enabled || !interaction_model_state_ ||
+        !cfg_.capability.admittance.validation.observation_validated ||
+        !cfg_.capability.admittance.validation.response_validated) :
         (!model_feedforward_ || cfg_.ctrller.drag_gains.kd.size()!=cfg_.joint_names.size()))
         return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
     const auto actuators=motor_bus_->read();
@@ -1452,8 +1588,10 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
         // INACTIVE after fresh healthy feedback; it never re-enables a drive.
         const auto observed=update_fault_reaction(Clock::now());
         if(!observed)return observed;
-        if(clear_fault_valid_cycles_<3 || std::any_of(joint_state_.vel.begin(),joint_state_.vel.end(),
-            [&](double v){return std::abs(v)>cfg_.shutdown.velocity_tolerance;}))
+        bool moving=false;
+        for(std::size_t i=0;i<joint_state_.vel.size();++i)
+            moving=moving || std::abs(joint_state_.vel[i])>cfg_.safety.fault_recovery.velocity_tolerance[i];
+        if(clear_fault_valid_cycles_<3 || moving)
             return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
         ctrller_.reset();interaction_controller_.reset();safety_.clear_cmd_history();
         clear_runtime_state();current_fault_.reset();last_fault_.reset();state_=RobotState::INACTIVE;
@@ -1470,7 +1608,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     if(!checked_state) return tl::make_unexpected(make_safety_fault(checked_state.error()));
 
     for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-        if(std::abs(joint_state->vel[i]) > cfg_.shutdown.velocity_tolerance) {
+        if(std::abs(joint_state->vel[i]) > cfg_.safety.fault_recovery.velocity_tolerance[i]) {
             return tl::make_unexpected(make_fault(RobotErr::FAULT_RECOVERY_NOT_ALLOWED));
         }
     }
@@ -1489,7 +1627,7 @@ tl::expected<void, RobotFault> Robot::clear_fault() {
     last_state_time_ = resumed_at;
     last_cmd_time_ = resumed_at;
     has_state_ = true;
-    feedback_aligner_.reset();observer_sample_ns_=0;
+    feedback_aligner_.reset();observation_velocity_.reset();observer_sample_ns_=0;
 
     accepted_nominal_cmd_=JointCtrlCmd{};
     last_nominal_velocity_.assign(cfg_.joint_names.size(),0.0);
@@ -1757,7 +1895,6 @@ RobotFault Robot::make_interaction_fault(InteractionControllerErr err) const noe
 void Robot::enter_fault(const RobotFault& fault, SafetyAction action) noexcept {
     clear_calibration_disturbance();
     gravity_verification_active_=false;
-    park_rigid_ramp_started_.reset();
     fault_hold_active_ = false;
     fault_hold_cmd_ = ActuatorCtrlCmd{};
     fault_hold_mode_ = FaultHoldMode::RIGID_HOLD;
@@ -1966,7 +2103,6 @@ tl::expected<void, RobotFault> Robot::reset_reference_to_measured(const JointSta
     nominal_hold_target_=state.pos;hold_integral_torque_.assign(cfg_.joint_names.size(),0.0);
     calibration_feedforward_mode_.reset();handover_source_gains_.reset();full_command_active_=false;
 accepted_nominal_cmd_.pos=state.pos;accepted_nominal_cmd_.vel.assign(cfg_.joint_names.size(),0.0);
-    park_rigid_ramp_started_.reset();
     clear_calibration_hold_gains();
     clear_calibration_tracking_gains();
     ctrller_.reset();
@@ -2046,21 +2182,6 @@ void Robot::apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now) {
         }
     }
 
-    // Park is the only user of this temporary handover. The first RIGID
-    // command has compliant gains, then Kp/Kd increase continuously while its
-    // reference travels from actual measured q; safety limits still apply
-    if(park_rigid_ramp_started_ &&
-       ctrller_.get_impedance_mode()==JointImpedanceMode::RIGID) {
-        gain_source_=GainSource::PARK_OVERRIDE;
-        const double elapsed=std::chrono::duration<double>(now-*park_rigid_ramp_started_).count();
-        const double fraction=park_rigid_gain_fraction(elapsed,park_rigid_ramp_duration_s_);
-        for(std::size_t i=0;i<cmd.kp.size();++i) {
-            const auto& soft=cfg_.ctrller.compliant_gains;
-            cmd.kp[i]=soft.kp[i]+fraction*(cmd.kp[i]-soft.kp[i]);
-            cmd.kd[i]=soft.kd[i]+fraction*(cmd.kd[i]-soft.kd[i]);
-        }
-        if(fraction>=1.0) park_rigid_ramp_started_.reset();
-    }
     if(handover_source_gains_ && handover_source_gains_->kp.size()==cmd.kp.size()) {
         const double x=std::clamp(std::chrono::duration<double>(now-handover_started_).count()/.3,0.0,1.0),blend=x*x*(3-2*x);
         for(std::size_t i=0;i<cmd.kp.size();++i) {
@@ -2074,9 +2195,9 @@ void Robot::apply_gain_overrides(JointCtrlCmd& cmd, TimePoint now) {
 
 void Robot::clear_runtime_state() noexcept {
     clear_calibration_disturbance();
+    admittance_validation_active_=false;
     handover_source_gains_.reset();calibration_feedforward_mode_.reset();full_command_active_=false;
     nominal_hold_target_.clear();hold_integral_torque_.clear();handover_source_cmd_={};
-    park_rigid_ramp_started_.reset();
     interaction_controller_.reset();
     interaction_state_={};
     joint_state_ = JointState{};
@@ -2086,7 +2207,7 @@ void Robot::clear_runtime_state() noexcept {
     last_joint_cmd_ = JointCtrlCmd{};
     actuator_state_ = ActuatorState{};
     has_state_ = false;
-    feedback_aligner_.reset();observer_sample_ns_=0;
+    feedback_aligner_.reset();observation_velocity_.reset();observer_sample_ns_=0;
 
     accepted_nominal_cmd_=JointCtrlCmd{};
     last_nominal_velocity_.assign(cfg_.joint_names.size(),0.0);

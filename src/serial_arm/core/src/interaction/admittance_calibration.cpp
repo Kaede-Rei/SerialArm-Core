@@ -310,7 +310,7 @@ std::vector<FrictionFeatures> friction_features(const std::vector<AdmittanceFric
     for(const auto& sample:samples) {
         const double v=sample.velocity[joint], speed=std::abs(v);
         const double resolution=cfg.velocity_resolution.empty()?0.0:cfg.velocity_resolution[joint];
-        const double blend=friction_residual_blend(v,cfg.velocity_transition,resolution);
+        const double blend=friction_residual_blend(v,cfg.velocity_transition[joint],resolution);
         FrictionFeatures feature{};
         if(v>0) { feature[0]=blend; feature[1]=blend*speed; }
         else if(v<0) { feature[2]=blend; feature[3]=blend*speed; }
@@ -366,7 +366,8 @@ bool solve_friction(const std::vector<FrictionFeatures>& features,
 tl::expected<AdmittanceFrictionCalibrationResult, AdmittanceStaticCalibrationErr>
 calibrate_admittance_friction(const std::vector<AdmittanceFrictionSample>& samples,
     const AdmittanceFrictionCalibrationCfg& cfg) {
-    if(cfg.joints_count==0 || !std::isfinite(cfg.velocity_transition) || cfg.velocity_transition<=0 ||
+    if(cfg.joints_count==0 || cfg.velocity_transition.size()!=cfg.joints_count || !finite_vector(cfg.velocity_transition) ||
+       std::any_of(cfg.velocity_transition.begin(),cfg.velocity_transition.end(),[](double x){return x<=0;}) ||
        !std::isfinite(cfg.min_fit_velocity) || cfg.min_fit_velocity<=0 ||
        !std::isfinite(cfg.max_fit_acceleration) || cfg.max_fit_acceleration<=0 ||
        !std::isfinite(cfg.min_speed_span) || cfg.min_speed_span<0 ||

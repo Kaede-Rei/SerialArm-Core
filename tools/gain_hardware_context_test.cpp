@@ -41,9 +41,6 @@ damiao:
   feedback_timeout_s: 0.05
   activation_retries: 3
   startup_read_cycles: 5
-  stop_kp: 10
-  stop_kd: 0.15
-  stop_cycles: 5
   actuators:
     joint1: {name: actuator1, motor_id: 1, master_id: 0, motor_type: DM4340}
     joint2: {name: actuator2, motor_id: 2, master_id: 0, motor_type: DM4310}
@@ -81,8 +78,8 @@ void semantics(const fs::path& temporary) {
     }
     changed=YAML::Clone(recorded);changed["damiao"]["feedback_timeout_s"]=.1;
     check(!compatible(saved,changed),"different feedback timing was accepted");
-    changed=YAML::Clone(recorded);changed["damiao"]["stop_kd"]=.5;
-    check(!compatible(saved,changed),"different stop behavior was accepted");
+    changed=YAML::Clone(recorded);changed["damiao"]["activation_retries"]=5;
+    check(!compatible(saved,changed),"different activation retry behavior was accepted");
     changed=YAML::Clone(recorded);changed["damiao"]["bus"]="other";
     check(!compatible(saved,changed),"different selected bus was accepted");
 

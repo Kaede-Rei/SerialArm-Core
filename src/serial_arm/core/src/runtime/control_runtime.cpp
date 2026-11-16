@@ -66,6 +66,11 @@ RuntimeSnapshot ControlRuntime::step(Robot& robot, Robot::TimePoint now) {
 RuntimeSnapshot ControlRuntime::step_impl(Robot& robot, Robot::TimePoint now) {
     RuntimeSnapshot result;
     result.monotonic_ns=std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if(robot.get_state()==RobotState::INACTIVE && robot.is_connected()) {
+        auto observed=robot.observe();
+        if(observed)result.observation=std::move(*observed);
+        else result.fault=observed.error();
+    }
     if(robot.get_state()==RobotState::ACTIVE) {
         std::optional<PendingReference> pending;
         {std::lock_guard<std::mutex> lock(command_mutex_);pending=std::move(pending_);pending_.reset();result.source=source_;}
@@ -127,17 +132,18 @@ void ControlRuntime::run(Robot& robot, double frequency_hz, double max_dt_s, con
 
 bool advance_joint_reference(JointVector& position, JointVector& velocity, const JointVector& target,
     const JointVector& max_velocity,const JointVector& max_acceleration,double speed_scale,double dt,
-    const JointVector* measured) {
+    const JointVector* measured,const JointVector* following_tolerance) {
     const auto n=target.size();
     if(!finite(position,n)||!finite(velocity,n)||!finite(target,n)||!finite(max_velocity,n)||
        !finite(max_acceleration,n)||!std::isfinite(speed_scale)||speed_scale<0||speed_scale>1||
-       !std::isfinite(dt)||dt<=0||(measured&&!finite(*measured,n)))
+       !std::isfinite(dt)||dt<=0||(measured&&(!finite(*measured,n)||!following_tolerance||!finite(*following_tolerance,n))))
         throw std::invalid_argument("invalid joint reference input");
     bool complete=true;
     for(std::size_t i=0;i<n;++i) {
         if(max_velocity[i]<=0||max_acceleration[i]<=0)throw std::invalid_argument("invalid joint reference limits");
         const double error=target[i]-position[i];
-        const double follow=measured?park_reference_speed_fraction(position[i],(*measured)[i]):1.0;
+        if(measured && (*following_tolerance)[i]<=0)throw std::invalid_argument("invalid parking follow tolerance");
+        const double follow=measured?park_reference_speed_fraction(position[i],(*measured)[i],(*following_tolerance)[i]):1.0;
         const double vmax=max_velocity[i]*speed_scale*follow, dv=max_acceleration[i]*dt;
         // A discrete stopping envelope reserves one complete execution step
         // Position and velocity always describe the same backward-Euler step

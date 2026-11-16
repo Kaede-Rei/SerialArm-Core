@@ -17,6 +17,7 @@ struct RuntimeSnapshot {
     RobotState state{RobotState::UNCONFIGURED};
     MotionSource source{MotionSource::NONE};
     std::optional<RobotCycleOutput> cycle;
+    std::optional<RobotCycleOutput> observation;
     std::optional<RobotCycleOutput> fault_feedback;
     std::optional<RobotFault> fault;
     bool fault_hold_maintained{false};
@@ -61,6 +62,7 @@ private:
 bool advance_joint_reference(
     JointVector& position, JointVector& velocity, const JointVector& target,
     const JointVector& max_velocity, const JointVector& max_acceleration,
-    double speed_scale, double dt, const JointVector* measured_position = nullptr);
+    double speed_scale, double dt, const JointVector* measured_position = nullptr,
+    const JointVector* following_position_tolerance = nullptr);
 
 } // namespace serial_arm

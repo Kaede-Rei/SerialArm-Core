@@ -15,7 +15,9 @@ namespace serial_arm {
  */
 struct AdmittanceStaticSample {
     JointVector gravity;          ///< 当前姿态未缩放的模型重力广义力 Nm
-    JointVector measured_torque;  ///< 当前关节反馈力矩 Nm
+    JointVector measured_torque;  ///< 当前关节反馈广义力 N·m 或 N
+    JointVector position;         ///< 对齐后的关节位置，SI
+    double time_s{0.0};           ///< 本姿态采集开始后的时间
 };
 
 /**
@@ -97,7 +99,7 @@ struct AdmittanceFrictionSample {
 struct AdmittanceFrictionCalibrationCfg {
     std::size_t joints_count{ 0 };
     JointVector momentum_gain;            ///< 空表示直接残差诊断；正式动量残差使用观测器增益
-    double velocity_transition{0.03};
+    JointVector velocity_transition;
     double min_fit_velocity{ 0.05 };       ///< 低于该速度不参与动态摩擦拟合，避免静摩擦不可辨识区
     double max_fit_acceleration{ 1.5 };    ///< 高于该加速度不参与拟合，降低惯性/qdd 误差污染
     double min_speed_span{ 0.03 };         ///< 每个方向至少覆盖的 |dq| 速度跨度 rad/s，保证 Coulomb/viscous 可分辨

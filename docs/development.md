@@ -1,698 +1,141 @@
 # 架构与开发
 
-SerialArm-Core 由 C++ Core 执行控制、动力学、交互和安全检查；GUI、Terminal 与 Python 共用原生能力，ROS2 和 MoveIt 通过可选适配层接入
+SerialArm-Core 使用 C++17，Core 负责硬件生命周期、控制、动力学、交互与安全；Terminal、Python、GUI 和 ROS2 复用同一原生实现
 
 ![Core、上层适配、机器人配置与硬件驱动](images/architecture.svg)
 
-## 组件与边界
+## 组件边界
 
 | 组件 | 职责 | 源码 |
 | --- | --- | --- |
-| Core | 生命周期、关节控制、动力学、安全与标定 | `src/serial_arm/core/` |
-| ControlRuntime | 周期执行、命令收取、运动来源与快照 | `src/serial_arm/core/include/serial_arm/runtime/` |
+| Core | Robot、控制、动力学、安全与标定 | `src/serial_arm/core/` |
+| ControlRuntime | 周期执行、运动来源和状态快照 | `src/serial_arm/core/include/serial_arm/runtime/` |
 | Launcher | 配置、任务、可视化与进程管理 | `apps/launcher/` |
-| ROS2 Adapter | ros2_control 命令、状态与生命周期适配 | `src/serial_arm/bringup/ros2_control/` |
-| Description / Profile | 模型资源与机械臂使用配置 | `src/robot_supports/` 或下游项目 |
-| Hardware Backend | 将统一执行器语义转换为厂商协议 | `src/robot_supports/hardware/` |
-| Protocol / Transport | 编解码、时间戳、共享总线与事务 | `src/robot_supports/protocol/` 与 Core transport |
+| ROS2 Adapter | ros2_control 命令、状态与生命周期 | `src/serial_arm/bringup/ros2_control/` |
+| Description / Profile | 模型资源、受控链、硬件映射与策略 | `src/robot_supports/` 或下游项目 |
+| Hardware Backend | 单位、反馈与执行器协议适配 | `src/robot_supports/hardware/` |
+| Protocol / Transport | 编解码、接收时间、共享总线和事务 | `src/robot_supports/protocol/` 与 Core transport |
 
-Core 通过 `MotorBus` 接口连接硬件，达妙是现有内置驱动；新增执行器由匹配的 Backend 实现协议、反馈与控制语义
+Description 保存几何、惯性、限位和坐标系；Profile 引用资源并定义受控关节顺序、Base/Tool、映射、执行路径及安全策略；Base 到 Tool 之间非固定、非 mimic 关节按链顺序进入 `joint_names`
 
-Description 保存 URDF/Xacro、网格、惯性、限位和坐标系；Profile 引用 Description，并配置受控链、Base/Tool、映射、总线、增益、安全限制、停放和可选上层资源
+配置与 API 使用 SI，旋转关节使用 rad、rad/s、N·m，直线关节使用 m、m/s、N；关节类型由模型决定，Backend 将厂商编码量转换到统一执行器契约
 
-Base 到 Tool 之间非固定、非 mimic 的关节按链顺序进入 `joint_names`；旁支夹爪保留在模型中，由对应驱动提供状态
+Renderer 无 Node 权限；Electron 提供受限文件与 IPC，Python 处理配置和离线任务，C++ 串行处理硬件控制；普通诊断和模型预览不连接硬件，显式连接观察不使能机械臂
 
-Renderer 无 Node 权限，Electron 主进程提供受限文件与 IPC 入口，Python 管理配置和离线任务，C++ 管理硬件生命周期与控制安全；诊断、模型导入和候选预览不打开执行器
-
-GUI 按设备路径独占连接；直接使用底层入口的调用方负责保证设备独占
-
-## 控制数据流
+## 生命周期与首次接入
 
 ```text
-上层目标
-  → 名义参考及速度/加速度约束
-  → 原生阻抗直接执行，或模型导纳生成虚拟参考
-  → 动力学前馈、执行器增益与模式交接
-  → 位置、速度、加速度与 PD+前馈总力矩约束
-  → Safety 检查
-  → Joint/Actuator 映射
-  → Backend 写入
+configure → INACTIVE
+             ├─ connect → observe → 读取实际反馈，不使能
+             └─ activate → 验证反馈与当前位首命令 → ACTIVE
+ACTIVE → deactivate → INACTIVE
+ACTIVE → FAULT → 保持或停止输出 → 显式恢复或失能
 ```
 
-Terminal、Python Session 和 ROS2 Adapter 共享 `ControlRuntime` 的执行与快照接口；同一个 Robot 由一个控制循环驱动
+`Robot::connect()` 刷新实际能力和 Safety 交集；`observe()` 保留越界、离线和驱动错误供诊断，不能据此声称已具备运动条件；`activate()` 在使能前检查真实反馈和完整当前位命令，再交给 Backend
 
-| 维度 | 类型 | 作用 |
+MIT 首次保持需要明确的正 Kp/Kd，模型初值是待测设计值；CSP 位置控制不需要 MIT 增益或 MDK，仅由驱动位置环执行名义参考；几何、轴身份、映射和最低运动边界必须在第一次运动写入前核对
+
+Backend 的 `activate(initial_cmd)` 在逐轴使能后立即发布当前位首命令；达妙 MIT 使用已验证预算内的 PD 与前馈，CSP 使用位置和速度上限；纯连接观察的 cleanup 不发失能命令；插件随当前 Core ABI 重新构建
+
+Terminal 停放在 MIT/CSP 下统一使用受限 RIGID 轨迹，满足严格位置、速度和持续稳定判据后才失能；失败保持使能并报告原因；`Robot::deactivate()`、Python `stop()` 和上下文退出不执行停放轨迹
+
+显式停放不读取自动退出开关；桌面正常退出由 Bridge 检查当前路径、会话指纹和 scoped 停放验收后调用停放，成功失能后才释放连接；Terminal 要求退出前已失能，ROS2 `on_deactivate()` 直接停用，不触发停放运动
+
+参数编辑器的范围提示与保存校验共用 `parameter_contract.py`；原生配置加载最终校验模型、映射和硬件边界；关系约束包括 `state_vel_scale >= cmd_vel_scale` 和 `max_dt_s >= 1 / ctrl_frequency_hz`
+
+位置内缩量、摩擦过渡速度、保持门限和停放容差使用逐轴向量，YAML 使用 joint name 映射；故障静止门限和响应验收门限分别归属 Safety 与 Admittance Validation；未启用自动停放时允许空停放动作，显式执行前检查动作完整性
+
+## 控制与观测
+
+| 维度 | 类型 | 含义 |
 | --- | --- | --- |
-| 控制方式 | `ReferenceBehavior` | 原生阻抗或模型导纳，决定参考如何生成 |
-| 增益用途 | `JointGainProfile` | 刚性、柔性、拖拽、伺服跟踪，决定关节侧 Kp/Kd |
-| 任务 | `JointImpedanceMode` | 保持、跟踪与拖拽，管理目标和连续命令 |
+| 执行路径 | `ControlPath` | MIT 或 CSP，在 INACTIVE 切换 |
+| 交互模式 | `JointImpedanceMode` | RIGID、COMPLIANT、DRAG、SERVO_TRACKING |
+| 增益来源 | `GainSource` | 配置、任务覆盖或交接中 |
+| 运动来源 | `MotionSource` | 点目标、连续参考、回放、标定或停放 |
 
-四用途配置写入 `control.controller.rigid`、`compliant`、`drag`、`servo_tracking`，`allow_full_cmd` 与它们同级；刚性与柔性各使用一组 P/D，旧 `hold`、`tracking` 字段及任务枚举继续兼容读取，不作为两个独立增益用途
-
-`control.runtime.tracking_gain_profile` 支持 `RIGID`、`COMPLIANT`、`SERVO_TRACKING`；省略时从旧 `tracking_impedance_mode` 推导；旧平铺增益与 `identification_tracking` 兼容读取，重复字段冲突时拒绝，新建、保存和导出统一写四用途结构
-
-### 原生阻抗与模型导纳
-
-原生阻抗输出位置、速度、前馈力矩、Kp、Kd，由 Backend 实现执行器命令；内置达妙驱动使用 MIT 模式
+MIT 发送 q、dq、Kp、Kd 和前馈，由执行器计算 PD；CSP 发送周期位置及速度上限，柔性与拖拽通过外层 MDK 修正参考；伺服跟踪暂时复用刚性行为
 
 ```text
-tau = Kp * (q_ref - q) + Kd * (dq_ref - dq) + tau_ff
+名义参考与运动约束
+  → MIT 直接参考，或 CSP 导纳虚拟参考
+  → 力矩预算与参考约束
+  → Safety → 关节/执行器映射 → Backend
 ```
 
-前馈可选择关闭、重力或完整逆动力学；模型导纳使用外力矩估计生成相对名义目标的退让，内层伺服跟随虚拟参考
+MIT 的三组 PD 配置为 `control.controller.rigid`、`compliant`、`drag`；拖拽 Kp=0，保持重力补偿和现有拖拽阻尼；CSP 的 M/D/K 是虚拟模型参数，与 MIT Kp/Kd 分开
 
-```text
-M_v * delta_q_ddot + D_v * delta_q_dot + K_v * delta_q = tau_ext_hat
-q_virtual = q_nominal + delta_q
-```
+导纳使用后向 Euler，限幅后的接受状态回写积分器；无外力时的持续偏置会在 K=0 拖拽中变成持续运动，MDK 不能修正上游残差来源
 
-虚拟模型使用后向 Euler 积分，将限幅后的接受状态回写积分器；M 必须为正，D、K 可为零，K 为零时无弹簧回位；运行中同策略调参按控制周期过渡，控制方式在失能时切换
+CSP 正常柔性与拖拽要求 `capability.admittance.validation` 中观测与响应均已验证；首次响应测试通过 `set_admittance_validation(true)` 在外力观测已验证且 K>0 时开放有限柔性，退出回到当前位 RIGID；该测试许可不自动生成验收结论
 
-导纳前馈结合实测状态下的质量矩阵、科氏项、重力、虚拟参考加速度及外力估计计算，最终参考仍受总力矩预算约束；模型导纳的保持和跟踪统一使用伺服增益，交互特性由 M/D/K 决定
+改动观测参数会撤销观测与响应验证，改动 MDK 或退让边界会撤销响应验证；失去准入条件时停止沿用导纳模式；MIT 拖拽和故障拖拽依赖当前模型及负载的重力验证，CSP 普通与故障拖拽依赖观测和响应验证，不要求 MIT 重力补偿标志
 
-### 反馈、保持与完成状态
+反馈接收时间使用 `steady_clock`；有效新测量对齐后再推进观测器；低速速度量化在关节侧用短位置窗处理，同一状态用于动力学、动量和摩擦标定；主机接收时间不是电机物理采样时间
 
-Backend 随帧传入接收时间和连续性，观测器只在有效新测量上推进；`MOMENTUM` 使用动量观测，`FULL_ID` 使用完整逆动力学残差并要求有效实测加速度；零偏、摩擦残差和死区用于外力估计，残差零偏不加入动力学前馈
+`PRESERVE_NOMINAL` 保留原名义目标，`CAPTURE_MEASURED` 捕获实测位置；退出 DRAG 捕获当前位并取消旧运动来源；点目标的参考结束、稳定和实际到位分别由运动快照报告
 
-普通保持交接使用 `PRESERVE_NOMINAL` 保留原目标，显式“当前位置刚性保持”使用 `CAPTURE_MEASURED`；导纳偏移与名义目标分别保存
+## 执行与持久化
 
-`control.hold_compensation` 是原生刚性保持的有界积分补偿，在低速、小误差且观测器有效时工作；接触、限幅、模式变化和故障按条件冻结或清理，模型导纳与柔性保持不使用它
+同一 Robot 只允许一个周期所有者；Terminal、Python Session 和 ROS2 复用 `ControlRuntime`，模式、参考和模型更新必须与周期串行；不要再开第二个写总线循环
 
-点到点命令具有独立运动编号；参考结束后以新鲜反馈检查逐关节位置、速度与连续稳定时间，报告执行中、完成、中断或失败；目标草稿与命令接收不表示已经到位
+`RuntimeSnapshot.cycle` 为实际控制周期，`observation` 为 INACTIVE 观察，`fault_feedback` 为故障反馈；只有控制周期参与示教、标定和普通运动完成判断
 
-## 配置与结果
-
-| 来源 | 生命周期 |
+| 数据 | 生命周期 |
 | --- | --- |
-| Profile 默认 | 显式保存后持久化 |
-| 连接覆盖 | 本次连接，保留原文件 |
-| 会话调参 | 当前工作台，保存前预览差异并确认 |
-| 标定或停放临时参数 | 对应任务，结束或故障时按任务恢复 |
+| Profile 参数 | 显式保存后持久化，写入前预览差异 |
+| 连接覆盖 | 当前连接，不改原文件 |
+| 会话调参 | 当前进程，保存后才成为默认 |
+| 标定临时参数 | 对应任务，退出时恢复 |
+| 检查和验收记录 | 绑定模型、映射、路径和相关参数；依赖变化后只撤销受影响范围 |
 
-新 Profile 默认关闭执行器写入、摩擦补偿和导纳；`write_enabled=false` 的 GUI 与 Terminal 使用 Core 和 URDF 建立 mock，不加载硬件插件；实机会话检查当前资源、硬件反馈、生命周期与 Safety 限制
+配置完整、人工检查、实测验收和当前连接状态分别显示；离线或重启不删除历史证据，也不沿用上一会话的新鲜反馈
 
-保存核对目标文件和来源，保留备份并原子替换；人工检查记录携带来源，配置变化后需要重新核对对应范围
+历史标定任务保留源快照、原始 CSV、候选和来源；`available` 表示基本参数测量完整，精度指标与验收结论分开；应用候选核对当前上下文，单项重力覆盖不冒充完整惯性模型
 
-历史任务和候选保留源快照，应用核对当前控制上下文，导出按兼容性选择当前配置或任务源快照；`available` 表示参数测量完整，新任务所有性能分析仅供参考，`validated` 只为旧接口兼容并固定 false；历史记录保留原标志与原范围，未完成参数测量的用途不可用
+## 构建与集成
 
-重力覆盖只替换重力项；URDF 质量与质心变化会影响完整动力学，需在相应工况验证；静态和完整惯性辨识的数据、算法及导出条件见 [标定参考](reference/calibration.md)
-
-几何 TCP 候选导出独立 URDF、Core 与 Profile；重标定已有 TCP 时更新候选自有固定关节，并将测量转换回其父坐标系，确认采用后登记新 Profile
-
-子页切换保留模型与相机；URDF 内容、路径或受控链变化时重新加载模型和限位；记录浏览与普通导出可离线操作，耗时导出使用后台任务，保持与失能命令继续使用控制通道
-
-## 准备开发环境
-
-按修改范围选择组件，安装选项见 [安装](install.md)
+在仓库根目录执行；完整选项见 [安装](install.md)
 
 ```bash
-# Core、Terminal、Python Binding 和 GUI，不依赖 ROS2
-./install.sh --preset standalone --with-python --jobs 1 --yes
+# 独立 Core、Terminal、Python 与 GUI
+./install.sh --preset standalone --robot dm_arm --with-python --jobs 2 --yes
 
-# 完整组件，包括 ROS2 / MoveIt；需先安装 ROS2
-./install.sh --preset dev --jobs 1 --yes
-```
+# 包含 ROS2 / MoveIt 的开发环境
+./install.sh --preset dev --jobs 2 --yes
 
-安装器使用 CMake 3.20+、C++17、Pinocchio、Eigen3 和 yaml-cpp；Python Binding 使用 Python 3.10+ 和仓库内置 pybind11，GUI 使用 Node.js 20+ 和 npm
-
-`.install/setup.bash` 与 `.install/run` 加载原生环境；只有显式执行 `./.install/run ros2 ...` 或加载 `.install/ros2-setup.bash` 才进入 ROS2 适配环境
-
-## 手动构建
-
-需要自定义安装前缀或单独构建 C++ 组件时，在仓库根目录使用独立构建脚本
-
-```bash
-# Core 库、Terminal 和模型工具，不构建 Python Binding 或 GUI
-JOBS=1 ./tools/bootstrap_standalone.sh
+# 独立手动构建
+JOBS=2 ./tools/bootstrap_standalone.sh --robot dm_arm
 source install/standalone/setup.bash
-
-# 同时安装达妙驱动、DM-Arm Profile 和模型资源
-JOBS=1 ./tools/bootstrap_standalone.sh --robot dm_arm
-
-# 仅构建 Core 库，不构建 Terminal 与模型工具
-JOBS=1 ./tools/bootstrap_standalone.sh --without-terminal
 ```
 
-该脚本优先使用系统 CMake 包；依赖不齐时需提供 Conan 2，缺少二进制包时默认不编译依赖源码；如需允许该回退，显式设置 `SERIAL_ARM_ALLOW_SOURCE_BUILD=1`
+安装器使用 CMake 3.20+、Pinocchio、Eigen3 和 yaml-cpp，Python Binding 使用 Python 3.10+ 与内置 pybind11，GUI 使用 Node.js 20+；`.install/setup.bash` 和 `.install/run` 加载安装环境，ROS2 使用单独的适配环境入口
 
-默认构建目录为 `build/serial_arm_core`，安装目录为 `install/standalone`；可通过 `CORE_BUILD_DIR`、`INSTALL_PREFIX`、`BUILD_TYPE` 和 `JOBS` 调整
+下游通过 `find_package(serial_arm_core CONFIG REQUIRED)` 导入 `serial_arm::core`、`config`、`robot`、`dynamics`、`interaction`；安装前缀加入 `CMAKE_PREFIX_PATH`，准确签名与错误见 [API](reference/api.md)
 
-ROS2 工作区构建见 [安装](install.md#直接在-ros2-工作区构建)；GUI 由统一安装器的 `--gui-only` 入口单独准备
+## 对应检查
 
-## C++ 下游集成
+先构建当前源码，再按影响范围选择检查；以下脚本使用离线数据、Mock 或 fake CAN，不连接机械臂
 
-安装后通过 `find_package(serial_arm_core CONFIG REQUIRED)` 导入；按用途链接以下目标
-
-| CMake Target | 用途 |
+| 影响范围 | 检查入口 |
 | --- | --- |
-| `serial_arm::core` | 状态、映射、控制器和 Safety 等基础接口 |
-| `serial_arm::config` | Core 配置与 Profile 读取 |
-| `serial_arm::robot` | 机器人控制流程与硬件装载 |
-| `serial_arm::dynamics` | 动力学模型计算与重力校正 |
-| `serial_arm::interaction` | 外力观测与模型导纳 |
+| Robot、生命周期、MIT/CSP 与导纳 | `python3 tools/check_robot_paths.py` |
+| 达妙协议、首命令和反馈时序 | `python3 tools/check_damiao_runtime_feedback.py` |
+| 动态插件转发及退出 | `python3 tools/check_hardware_loader_control_path.py`、`python3 tools/check_hardware_loader_lifetime.py` |
+| 增益、力矩、协议量化 | `python3 tools/check_config_pd_limits.py`、`python3 tools/check_adaptive_gain_core.py` |
+| 原生标定与任务调度 | `tools/check_adaptive_gain_flow.py`、`tools/check_gain_taught_path_flow.py`，使用 `--terminal` 指定本次程序 |
+| Python 数组与快照 | `./.install/run python tools/check_python_binding.py` |
+| GUI 资源与 IPC | `node apps/launcher/scripts/verify.cjs` |
+| 页面、主题和窗口宽度 | `apps/launcher/scripts/render-studio-ui.cjs` |
+| 状态、草稿和关闭流程 | `apps/launcher/scripts/verify-session-lifecycle.cjs` |
 
-下游构建时将安装前缀加入 `CMAKE_PREFIX_PATH`，同时保证 Pinocchio、Eigen3 和 yaml-cpp 的 CMake 包可被找到；接口说明见 [API 参考](reference/api.md)
+真实 Electron 检查使用当前图形会话的 DISPLAY；页面验证需要实际渲染和交互，不能以静态资源检查代替；控制验证分别报告离线行为、实测硬件与未覆盖路径
 
-## 检查改动
+增益轨迹审计使用 `python3 tools/audit_gain_calibration.py --self-test` 或传入任务目录；审计历史数据只解释原记录，不生成新控制器的真机结果
 
-编译所改组件后，在仓库根目录执行对应检查；以下命令不连接机械臂
+## 发行与文档
 
-```bash
-# GUI 资源、图形运行库与 IPC 路由静态检查，需先安装 GUI 依赖
-node apps/launcher/scripts/verify.cjs
+`./build_linux.sh` 生成独立 Core、Python 和 GUI 发行包，显式 `--with-ros2` 才附加 ROS2 / MoveIt；日常修改按组件构建，无需重复打包 AppImage 或 deb
 
-# 真实 Electron 的 Profile／动作草稿／关闭与图形重启状态检查
-DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
-  apps/launcher/scripts/verify-session-lifecycle.cjs
-
-# 可选：真实 Electron 渲染离线增益页，读取只读候选记录
-node apps/launcher/scripts/gain-ui-fixture.cjs \
-  --out /tmp/serialarm-gain-ui --record /path/to/task/gain-candidate.json
-DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
-  apps/launcher/scripts/render-gain-ui.cjs --fixture /tmp/serialarm-gain-ui
-
-# 完整生产页面的离线渲染，默认覆盖 18 页、明暗主题及两种宽度
-DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
-  apps/launcher/scripts/render-studio-ui.cjs
-
-# Python 数组、快照类型和 NumPy 内存布局，需已安装 Python Binding
-./.install/run python tools/check_python_binding.py
-
-# 原生命令入口
-./.install/run serial_arm_terminal --help
-./.install/run serial_arm_model_probe --help
-./.install/run serial_arm_model_calibrator --help
-
-# 增益历史证据审计器自测，无原生依赖
-python3 tools/audit_gain_calibration.py --self-test
-
-# 只读复核整轨抽动任务的 q/v 时序、实际增益、误差与用途覆盖
-python3 tools/audit_gain_calibration.py /path/to/model-calibration-1794295009141 \
-  --check-establishment-regression --summary
-
-# 实际原生 Mock 的固定 HOLD 扰动采集、记录与取消；需本次构建
-./.install/run .install/gui-venv/bin/python tools/check_gain_hold_disturbance.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 实际原生 Mock 的示教边界、附近实测点、有偏置参考与显式余量检查
-./.install/run .install/gui-venv/bin/python tools/check_gain_probe_boundaries.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 实际原生 Mock 的逐轴隔离频响、当前中心的扰动 mask 与中途停止证据
-./.install/run .install/gui-venv/bin/python tools/check_gain_frequency_response_flow.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 实际原生 Mock 从合法硬端点进入示教内侧，检查新中心、取消和预算不足
-./.install/run .install/gui-venv/bin/python tools/check_gain_measurement_center_flow.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 实际原生 Mock 的阶段警告后继续、完整参数保留与终止记录一致性
-./.install/run .install/gui-venv/bin/python tools/check_gain_stage_continuation_flow.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 只复核硬范围零位的实际录制结束、保存与载入，约数秒
-./.install/run .install/gui-venv/bin/python tools/check_gain_probe_boundaries.py \
-  --teach-zero-only \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 模型、辨识、候选、预算与内存 Robot 的行为检查
-python3 tools/check_adaptive_gain_core.py
-
-# 上述检查还覆盖真实大增益交接故障的离线回归：保持原始
-# accepted-reference/actual-feedback 误差，拒绝整组超预算候选；
-# 同时复验局部数值信任域、PD 采样/反馈延迟/量化与零额外惯量场景，
-# 以及柔性两组未达标时的实际改善比较；不会加载真机驱动
-
-# 原生 Mock 走完整四用途、示教范围/方向、记录、临时应用与恢复
-./.install/run .install/gui-venv/bin/python tools/check_gain_taught_path_flow.py \
-  --cases complete \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-
-# 实际达妙硬件 read 调用链搭配假 CAN；无设备连接
-python3 tools/check_damiao_runtime_feedback.py
-
-# 可选：直接重放已有最新腕轴原始 CSV，只有下一步提议，不执行硬件
-c++ -std=c++17 -O1 -I src/serial_arm/core/include \
-  -I src/serial_arm/core/third_lib/tl/include -I /usr/include/eigen3 \
-  tools/adaptive_gain_offline_test.cpp -o /tmp/serialarm-adaptive-gain-test
-/tmp/serialarm-adaptive-gain-test --wrist-task /path/to/model-calibration-1794278968578
-
-# 旧 PD 上限忽略、硬件能力刷新、映射和协议量化，需先重编 Core
-python3 tools/check_config_pd_limits.py
-
-# 真实原生 IPC 的 Mock 集成检查，使用本次构建的程序
-./.install/run .install/gui-venv/bin/python tools/check_adaptive_gain_flow.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal \
-  --full-probes
-
-# 用 FIFO 阻塞实际 CSV 写入，检查评估阶段已退出 TRACKING
-./.install/run .install/gui-venv/bin/python tools/check_gain_assessment_hold.py \
-  --terminal build/unified/standalone-dm_arm-t1-p1-m0/core/serial_arm_terminal
-```
-
-GUI 改动还需启动 `./launch.sh` 检查受影响页面、语言与主题；三维改动需验证模型实际绘制与交互，静态资源检查不能代替渲染验证
-
-离线增益页 fixture 提取实际 renderer 函数与事件处理，不加载后端设备接口；`DISPLAY` 使用当前已有图形会话的显示值，结果写入 `/tmp/serialarm-gain-ui/screenshots/report.json`；截图按实际滚动视口分段保存，不拼接或用超大 GPU 裁剪替代；已有阴影裁切审计脚本时，可为渲染命令追加 `--clip-audit /path/to/clip-audit.js` 检查默认、悬停和展开状态
-
-控制逻辑改动先检查配置、离线记录与数值结果，再按实际改动验证实机行为；贡献说明应区分离线验证与实机验证，记录使用的硬件、配置和未覆盖的路径
-
-`check_adaptive_gain_flow.py` 仅在临时目录生成离线 Core、示教和候选，强制 `write_enabled=false` 且不传硬件插件；覆盖两模式预算、原始 T 在重定时与再次导入后的来源、工作线程停止及单用途候选应用／恢复；`--full-probes` 额外完成两组旧增益下的实际短测工作线程，比较模型初值并检查不响应独立力矩的 Mock 保留证据不足；其中的合成候选仅用于记录兼容与应用范围检查，不提供机械臂验收结论
-
-Mock 的理想位置跟随不能验证执行器起动能力；编码器分辨率、静摩擦、MIT 量化、重力负载与模型耦合需由对应离线动态试验和真实机械臂测量分别覆盖；历史记录可用审计器区分“有新反馈但位置不响应”与“反馈缺失”，但离线重新解释原记录不会生成修复后的真机验收
-
-运动建立的回归区分幅值扩展与增益变化：前者保持 PD，后者检查当前完整组名义阻尼随 P 保持、真实协议上限和联合力矩域；降低刚度处理持续往复时不降低已有阻尼；stick-slip 物理仿真仍保留原位置、力矩、预算和误差断言；历史 CSV 只重放至首次策略分歧，之后原数据仍属于旧控制器，不反馈为新候选已执行结果
-
-阶段继续的真实 Native 检查还读取每轴 `reference_sample_time_s/reference_sample_time_known`，核对实际采样参考与保存源路径的 Hermite 位置、速度一致；相邻位移与速度梯形积分误差的容差来自该源路径真实最大加速度 `A·dt²/4`，不使用或放宽 `<0.1°` 跟踪目标；源时间、命令写入时间和原始反馈分别保留
-
-本地安装刷新后仍通过 `./launch.sh` 启动现有桌面入口；检查使用本次构建的程序，源码检查或旧安装程序的通过不能代替当前构建与界面结果
-
-取消用户 PD 上限后的专用检查 `check_config_pd_limits.py` 已通过：分区与平铺旧配置中的缺失、畸形 PD 上限字段均不影响加载，直接策略里的旧覆盖值不生效；连接能力刷新重建协议边界与步进，非 1 映射正确保留协议码，位置、速度与力矩收窄仍然有效；实际达妙编码函数对 Kp/Kd 共 8192 个码中心完成幂等检查，内存 Robot 周期保留投影前请求并发送可编码增益，超过协议上限的请求仍被拒绝
-
-同一最终检查还验证初次故障刚性保持、持续保持、拖拽恢复及回到刚性保持的协议网格；半码附近的阻尼请求在编码后会提高实际 PD 命令，以 1 Nm 上限构造的反例中，原浮点总力矩低于上限，而编码后为约 1.000022 Nm，初次保持没有写入超预算命令并走停止路径，持续保持同样拒绝写入并失能；错误类型沿用 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`
-
-此前执行 `./launch.sh --doctor --profile dm_arm_gray` 时，环境、资源与模型检查正常；因未连接设备，`/dev/ttyACM0` 不存在，整体退出码为 1，设备检查未通过；本轮状态与模型修改未重新执行该设备检查
-
-前一轮起动回归的已执行离线证据：审计器 20 项自测通过；六轴静摩擦／滑动仿真调用当时原生工作线程相同的 `motion_establishment_step`，按历史任务 T=28.22 秒的预算，在 8 次完整短测、累计 68.8945 秒仿真测量成本后建立全部六轴响应，并保留 153 秒用途验证预算；当时未改变位置、力矩与 Kp/Kd 安全上限；静摩擦 12 Nm 高于执行器 10 Nm 能力的对照未被标成建立成功，并在约束／预算内结束
-
-同一六轴静摩擦／滑动回归的独立扰动部分经过 3 次完整测量后，腕轴获得可观测响应，joint3 在原有 1.4 Nm 扰动上限下仍缺少所需运动响应；其静态／恢复记录保留，刚度测量不标为通过
-
-内存 Robot 回归另将两轴实测位置相对旧保持目标分别偏移 `-0.011446 rad`、`-0.022507 rad`，确认起动中心采用新鲜实测反馈，并拒绝过期反馈；这些结果支持离线起动与调用行为，真实机械臂上的运动建立、保持和四用途验收仍需操作者另行发起
-
-本轮实际 Electron 状态检查 `verify-session-lifecycle.cjs` 通过 91 项断言：生产 renderer 函数与按钮处理、真实 preload IPC 和 BrowserWindow 共同验证 Profile 的运行／停止／启动锁、旧异步回包丢弃、目标草稿与原动作终结分离，以及原生关闭、标题栏、应用退出、图形重启的取消／放弃顺序；原生对话框使用预先指定的回答，会话桥接替换为无设备对象，未启动硬件后端；临时导纳草稿仍沿用原导航语义，关闭确认范围为现有 Profile 参数草稿
-
-此前 `check_gain_assessment_hold.py` 在实际原生工作线程中用 FIFO 阻塞 CSV 写入约 0.35 秒，期间连续 22 次观测到 HOLD，最终排出 3,036,238 字节并正常取消；对应内存 Robot 检查同时确认 HOLD 超过 100 ms 不触发命令超时，而普通 TRACKING 命令断流仍触发 `CMD_TIMEOUT`；根因修复针对运动结束后的评估／写盘路径，未提高超时常数
-
-模型检查区分物理先验、设计目标和执行约束：人工速度／加速度／力矩修改不改变 `unconstrained_kp/kd`，收窄力矩可改变约束后候选；完整质量矩阵的修正只调整相关模态参与轴，独立质量块不被一起缩小；真实 URDF 与历史路径的 7 类检查及新 Profile 创建／保存的 8 项检查通过，离线初始化凭据保留三层建议与原因，既有运行／恢复基线保持原值；恢复设计和不同示教路径产生不同建议，均不作为实机起动或四用途验收结论
-
-上一版原生／Python 构建与本地安装刷新通过，使用当时安装 probe 的 Python 8 项检查、NumPy Binding 检查、后端 `--check`、PD 兼容／8192 码中心／故障保持力矩检查均通过；当时 `--full-probes` 12 项真实原生 Mock IPC 检查通过，含不同旧增益下同模型 seed、参考与独立扰动短测、预算与重复导入、停止及单用途应用兼容；T=0.2 秒合成源对应 3 秒硬预算，实际 0.515261 秒结束，`available=false`、`validated=false`
-
-最终全应用离线界面检查加载完整生产 HTML、JS 与 CSS，以只读接口替代后端；18 页在 1280／375 宽度、明暗主题下共 72 次渲染通过，11 项交互检查和 160 次默认／悬停／展开裁切审计通过，无页面横向溢出或控制台错误；数字去尾零与真实初始化凭据另作定向检查；共享按钮沿用橙色白字，参数表按关节并列 Kp／Kd，未编辑保存保留原始数值精度
-
-字体使用应用内独立 family 与精确本地正体名称，避免本机通用字体别名将界面替换成斜体等宽字；实际渲染字体通过浏览器字体信息核对为正体 Noto Sans CJK SC，未修改系统字体设置或新增字体依赖；界面 fixture 不启动设备或原生控制会话，三维模型与终端执行仍由各自检查覆盖
-
-本次增益修正将未执行的整轨性能需求与实际 bootstrap 分开，使用恢复设计起动并逐步补充响应证据；逐周期位置监督触发后锁存 `CALIBRATION_RESPONSE_UNSTABLE`，在写盘前进入既有故障退出，失败试验保存部分周期数据；不提高命令超时，不自动清故障后重试
-
-现有审计器新增实际增益、接收时序、成功周期总命令重建与位置反转证据，30 项自测通过；原始故障任务回归确认整轨入口仅有 188 周期、0.956740 秒，joint4 已出现约 50 Hz 的位置往复，而周期最大间隔仅 11.040 ms，故障为 `REFERENCE_GOVERNOR_FAILED/INFEASIBLE`；这与此前评估写盘后的 `CMD_TIMEOUT` 分开处理；最新任务 22 个文件和原参考 ZIP 读取前后 SHA256 均一致，审计不生成新硬件验收结论
-
-本次界面针对性离线检查通过 6 组组合、36 张截图、36 次裁切检查和 232 项断言；真实机械臂的 bootstrap、在线位置监督退出及四用途效果仍由操作者另行发起验证
-
-本次最终原生／Python 构建与本地安装通过；`--full-probes` 12 项实际原生 Mock 检查、Python Binding、后端 `--check` 与安装环境检查通过；T=0.2 秒、硬预算 3 秒的合成任务在 0.543378 秒退出，保持 `available=false/validated=false`；内存 Robot 验证了异常响应锁存、可行故障保持、不可行保持时原 `MotorBus::stop` 回退及原有 `CMD_TIMEOUT` 语义
-
-离线六轴运动建立回归经 15 趟、114 秒测量完成并保留原验证预留；原始位置记录重放中，监督器在整轨入口后 0.905995 秒触发，早于原记录末帧 0.956740 秒，四份原短测记录没有误触发；这些是离线重放／内存控制检查，没有重新运行原始真机试验
-
-同一最终版本的实际原生工作线程 FIFO 检查通过：阻塞写盘期间保持 HOLD 0.428643 秒、连续 21 次观测，正常排出 2,977,861 字节后取消退出；`CMD_TIMEOUT` 仍为 0.1 秒；Mock 证据不足时实际局部比较数为 0，未盲目试参；生产比较循环另按快速每组最多 1 次、精细每组最多 3 次和实际剩余预算共同约束
-
-本次输入／行程平台修正的审计器 36 项自测与原 15 份 CSV 的 12 组只读回归通过，27 个原文件读取前后哈希不变；正式窗口重算保留末趟 `ratio=0.204693`，不将其误判为低于 0.2，也不将任务外的后续 fault 归入这份 `fault_interrupted=false` 记录
-
-定向控制检查重放原始前 10 趟测量时，在 joint3 当前 Kp=`241.39194` 首次拒绝没有可分辨输入增长的继续升参，保留整组增益并转向较慢测量；原后 5 份 CSV 只保留为旧输入条件的回归，未用于假充新慢测结果；后续慢测成功／受阻由独立仿真验证，六轴 15 趟、114 秒的既有预算回归继续通过；本次原生构建通过，未执行新的真机试验
-
-本轮实际原生 Mock `--full-probes` 12 项通过，新增记录断言核对 `current_kp/current_kd` 与 CSV／参数元数据一致，`blocked_axes/input_response_progress` 可解析；T=0.2 秒、硬预算 3 秒的任务在 0.506322 秒结束，`available=false/validated=false`；Launcher 检查与 31 项界面检查、4 张截图通过，两种尺寸的裁切检查均为零
-
-本次多频平台与取消分类修正后，审计器 44 项自测、三份原任务的 12／9／8 组只读回归及旧 ZIP 兼容检查通过，66 个原始文件读取前后哈希一致；回归分别保留旧 15 趟升参平台、同组增益慢测 12 趟及取消后的部分第二趟，不把历史 CSV 视为新单频条件的实测结果；核心离线检查覆盖同组单频运动补证成功与仍不足两种情况，六轴运动建立经 14 趟、106.4 秒完成，原异常位置记录的监督触发仍为 0.905995 秒；真实机械臂效果尚待操作者主动发起验证
-
-本次原生构建、本地安装、后端 `--check` 与安装环境检查通过；实际原生 Mock `--full-probes` 12 项及终止字段断言通过，主动停止的状态与候选共同记录 `cancelled/stop_requested/fault_interrupted=false`；T=0.2 秒、硬预算 3 秒的合成任务在 0.502098 秒结束，两处共同记录 `budget_exhausted`，`available=false/validated=false`；两份历史终态的界面检查共 218 项通过，1555／1280／375 宽度与明暗主题共 12 张终态截图、12 次零裁切检查，另核对关闭后主页面；原增益页 25 项交互与 2 次定向渲染、Launcher 及语法检查通过
-
-本轮在 `360f329` 检查点后修正 HOLD 扰动入口、可用性聚合和整轨局部修正；原生构建与本地安装通过，`check_adaptive_gain_core.py` 的确定性 MIT 模型 RMS 从 `0.00434789` 降至 `0.00329732 rad`，内存 Robot 验证 HOLD 可刷新独立扰动、普通 HOLD 仍拒绝跟踪参考，并保留原命令超时语义；这些是离线模型与接口结果，未执行新的真机验收
-
-实际原生 Mock `--full-probes` 12 项通过，包含显式聚合 `available=false` 的现代实测伺服候选警告应用／恢复、旧增益独立性与停止预算；T=0.2 秒、硬预算 3 秒的任务在 `0.503206 s` 退出；后端 `--check` 与 Launcher 检查通过；原任务只读审计 9 组回归、审计器 50 项自测和旧 ZIP 兼容检查通过，原任务与 ZIP 共 41 个文件前后哈希一致
-
-本轮完整生产页面的 Electron 离线检查 90 项通过，8 张有效截图且控制台错误为零，覆盖 1280／375 宽度下自查保存、参数保存／重载、连接检查与列表刷新时的真实滚动、展开状态和焦点，以及原失败任务已测用途的警告应用入口与未达标原因；主动导航仍按导航语义切换页面，不沿用原页面滚动位置
-
-`check_gain_hold_disturbance.py` 的实际原生 Mock 回归 7 项通过，单刚性精调使用原始 T=25 秒、硬预算 600 秒；约 `181.167 s` 后取得 1968 个 HOLD 周期及每轴 1870 个新鲜短测样本，名义／接受参考保持同一实际 HOLD 目标，独立力矩输入非零，未再出现 `short response input rejected`；Mock 位移为零，因此参数 `available=true`，`qualification_complete=false/validated=false`，随后正常取消并保存一致的终止对象；初次较大幅度合成路径触发了实际整轨修正，超过测试原先 180 秒等候，最终将专用 HOLD fixture 改为较缓路径并将外层等待设为 300 秒，原 T、验收与 Safety 未变，未减少生产扰动补测
-
-本次包含保形插值与精确恒值平台处理的最终原生构建中，`check_gain_probe_boundaries.py` 实际 Mock 全套 9 项通过：旧示教最小位置为 `0.001 rad`、新鲜实测为 `0` 时可正常开始，未要求精确贴合端点；joint2／3 参考偏置约 `∓0.005293 rad`，分别限于 `[-0.04,0]`、`[0,0.030837] rad`；URDF 上下限各扩大 1 rad 后试验域不变；两轴独立扰动被逐轴置零，其余轴继续测量，结果未提升为通过
-
-同一实际工作线程取得每轴 86 帧完整端点过渡，首参考为新鲜实测 `0`，joint3 有界移动到 `0.001 rad`、参考速度峰 `0.010007 rad/s`，全程无限幅并正常取消；测试核对规划的最大步长与 PD 误差范围，命令写入时间上的速度导数仅作观测量，不混同规划内部步长；显式 `0.02 rad` 命令余量与原始硬范围分别产生 `command_reference`、`recorded_position` 诊断，原始合成文件字节保持不变
-
-全套同时执行真实 `teach_replay_record_begin → record_stop → save → load`：临时 URDF 将 joint2／3 下限设为 0、Safety 位置余量为 0，Mock 在实际零位录得 62 个样本、1.22 秒；录制结束与载入均为 `ready`、无错误或故障，保存的两轴全部位置及载入首尾均保持精确 0，文件原字节未改；也可用 `--teach-zero-only` 单独复核这一用户入口
-
-审计器本次 58 项自测、原 12 趟端点外探记录的 10 组只读回归、前次保持入口记录的 9 组回归及旧 ZIP 读取通过；仅读取已有历史数据，未计算哈希、修改原记录或连接机械臂；新条件的物理运动、双向扰动和各用途达标仍由之后主动发起的实机标定测量
-
-最终算法离线回归通过：零位、上下界平台、极值及不等割线下的保形插值保持相邻节点范围，参考速度与位置真实导数一致，密集多轴采样仍满足原 v/a 限制；`±0.02/±0.1` 各 10001 个平台进度点、完整重定时中的恒值 `0.02` 轴及生产插值位置均精确保留原值且速度为零；未用逐帧裁剪参考或扩大 Safety 消除越界
-
-本次最终原生构建、本地安装、后端与安装环境检查通过；实际原生 Mock `--full-probes` 12 项通过，包含偏置及淡入淡出后的真实参考包络、逐轴记录域、旧参数独立性、停止与预算；T=0.2 秒、硬预算 3 秒的合成源在 `0.505637 s` 结束，`available=false/validated=false`
-
-最终固定 HOLD 扰动原生回归 7 项通过，约 `103.439 s` 获得 1960 个全周期 HOLD 帧及各轴 1862 个新鲜扰动样本；joint2／3 按边界余量 mask 保持零扰动，其余轴独立输入非零；已测参数仍可用，缺少抗扰证据不提升用途验收，最终为 `cancelled/stop_requested/fault_interrupted=false`、Robot 保持 `ACTIVE`；本轮全部为内存／Mock 和已有记录的离线验证，未连接真机
-
-本次幅值校准修正的完整算法离线检查与最新原 CSV 回放通过；旧高 P 反例保留“提高 P 必须增加编码／位置噪声可分辨的已知驱动”，1／3／7 轴及逐轴置换覆盖单轴真正饱和时其他轴继续、单频低输入继续校准和当前完整组仍未通过；真实 stick/slip 模型六轴经 15 个完整试验、161.4 秒建立运动，保留原 153 秒验证预留，独立扰动仍受原 5% 上限；最新实测 joint5 的 `PD_peak=0.078379 Nm` 原样保留，离线只提出下一组 `Kp≈3.4188`、已知驱动峰 `≈0.095806 Nm`，未声称这组参数在真机已执行或改善
-
-审计器 58 项自测及 `1794278968578`／`1794278779311` 原 CSV 的 12／7 组只读回归通过；两份记录的测量不足、剩余预算、完整窗口及未开始用途均保留原值，没有把新规则提议回填为历史通过
-
-本次最终原生构建、本地安装、后端与安装环境，以及 8 项 Python 初始化／导出检查通过；最终实际 Mock `--full-probes` 12 项通过，T=0.2 秒、硬预算 3 秒任务在 `0.500090 s` 退出，`available=false/validated=false`；固定 HOLD 原生回归 7 项通过，约 `163.810 s`，实际经过 4 个逐轴隔离频响阶段，取得 1967 个 HOLD 全周期帧、每轴 1869 个新鲜扰动样本，joint2／3 零输入 mask、其他轴输入非零，正常 `cancelled/stop_requested/fault_interrupted=false`；这里验证实际执行与记录路径，Mock 不产生真实力矩运动辨识
-
-逐轴频响详情使用生产 renderer 的 Electron 检查 47 项通过，覆盖 1280／375 宽度和明暗主题四组渲染，保存 10 张 PNG；合成频响数据明确用于界面，旧记录只读，不能用界面 fixture 代替真实频响测量
-
-最终专用原生隔离频响两案例通过，检查约 `118.95 s`、外层限时 180 秒；完整案例取得 axis1／4／5／6 四个隔离扰动窗口，各 806–807 个新鲜样本，axis2／3 明确双侧空间不足且 `record_path=null`；参考位置固定、参考速度为零、仅活动轴扰动非零，完整实际增益一致且无限幅；部分案例在 axis4 主动停止，axis1 已完成的 806 个新鲜样本及证据仍保存在 `experiments`；两案例均以 `cancelled/stop_requested/fault_interrupted=false` 和 `ACTIVE` 收尾；Mock 无力矩到运动的响应，因此实测频响与设计候选保持无效，没有生成物理验收通过
-
-固定端点案例的只读审计回归通过：`1794284413104` 的 10 组检查保留 16 个完整短测、曾建立运动后当前行程不足及剩余 `211.816 s` 的事实；`1794284166755` 的 8 组检查保留第 12 窗部分数据和总线写失败，未将两种退出合并为预算或硬件能力结论；审计器 58 项自测通过，未改原任务、Profile 或计算哈希
-
-本次测量点改造的原生隔离频响两案例通过，耗时 `134.538 s`；实际进入内部测量区域后，六轴均有合法双侧输入并取得完整隔离窗口，各 805–806 个新鲜样本；主动停止案例在第二个隔离窗口中退出，第一个窗口的 806 个新鲜样本保留，终止为 `cancelled/stop_requested/fault_interrupted=false`；检查按本次实际中心与域计算应测轴，不再固定旧起点的轴号 mask；参考固定、其他轴零扰动、完整实际增益稳定且无限幅仍为必要条件，Mock 频响与设计候选保持无效
-
-最终原生测量中心三案例通过，耗时 `13.77 s`：合法硬端点的进入 CSV 每轴 776 行，首参考与新鲜实测起点、末参考与计划目标的记录差值均小于 `1e-8 rad`，末参考速度为零；joint3 从新鲜 `0` 进入计划点 `0.022068302 rad` 后，以重新实测中心约 `0.022068299 rad` 开始短测并保存 378 行；中途停止保留每轴 46 行及 `cancelled`，未报告短测或用途通过；T=1 秒、硬预算 15 秒的案例在 `2.134 s` 退出，主原因保留 `identification_insufficient:measurement_center_entry_insufficient_reserved_budget`
-
-最终 HOLD 原生回归 7 项通过，耗时 `182.836 s`，实际经过进入、重新噪声采样、整组短测、隔离频响、返程、三趟同条件整轨及端点重新规划扰动；取得 1966 个全周期 HOLD 帧、每轴 1868 个新鲜扰动样本，端点 joint2／3 因双侧余量不足置零，其余轴在固定 HOLD 下独立输入非零；原生跟踪与保持参数可用，抗扰证据不足不提升资格或 `validated`，随后正常取消；本次原生构建、本地安装、doctor、后端和安装环境，以及核心回归、8 项 Python 模型初始化集成检查和 Launcher 检查通过；Mock 结果仅覆盖软件执行、约束与记录，新的实机进入、频响及用途效果待操作者发起标定测量
-
-最终边界原生套件 10 项通过：初始 `0` 位于旧示教 joint3 端点 `0.001 rad` 外仍可开始，进入约 `5.035 s` 后在重新实测 `0.015008017 rad` 建立局部试验；进入／返程每轴分别 987／957 行，首行精确对应各自新鲜起点、末行对应目标，六轴末参考与目标差值均为零；进入后重新噪声采样及整组测量，当前中心六轴扰动均可测，返回端点后的轴 mask 另按该位置计算
-
-同套件将 URDF 上下限各扩大 1 rad 后仍选择同一示教路径点，所有实际参考保持在各自新鲜中心、示教域及原 Safety 的交集内；显式 `0.02 rad` 命令余量与原始硬范围分别产生 `command_reference`、`recorded_position` 诊断；实际零位录制结束／保存／载入取得 61 个样本、1.2 秒，joint2／3 原始值及首尾均为精确 0；合成源文件字节保持不变，语法检查与 `git diff --check` 通过
-
-随后真实任务 `1794288727413` 暴露“静止仅见一码、进入后才学到编码步”的缺测组合；新增原 CSV 只读回归 8 项及审计器 64 项自测通过，定位 joint3 的一码回跳与末周期仅 `1.275643e-6 rad` 的引导量超出，分别保留实际 P/D、连续反馈、joint6 一条重复反馈、预算与无故障退出；上一轮位置跟随 Mock 及预先给定分辨率的数值测试未覆盖此组合，不能以其通过替代新真实任务的效果
-
-本次未知位置步长修正的核心回归通过，覆盖原末码的数值反事实、运动中新鲜码变学习、未知步长内部缓冲、静止重采保留已观测步长、收紧引导量时的停稳交接，以及真实大回退仍被原硬引导量拒绝；这些数值检查不修改原 CSV，也不将反事实计算写为真机已改善
-
-最终强化原生 Mock 三案例通过，耗时 `13.770 s`：六轴从未知步长到新鲜位置间距证据，局部静止窗未有码变时仍保留有效步长，后续短测计划的编码步长与噪声均和实际使用值一致；入口每轴 776 行、短测 366 行，中途停止保留每轴 42 行；T=1 秒、硬预算 15 秒的案例在 `2.135 s` 以明确的预留预算不足原因结束，未标为通过
-
-同一最终原生构建的边界套件 10 项通过，进入／返程分别取得每轴 987／959 行，首参考为各自新鲜实测点、末参考与目标差值全为零；joint3 以重新实测 `0.015007995 rad` 开始局部短测，URDF 扩大后仍选择同一示教路径点；显式余量、原始硬范围与实际零位录制结束／保存／载入均保持合法，零位取得 62 个样本、1.22 秒，原始零值与合成源字节保持不变
-
-最终固定 HOLD 原生回归 7 项通过，耗时 `182.879 s`，取得 1968 个 HOLD 全周期帧、每轴 1870 个新鲜扰动样本；固定目标、零参考速度、逐轴合法独立输入、完整周期记录与参数可用但缺少资格的警告语义均保持，正常 `cancelled/stop_requested/fault_interrupted=false`；最终原生构建、本地安装及 Launcher 检查通过；这些仍是内存／Mock 软件验证，新机械臂进入与整定效果由操作者的新任务测量
-
-端点入口任务 `1794291242687` 的原 CSV 只读回归 8 项与审计器 76 项自测通过；明确区分 15 趟运动建立、实际返程、169 周期入口过渡与零样本整轨文件，保留原提前趟数 1；复算局部 `0.856812 s` 上限、joint4 未精确停止的微小参考残差，以及 joint2 无法容纳 150 ms 稳定窗口的时间关系；当次退出仍为测量不足、剩余 `178.091 s`、无 Robot 故障，不改成预算耗尽或硬件能力不足；新复核／继续策略字段原样透传，旧记录缺字段时不填成零警告或通过
-
-本轮最终原生构建与两个本地安装前缀更新完成；阶段继续回归用时 `17.887 s`，取得原生跟踪每轴 803 周期、柔性跟踪每轴 1076 周期及刚性／柔性保持，伺服复用适用测量；7 条阶段警告未串用其他阶段的受阻关节，三处终止记录一致，结果保留 `available=true/validated=false/review_required=true`；中心三案例用时 `23.972 s`，其中 T=1 秒、硬预算 15 秒的案例在 `12.440 s` 内仍取得每轴 1015 个原生周期并保留警告可用参数；边界 10 项及固定 HOLD 7 项通过，后者耗时 `182.858 s`、取得 1967 个全周期 HOLD 帧并正常 `cancelled/stop_requested`，缺少独立扰动证据不补成通过；完整原生流程 12 项覆盖两模式预算、重复导入、停止、警告应用／恢复、旧增益独立初始化及实际短测输入输出，T=0.2 秒、硬预算 3 秒的无测量容纳案例在 `0.529881 s` 以 `budget_exhausted` 退出；核心回归含到达后停留期间的原引导量检查、8 项模型初始化集成检查及 UI 的 29 项／7 图和 13 项／3 图检查通过；这些结果来自内存／Mock 和原记录的离线验证，未连接真机，实际机械臂效果由操作者后续标定测量
-
-本轮整轨精度与抽动修正的离线检查通过：核心套件包含真实延迟 MIT／stick-slip plant、FRF、半码路由简化、有限端点、运动中残差与局部超调、名义阻尼候选和内存 Robot；六轴 stick-slip 在 17 个完整试验、192.4 秒内建立运动，保留原 153 秒用途验证预留，独立扰动仍保留重轴 5% 输入不足；审计器 87 项自测及任务 `1794295009141` 的 8 项原始证据回归通过，原记录的错误、增益与未测项没有被改写
-
-实际 Native Mock 的阶段继续及参考时序检查通过，用时 `18.000 s`，原生／柔性整轨分别取得每轴 802／1074 周期，伺服复用原生数据；各行参考源时间、保存源路径的位置与速度，以及按实际源加速度和采样间隔计算的积分边界均一致，最大位移积分残差约 `1.69e-5 rad`，`<0.1°` 验收目标不变；7 条阶段警告后仍完成可执行的后续测量，结果保留 `available=true/validated=false/review_required=true`；中心三案例通过，用时 `22.829 s`，进入与短测中心、原路径索引、边界、步长保留和用户停止语义不变，T=1／硬预算 15 秒案例在 `12.442 s` 退出并保留 1015 周期完整原生参数
-
-同轮完整 Native 流程 12 项、边界 10 项及固定 HOLD 7 项通过；T=0.2／硬预算 3 秒的无完整试验容纳案例在 `0.528694 s` 提前以预算不足退出，结果不可用且未通过；固定 HOLD 检查用时 `168.882580 s`，取得 1967 个全周期帧和各轴 1869 个新鲜扰动样本，joint2／3 按当时端点余量为零输入，其余合法轴为非零独立输入，正常 `cancelled/stop_requested/fault_interrupted=false`，完整参数可用与抗扰证据不足分别保留；达妙 read 的假 CAN 三组、模型初始化 8 项和 Launcher 检查通过；这些检查均使用内存、无硬件插件的 Mock 或假 CAN，实际设备效果由操作者后续标定确认
-
-继续使用现有 `./launch.sh` 桌面入口，选择已有示教记录并导入自动增益标定；没有新增算法选择或独立必做流程；本轮不生成发行包，运行安装刷新与临时工程源码同步沿用现有本地入口，原始 Profile 和任务证据保留
-
-以下小节保留各轮历史实现与已执行检查；其中当时的“当前主线”、误差目标与通过标志按该轮语义理解；现行流程以文末[当前在线自整定与参考指标](#当前在线自整定与参考指标)及[标定参考](reference/calibration.md#沿示教轨迹在线自整定)为准
-
-### 连续示教主线的离线回归
-
-本轮新增 `gain_taught_path_following.hpp` 与 `gain_taught_path_following_test.cpp`，由原 Hermite 时间轴生成整组位置及其真实速度，只连续调节共同 phase；逐段解析导数约束速度与加速度，并以完整刹停区间和实际反馈预留约束前进；覆盖静止反馈、原码阶量化、快慢反馈、不同轴数、未知编码步长、无效输入及原时间轴不变
-
-单独纯 C++ 用例编译无警告且通过：20 ms／450 ms 一阶位置跟随 plant 分别在 `30.640 s / 31.755 s` 完成同一示教源，慢反馈实际降低推进速度；静止 plant 保持 10 秒时参考连续制动、没有伪造到位，恢复反馈后沿同一 phase 完成；所有检查均使用原 q/v，不裁剪参考或修改反馈
-
-读取任务 `model-calibration-1794470861136` 已保存的 2874 点轨迹，源时长 `47.684298 s`；已观测位置步长 `0.0003814697265625 rad`、半码几何简化后仍有 1361 个节点，旧逐节点停稳在 `v=0.05 rad/s`、`a=0.2 rad/s²` 下需 `947.944 s`，超过原 T=`28.14 s` 对应的 `422.1 s` 硬预算
-
-对同一保存轨迹，35 ms 一阶位置跟随、原位置码量化、三码预留和 `0.04 rad` 跟随距离的离线用例中，连续 follower 在 `max_rate=0.65`、v/a=`5.4/10.8` 下用 `113.080 s` 完成，20272 个周期因反馈调整 phase；另在 `max_rate=1`、v/a=`1.62/3.24` 下用 `165.370 s` 完成，28223 个周期因反馈调整，峰值采样加速度为 `1.489 rad/s²`；无逐节点停稳或速度／加速度越界
-
-生成的 2874 点多轴曲线另复现大量小几何节点：半码简化后 839 节点的旧成本为 `433.905 s`，连续跟随实际仿真用时 `178.090 s`；这些结果验证路径执行与反馈调速，所用一阶位置 plant 不替代真实 MIT 控制器、摩擦、耦合动力学或机械臂稳定性测量
-
-现有纯 C++／内存 Robot 验证入口已接入新用例，可另传一份只读的已有 `trajectory.csv` 复算，不需要设备或额外依赖
-
-```bash
-python3 tools/check_adaptive_gain_core.py \
-  --core-build build/unified/standalone-dm_arm-t1-p1-m0/core \
-  --demonstration /path/to/task/trajectory.csv
-```
-
-上述数值来自单独新用例的实际离线执行；完整构建／流程检查与新硬件标定结果在各自执行后另记，不由本段生成通过结论
-
-### Backend 退出生命周期回归
-
-本轮只读检查发现 Core `BusRegistry` 的静态表保留 transport 弱引用；Backend 对象销毁后，最后一个弱引用控制块可能直到后续 acquisition 或进程退出才释放，而其虚表与 `_M_destroy` 位于已加载的协议 DSO；Loader 原先直接卸载 DSO 的顺序存在调用已卸载代码的路径，与失能后 native 退出 `-11` 的现象相符，未取得该次崩溃栈
-
-`HardwareLoader` 使用 `RTLD_NODELETE` 保留 Backend 及依赖代码映射至进程退出，真实对象、串口和总线连接仍按原顺序销毁；同一 native 进程不热替换已加载的库，重新启动 native 进程采用新的安装文件
-
-已低优先级实际执行 `check_hardware_loader_lifetime.py`，返回 0：临时内存 Backend 配合真实 Loader／BusRegistry，验证两轮加载、清理、重载，Backend 和 transport 对象均实际销毁，过期弱控制块分别在重载和正常进程退出时释放；该回归不加载真实硬件插件，不打开设备或启动接收线程
-
-```bash
-nice -n 19 python3 tools/check_hardware_loader_lifetime.py
-```
-
-### 主轨迹 1× 与用途验收范围
-
-前述反馈调速 follower 的离线数值保留其当时实现和试验范围；当前默认主线改为与冻结整轨相同的 `control_cycle_monotonic` 固定源时间采样，`playback_rate=1`，柔性整轨同样使用 1×，不再使用软跟随调速作为默认发现调度；附近端点的参考准备仍按原 v/a 边界做 smooth cubic 过渡，且计入原 T 预算
-
-操作者在旁看护、运动区空闲且无额外负载的一轮真机记录 `model-calibration-1794478087644` 中，旧软调度约运行 170 秒才到源时间 `40.98 / 43.35 s`，随后被过多用途验证预留截断；任务约 282 秒自然结束，拖拽安静稳定性已有实测通过，其他用途缺少完整整轨，不能由此记为测量完整或精度通过；该记录用于说明默认主线改回 1× 和缩减提前预留的原因，不改写其原始数据
-
-当前发现阶段普通误差不暂停或终止主轨迹，粗响应目标与最终逐轴 `<0.1°` 验收目标分开；仅原 Safety、确认的非指令持续位置振荡、操作者停止、原总预算或无法继续的执行故障中断执行；必要整轨／保持／拖拽／退出优先安排，独立扰动的全部补测不预先堆入发现阶段预留
-
-柔性按已知关节力矩下让位、初始无载平衡恢复及模型／局部包络评价，无载稳定窗和原始参考误差分别保存；独立输入前增加约 0.25 秒零输入基线；拖拽保持 Kp=0，安静稳定性和运动释放衰减分开记录，安静参数可用不补成未测衰减通过；用途依据与范围见 [标定参考](reference/calibration.md#候选与用途验证)
-
-本段记录当前源码行为和上述已发生真机记录；新 1× 主线的构建、自动检查与后续完整真机标定结果，在实际执行后另记，不沿用旧 follower 仿真或这一 partial 任务宣称通过
-
-### 独立输入与多控制组的 MIT 自整定主线
-
-当前实现替代前述逐段倍率调参主线：首趟使用纯 URDF 名义 PD 冻结整组，以已检查示教路径 1× 保存完整基线；需要改进时第二趟仍按 1× 走原路径，在内部已到达姿态平滑插入测量停留，直接使用新鲜实际位置固定中心，不要求精确贴合示教样本，也不在机械限位端点卡住反复加激励；普通跟踪误差只影响结果评价，Safety、持续真实振荡、停止及原预算仍退出
-
-Core 公共 `nominal_urdf_gain_design` 由质量矩阵行绝对值和 `R_ii=Σ_j|M_ij|`，按显式 2 Hz／ζ=0.7 设计 `Kp=ω²R`；阻尼现已改为下述双对角化与 MIT 对角投影，物理来源仅为 URDF 几何与惯性，频率和阻尼是工程目标，协议／Safety 只在随后约束实际命令，首趟不由旧参数或静态输入修正确定中心
-
-新 `mit_closed_loop_autotune.hpp` 每轴使用四组冻结实际 PD、相同已知独立命令力矩、相同参考／前馈与其余轴控制器；前三组非共线变化识别 `1/H=a+bP+cD`，第四组独立检查预测；`G_eff=b/a` 与 `V_inner_relative=c/b` 用于受约束频域 PD 设计，依次处理下一轴前固定当时完整组；它们是局部等效内部反馈端口，未以延迟 host q/v 拼造实际 embedded PD 或声称恢复裸机械模型
-
-该阶段仅有效且通过额外控制组验证的候选安排完整同方向 1× 冻结整组比较，然后继续四用途必要验收；缺少噪声以上响应、两半窗一致性、足够 PD 可分辨变化或预算时保留 warning 和原完整基线，不把缺测当整场执行失败；当时局部停留与四组输入使用快标 12T／15T、精调 12T／24T 的旧预算；当前在线主线和现行预算以下文及标定参考为准
-
-已实际编译并运行新 FRF 单项，零编译告警；解析用例覆盖未知共同 command／return transport、内部位置／速度滤波与上报速度差异、固定状态前馈、多轴固定其他回路以及第四控制组失配；真实时域离线 MIT plant 以内部 2 kHz／主机 500 Hz、命令和内部力矩延迟、返回延迟、量化、摩擦及 80 ms 上报速度滤波采样，四组 `4/0.3、2/0.3、4/1.2、2/1.2` 产生可用识别与第四组验证，生成 `2.442/0.57265` 候选
-
-该离线候选在独立卸载恢复试验中，RMS 从 `0.00393432` 降至 `0.00389013 rad`，反侧过冲从 `0.006772` 降至 `0.002564 rad`，进入 `±0.001 rad` 的时间从 `2.218` 降至 `1.334 s`；改善主要来自过冲和恢复，未把约 1% 的 RMS 改善写成刚性精度达标；较弱的 `4→5`、`0.3→0.6` 变化虽可分别测得 H，消元后两半窗不一致仍正确报告证据不足，未放宽阈值
-
-本段只有上述离线单项结果；新主链此时尚未在真实机械臂执行，也未以此前真机任务或纯解析公式宣布通过；方法依据及本项目消元推导的归属见 [标定参考](reference/calibration.md#沿示教轨迹建立响应)，后续完整构建／Mock 与实机结果执行后另记
-
-### 示教导入的共享停点与相邻零速段
-
-同轮真实 Mock 导入先后暴露两个生产问题：顺序 remap 强制每个目标占用新重定时节点，导致近姿态共格时错误跳向后段或导入失败；两个合法静态停点恰落相邻几何节点时，原 `v_start+v_end=0` 直接拒绝有限距离段；两者均在实际规划／映射 helper 修复，未更换失败示教或放宽原 `.025 rad` 目标误差容差
-
-已 nice19 单独编译并运行 `calibration_stop_remap_test.cpp`，零告警、返回 0；覆盖 1／3／7 轴往返重访、浮点更近的返程、同格近姿态、严格原容差、反向／重复 retime，以及密集相邻停点的三角／限速梯形连接；按生产 Hermite 插值检查实际速度与加速度
-
-直接只读原两份失败 CSV，各 201 源点取 51 个有序 stop：原共线余弦路径得到 375 重定时点、`5.83486 s`，当前非共线路径得到 510 点、`7.77688 s`，全部目标按原序保留且位置容差和实际 v/a 检查通过；完整 Native Mock 导入／任务回归由统一构建后另记，单项不代替真实设备验收
-
-### 新主线的最终离线整流程检查
-
-当前源码已完成 Core／Model Probe 编译和既有 standalone、Python、GUI 本地安装，安装器的配置、Python Binding、GUI 静态与后端检查通过；未生成发行包或提交代码
-
-`check_adaptive_gain_core.py` 的算法与内存 Robot 检查通过；`check_gain_taught_path_flow.py --cases complete` 使用实际 Native Mock 跑完四用途，原始 T=25 s，目标 300 s、硬上限 375 s，实际用时 251.72 s；首趟冻结基线、示教内部停留、六轴隔离独立输入以及恢复后的原速整轨均实际执行，柔性可选修正被输入约束拒绝后仍完成保持验证；四用途参数均 available，parameter measurement_complete 为 true
-
-Mock 不模拟力矩产生的物理位移，频响证据不足如实保留，未生成虚假整定候选；qualification_complete 与 validated 均为 false；该检查验证执行链和数据语义，算法效果由前述独立 MIT 时域仿真验证
-
-单用途 fine 的用户停止检查实际用时 9.49 s，T=25 s 对应目标 300 s、硬上限 600 s，已完成基线在第二趟停止后仍可查看与临时应用；临时应用仅修改所选 servo 用途，其他用途不变，恢复精确返回原运行参数，Profile 文件未写入
-
-首次导入真实 Description 流程 10／10 通过，柔性由同一 native 方程按独立 1 Hz／ζ=0.7 目标生成，拖拽严格 Kp=0；Electron 真实 DOM 34 项及宽窄屏、明暗主题四组渲染通过；零速停留和原两份失败导入数据回归通过
-
-另以临时纯内存 MotorBus 检查两种 EOF 失能失败：显式失能失败转 FAULT 后退出、ACTIVE 直接 EOF 时失能失败；均保留 DISABLE_FAILED 与 disable_confirmed=false，返回退出码 1，没有未捕获异常或 abort；未连接真实设备
-
-操作者随后关闭设备并选择自行从软件测试，测试连接已释放；这一轮新频响主线未执行实机标定，不以此前的真机任务替代新算法硬件验收
-
-### 双对角化阻尼与本轮受监督实测
-
-首次导入与标定共用 URDF 名义设计，阻尼改为 Double Diagonalization：求完整质量矩阵与对角刚度的广义模态，计算 `D_full=2MΦ diag(ζ_iω_i)ΦᵀM`，再按 MIT 独立逐轴通道保留正对角；保存完整矩阵、投影方法及投影后的理想模态诊断，不宣称对角近似仍精确达到全部模态 ζ=0.7；来源及公式见 [标定参考](reference/calibration.md#模型初始化)
-
-在线振荡保护从新鲜位置码学习编码步长，区分单次回摆与连续、可分辨的交替行程；已知独立输入的实际频率用于核对受迫响应，不把未知输入或异常频段振荡豁免；原始反馈、Safety 和最终误差验收未放宽
-
-局部频段与输入幅值联合使用当前 URDF 惯量、实际可编码 PD、反馈时序、噪声、示教域和剩余预算作数值规划；无可分辨且合法的实验时记录缺测并继续示教路径；自动换段以同任务已完成的实际发送端点作为凭据，普通跟踪误差不再阻止接续下一趟，冷启动、陈旧反馈和故障状态仍按原进入条件处理
-
-本轮实际执行 standalone、Python、GUI 本地完整构建安装，配置、Python Binding、GUI 静态及后端检查通过；DD 的 1／3／7 轴、耦合、尺度与映射用例，端点接续、频段规划及振荡保护单项通过；三份原始故障记录共 39342 行重放未再出现已确认的误触发；真实持续振荡、已知输入外异常频段用例仍触发保护
-
-最终 Native Mock 两案例约 87.38 秒完成，实际经过 12 个隔离输入／补测窗口，主动停止保留完整基线及已采部分；Mock 不模拟真实力矩运动，未据此生成虚假有效模型或整定候选；首次 Description 导入的共享 DD 流程集成检查通过；单用途精调的停止、用途隔离及预算检查有离线证据，本轮未另做单用途精调实机试验
-
-操作者在旁看护、运动范围空闲且无额外负载的最终四用途实测，用可信原始 T=28.14 秒，目标 337.68 秒、硬上限 422.1 秒，实际 322.412 秒自然结束；冻结基线、含内部短测的发现路径、柔性冻结验证共三趟完整路径均落盘；没有执行故障或在线振荡保护事件；操作者报告相比前版明显更平滑
-
-四用途均 `available=true`、整组参数测量完整；拖拽通过本轮用途验证；刚性、伺服、柔性未通过全部用途验收，`qualification_complete=false/validated=false`；原生整轨逐轴峰值约为 4.286／1.563／2.894／1.747／2.853／18.042 度，仍未达到每轴小于 0.1 度的目标；这些误差保留在结果中，未通过降低指标获得达标
-
-本轮独立输入并未取得足以更新跟踪控制器的频响：一轴在预算与示教域内找不到可分辨频段，其他已测轴分别为位置 tone 低于噪声或输出拟合质量不足；实际输出仅零至数个编码步，输入记录正常、反馈连续且无限幅；保留每个窗口的具体原因与缺失证据，没有把弱响应填为成功识别，本轮未产生有效的新跟踪模型候选
-
-收尾另修复具体失败原因被试验数量汇总覆盖的问题，保留首个实际失败的原因与缺失证据；对应频响单项通过，Terminal 增量编译、本地安装及安装后启动检查通过；该收尾变更仅修复诊断传递，未再执行硬件运动
-
-收尾由操作者确认托稳／支撑后失能，状态确认 INACTIVE，Native 正常退出且串口释放；没有自动改写机器人 Profile、提交代码或打包发行
-
-
-### 连接上下文与未辨识时的示教局部比较
-
-同一实际串口的设备路径和符号链接曾被 YAML 字面比较误判为硬件不同；现在 Damiao 按驱动真实的平铺字段／总线字段优先级规范连接上下文，并仅在可核实的字符设备别名间判为相同；不同设备、波特率、总线、驱动、执行器、映射和控制条件仍拒绝；应用、保存与导出使用相同语义，原始 source 快照及其指纹不变
-
-脚本产生的旧任务可能未记录 Profile 名称；非空的其他 Profile 仍拒绝，空名称则必须同时具备可信 Core、URDF、原始硬件和生效硬件快照，以及完整控制上下文，再执行全部原有逐项核对；不向历史 metadata 补写名字；本轮实际旧任务与当前配置的四用途完整上下文核对通过，四份快照分别缺失／篡改的八个反例全部拒绝
-
-路径初始化不再按轴拼接不同姿态的最大 P／最大 D；使用时间加权平均完整质量矩阵，保存原惯量范围、时间和权重，先约束整组 P，再由同一 M 与实际完整 P 计算 DD 阻尼，最后约束／编码 D；首次导入仍使用声明单姿下的共享 URDF 设计，路径平均矩阵不被解释成全路径最差模态保证
-
-驱动实际公布力矩命令步长，并由 Native 和 Python 能力接口、任务 metadata 保留；joint quantum 按 tor_ratio 映射；独立输入每个 tone 考虑已知协议码余量，不足时不把连续数值当成精确可施加的小力矩；输入仍明确是编码前命令，不冒称测得的电机力矩
-
-频响不足时，主链会复用已完成示教测量生成一次有界局部候选，选择 normalized peak 最大的有效轴；P 增加以准静态残差先验估计可分辨步长，最大单次 50%，记录为候选假设而不是辨识结论；实际码差异、实测位置及速度误差峰值、原力矩和协议边界共同约束；仅完整、同方向、同速度的实际整组比较可保留结果，其他轴及未比较参数不拼接
-
-只读回放原始六轴整轨数据时，新 helper 为最大误差轴生成 P=0.732601→0.854701 的码 6→7 候选，D 维持码 34，保守反馈力矩包络为 0.32617 Nm，小于当时 2.5 Nm 预算；这只证明旧数据能够进入新候选调用链，该候选尚未在真机复测，不把它记为已改进
-
-原有双轴、延迟、摩擦和量化 MIT 离线 plant 参数未变；由新 helper 连续五轮生成并实际仿真完整组，保留比较后轴 0 峰值误差从 0.0262175 降至 0.0161639 rad，RMS 从 0.0215409 降至 0.0133178 rad；有害跨轴组合仍被拒绝；这是该明确离线模型的改善，未替代新的硬件验收
-
-本轮完整 standalone／Python／GUI 构建安装通过，核心完整行为检查、驱动力矩步长与实际寄存器刷新假总线测试、初始化／上下文 12 项（含首次 Description 导入真实 Probe 集成）、Python Binding 及应用上下文检查通过；界面来源说明实际 Electron DOM 40 项及四组尺寸／主题渲染通过；单用途精调 Native Mock 主动停止约 9.04 秒正常退出，保留完整基线，临时应用只改所选用途并可精确恢复，Profile 未写入
-
-最终完整 Native Mock 在原 fixture 中耗时 221.155 秒、退出码 0；原 T=25 秒、目标 300 秒、硬上限 375 秒未变；实际六轴独立输入和补测、四用途保持／扰动／拖拽及完整示教路径均执行；局部候选确实进入同方向原速冻结整轨比较，Mock 不受增益影响，正确拒绝候选并保留原完整参数组；四用途 available、测量完整，独立物理证据不足保持 qualification_complete=false/validated=false；临时仅应用所选 servo、恢复原用途参数、任务退出恢复原运行组及 Profile 不改断言全部通过；171 个质量矩阵采样的时间权重和、最终完整 K 与 DD 矩阵恒等式检查通过；所有 Mock 进程已关闭
-
-界面按每种用途的最终测量路径匹配实际保留的整轨比较，分别显示模型已测但未改进、实测比较后保留改进和历史来源未记录；不通过 available、全局 revisions 或其他用途的记录提升调优证据
-
-本轮用户已将机械臂支撑并断电，后续工作完全离线；没有重新连接、使能、下发设备命令或提交代码，新的阻尼基准与轨迹局部比较效果等待后续实机记录
-
-### 当前在线自整定与参考指标
-
-当前默认流程保留纯 URDF 几何／惯性与双对角化初始化，在正常 1× 示教运动中测量和在线更新 P/D，最后冻结完整实际可编码参数组进行原路径与用途测量；局部 IV/ARX 输入输出模型使用已知有界平滑独立输入，留出预测质量足够时才根据未来已示教参考的 P/D 敏感度小步更新；更新通过实际力矩、协议与平滑过渡约束，模型不足暂停更新但不暂停原路径；关节名称、数量或当前机械臂身份不参与策略分支
-
-刚性／伺服快速模式计划 1 趟运动中更新与 1 趟冻结测量，精细模式最多 2 趟更新与 1 趟冻结测量；柔性采用相同轨迹安排并保留用途独立扰动与释放修正；拖拽固定 Kp＝0，整定 Kd 并测量无外力静置与释放，不强迫进行轨迹回放；不足以完成的下一自动阶段不启动，初始化、更新、过渡、测量与退出全部计入可信原始录制时长 T；当前四用途快标目标 18T、硬上限 24T，单用途精调目标 12T、硬上限 15T
-
-新任务取消精度／误差验收阈值；`acceptance_scope=measured_response_reference_only_v1`、`reference_only=true`、`accuracy_thresholds_enabled=false` 明确全过程峰值、RMS、滞后、最终目标窗与用途指标全部仅供参考；旧误差目标兼容读取但不用于新任务通过评分、应用门槛或流程中断；新序列化的 `validated/endpoint_passed` 等兼容字段固定 false，`available` 仍表示完整参数组已测完，`qualification_complete` 表示扩展用途证据范围已测完
-
-基本参数测量完整时终止分类为 `measured_reference_complete`，缺项为 `insufficient_measurement`；取消、预算和真实故障独立记录；正常完整或部分测量不再以精度失败结束；历史范围与通过字段按原记录显示，读取不改写原数据，不把缺测窗口补成通过
-
-首次导入 Description 所生成的 `core.yaml` 增加仅供参考、尚未实测注释；初始化凭据整体、用途与逐轴值保存 `reference_only=true`、`value_role=unmeasured_model_reference`、`accuracy_thresholds_enabled=false`；数值双对角化与协议编码算法未改变，作者已有增益按原值导入，离线建议不自动覆盖配置；`verify_gain_initialization.py` 的实际 Probe 集成 12 项通过，涵盖新生成、硬件选择后生成与作者配置保持，以及建议元数据和旧增益／人工限制不改变模型数值来源
-
-四种用途仍为刚性、伺服跟踪、柔性、拖拽；保持、轨迹、受扰恢复和释放是用途内测量，参考分析不新增精度认证；实际执行增益、输入、反馈与逐周期时序随记录保存，最终可采用的必须是完整冻结测量过的参数组；原临时应用、恢复、保存与导出入口沿用测量范围
-
-方法与输入输出定义见 [在线自整定](reference/calibration.md#沿示教轨迹在线自整定) 和 [参考指标](reference/calibration.md#参考指标与测量范围)；UBC 自适应控制教程提供间接自整定的建模与控制器更新结构，MathWorks `stepinfo` 用于区分过渡与最终目标观测；旧独立频响和整轨直接比较工具按其原适用条件保留，均不将来源文献视为本实现的通用闭环稳定性或性能保证
-
-`check_adaptive_gain_core.py` 在线主线初次验证时注册 18 个算法检查程序及内存 Robot 回归；当时新增 `gain_online_trajectory_test.cpp` 使用 1 kHz 电机内环、200 Hz 命令／量化反馈、9 ms 力矩延迟、摩擦及实际 120 ms 平滑增益过渡；1／3／7 轴均在同一趟示教结束前发生更新，模拟 RMS 分别从 `0.0532194→0.0370163`、`0.0448100→0.0320536`、`0.0442248→0.0365282 rad`；实际协议网格另完成 3 次在线更新且每个执行码合法；这些数值仅描述该可重复离线模型
-
-新检查还覆盖相同 URDF 先验下实际黏滞改变会影响模型与候选、关节置换、强耦合超出局部模型的预测缺口、未知／微弱独立输入、计划与接受输入不一致、未知前馈、重复／陈旧反馈，以及预测参考与主机时钟偏移；缺少证据时不伪造模型或增益更新；末段冻结完整组，原始误差不按预测模型改写
-
-在线主线初次验证的原生 Mock 四用途流程约 `148.65 s` 完成，原始 T＝25 秒、硬上限375秒；native／compliant 各执行一趟在线学习与一趟冻结测量，共 18 次在线诊断，没有只作搬运的整轨回程；最终逐周期 PD 与所保存完整组一致，四用途可用但兼容通过字段全部 false；Mock 不响应独立力矩，其局部预测模型或 PD 更新只验证软件调度，不能据此声称物理输入响应或优化有效；单用途精调完成两趟在线、一趟冻结后取消约 `50.21 s`，已测组保留，应用与恢复不覆盖其他用途，退出恢复原运行参数；旧精度字段忽略、重复导入不扩大 T 与不足预算不启动试验均已通过
-
-### 在线时序与小增益协议码回归
-
-一次真实归档包含 76 次在线更新、456 个轴窗口；原实现把抖动的实际时间点直接送入等间隔模型，随后以网格不均匀拒绝全部窗口，尚未拟合就返回，候选数与实际安装数均为零；不能由这些零更新记录推断电机问题或整定已经生效
-
-修复后的建模网格按命令与反馈各自时间重建，原始接收间隔约 1.4–13.1 ms 可进入约 20 ms 的等间隔模型；命令按实际写时积分、输出仅在新鲜反馈之间插值；在同一归档上重新计算得到 119 个受留出预测支持的局部模型、66 组候选，全部通过原整组力矩准入；其余模型分别记录系数合理性、留出预测或信息秩不足，不再统一误报为缺少激励；这是历史数据上的候选复算，不是已执行这些候选后的反馈
-
-`tools/check_gain_recorded_online.py --task <归档任务目录> --output /tmp/online-replay.json` 使用现有编译器、Eigen 与 yaml-cpp 构建只读检查；由任务归档提取关节映射、URDF 惯量、协议码与实际预算，逐原更新时刻检查同一候选函数和完整组准入；不构造 Robot 或加载硬件，输出仅允许写入 `/tmp`，归档和 Profile 保持只读；`--record`、`--event-index` 与 `--window-s` 可缩小检查范围
-
-`gain_online_trajectory_test.cpp` 新增 1／3／7 轴物理仿真，约 200 Hz 主机时序包含抖动、10–12 ms 间隔与重复帧，反馈位置分辨率为 `25/65536 rad`，速度量化且带 3 ms 反馈延迟；运动中分别发生 10／14／14 次实际在线更新；两组最终固定 PD 在完全相同初态、路径、速度、前馈、时钟和零辨识输入下复测，RMS 分别为 `0.0102197→0.00516923`、`0.0111443→0.00510169`、`0.0109799→0.0058329 rad`；训练中的原始误差另外保留，不用探索激励不同的在线 RMS 冒充性能对照
-
-初始 P 只有三个协议码时，首个 P 调整严格为相邻一码；小步提案仍经预测成本和原有完整组准入，没有强迫更新；同时检查真实断流不跨接、原始数据不改、未知／限幅输入不伪造、关节置换和耦合超出局部模型时的具体缺口；这些均为离线可重复行为，不替代新版本实机观察
-
-### 示教内部用途测量、弱轴模型与完成说明
-
-本轮保留 URDF 几何／惯性与双对角化初始化，补齐后续测量与参数修正行为；已有建议不因关节名称或某台机械臂身份改变，原 Safety、协议能力与总预算继续生效
-
-独立扰动、刚性与柔性用途测量不再依赖回放端点附近的双侧空间；在已检查示教路径中选择具备所需余量的内部测量位置，访问与返回复用该路径的 Hermite 关节位置，并给源路径时间安排静止起止的速度／加速度约束；不以关节角直线连接替代弯曲的已示教路径，也不扩大示教范围或要求用户精确引导到内部位置；行程结束单独记录，不作为到位精度或用途分析通过结论
-
-往返行程、内部测量、固定组复测及退出都占用同一原始 T 预算；没有合适内部位置或剩余时间不足时，保存 `interior_purpose_measurement_skipped` 及具体原因，不退回硬端点强行施加扰动；实际访问另存 `taught_measurement_anchor_visit` 的源索引、计划／实际耗时、参考位置与逐周期记录
-
-用途测量后的接受参考与之前实际发出的源路径节点分别保存；拖拽释放可能改变接受参考，但不将该平衡位置覆盖成已完成的路径节点；回程从接受参考平滑接回同一原节点，不增加实际到位误差门槛；单独拖拽任务没有先前路径凭据时，沿用原有附近端点引导与新鲜反馈入口，不要求先执行刚性整轨
-
-预算预留按实际尚未执行的阶段计费；当前用途短测、回程及最终冻结轨迹分别只计一次，已尝试但证据不足的拖拽不继续占用不可消费的重试预算；纯拖拽回程只留真实退出成本；这些调整不改变可信原始 T、硬截止时间或 Safety
-
-弱轴局部模型同时比较二阶 ARX 的独立输入系数结构与共用 ZOH 输入系数结构；相邻平滑输入不足以独立辨识两个分子系数时，不再仅因五参数模型秩不足就放弃四参数结构；两种结构使用相同训练与留出窗口，仍核对作用方向、动态合理性和留出预测，不补造不可辨识参数；预测证据尺度来自训练窗实测行程与原始编码／噪声信息，不让留出窗口的新异常扩大它自己的允许误差；`structure`、`parameter_count`、`training_span_rad` 与 `validation_error_limit_rad` 进入模型记录和展开详情，它们不构成运动精度门槛
-
-柔性在线候选使用相同初态、示教参考与前馈条件下的有／无已知小输入配对预测，代价包含有界让位及卸载后恢复，不再沿用刚性轨迹误差最小化作为唯一目标；配对预测只用已测输入量级与当前局部模型，真实柔顺性仍由独立扰动和释放记录说明，不把模型预测写成接触力测量
-
-刚性增加 `gain_rigid_tuning.hpp` 的实测候选：可分辨的受扰位移或实际保持静差支持一次至多 12% 或相邻协议码的 P 比较；D 达到协议上限不冻结 P，重复释放振荡支持有界降低 P 或阻尼单步比较，一次超调不解释成共振；所有提案仍走原整组反馈力矩准入，不能直接跳到大增益
-
-刚性保留比较核对相同输入波形、方向、时间、固定参考中心与执行条件，以及记录的实际完整 P/D；受扰位移或最终静差须有超出测量分辨能力的改善，恢复、漂移、振荡和限幅不得被更差的新响应掩盖；不可辨识轴保持原参数时可随完整已测组保留，不拼接未经联合测量的最终组；`rigid_purpose_local_comparison` 保存原组、比较组、两份测量记录与保留原因，所有分析仍仅供参考
-
-界面将正常完成原因 `reference_analysis_available` 显示为“实测参数与分析已保存，仅供参考”，不再送入通用错误翻译而出现“操作未完成”；真实失败、故障、取消、时限或缺测仍优先于遗留完成原因；内部访问、未安排补测与刚性比较均有可读双语详情，不据此生成精度通过结论，旧记录仍只读
-
-本轮已通过 `check_adaptive_gain_core.py` 的 20 个算法程序与内存 Robot 回归；新增路径访问用例覆盖 1／3／7 轴、路径反向与置换、原 Hermite 路径位置、起止静止及实际速度／加速度边界；在线模型用例验证四参数结构从实际数据成立、留出异常仍拒绝，以及柔性配对预测在名义轨迹误差为零时仍参与候选方向
-
-`gain_rigid_tuning_test.cpp` 直接积分采样 MIT 方程，在同输入与同中心下比较真实生成的完整组，1／3／7 轴受扰峰位移之和分别由 `0.01198→0.01071`、`0.03323→0.02971`、`0.06996→0.06255 rad`；协议低码、D 上限、未知输入、单次超调／重复振荡、换中心／前馈、限幅、恢复恶化、实际保持静差与关节置换反例通过；这些数值描述测试 plant，不是实机改善记录
-
-GUI 总检查 `LAUNCHER_STATIC_PASS` 通过；正常完成任务的只读双语重放，以及真实故障优先级、取消／预算／缺测和历史记录兼容回归通过；真实 Electron 完成 55 项 DOM 检查与 12 组宽窄窗口、明暗主题渲染，覆盖完成正文、新记录与局部模型详情；可用下列入口在 `/tmp` 重现，不加载后端设备接口
-
-```bash
-# 正常 reference-only 完成任务的只读状态回归
-SERIAL_ARM_GAIN_UI_RECORD_DIR=/path/to/reference-only-complete-task \
-  node apps/launcher/scripts/verify-gain-calibration.cjs
-
-# 新记录与在线模型详情的实际 Electron 检查
-node apps/launcher/scripts/gain-ui-fixture.cjs --out /tmp/serialarm-gain-purpose-ui
-DISPLAY=:1 apps/launcher/node_modules/.bin/electron --no-sandbox \
-  apps/launcher/scripts/render-gain-ui.cjs --fixture /tmp/serialarm-gain-purpose-ui \
-  --scenes available,online,failed --themes light,dark
-```
-
-此前按旧预算完成的 Native Mock 四用途快标完成 4／4 趟路径、4 次内部访问／返回及原生／柔性最终完整固定组记录；整套夹具耗时 `148.564 s`，原始 T＝25 秒、当时目标300秒、硬上限375秒；中途取消夹具耗时 `83.504 s`，结果为 `cancelled/stop_requested/fault_interrupted=false`，此前完整原生固定组仍可临时应用与恢复；两者均检查原始 T、完整周期记录、输入／方向、未覆盖输入 Profile 与警告可用语义
-
-该次单用途伺服精调完成两趟在线更新和一趟冻结记录，任务实际耗时 `107.682120 s`，夹具总耗时 `110.056 s`；纯拖拽精调从距示教端点 `0.005 rad` 的初始实际位置开始，经原附近引导入口访问内部位置并返回，未执行整轨，任务实际耗时 `15.355193 s`；Kp 全为0，单用途应用和恢复没有覆盖其他用途；两例均沿用原始 T＝25秒、当时目标300秒、硬上限600秒，正常以 `measured_reference_complete/reference_analysis_available` 结束
-
-这四个原生用例逐个执行并通过，分别可用 `tools/check_gain_taught_path_flow.py --cases complete|cancel|fine|drag` 重现；Mock 不响应物理 PD 或独立力矩，检查结论限于实际软件调度、记录和参数应用；物理整定行为由前述采样 MIT 仿真检查；最终普通本地安装、Core／Terminal／Python 绑定及 Launcher 静态／后端检查通过；本轮没有连接硬件、修改用户 Profile 或历史任务，也没有新的实机效果结论
-
-### 目标虚影冷启动与点到点动作状态
-
-目标虚影的完整 STL 解析与原25度轮廓提取移至 `model-geometry-worker.mjs`，同一资源按视图生命周期共享几何；模型加载时提前构建隐藏虚影并编译共享材质，真正收到目标 FK 后只更新矩阵和显示；清除目标不重算轮廓，替换模型或销毁视图时取消旧任务并释放缓存；准备失败不补造可用目标
-
-`verify-model-ghost.cjs` 在真实 Electron 中对同一组10份 STL（含约13MB大网格）比较原版和修后：首次虚影 `2768.7→23.2 ms`，清除后重显 `2555.9→1.3 ms`，资源读取 `20→10` 次；两版在有效目标姿态下取得相同完整轮廓和目标像素；加载包含后台准备约 `1.57→4.14 s`，期间仍有364次10毫秒界面心跳，区别于交互线程同步冻结；54项真实模型断言和30项普通几何检查通过
-
-点到点 `JointMotionTracker` 用250毫秒新鲜位置窗口的斜率及行程范围观察实际稳定，不要求原始电机速度码恰好回零；参考已完成且持续稳定150毫秒后发布动作完成，`target_reached` 单独说明原位置容差内是否到位，`position_error` 保存实际减目标；静差不会永久阻塞后续请求，也不会显示成目标已到达；命令生成、原位置容差和Safety保持原义，故障／中断事件优先
-
-新增 `joint_motion_tracker_test.cpp` 覆盖1／3／7轴、移动轴单位、原始速度偏置、量化位置、静差、持续运动、振荡、反馈重复／中断与真实终态；已通过单项检查并注册到现有Core测试入口；实际Native禁写Mock在约0.58秒内从移动到完成，公开到位结果及实际偏差，随后接受新动作并由保持请求正常中断，输入Profile未变；Electron生命周期94项及最终本地安装、Python只读字段和Launcher检查通过；未连接硬件
-
-### 用途脉冲测量与拖拽零刚度时序
-
-用途短测从多轴同时相关输入改为固定完整 P/D、固定内点参考的逐轴已知平滑脉冲；同一时刻只有被测轴注入独立输入，其他轴仍记录反馈；直接输入、加载位移、卸载恢复与模型是否可辨识分开保存，有限脉冲观察不声明频响、机械模态或接触力已辨识
-
-拖拽先完成实际 Kp＝0／Kd 参数交接，再测零独立输入的安静窗口；可选的逐轴输入和释放均在相同零刚度组下进行，实际释放时刻不再由正刚度轨迹准备的模式切换代替；安静基本结果和释放测量范围分别保留，缺少可分辨释放不清除已完成的安静结果，调整 Kd 后仍重新测完整组
-
-这些用途阶段继续使用已检查示教内点和原 Hermite 访问／返回；当前四用途快标按原始 T 的 18T 目标与 24T 硬上限，单用途精调按 12T 目标与 15T 硬上限；输入及参数交接、安静、脉冲、释放和收尾均占用同一预算，不扩大轨迹、人工 Safety 或协议能力
-
-`check_gain_taught_path_flow.py` 在既有四个实际 Native Mock 用例中核对逐周期单轴输入、固定完整参数、冻结整轨、直接数据与模型未知的区分，以及原 T、取消保留和单用途应用／恢复；导出检查调用真实桌面文件清单、任务记录导出和候选导出，再逐字节比较临时任务中的内部访问、用途脉冲和拖拽 CSV；Mock 忽略物理力矩，其结果只覆盖执行链、时序、记录及应用，物理响应由单独的采样 MIT 测试覆盖
-
-此前按旧预算完成的真实 Native 禁写 Mock 四个用例均通过：完整四用途快标自动阶段 177.420 秒，取消保留 81.184 秒，伺服单用途精调 81.470 秒，附近起点的拖拽单用途精调 25.742 秒；原始 T 均为 25 秒，当时快标／精调分别为 375／600 秒硬预算，取消只保留已完成的原生冻结组；完整快标的原生用途 6 窗、柔性首轮含补测 12 窗和柔性整组修正 6 窗均逐周期确认最多单轴独立输入；两种拖拽用例均确认实际 P0 后先采集 0.7 秒零输入静置，物理释放未测时保留基本参数；桌面文件清单及两类 ZIP 导出均保留全部访问、用途和拖拽 CSV 原字节；汇总日志 `/tmp/serialarm-isolated-purpose-flow.log`、结果 `/tmp/serialarm-isolated-purpose-flow.json`；本轮没有硬件测试
-
-### 示教残差、输入尺度与名义保持目标
-
-用途脉冲从本次已执行轨迹提取已知独立输入和低速主机 P/D 残差作为输入尺度先验，两个来源分别记录，不解释为已辨识摩擦系数；可分辨响应不足时在原协议、力矩、位置范围与预算内逐次补测，反向响应与低于分辨能力分别记录；柔性模型初值保留，移除其相对刚性固定 0.65／0.85 比例搜索上界
-
-用途测量与保持固定已发送的示教内点目标，入口实际位置仅记录偏差和可测余量，不再用它重置目标；界面同时列出目标、入口实测与差值，历史记录未给出来源时不补成示教名义目标；补测计划、实际窗口、输入来源和整组候选采用结论分开展示
-
-模型驱动更新没有有效方向时，可在预算内从原示教路径选择有分辨度的误差短段，按同方向、同速度、相同前馈和负载条件测量一个有界 P 或 D 坐标候选；两次比较均使用完整固定 P/D，其他轴也参加是否恶化的判定；回程不作为对照，局部记录使用既有 `gain-trajectory-local-*.csv` 导出范围；有限次直接比较保留 `model_identified=false`，最终仍冻结整组做完整轨迹测量
-
-前端参考字段、补测状态、原始来源、局部比较和历史缺项的中英文渲染断言已通过；真实 Electron 原有 58 项 DOM 检查和 10 个状态／尺寸渲染通过，新增六轴参考／输入／脉冲表在桌面及窄窗口中渲染且无页面溢出；这些检查使用离线合成记录，不连接设备
-
-此前按旧预算完成的 Native 禁写 Mock 四个用例均退出 0：四用途快标自动阶段 `269.550 s`，伺服单用途精调 `154.738 s`，中途取消 `173.889 s`，附近起点的拖拽单用途精调 `25.723 s`；原始 T 均为 25 秒，当时快标目标／硬上限为 300／375 秒，精调为 300／600 秒；取消保留已完成原生冻结组且不发布未完成柔性组，临时应用与恢复只涉及选定用途，输入 Profile 未改写
-
-完整快标的原生／柔性用途各执行 18 个隔离窗口，逐周期最多单轴独立输入；输入先验来自实际轨迹记录，保持和用途脉冲始终使用已发送的示教内点目标，入口实测偏差另存；原生与柔性各完成两次局部完整组比较，精调完成三次，Mock 不提供增益变化的物理改善，候选均被拒绝且保留原完整参数；原生／柔性最终冻结记录每轴各 2877 行，拖拽实际 P0 生效后先记录 0.7 秒静置，释放响应缺测不抹掉基本结果；任务文件清单及两类 ZIP 均保留访问、用途、拖拽和局部比较 CSV 原字节
-
-首轮集成发现用途补测计划未与 Robot 既有的用户 Safety 力矩 5% 独立注入界取交集，执行层正确拒绝并保留失败记录；修正计划、补测和固定输入复测共用该边界后，以上四个用例全部通过，未修改 Robot 或 Safety 限制；集中结果为 `/tmp/serialarm-input-prior-v2-flow.json`，日志为 `/tmp/serialarm-input-prior-v2-flow.log`；本轮仅验证离线流程、记录和界面，未连接硬件
-
-### 用途预算与短段比较时钟
-
-当前四用途快标目标为 18T、硬上限 24T，单用途精调为 12T／15T；原始 T 仍来自可信示教录制，重定时和补测不增加时限；原生可选短段比较先预留后续柔性学习、内点访问／返回、用途基线和一次可用用途比较、最终冻结及退出，当前已启动的阶段不重复占用未来额度；预算事件保存实际范围和秒数
-
-短段实测比较改在两个实际参考时钟的共同覆盖区间执行；不同首样本不再都钳到零时刻，速度重建仅采用实际相邻命令变化描述插值不确定度，恒速段不扩大容差；真实不同速度、路径、方向、前馈或负载条件仍拒绝；`comparison_reason` 单独记录采用／拒绝原因，原 `reason` 继续说明为何提出候选
-
-`gain_taught_local_correction_test.cpp` 的 1／3／7 轴非线性 MIT plant 改善检查，以及同路径不规则时钟、实际不同速度／路径、固定整组和缺项反例均通过；既有幅度不超过 12% 或相邻协议码的更新范围保持原义；原始实测 CSV 的只读重放确认原来因首样本钳位和曲线插值被拒绝的两次比较可按各自实测证据保留，未拼接成未测的新参数组
-
-新预算下的 Native 禁写 Mock 四个用例全部退出 0：四用途快标自动阶段 `326.157 s`，伺服单用途精调 `154.791 s`，中途取消 `173.891 s`，附近起点的拖拽单用途精调 `164.878 s`；可信 T 均为25秒，四用途目标／硬上限450／600秒，单用途300／375秒；快标保留4趟完整轨迹、原生与柔性各18个隔离用途窗口及各2次短段整组比较，柔性未来阶段保留105.107秒并实际完成，未因原生可选比较跳过该用途
-
-四个用例继续核对真实周期参数、原路径、单轴输入、固定组最终记录、停止保留、选定用途应用／恢复和两类导出的原始证据字节；拖拽逐轴计划与补测决定均保存输入域和缺项原因，Mock 不响应物理力矩，释放仍标未测并保留已测安静结果；这些结果覆盖离线软件流程，真实响应由单独的采样 MIT plant 测试说明
-
-### 经过示教内点时完成用途测量
-
-刚性／伺服与柔性在线学习之后，沿同一已检查示教路径正常运行到内点；源时钟平滑停下，完成该位置的用途测量与局部参数比较，再按原方向走完剩余路径；最终完整组仍单独冻结复测；四用途快标最多六趟，单用途精调最多四趟，可信 T 及 18T／24T、12T／15T 总预算不变；单独拖拽保留附近起点的沿原路径访问／返回
-
-`taught_path_purpose_dwell` 保存内点、方向、暂停／恢复时刻、停留成本、完成状态与逐周期路径记录；示教源进度使用独立 `trajectory_source_time_s`，控制命令、参考采样和反馈保留真实墙钟；用途采集期间的主轨迹记录保留实际间隙，独立输入与保持仍写入各自 CSV；新阶段与实际恢复状态在现有桌面详情中显示，取消只保留已执行部分，不显示为已走完
-
-途中停留的可选局部比较把短段两端约束在内点前后各4秒源域内；参数测全与用途直接响应测全分列，完整输入但响应不可分辨时保留可用参数，并保留用途补测状态
-
-保持积分窗口按本次已测静差建立；持续冻结且补偿未建立时提前结束该补测，保留实际设置与逐轴冻结原因；短段比较把入口已有静差与运动新增超调分开，初态不一致只触发预算内一次整组同段复测，原始 RMS／峰值不扣除偏置；拖拽阻尼比较以完整惯量和执行重力项核对工况，避免以固定编码位置容差代替工况可比性
-
-更新后的 Native 禁写 Mock 四个用例均退出0：四用途快标自动阶段331.630秒，伺服单用途精调141.643秒，途中取消185.408秒，附近起点的拖拽单用途精调164.877秒；可信 T 均为25秒，四用途目标／硬上限450／600秒，单用途300／375秒；快标完成六趟、精调完成四趟，拖拽单用途没有整轨计数；核对了原 Hermite 路径、同向恢复、源时钟与真实采集间隙、内点前后各4秒的局部范围、逐轴输入、最终全程固定参数组及原始证据导出
-
-快标和精调均保留完整参数组，但 Mock 的独立输入未形成可分辨用途响应，因此 `available=true`、`direct_measurement_complete=false`、`qualification_complete=false`、`validated=false`；取消保留已完成的原生固定组，柔性途中记录保持未完成；临时应用／恢复只修改所选用途，输入配置文件字节不变；这些用例验证软件流程与记录，未执行实机验收
-
-快标与精调用于验证最终运动、局部范围及完整度逻辑；随后仅恢复回调结束后的界面阶段和用途状态，取消与拖拽用例使用含该展示修正的最终二进制；桌面62项 DOM 检查和10张渲染图通过，最后补充的恢复状态及中断用时双语静态回归通过；中断时按已记录的暂停起点显示部分停留用时，不把尚未提交的源时钟插入量0显示为实际停留0秒
-
-### 用途回调恢复与弱响应轴的测量位置
-
-后续实机记录在387.471秒时结束，原675.36秒硬预算尚余287.889秒且没有Safety故障；柔性未测全的直接原因是用途回调结束后仍处于保持模式，却先提交了跟踪参考；修正为交接入口统一恢复跟踪模式、用途与完整参数组，再提交有界参考，实际增益保留原平滑过渡
-
-同次记录中低惯量轴的局部比较只有0.01891°参考行程，小于一个实际位置码；沿途位置选择改为结合实际误差、噪声与附近示教运动，同时保留几何测量余量；该条历史路径的选择从源索引1020移到2040，原弱响应轴附近±4秒参考行程由0.02049°增加到82.4292°；这是原路径的数据计算，未执行新的真机运动，也没有按轴编号定制规则
-
-模型无效但持续同方向误差时，增加显式有界P响应建立试验，保留模型无效标记与未解析响应的累计试验范围；刚性用途改为优先比较实测需求最大的一个增益坐标，按配对均值及不确定度确定可分辨步长；保留完整组准入、实际比较与原始误差，不以预测替代采用结论
-
-拖拽增加附近示教运动准备后的实际P0释放观察；正刚度准备、实际零刚度建立、释放与返回分别记录，保留原独立脉冲证据；新增`drag-taught-release-*.csv`随现有桌面任务记录与成果导出入口保存
-
-完整用途回调的Native禁写Mock执行374.979秒，柔性最终完整参数组测量完成且没有故障；该用例使用加权内点之前版本，理想Mock恰好回到名义内点，没有触发需要交接的恢复分支，不能用于证明该分支已覆盖
-
-最终加权内点版本的针对性Native回归执行76.362秒；仅在临时夹具构造实际P0、一次示教释放、fresh实测保持的回调返回态，并跳过重复用途搜索；生产内点选择、交接、源时钟、同向恢复和最终冻结代码原样运行；实际交接记录完成，108条交接周期均为`COMPLIANT_TRACKING`，实际完整参数组经原平滑交接后与柔性最终固定组一致；可信T＝25秒、单用途预算300／375秒，无故障；桌面文件清单及任务／成果两种ZIP中的新释放记录与源CSV字节一致
-
-该状态机回归使用临时O0禁写Mock，不评价真实机械性能；它与前述374.979秒完整用途回调用例分别说明各自覆盖范围；后续仅修改的拖拽D比较参考复位目标分支不在该单柔性用例内，沿用原示教内点参考与实测惯量／重力工况比较的契约
-
-### 重力采集的连续跟随策略
-
-后续重力实机任务完成双向静态采样和静态拟合，在首个逆向半速动态采集阶段被旧逐点软跟随追赶规则中断；误差0.058884 rad仅比软线0.0588 rad高约0.000084 rad，仍低于原硬线0.14 rad，末1.2秒236条反馈全部新鲜且未限幅；采集调用未开放增益修改，因此旧心跳误用了固定增益验证的1200毫秒追赶超时
-
-重力与动力学采集改用共享`CONTINUOUS_GOVERNED_PATH`策略，保留已有连续调速和变化率限制，软误差只影响源进度，不触发逐点固定增益追赶，也不增长PD；普通回放继续使用原有有界追赶，硬跟随距离与实际Safety不变
-
-现有`adaptive_gain_robot_test.cpp`增加真实内存MotorBus、Robot及ControlRuntime回归；所有轴采用统一0.058884 rad位置偏差，固定Kp＝4.76190476／Kd＝0.12087912，真实运行270个控制周期并越过原1.2秒追赶时限，源进度持续前进且实际PD不变；同一共享策略拒绝超过0.14 rad硬线与无效数据，真实总线读取失败进入FAULT，停止生命周期后拒绝继续参考；该针对性Robot用例退出0，没有连接硬件或运行完整重力采集
-
-## 构建发行包
-
-准备 Release 时执行 `./build_linux.sh`，默认生成独立 Core、Python 与 GUI 发行包；使用 `--with-ros2` 才附加 ROS2 / MoveIt 适配层，构建条件和产物见 [安装](install.md#构建-linux-发行包)
-
-日常更新按修改范围构建和检查组件，无需重新生成 AppImage 或 deb
-
-## 文档约定
-
-README 提供项目介绍、安装和文档入口，操作说明集中在 [使用指南](guide.md)，算法与接口细节放在 `docs/reference/`
-
-命令应写明执行目录、所需组件与参数含义；模型、设备和资源路径使用示例值，不写入本机绝对路径、运行记录或私人笔记
-
-修改公开行为、配置格式或命令入口时，同步更新对应说明；自然语言不使用中文句号，段末不加标点，代码、路径、URL、数学表达与许可证原文保留必要符号
+README 提供项目入口，操作流程集中在 [使用指南](guide.md)，接口和算法放在 `docs/reference/`；公共行为与配置变化同步文档，使用示例路径，不记录本机设备、私人笔记或逐轮开发日志

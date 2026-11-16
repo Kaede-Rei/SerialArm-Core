@@ -56,6 +56,7 @@
 #include <exception>
 #include <functional>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -266,6 +267,7 @@ std::string to_string(RobotErr value) {
         case RobotErr::MOTION_SOURCE_BUSY: return "MOTION_SOURCE_BUSY";
         case RobotErr::CALIBRATION_RESPONSE_UNSTABLE: return "CALIBRATION_RESPONSE_UNSTABLE";
         case RobotErr::FAULT_RECOVERY_NOT_ALLOWED: return "FAULT_RECOVERY_NOT_ALLOWED";
+        case RobotErr::ADMITTANCE_NOT_VALIDATED: return "ADMITTANCE_NOT_VALIDATED";
     }
     return "UNKNOWN";
 }
@@ -698,7 +700,7 @@ public:
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
-        state_.enabled.assign(size, 1);
+        state_.enabled.assign(size, 0);
         state_.err_code.assign(size, 0);
     }
 
@@ -736,6 +738,7 @@ public:
     tl::expected<void, MotorBusErr> activate() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
         active_ = true;
+        state_.enabled.assign(size(),1);
         return { };
     }
 
@@ -756,6 +759,7 @@ public:
     tl::expected<void, MotorBusErr> stop() override { return { }; }
     tl::expected<void, MotorBusErr> deactivate() override {
         active_ = false;
+        state_.enabled.assign(size(),0);
         return { };
     }
     tl::expected<void, MotorBusErr> recover() override { return { }; }
@@ -919,8 +923,9 @@ public:
             const auto selection = read_int("请选择: ");
             if(!selection) {
                 if(std::cin.eof()) {
-                    safe_exit();
-                    break;
+                    if(safe_exit()) break;
+                    std::cerr << "输入已断开，未完成正常退出；仅执行底层资源清理，不启动停放轨迹\n";
+                    return 1;
                 }
                 std::cout << "输入无效，请输入菜单编号\n";
                 continue;
@@ -979,21 +984,20 @@ public:
             cycle_cv_.notify_all();
             if(parking.joinable()) parking.join();
             };
-        auto start_parking = [&](long long id, bool shutdown) {
+        auto start_parking = [&](long long id) {
             if(parking.joinable()) parking.join();
             parking_cancelled.store(false);
             parking_running.store(true);
-            try { parking = std::thread([&, id, shutdown]() {
+            try { parking = std::thread([&, id]() {
                 try {
                     park_and_deactivate(&parking_cancelled);
                     if(parking_cancelled.load()) throw std::runtime_error("park interrupted by operator");
-                    if(shutdown && machine_robot_state() == RobotState::FAULT) machine_deactivate();
-                    if(machine_robot_state() != RobotState::INACTIVE) {
+                    {
                         std::lock_guard<std::mutex> lock(mutex_);
-                        throw std::runtime_error(park_last_error_.empty() ? "park did not reach INACTIVE" : park_last_error_);
+                        if(!park_last_error_.empty() || robot_.get_state()!=RobotState::INACTIVE)
+                            throw std::runtime_error(park_last_error_.empty() ? "park did not reach INACTIVE" : park_last_error_);
                     }
                     emit_reply(id, "true");
-                    if(shutdown) shutdown_complete.store(true);
                 }
                 catch(const std::exception& error) { emit_reply(id, "null", error.what()); }
                 parking_running.store(false);
@@ -1052,9 +1056,10 @@ public:
                     if(!request["method"] || !request["method"].IsScalar()) throw std::runtime_error("method is required");
                     const std::string method = request["method"].as<std::string>();
                     const YAML::Node params = request["params"];
+                    machine_calibration_poll();
                     if(parking_running.load() && method != "status" && method != "get_admittance" &&
                        method != "candidate_overrides" && method != "model_calibration_status" && method != "model_calibration_gain_plan" &&
-                       method != "calibration_status" && method != "teach_replay_status" &&
+                       method != "calibration_status" && method != "calibration_samples" && method != "teach_replay_status" &&
                        method != "deactivate" && method != "hold")
                         throw std::runtime_error("stop the active park operation before other commands");
                     if((teach_replay_phase_.load()==1 || teach_replay_phase_.load()==3) &&
@@ -1065,6 +1070,14 @@ public:
 
                     if(method == "status") {
                         emit_reply(id, machine_snapshot_json());
+                    }
+                    else if(method == "connect") {
+                        machine_connect();
+                        emit_reply(id,"true");
+                    }
+                    else if(method == "observe") {
+                        machine_observe();
+                        emit_reply(id,machine_snapshot_json());
                     }
                     else if(method == "activate") {
                         machine_activate();
@@ -1085,7 +1098,7 @@ public:
                         if(model_calibration_phase_.load() == ModelCalibrationPhase::WAITING_REPLAY_CONFIRMATION)
                             machine_model_calibration_cancel();
                         machine_require_no_calibration("park");
-                        start_parking(id, false);
+                        start_parking(id);
                     }
                     else if(method == "clear_fault") {
                         machine_clear_fault();
@@ -1161,9 +1174,25 @@ public:
                         machine_set_control_path(params["path"].as<std::string>());
                         emit_reply(id,machine_admittance_json());
                     }
+                    else if(method == "admittance_validation") {
+                        if(!params["active"]) throw std::runtime_error("active is required");
+                        {
+                            std::lock_guard<std::mutex> lock(mutex_);
+                            const auto result=robot_.set_admittance_validation(params["active"].as<bool>());
+                            if(!result) throw machine_robot_error("admittance_validation",result.error());
+                            runtime_.clear_commands();
+                        }
+                        emit_reply(id,machine_admittance_json());
+                    }
                     else if(method == "set_admittance") {
                         machine_set_admittance(params);
                         emit_reply(id, machine_admittance_json());
+                    }
+                    else if(method == "calibration_status") {
+                        emit_reply(id,machine_calibration_status_json());
+                    }
+                    else if(method == "calibration_samples") {
+                        emit_reply(id,machine_calibration_samples_json());
                     }
                     else if(method == "calibration_begin") {
                         if(!params || !params["kind"]) throw std::runtime_error("calibration kind is required");
@@ -1288,6 +1317,8 @@ public:
                         emit_reply(id, "true");
                     }
                     else if(method == "shutdown") {
+                        if(machine_robot_state() != RobotState::INACTIVE)
+                            throw std::runtime_error("disconnect requires INACTIVE; explicitly park or deactivate the robot first");
                         if(teach_replay_phase_.load()==3)machine_teach_replay_stop();
                         if(teach_replay_phase_.load()==1 || teach_replay_phase_.load()==4){teach_replay_record_stop_.store(true);teach_replay_stop_.store(true);cycle_cv_.notify_all();if(teach_replay_worker_.joinable())teach_replay_worker_.join();}
                         if(gravity_verify_active_ && machine_robot_state() != RobotState::INACTIVE)
@@ -1295,7 +1326,8 @@ public:
                         if(gravity_verify_active_) machine_gravity_verify_cancel();
                         if(machine_calibration_kind_ != "none") machine_calibration_cancel();
                         if(model_calibration_task_active()) { machine_model_calibration_cancel(); if(model_calibration_worker_.joinable()) model_calibration_worker_.join(); }
-                        start_parking(id, true);
+                        emit_reply(id, "true");
+                        shutdown_complete.store(true);
                     }
                     else {
                         throw std::runtime_error("unknown request method");
@@ -1330,15 +1362,8 @@ public:
             if(machine_friction_thread_.joinable()) {
                 machine_friction_stop_.store(true); cycle_cv_.notify_all(); machine_friction_thread_.join();
             }
-            if(machine_robot_state() == RobotState::ACTIVE) {
-                if(gravity_verify_active_) {
-                    // The IPC peer disappeared while the arm used an unverified drag controller
-                    // Do not start an automatic trajectory with unvalidated tracking gains
-                    machine_deactivate();
-                } else {
-                    park_and_deactivate();
-                }
-            }
+            // A vanished IPC peer cannot authorize a new parking trajectory
+            if(machine_robot_state() == RobotState::ACTIVE) machine_deactivate();
             if(machine_robot_state() == RobotState::FAULT) machine_deactivate();
             if(machine_robot_state() == RobotState::ACTIVE || machine_robot_state() == RobotState::FAULT)
                 throw std::runtime_error("shutdown did not confirm INACTIVE; motor disable remains unconfirmed");
@@ -1466,6 +1491,35 @@ private:
         }
     }
 
+    void store_observation_locked(RobotCycleOutput output) {
+        (void)dynamics_.update_state(output.joint_state,JointVector(cfg_.joint_names.size(),0));
+        last_output_=std::move(output);
+        last_cycle_monotonic_ns_=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+        const auto& stamps=last_output_->actuator_state.feedback_received_ns;
+        feedback_time_ns_=stamps.empty()?0:*std::min_element(stamps.begin(),stamps.end());
+        ++cycle_counter_;cycle_cv_.notify_all();
+    }
+
+    void machine_connect() {
+        machine_require_no_calibration("connect");
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto result=robot_.connect();
+        if(!result)throw machine_robot_error("connect",result.error());
+        cfg_.safety=robot_.get_config().safety;
+        refresh_actuator_info_locked();
+        const auto observed=robot_.observe();
+        if(!observed)throw machine_robot_error("observe",observed.error());
+        store_observation_locked(*observed);
+        background_fault_reported_=false;
+    }
+
+    void machine_observe() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        const auto observed=robot_.observe();
+        if(!observed)throw machine_robot_error("observe",observed.error());
+        store_observation_locked(*observed);
+    }
+
     void machine_activate() {
         if(teach_replay_phase_.load()==4 && teach_replay_worker_.joinable())teach_replay_worker_.join();
         if((model_calibration_phase_.load() == ModelCalibrationPhase::FAILED ||
@@ -1550,8 +1604,12 @@ private:
                 const auto& recovery = cfg_.safety.fault_recovery;
                 if(!recovery.allow_drag_recovery)
                     throw std::runtime_error("fault_drag_recovery: fault_recovery.allow_drag_recovery is false");
-                if(!robot_.get_config().dynamics.gravity_model_validated)
-                    throw std::runtime_error("fault_drag_recovery: model.gravity_model_validated is false; verify the current robot gravity model before reconnecting");
+                const auto& actual=robot_.get_config();
+                if(actual.runtime.control_path==ControlPath::CSP &&
+                   (!actual.capability.admittance.validation.observation_validated || !actual.capability.admittance.validation.response_validated))
+                    throw std::runtime_error("fault_drag_recovery: ADMITTANCE_NOT_VALIDATED");
+                if(actual.runtime.control_path==ControlPath::MIT && !actual.dynamics.gravity_model_validated)
+                    throw std::runtime_error("fault_drag_recovery: model.gravity_model_validated is false; verify the current gravity model");
                 if(recovery.default_mode != FaultHoldMode::RIGID_HOLD || !recovery.require_operator_request)
                     throw std::runtime_error("fault_drag_recovery: fault recovery policy does not permit operator drag recovery");
                 if(const auto& fault = robot_.get_last_fault()) {
@@ -1921,6 +1979,9 @@ private:
         std::ostringstream out;
         out << std::setprecision(17) << "{\"enabled\":" << (a.enabled ? "true" : "false");
         out << ",\"observer_enabled\":" << (a.observer_enabled ? "true" : "false");
+        out << ",\"validation\":{\"observation_validated\":" << (a.validation.observation_validated?"true":"false")
+            << ",\"response_validated\":" << (a.validation.response_validated?"true":"false")
+            << ",\"test_active\":" << (robot_.is_admittance_validation_active()?"true":"false") << ",\"velocity_tolerance\":";machine_json_joint_vector(out,a.validation.velocity_tolerance);out<<'}';
         out << ",\"gravity_model_validated\":" << (robot_.get_config().dynamics.gravity_model_validated ? "true" : "false");
         out << ",\"control_path\":\"" << (robot_.get_control_path()==ControlPath::MIT ? "MIT" : "CSP") << "\"";
         out << ",\"joint_enabled\":"; machine_json_vector(out, a.joint_enabled);
@@ -1933,7 +1994,7 @@ private:
         out << ",\"torque_bias\":"; machine_json_joint_vector(out, a.calibration.torque_bias);
         out << ",\"torque_threshold\":"; machine_json_joint_vector(out, a.calibration.torque_threshold);
         out << ",\"friction\":{\"enabled\":" << (a.calibration.friction.enabled ? "true" : "false")
-            << ",\"velocity_transition\":" << a.calibration.friction.velocity_transition;
+            << ",\"velocity_transition\":"; machine_json_joint_vector(out,a.calibration.friction.velocity_transition);
         out << ",\"positive_coulomb\":"; machine_json_joint_vector(out, a.calibration.friction.positive_coulomb);
         out << ",\"positive_viscous\":"; machine_json_joint_vector(out, a.calibration.friction.positive_viscous);
         out << ",\"negative_coulomb\":"; machine_json_joint_vector(out, a.calibration.friction.negative_coulomb);
@@ -1947,7 +2008,7 @@ private:
         out<<"},\"hold_compensation\":{\"enabled\":"<<(h.enabled?"true":"false")<<",\"integral_gain\":";machine_json_joint_vector(out,h.integral_gain);
         out<<",\"max_torque\":";machine_json_joint_vector(out,h.max_torque);out<<",\"max_rate\":";machine_json_joint_vector(out,h.max_rate);
         out<<",\"contact_threshold\":";machine_json_joint_vector(out,h.contact_threshold);
-        out<<",\"velocity_threshold\":"<<h.velocity_threshold<<",\"error_threshold\":"<<h.error_threshold<<"}}";
+        out<<",\"velocity_threshold\":";machine_json_joint_vector(out,h.velocity_threshold);out<<",\"error_threshold\":";machine_json_joint_vector(out,h.error_threshold);out<<"}}";
         return out.str();
     }
 
@@ -1966,6 +2027,13 @@ private:
             for(double value : values) if(!std::isfinite(value) || (allow_zero ? value<0.0 : value<=0.0)) throw std::runtime_error(std::string(name) + " contains invalid value");
             target = std::move(values);
             };
+        if(params["validation"]) {
+            const auto validation=params["validation"];
+            if(validation["observation_validated"]) candidate.validation.observation_validated=validation["observation_validated"].as<bool>();
+            if(validation["response_validated"]) candidate.validation.response_validated=validation["response_validated"].as<bool>();
+            if(validation["velocity_tolerance"])
+                candidate.validation.velocity_tolerance=machine_node_vector(validation["velocity_tolerance"],"validation.velocity_tolerance");
+        }
         set_vector("mass", candidate.controller.mass);
         set_vector("damping", candidate.controller.damping,true);
         set_vector("stiffness", candidate.controller.stiffness,true);
@@ -5211,7 +5279,7 @@ private:
         }
         {std::lock_guard<std::mutex> lock(model_calibration_mutex_);gain_probe_stage_="hold";gain_candidate_index_=0;gain_probe_kp_=gains.kp.front();gain_probe_kd_=gains.kd.front();}
         gain_probe_begin(label,"all",result.duration_s,0,compensation.enabled?"hold_integral_convergence":"hold_verification");
-        {std::ostringstream actual;actual<<std::setprecision(17)<<"{\"kind\":\"hold_parameters\",\"record_path\":\""<<result.record_path<<"\",\"full_cycle_evidence\":\"frames.csv\",\"label\":\""<<label<<"\",\"duration_s\":"<<result.duration_s<<",\"settling_window_s\":"<<result.settling_window_s<<",\"integral_enabled\":"<<(compensation.enabled?"true":"false")<<",\"kp\":";machine_json_joint_vector(actual,gains.kp);actual<<",\"kd\":";machine_json_joint_vector(actual,gains.kd);actual<<",\"integral_gain\":";machine_json_joint_vector(actual,compensation.integral_gain);actual<<",\"max_torque\":";machine_json_joint_vector(actual,compensation.max_torque);actual<<",\"max_rate\":";machine_json_joint_vector(actual,compensation.max_rate);actual<<",\"contact_threshold\":";machine_json_joint_vector(actual,compensation.contact_threshold);actual<<",\"velocity_threshold\":"<<compensation.velocity_threshold<<",\"error_threshold\":"<<compensation.error_threshold<<",\"target_source\":\""<<result.target_source<<"\",\"target_pos\":";machine_json_joint_vector(actual,result.target);
+        {std::ostringstream actual;actual<<std::setprecision(17)<<"{\"kind\":\"hold_parameters\",\"record_path\":\""<<result.record_path<<"\",\"full_cycle_evidence\":\"frames.csv\",\"label\":\""<<label<<"\",\"duration_s\":"<<result.duration_s<<",\"settling_window_s\":"<<result.settling_window_s<<",\"integral_enabled\":"<<(compensation.enabled?"true":"false")<<",\"kp\":";machine_json_joint_vector(actual,gains.kp);actual<<",\"kd\":";machine_json_joint_vector(actual,gains.kd);actual<<",\"integral_gain\":";machine_json_joint_vector(actual,compensation.integral_gain);actual<<",\"max_torque\":";machine_json_joint_vector(actual,compensation.max_torque);actual<<",\"max_rate\":";machine_json_joint_vector(actual,compensation.max_rate);actual<<",\"contact_threshold\":";machine_json_joint_vector(actual,compensation.contact_threshold);actual<<",\"velocity_threshold\":";machine_json_joint_vector(actual,compensation.velocity_threshold);actual<<",\"error_threshold\":";machine_json_joint_vector(actual,compensation.error_threshold);actual<<",\"target_source\":\""<<result.target_source<<"\",\"target_pos\":";machine_json_joint_vector(actual,result.target);
             actual<<",\"entry_actual_pos\":";machine_json_joint_vector(actual,result.entry_actual);actual<<'}';gain_experiment_records_.push_back(actual.str());}
 
         std::uint64_t cursor=0;std::string blocked_integral;
@@ -5505,7 +5573,7 @@ private:
                             domain_stopped=true;requested=true;
                             if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::RIGID,now,HoldTargetPolicy::CAPTURE_MEASURED))
                                 throw std::runtime_error("cannot_hold_demonstrated_release_without_coasting_room");
-                            return;
+                    return;
                         }
                         if(!runtime_.set_impedance_mode(robot_,JointImpedanceMode::DRAG) ||
                            !robot_.set_calibration_tracking_gains(gains,JointImpedanceMode::DRAG))throw std::runtime_error("cannot_release_demonstrated_motion_to_actual_drag");
@@ -6988,7 +7056,7 @@ private:
                         trim.max_rate[axis]=trim.max_torque[axis];trim.contact_threshold[axis]=std::max(.02,.10*cfg_.safety.limits.max_effort[axis]);
                         trim.integral_gain[axis]=std::min(.25*stage.hold_gains.kp[axis],trim.max_torque[axis]/std::max(.001,std::abs(stage.hold.mean_error[axis])));
                     }
-                    trim.velocity_threshold=gain_requirements_.hold_velocity_rad_s;trim.error_threshold=std::max({.01,2*gain_requirements_.hold_error_rad,1.25*stage.hold.worst_error});
+                    trim.velocity_threshold.assign(cfg_.joint_names.size(),gain_requirements_.hold_velocity_rad_s);trim.error_threshold.assign(cfg_.joint_names.size(),std::max({.01,2*gain_requirements_.hold_error_rad,1.25*stage.hold.worst_error}));
                     stage.attempted_compensation=trim;
                     double integral_cost=2.1;for(std::size_t i=0;i<n;++i)integral_cost=std::max(integral_cost,1.7+3.5*stage.hold_gains.kp[i]/trim.integral_gain[i]);
                     if(gain_trial_fits(integral_cost+verification_reserve()))try {
@@ -7243,7 +7311,7 @@ private:
             if(stage.category=="rigid_tracking" || stage.category=="compliant_tracking") {
                 out<<",\"hold_verification\":";hold_json(stage.hold);
                 if(stage.compensation) {
-                    const auto& c=*stage.compensation;out<<",\"hold_compensation\":{\"enabled\":"<<(c.enabled?"true":"false")<<",\"integral_gain\":";machine_json_joint_vector(out,c.integral_gain);out<<",\"max_torque\":";machine_json_joint_vector(out,c.max_torque);out<<",\"max_rate\":";machine_json_joint_vector(out,c.max_rate);out<<",\"contact_threshold\":";machine_json_joint_vector(out,c.contact_threshold);out<<",\"velocity_threshold\":"<<c.velocity_threshold<<",\"error_threshold\":"<<c.error_threshold<<'}';if(stage.compensated_hold){out<<",\"hold_compensation_verification\":";hold_json(*stage.compensated_hold);}
+                    const auto& c=*stage.compensation;out<<",\"hold_compensation\":{\"enabled\":"<<(c.enabled?"true":"false")<<",\"integral_gain\":";machine_json_joint_vector(out,c.integral_gain);out<<",\"max_torque\":";machine_json_joint_vector(out,c.max_torque);out<<",\"max_rate\":";machine_json_joint_vector(out,c.max_rate);out<<",\"contact_threshold\":";machine_json_joint_vector(out,c.contact_threshold);out<<",\"velocity_threshold\":";machine_json_joint_vector(out,c.velocity_threshold);out<<",\"error_threshold\":";machine_json_joint_vector(out,c.error_threshold);out<<'}';if(stage.compensated_hold){out<<",\"hold_compensation_verification\":";hold_json(*stage.compensated_hold);}
                 }
             }
             if(stage.category=="compliant_tracking") {
@@ -7930,11 +7998,12 @@ private:
             <<"\",\"control_path\":\""<<(robot_.get_control_path()==ControlPath::MIT ? "MIT" : "CSP")<<"\"},\"admittance\":{";
         const auto& a=cfg_.capability.admittance;
         out<<"\"enabled\":"<<(a.enabled?"true":"false")<<",\"joint_enabled\":";machine_json_vector(out,a.joint_enabled);
+        out<<",\"validation\":{\"velocity_tolerance\":";machine_json_joint_vector(out,a.validation.velocity_tolerance);out<<'}';
         out<<",\"observer\":{\"mode\":\""<<"MOMENTUM"<<"\",\"momentum_gain\":";machine_json_joint_vector(out,a.observer.momentum_gain);
         out<<"},\"calibration\":{\"torque_bias\":";machine_json_joint_vector(out,a.calibration.torque_bias);
         out<<",\"torque_threshold\":";machine_json_joint_vector(out,a.calibration.torque_threshold);
         const auto& f=a.calibration.friction;
-        out<<",\"friction\":{\"enabled\":"<<(f.enabled?"true":"false")<<",\"velocity_transition\":"<<f.velocity_transition;
+        out<<",\"friction\":{\"enabled\":"<<(f.enabled?"true":"false")<<",\"velocity_transition\":";machine_json_joint_vector(out,f.velocity_transition);
         out<<",\"positive_coulomb\":";machine_json_joint_vector(out,f.positive_coulomb);
         out<<",\"positive_viscous\":";machine_json_joint_vector(out,f.positive_viscous);
         out<<",\"negative_coulomb\":";machine_json_joint_vector(out,f.negative_coulomb);
@@ -8100,7 +8169,7 @@ private:
                     trim.integral_gain=c["integral_gain"].as<JointVector>();
                     trim.max_torque=c["max_torque"].as<JointVector>();trim.max_rate=c["max_rate"].as<JointVector>();
                     trim.contact_threshold=c["contact_threshold"].as<JointVector>();
-                    trim.velocity_threshold=c["velocity_threshold"].as<double>();trim.error_threshold=c["error_threshold"].as<double>();
+                    trim.velocity_threshold=c["velocity_threshold"].as<JointVector>();trim.error_threshold=c["error_threshold"].as<JointVector>();
                     hold_compensation=trim;
                 } else {
                     // Earlier baseline-only records were also measured with trim
@@ -8478,6 +8547,9 @@ private:
         machine_calibration_context_valid_ = true;
         machine_calibration_error_.clear();
         machine_calibration_kind_ = kind;
+        machine_calibration_completed_kind_.clear();
+        last_static_validation_result_.reset();
+        machine_calibration_validation_scope_.clear();
         machine_calibration_phase_ = "waiting_user";
         machine_calibration_expected_ = kind == "static" ? 8 : 5;
         machine_calibration_poses_.clear();
@@ -8489,26 +8561,66 @@ private:
         }
     }
 
-    void machine_calibration_capture() {
-        if(machine_calibration_kind_ != "static" && machine_calibration_kind_ != "validation") throw std::runtime_error("no static calibration task is active");
-        if(machine_calibration_poses_.size() >= machine_calibration_expected_) throw std::runtime_error("all required poses are already captured");
-        machine_calibration_phase_ = "collecting";
-        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID) || !wait_for_static_tuning_pose(0.30, 5.0, 0.03, 1.5)) {
-            machine_calibration_phase_ = "waiting_user";
-            throw std::runtime_error("pose did not become static within timeout");
+    static constexpr double kExternalStaticWindowS=15.0;
+
+    void machine_calibration_poll() {
+        if(!machine_static_capture_.valid() || machine_static_capture_.wait_for(std::chrono::seconds(0))!=std::future_status::ready) return;
+        auto samples=machine_static_capture_.get();
+        if(!samples) {
+            machine_calibration_phase_="failed";
+            machine_calibration_error_="static sample collection interrupted or pose moved";
+            return;
         }
-        auto samples = collect_static_pose_samples(0.0, 1.0);
-        if(!samples) { machine_calibration_phase_ = "waiting_user"; throw std::runtime_error("static sample collection failed"); }
         machine_calibration_poses_.push_back(std::move(*samples));
-        if(machine_calibration_poses_.size() < machine_calibration_expected_) {
-            const auto sampling_mode=robot_.get_control_path()==ControlPath::CSP ? JointImpedanceMode::RIGID : JointImpedanceMode::DRAG;
-            if(!set_tuning_impedance_mode(sampling_mode)) throw std::runtime_error("failed to return to calibration sampling mode");
-            machine_calibration_phase_ = "waiting_user";
+        if(machine_calibration_poses_.size()==machine_calibration_expected_) {
+            machine_calibration_phase_="ready_to_fit";
+        } else {
+            const auto mode=robot_.get_control_path()==ControlPath::CSP?JointImpedanceMode::RIGID:JointImpedanceMode::DRAG;
+            if(!set_tuning_impedance_mode(mode)) {
+                machine_calibration_phase_="failed";
+                machine_calibration_error_="failed to restore pose selection mode";
+                return;
+            }
+            machine_calibration_phase_="waiting_user";
         }
-        else machine_calibration_phase_ = "ready_to_fit";
+    }
+
+    void machine_calibration_capture() {
+        machine_calibration_poll();
+        if(machine_calibration_kind_!="static" && machine_calibration_kind_!="validation") throw std::runtime_error("no static calibration task is active");
+        if(machine_static_capture_.valid()) throw std::runtime_error("pose acquisition is running");
+        if(machine_calibration_poses_.size()>=machine_calibration_expected_) throw std::runtime_error("all required poses are already captured");
+        if(!set_tuning_impedance_mode(JointImpedanceMode::RIGID)) throw std::runtime_error("failed to hold current pose");
+        machine_calibration_phase_="collecting";
+        machine_static_cancel_.store(false);
+        machine_static_capture_=std::async(std::launch::async,[this] {
+            return collect_static_pose_samples(1.0,kExternalStaticWindowS,&machine_static_cancel_);
+        });
+    }
+
+    std::string machine_calibration_samples_json() const {
+        std::ostringstream out;
+        out << std::setprecision(17) << "{\"static_window_s\":" << kExternalStaticWindowS << ",\"poses\":[";
+        for(std::size_t i=0;i<machine_calibration_poses_.size();++i) {
+            if(i) out << ',';
+            out << "{\"samples\":[";
+            const auto& samples=machine_calibration_poses_[i].samples;
+            for(std::size_t j=0;j<samples.size();++j) {
+                if(j) out << ',';
+                const auto& sample=samples[j];
+                out << "{\"time_s\":" << sample.time_s << ",\"position\":"; machine_json_joint_vector(out,sample.position);
+                out << ",\"gravity\":"; machine_json_joint_vector(out,sample.gravity);
+                out << ",\"measured_torque\":"; machine_json_joint_vector(out,sample.measured_torque);
+                out << '}';
+            }
+            out << "]}";
+        }
+        out << "]}";
+        return out.str();
     }
 
     void machine_calibration_finish() {
+        machine_calibration_poll();
         if(machine_calibration_poses_.size() != machine_calibration_expected_) throw std::runtime_error("required poses have not all been captured");
         machine_calibration_phase_ = "fitting";
         if(machine_calibration_kind_ == "static") {
@@ -8545,14 +8657,31 @@ private:
             const auto result = evaluate_admittance_static_validation(machine_calibration_poses_, config);
             if(!result) { machine_calibration_phase_ = "failed"; machine_restore_calibration_runtime(false); throw std::runtime_error("static validation failed"); }
             last_static_validation_result_ = result.value();
+            auto candidate=machine_calibration_original_admittance_;
+            const bool static_pass=std::all_of(result->pass.begin(),result->pass.end(),[](auto value){return value!=0;});
+            bool friction_pass=!candidate.calibration.friction.enabled;
+            if(!friction_pass && last_friction_calibration_result_) {
+                const auto& friction=*last_friction_calibration_result_;
+                const auto& actual=candidate.calibration.friction;
+                friction_pass=friction.positive_coulomb==actual.positive_coulomb && friction.positive_viscous==actual.positive_viscous &&
+                    friction.negative_coulomb==actual.negative_coulomb && friction.negative_viscous==actual.negative_viscous &&
+                    std::all_of(friction.validation_pass.begin(),friction.validation_pass.end(),[](auto value){return value!=0;});
+            }
+            candidate.validation.observation_validated=static_pass && friction_pass;
+            candidate.validation.response_validated=false;
+            if(!apply_runtime_admittance_cfg(candidate)) throw std::runtime_error("failed to apply observation validation");
+            machine_calibration_validation_scope_=machine_admittance_json();
             machine_restore_calibration_runtime(false);
             machine_calibration_phase_ = "complete";
         }
+        machine_calibration_completed_kind_=machine_calibration_kind_;
         machine_calibration_kind_ = "none";
         machine_calibration_context_valid_ = false;
     }
 
     void machine_calibration_cancel(bool restore_mode = true) {
+        machine_static_cancel_.store(true);
+        if(machine_static_capture_.valid()) { machine_static_capture_.wait(); machine_static_capture_={}; }
         if(machine_friction_thread_.joinable()) {
             machine_friction_stop_.store(true);
             cycle_cv_.notify_all();
@@ -8675,6 +8804,7 @@ private:
     std::string machine_calibration_status_json() const {
         std::ostringstream out;
         out << "{\"kind\":\"" << machine_json_escape(machine_calibration_kind_) << "\",\"phase\":\"" << machine_json_escape(machine_calibration_phase_) << "\"";
+        out << ",\"completed_kind\":\"" << machine_json_escape(machine_calibration_completed_kind_) << "\"";
         out << ",\"captured\":" << machine_calibration_poses_.size() << ",\"expected\":" << machine_calibration_expected_;
         if(!machine_calibration_error_.empty()) out << ",\"error\":\"" << machine_json_escape(machine_calibration_error_) << "\"";
         if(machine_friction_trajectory_) out << ",\"trajectory_samples\":" << machine_friction_trajectory_->positions.size() << ",\"replay_rate\":" << machine_friction_replay_rate_;
@@ -8685,7 +8815,12 @@ private:
             out << ",\"observable\":"; machine_json_vector(out, last_static_calibration_result_->gravity_scale_observable); out << '}';
         }
         if(last_static_validation_result_) {
-            out << ",\"validation\":{\"residual_rms\":"; machine_json_joint_vector(out, last_static_validation_result_->residual_rms);
+            out << ",\"validation\":{\"independent\":true,\"static_window_s\":" << kExternalStaticWindowS
+                << ",\"pose_count\":" << machine_calibration_poses_.size()
+                << ",\"friction_required\":" << (cfg_.capability.admittance.calibration.friction.enabled?"true":"false")
+                << ",\"validated\":" << (cfg_.capability.admittance.validation.observation_validated?"true":"false")
+                << ",\"scope_config\":" << (machine_calibration_validation_scope_.empty()?"{}":machine_calibration_validation_scope_)
+                << ",\"residual_rms\":"; machine_json_joint_vector(out, last_static_validation_result_->residual_rms);
             out << ",\"residual_p99\":"; machine_json_joint_vector(out, last_static_validation_result_->residual_p99);
             out << ",\"residual_max\":"; machine_json_joint_vector(out, last_static_validation_result_->residual_max);
             out << ",\"pass\":"; machine_json_vector(out, last_static_validation_result_->pass); out << '}';
@@ -8734,6 +8869,7 @@ private:
         out << ",\"control_path\":";machine_json_string(out,robot_.get_control_path()==ControlPath::MIT ? "MIT" : "CSP");
         out << ",\"monotonic_ns\":" << last_cycle_monotonic_ns_;
         out << ",\"feedback_receive_ns\":" << feedback_time_ns_;
+        out << ",\"hardware_connected\":" << (robot_.is_connected()?"true":"false");
         out << ",\"valid\":" << (last_output_ ? "true" : "false");
         out << ",\"sequence\":" << cycle_counter_;
         if(feedback_time_ns_ > 0) {
@@ -9015,6 +9151,10 @@ private:
             return true;
         };
         hooks.after_step=[this](const RuntimeSnapshot& step){
+            if(step.observation)store_observation_locked(*step.observation);
+            else if(step.state==RobotState::INACTIVE && step.fault) {
+                last_output_.reset();feedback_time_ns_=0;
+            }
             if(step.fault_feedback) {
                 last_output_=*step.fault_feedback;
                 last_cycle_monotonic_ns_=step.monotonic_ns;
@@ -9109,7 +9249,8 @@ private:
         JointVector next_vel = stream_.ref_vel;
         const JointVector* measured=stream_.park_mode && last_output_ ? &last_output_->joint_state.pos : nullptr;
         const bool complete=advance_joint_reference(next_pos,next_vel,stream_.target_pos,
-            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,stream_.speed_scale,dt,measured);
+            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,stream_.speed_scale,dt,measured,
+            measured?&cfg_.shutdown.for_path(robot_.get_control_path()).position_tolerance:nullptr);
         const auto result = runtime_.submit_reference(robot_,JointPosVelCmd{next_pos,next_vel},now,
             stream_.park_mode ? MotionSource::PARK : MotionSource::STREAM);
         if(!result)return result;
@@ -9205,7 +9346,7 @@ private:
         std::cout << " 4. 运动与命令\n";
         std::cout << " 5. 动力学与配置\n";
         std::cout << " 6. 调参与测试\n";
-        std::cout << " 0. 回到停放姿态并安全退出\n";
+        std::cout << " 0. 退出终端（需先失能）\n";
     }
 
     bool handle_menu(int selection) {
@@ -9382,7 +9523,13 @@ private:
         std::unique_lock<std::mutex> lock(mutex_);
         park_last_error_.clear();
         if(cancelled && cancelled->load()) { park_last_error_ = "park interrupted by operator"; return; }
-        clear_command_sources();
+        const auto path=robot_.get_control_path();
+        const auto parking=cfg_.shutdown.for_path(path);
+        if(!parking.enabled) {
+            park_last_error_="parking is disabled for the current control path";
+            std::cout<<"当前执行路径未允许停放再失能\n";
+            return;
+        }
         if(robot_.get_state() == RobotState::INACTIVE) {
             std::cout << "Robot 已经处于 INACTIVE\n";
             return;
@@ -9392,46 +9539,58 @@ private:
             std::cout << "Robot 当前处于 FAULT，不能执行停放轨迹，请先处理故障或使用立即失能\n";
             return;
         }
-        if(!cfg_.shutdown.park_before_disable) {
-            std::cout << "shutdown.park_before_disable=false，将直接执行立即失能\n";
-            immediate_deactivate_locked();
+        const std::size_t n = cfg_.joint_names.size();
+        if(parking.park_pos.size() != n || parking.position_tolerance.size() != n ||
+           parking.velocity_tolerance.size() != n) {
+            park_last_error_ = "parking target and per-joint tolerances must be configured before parking";
+            std::cout << "请先设置完整的停放目标和逐关节到位容差\n";
             return;
+        }
+        bool rigid_phase=parking.strategy==serial_arm::ParkingStrategy::RIGID;
+        if(!rigid_phase && path==ControlPath::CSP) {
+            const auto& validation=robot_.get_config().capability.admittance.validation;
+            if(!validation.observation_validated || !validation.response_validated) {
+                park_last_error_="ADMITTANCE_NOT_VALIDATED: compliant parking requires accepted external effort and response";
+                std::cout<<"CSP 柔性停放需要先完成外力和响应验收\n";
+                return;
+            }
         }
 
         // Stop an unfinished calibration from leaking temporary tracking gains
         // into a normal shutdown. Robot's ordinary configured gains stay intact
         robot_.clear_calibration_hold_gains();
         robot_.clear_calibration_tracking_gains();
-        // CSP 停放使用名义位置轨迹，不依赖尚未标定的外力退让
+        // Parking follows the selected strategy; a rejected mode never selects another strategy
 
-        const auto resume_admittance = [this]() {
-
-            };
+        const auto capture_current = [&](Robot::TimePoint now) {
+            clear_command_sources();
+            if(robot_.get_state()==RobotState::ACTIVE) {
+                const auto held=runtime_.set_impedance_mode(robot_,robot_.get_impedance_mode(),now,HoldTargetPolicy::CAPTURE_MEASURED);
+                if(!held)print_fault(held.error());
+            }
+        };
         const auto interrupted = [&]() {
             if(!cancelled || !cancelled->load()) return false;
-            clear_command_sources();
-            if(robot_.get_state() == RobotState::ACTIVE)
-                (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID, Robot::Clock::now());
+            capture_current(Robot::Clock::now());
             park_last_error_ = "park interrupted by operator";
-            resume_admittance();
             return true;
             };
 
-        const bool csp_parking=robot_.get_control_path()==ControlPath::CSP;
-        const auto mode_result = runtime_.set_impedance_mode(robot_, csp_parking ? JointImpedanceMode::RIGID : JointImpedanceMode::COMPLIANT, Robot::Clock::now());
+        const auto mode_result = runtime_.set_impedance_mode(robot_,rigid_phase?JointImpedanceMode::RIGID:JointImpedanceMode::COMPLIANT,
+            Robot::Clock::now(),HoldTargetPolicy::CAPTURE_MEASURED);
         if(!mode_result) {
             park_last_error_ = "park failed: cannot enter parking mode; robot was not automatically disabled";
             std::cout << "切换停放模式失败：\n";
             print_fault(mode_result.error());
-            resume_admittance();
             return;
         }
 
+        clear_command_sources();
         stream_.enabled = true;
         stream_.completion_reported = false;
         stream_.park_mode = true;
-        stream_.speed_scale = cfg_.shutdown.speed_scale;
-        stream_.target_pos = cfg_.shutdown.park_pos;
+        stream_.speed_scale = parking.speed_scale;
+        stream_.target_pos = parking.park_pos;
         stream_.ref_pos = robot_.get_joint_state().pos;
         stream_.ref_vel.assign(cfg_.joint_names.size(), 0.0);
         stream_.last_update_time = Robot::Clock::now();
@@ -9440,16 +9599,12 @@ private:
         background_fault_reported_ = false;
 
         std::cout << "开始回到配置的停放姿态\n";
-        if(csp_parking)std::cout << "[停放] CSP 刚性位置轨迹，不启用导纳退让\n";
-        else std::cout << "[停放] 前 " << cfg_.shutdown.compliant_phase_ratio * 100.0
-            << "% 时间柔性快速回位，后 " << (1.0 - cfg_.shutdown.compliant_phase_ratio) * 100.0
-            << "% 时间刚性精调，切换时重新以实测关节位置建立参考\n";
-        print_vector("park_pos", cfg_.shutdown.park_pos);
+        std::cout << (rigid_phase?"[停放] 全程刚性受限定位\n":"[停放] 先柔性接近，实测稳定后交接刚性定位\n");
+        print_vector("park_pos", parking.park_pos);
 
         const Robot::TimePoint started_at = Robot::Clock::now();
         Robot::TimePoint last_progress_at = started_at;
         std::optional<Robot::TimePoint> settled_at;
-        bool rigid_finish_mode = csp_parking;
         while(robot_.get_state() == RobotState::ACTIVE) {
             if(interrupted()) return;
             const std::uint64_t previous_cycle = cycle_counter_;
@@ -9460,12 +9615,10 @@ private:
             const Robot::TimePoint now = Robot::Clock::now();
             // Do not validate or deactivate based on an old frozen feedback frame
             if(cycle_counter_ == previous_cycle || !last_output_) {
-                if(std::chrono::duration<double>(now - started_at).count() >= cfg_.shutdown.timeout_s) {
-                    clear_command_sources();
-                    (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID, now);
-                    park_last_error_ = "park timeout: fresh joint feedback unavailable; robot remains enabled in RIGID";
-                    std::cout << "停放超时：未获取到有效关节反馈，已进入 RIGID 并取消失能\n";
-                    resume_admittance();
+                if(std::chrono::duration<double>(now - started_at).count() >= parking.timeout_s) {
+                    capture_current(now);
+                    park_last_error_ = "park timeout: fresh joint feedback unavailable; parking cancelled without disabling motors";
+                    std::cout << "停放超时：未获取到有效关节反馈，已取消停车并请求当前位置保持，取消失能\n";
                     return;
                 }
                 continue;
@@ -9473,103 +9626,68 @@ private:
 
             double max_position_error = 0.0;
             double max_velocity = 0.0;
+            double position_ratio = 0.0;
+            double velocity_ratio = 0.0;
             std::size_t position_index = 0;
             std::size_t velocity_index = 0;
             for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-                const double position_error = std::abs(last_output_->joint_state.pos[i] - cfg_.shutdown.park_pos[i]);
+                const double position_error = std::abs(last_output_->joint_state.pos[i] - parking.park_pos[i]);
                 const double velocity = std::abs(last_output_->joint_state.vel[i]);
-                if(position_error > max_position_error) {
+                if(position_error / parking.position_tolerance[i] > position_ratio) {
+                    position_ratio = position_error / parking.position_tolerance[i];
                     max_position_error = position_error;
                     position_index = i;
                 }
-                if(velocity > max_velocity) {
+                if(velocity / parking.velocity_tolerance[i] > velocity_ratio) {
+                    velocity_ratio = velocity / parking.velocity_tolerance[i];
                     max_velocity = velocity;
                     velocity_index = i;
                 }
             }
 
-            // The nominal 75/25 division is temporal. Decelerate the compliant
-            // reference shortly before the transition, so measured velocity can
-            // pass the handover gate without requiring proximity to park_pos
-            const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
-            const double soft_end_s=cfg_.shutdown.timeout_s*cfg_.shutdown.compliant_phase_ratio;
-            if(!rigid_finish_mode && elapsed_s>=std::max(0.0,soft_end_s-0.35))
-                stream_.speed_scale=0.0;
-            if(!rigid_finish_mode && serial_arm::park_time_to_rigid(
-                elapsed_s, cfg_.shutdown.timeout_s, cfg_.shutdown.compliant_phase_ratio) &&
-                serial_arm::park_safe_for_timed_rigid(
-                    last_output_->joint_state.pos, last_output_->joint_state.vel,
-                    cfg_.shutdown.park_pos, cfg_.shutdown.velocity_tolerance,
-                    cfg_.shutdown.relaxed_tolerance_ratio)) {
-                // Robot::set_impedance_mode resets its command history to actual
-                // feedback, then the park streamer starts from this same state.
-                // High rigidity never inherits the compliant reference backlog
-                const JointVector actual_pos = last_output_->joint_state.pos;
-                const auto rigid_result = runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID, now);
-                if(!rigid_result) {
-                    clear_command_sources();
-                    (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID, now);
-                    park_last_error_ = "park failed: cannot switch to RIGID; robot remains enabled in RIGID";
-                    std::cout << "切换精确收敛模式失败，保持使能并取消自动失能\n";
-                    resume_admittance();
-                    return;
-                }
-                // The command starts at measured q, NOT at the old compliant
-                // reference, and the gains are blended over 0.65 s instead of
-                // jumping directly from Gray compliant Kp to rigid Kp
-                if(!robot_.begin_park_rigid_gain_ramp(0.65,now)) {
-                    clear_command_sources();
-                    (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID,now);
-                    park_last_error_="park failed: cannot initialize smooth rigid handover; robot remains enabled in RIGID";
-                    resume_admittance();
-                    return;
-                }
-                stream_.ref_pos = actual_pos;
-                stream_.ref_vel.assign(cfg_.joint_names.size(), 0.0);
-                stream_.last_update_time = now;
-                stream_.completion_reported = false;
-                // Keep the configured safe speed limit during final approach.
-                // The old 0.16 clamp made a 2.5 s rigid phase unnecessarily slow
-                stream_.speed_scale = cfg_.shutdown.speed_scale;
-                rigid_finish_mode = true;
-                settled_at.reset();
-                std::cout << "[停放] 柔性阶段结束，实测位置续接并渐进增加刚度\n";
-            }
-
-            const bool reached = max_position_error <= cfg_.shutdown.position_tolerance &&
-                max_velocity <= cfg_.shutdown.velocity_tolerance;
-            if(rigid_finish_mode && reached) {
+            const double elapsed_s=std::chrono::duration<double>(now-started_at).count();
+            const bool reference_complete=stream_.completion_reported;
+            const double position_boundary=rigid_phase?1.0:serial_arm::kParkFollowingPositionRatio;
+            const bool reached=reference_complete && position_ratio<=position_boundary && velocity_ratio<=1.0;
+            if(reached) {
                 if(!settled_at) settled_at = now;
-                if(std::chrono::duration<double>(now - *settled_at).count() >= cfg_.shutdown.settle_time_s) break;
+                if(std::chrono::duration<double>(now - *settled_at).count() >= parking.settle_time_s) {
+                    if(rigid_phase)break;
+                    const auto handoff=runtime_.set_impedance_mode(robot_,JointImpedanceMode::RIGID,now,HoldTargetPolicy::PRESERVE_NOMINAL);
+                    if(!handoff) {
+                        capture_current(now);
+                        park_last_error_="park failed: compliant to rigid handoff was rejected; motors were not disabled";
+                        print_fault(handoff.error());
+                        return;
+                    }
+                    // Keep the original parking target and completed nominal reference
+                    // A mode anchor is never an alternative parking endpoint
+                    rigid_phase=true;
+                    settled_at.reset();
+                    std::cout<<"[停放] 柔性参考到位且实测接近并稳定，交接刚性，重新检查严格到位判据\n";
+                }
             }
             else settled_at.reset();
 
             if(std::chrono::duration<double>(now - last_progress_at).count() >= 1.0) {
-                std::cout << "[停放] 最大位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，最大速度="
-                    << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")\n";
+                std::cout << "[停放] 最差位置容差比例=" << position_ratio << " (" << cfg_.joint_names[position_index]
+                    << ")，最差速度容差比例=" << velocity_ratio << " (" << cfg_.joint_names[velocity_index] << ")\n";
                 last_progress_at = now;
             }
 
-            if(elapsed_s > cfg_.shutdown.timeout_s) {
-                clear_command_sources();
-                (void)runtime_.set_impedance_mode(robot_, JointImpedanceMode::RIGID, now);
+            if(elapsed_s > parking.timeout_s) {
+                capture_current(now);
                 std::ostringstream detail;
                 detail << "park timeout: position error=" << std::fixed << std::setprecision(6)
-                    << max_position_error << " rad (" << cfg_.joint_names[position_index] << ", limit="
-                    << cfg_.shutdown.position_tolerance << " rad); speed=" << max_velocity << " rad/s ("
-                    << cfg_.joint_names[velocity_index] << ", limit=" << cfg_.shutdown.velocity_tolerance
-                    << " rad/s); timeout=" << cfg_.shutdown.timeout_s
-                    << "s; stage=" << (rigid_finish_mode ? "rigid_final" : "compliant_approach")
-                    << ". Robot remains enabled in RIGID; no automatic disable. "
-                    << (rigid_finish_mode ? "Rigid finishing did not settle in time." :
-                        "Timed rigid switch was delayed because joint motion was still too fast or feedback invalid; target distance is not a switching gate.");
+                    << max_position_error << " (" << cfg_.joint_names[position_index] << ", limit="
+                    << parking.position_tolerance[position_index] << "); speed=" << max_velocity << " ("
+                    << cfg_.joint_names[velocity_index] << ", limit=" << parking.velocity_tolerance[velocity_index]
+                    << "); timeout=" << parking.timeout_s
+                    << "s; stage="<<(rigid_phase?"rigid_positioning":"compliant_approach")<<". Parking cancelled; motors were not disabled";
                 park_last_error_ = detail.str();
-                std::cout << "停放流程超时，最终严格就位判据仍未满足，已切换 RIGID 并取消失能\n";
-                std::cout << "最差位置误差=" << max_position_error << " rad (" << cfg_.joint_names[position_index] << ")，严格允许="
-                    << cfg_.shutdown.position_tolerance << " rad\n";
-                std::cout << "最差速度=" << max_velocity << " rad/s (" << cfg_.joint_names[velocity_index] << ")，严格允许="
-                    << cfg_.shutdown.velocity_tolerance << " rad/s\n";
-                resume_admittance();
+                std::cout << "停放流程超时，原定到位判据未满足，已取消停车并请求当前位置保持，取消失能\n";
+                std::cout << "最差位置容差比例=" << position_ratio << " (" << cfg_.joint_names[position_index] << ")\n";
+                std::cout << "最差速度容差比例=" << velocity_ratio << " (" << cfg_.joint_names[velocity_index] << ")\n";
                 return;
             }
         }
@@ -9578,7 +9696,6 @@ private:
         if(robot_.get_state() != RobotState::ACTIVE) {
             park_last_error_ = "park interrupted: robot left ACTIVE during approach (" + to_string(robot_.get_state()) + ")";
             std::cout << "停放过程中 Robot 离开 ACTIVE：" << to_string(robot_.get_state()) << '\n';
-            resume_admittance();
             return;
         }
 
@@ -9588,14 +9705,7 @@ private:
             park_last_error_ = "park failed: cannot enter RIGID; robot was not automatically disabled";
             std::cout << "停放后切换 RIGID 失败：\n";
             print_fault(hold_result.error());
-            resume_admittance();
             return;
-        }
-
-        const Robot::TimePoint hold_until = Robot::Clock::now() + std::chrono::milliseconds(200);
-        while(robot_.get_state() == RobotState::ACTIVE && Robot::Clock::now() < hold_until) {
-            cycle_cv_.wait_for(lock, std::chrono::milliseconds(20));
-            if(interrupted()) return;
         }
 
         if(interrupted()) return;
@@ -9604,7 +9714,6 @@ private:
             park_last_error_ = "park reached the configured pose but deactivate() failed; inspect hardware state";
             std::cout << "停放后 deactivate() 失败：\n";
             print_fault(result.error());
-            resume_admittance();
             return;
         }
         last_output_.reset();
@@ -10073,11 +10182,14 @@ private:
         return false;
     }
 
-    std::optional<AdmittanceStaticPoseSamples> collect_static_pose_samples(double settle_s, double sample_s) {
+    std::optional<AdmittanceStaticPoseSamples> collect_static_pose_samples(double settle_s, double sample_s, const std::atomic<bool>* cancelled=nullptr) {
         if(settle_s > 0.0) std::this_thread::sleep_for(std::chrono::duration<double>(settle_s));
 
         AdmittanceStaticPoseSamples pose;
-        const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(sample_s));
+        const auto started=Robot::Clock::now();
+        JointVector anchor;
+        std::uint64_t last_stamp=0;
+        const auto deadline = Robot::Clock::now() + std::chrono::duration_cast<Robot::Clock::duration>(std::chrono::duration<double>(sample_s+cfg_.safety.state_timeout_s));
         std::uint64_t cursor = 0;
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -10085,19 +10197,32 @@ private:
         }
 
         while(Robot::Clock::now() < deadline) {
+            if(cancelled && cancelled->load()) return std::nullopt;
             std::unique_lock<std::mutex> lock(mutex_);
-            const bool updated = cycle_cv_.wait_for(lock, std::chrono::milliseconds(100), [&]() {
-                return cycle_counter_ > cursor || robot_.get_state() != RobotState::ACTIVE;
-                });
-            if(robot_.get_state() != RobotState::ACTIVE) return std::nullopt;
-            if(!updated || cycle_counter_ <= cursor || !last_output_ || !dynamics_.is_updated()) continue;
-            cursor = cycle_counter_;
-            pose.samples.push_back(AdmittanceStaticSample{
-                dynamics_.get_gravity(),
-                last_output_->joint_state.tor,
-                });
+            const bool updated=cycle_cv_.wait_for(lock,std::chrono::milliseconds(100),[&] {
+                return cycle_counter_>cursor || robot_.get_state()!=RobotState::ACTIVE || (cancelled && cancelled->load());
+            });
+            if(robot_.get_state()!=RobotState::ACTIVE || (cancelled && cancelled->load())) return std::nullopt;
+            if(!updated || cycle_counter_<=cursor || !last_output_) continue;
+            cursor=cycle_counter_;
+            const auto& output=*last_output_;
+            if(!output.observer_valid) return std::nullopt;
+            if(!output.new_measurement || output.observer_timestamp_ns<=last_stamp) continue;
+            const auto& observed=output.observer_state;
+            if(anchor.empty()) anchor=observed.pos;
+            const auto& types=dynamics_.get_info().joint_types;
+            for(std::size_t i=0;i<anchor.size();++i) {
+                const double tolerance=types[i]=="prismatic"?0.0001:0.005;
+                if(std::abs(observed.pos[i]-anchor[i])>tolerance) return std::nullopt;
+            }
+            const JointVector zero(anchor.size(),0.0);
+            if(!dynamics_.update(observed,zero,zero)) return std::nullopt;
+            pose.samples.push_back({dynamics_.get_gravity(),observed.tor,observed.pos,
+                std::chrono::duration<double>(Robot::Clock::now()-started).count()});
+            last_stamp=output.observer_timestamp_ns;
+            if(pose.samples.back().time_s-pose.samples.front().time_s>=sample_s) break;
         }
-        if(pose.samples.empty()) return std::nullopt;
+        if(pose.samples.size()<2 || pose.samples.back().time_s-pose.samples.front().time_s<sample_s) return std::nullopt;
         return pose;
     }
 
@@ -10469,8 +10594,7 @@ private:
         const std::string& indent) const {
         std::cout << indent << "friction:\n";
         std::cout << indent << "  enabled: " << (friction.enabled ? "true" : "false") << '\n';
-        std::cout << indent << "  velocity_transition: " << std::fixed << std::setprecision(6)
-            << friction.velocity_transition << '\n';
+        std::cout << indent << "  "; print_joint_yaml_map("velocity_transition",cfg_.joint_names,friction.velocity_transition);
         std::cout << indent << "  "; print_joint_yaml_map("positive_coulomb", cfg_.joint_names, friction.positive_coulomb);
         std::cout << indent << "  "; print_joint_yaml_map("positive_viscous", cfg_.joint_names, friction.positive_viscous);
         std::cout << indent << "  "; print_joint_yaml_map("negative_coulomb", cfg_.joint_names, friction.negative_coulomb);
@@ -10687,7 +10811,7 @@ private:
         constexpr double kStaticTimeoutS = 5.0;
         constexpr double kStaticMaxVel = 0.03;
         constexpr double kStaticMaxAcc = 1.5;
-        constexpr double kSampleS = 1.0;
+        constexpr double kSampleS = kExternalStaticWindowS;
 
         JointImpedanceMode original_mode;
         AdmittanceCapabilityCfg original_admittance;
@@ -10715,7 +10839,8 @@ private:
             if(restore) cfg_.dynamics.gravity_scale = original_gravity_scale;
             };
 
-        if(!set_tuning_impedance_mode(JointImpedanceMode::DRAG)) {
+        const auto sampling_mode=robot_.get_control_path()==ControlPath::CSP?JointImpedanceMode::RIGID:JointImpedanceMode::DRAG;
+        if(!set_tuning_impedance_mode(sampling_mode)) {
             restore_runtime();
             return false;
         }
@@ -10749,7 +10874,7 @@ private:
                 return false;
             }
             poses.push_back(std::move(*samples));
-            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::DRAG)) {
+            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(sampling_mode)) {
                 restore_gravity_scale();
                 restore_runtime();
                 return false;
@@ -10841,7 +10966,7 @@ private:
         constexpr double kStaticTimeoutS = 5.0;
         constexpr double kStaticMaxVel = 0.03;
         constexpr double kStaticMaxAcc = 1.5;
-        constexpr double kSampleS = 1.0;
+        constexpr double kSampleS = kExternalStaticWindowS;
 
         JointImpedanceMode original_mode;
         AdmittanceCapabilityCfg original_admittance;
@@ -10863,7 +10988,8 @@ private:
             last_output_.reset();
             };
 
-        if(!set_tuning_impedance_mode(JointImpedanceMode::DRAG)) {
+        const auto sampling_mode=robot_.get_control_path()==ControlPath::CSP?JointImpedanceMode::RIGID:JointImpedanceMode::DRAG;
+        if(!set_tuning_impedance_mode(sampling_mode)) {
             restore_runtime();
             return false;
         }
@@ -10894,7 +11020,7 @@ private:
                 return false;
             }
             poses.push_back(std::move(*samples));
-            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(JointImpedanceMode::DRAG)) {
+            if(pose_index + 1 < kPoseCount && !set_tuning_impedance_mode(sampling_mode)) {
                 restore_runtime();
                 return false;
             }
@@ -11547,22 +11673,22 @@ private:
             print_vector("admittance_threshold", a.calibration.torque_threshold);
             std::cout << "friction_compensation   : " << (a.calibration.friction.enabled ? "ENABLED" : "DISABLED") << '\n';
             if(a.calibration.friction.enabled) {
-                std::cout << "friction_vel_transition: " << a.calibration.friction.velocity_transition << '\n';
+                print_vector("friction_vel_transition",a.calibration.friction.velocity_transition);
                 print_vector("friction_C_pos", a.calibration.friction.positive_coulomb);
                 print_vector("friction_B_pos", a.calibration.friction.positive_viscous);
                 print_vector("friction_C_neg", a.calibration.friction.negative_coulomb);
                 print_vector("friction_B_neg", a.calibration.friction.negative_viscous);
             }
         }
-        std::cout << "park_before_disable     : " << std::boolalpha << cfg_.shutdown.park_before_disable << '\n';
-        print_vector("park_pos", cfg_.shutdown.park_pos);
-        std::cout << "park_speed_scale        : " << cfg_.shutdown.speed_scale << '\n';
-        std::cout << "park_position_tolerance : " << cfg_.shutdown.position_tolerance << '\n';
-        std::cout << "park_velocity_tolerance : " << cfg_.shutdown.velocity_tolerance << '\n';
-        std::cout << "park_settle_time_s      : " << cfg_.shutdown.settle_time_s << '\n';
-        std::cout << "park_relaxed_ratio      : " << cfg_.shutdown.relaxed_tolerance_ratio << '\n';
-        std::cout << "park_compliant_ratio    : " << cfg_.shutdown.compliant_phase_ratio << '\n';
-        std::cout << "park_timeout_s          : " << cfg_.shutdown.timeout_s << '\n';
+        const auto& parking=cfg_.shutdown.for_path(robot_.get_control_path());
+        std::cout<<"parking_enabled        : "<<std::boolalpha<<parking.enabled<<'\n';
+        std::cout<<"parking_strategy       : "<<(parking.strategy==serial_arm::ParkingStrategy::RIGID?"rigid":"compliant_then_rigid")<<'\n';
+        print_vector("park_pos", parking.park_pos);
+        std::cout << "park_speed_scale        : " << parking.speed_scale << '\n';
+        print_vector("park_position_tolerance",parking.position_tolerance);
+        print_vector("park_velocity_tolerance",parking.velocity_tolerance);
+        std::cout << "park_settle_time_s      : " << parking.settle_time_s << '\n';
+        std::cout << "park_timeout_s          : " << parking.timeout_s << '\n';
         std::cout << "cmd_timeout_s           : " << cfg_.safety.cmd_timeout_s << '\n';
         std::cout << "state_timeout_s         : " << cfg_.safety.state_timeout_s << '\n';
         std::cout << "max_dt_s                : " << cfg_.safety.max_dt_s << '\n';
@@ -11606,19 +11732,10 @@ private:
     }
 
     bool safe_exit() {
-        park_and_deactivate();
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if(robot_.get_state() == RobotState::FAULT) {
-                const auto forced = robot_.force_deactivate();
-                if(!forced) {
-                    std::cout << "FAULT 安全退出失能失败：\n";
-                    print_fault(forced.error());
-                    return false;
-                }
-            }
-            if(robot_.get_state() == RobotState::ACTIVE) {
-                std::cout << "安全退出取消，机械臂仍处于 ACTIVE\n";
+            if(robot_.get_state() != RobotState::INACTIVE) {
+                std::cout << "请先显式停放并失能，或在可靠支撑下立即失能，再退出终端\n";
                 return false;
             }
             quit_.store(true);
@@ -11671,6 +11788,10 @@ private:
     StreamState stream_;
     std::optional<RobotCycleOutput> last_output_;
     std::uint64_t last_cycle_monotonic_ns_{0};
+    std::string machine_calibration_completed_kind_;
+    std::string machine_calibration_validation_scope_;
+    std::future<std::optional<AdmittanceStaticPoseSamples>> machine_static_capture_;
+    std::atomic<bool> machine_static_cancel_{false};
     std::optional<AdmittanceStaticCalibrationResult> last_static_calibration_result_;
     std::optional<AdmittanceStaticValidationResult> last_static_validation_result_;
     std::optional<AdmittanceFrictionCalibrationResult> last_friction_calibration_result_;

@@ -78,15 +78,15 @@ enum class FaultHoldMode {
  */
 struct JointLimitCfg {
     std::vector<std::uint8_t> has_position_limit; ///< 是否执行位置硬限位和命令位置软限位
-    JointVector min_pos;       ///< 状态位置硬下限，rad
-    JointVector max_pos;       ///< 状态位置硬上限，rad
-    JointVector max_vel;       ///< 最大速度，rad/s
-    JointVector max_acc;       ///< 最大加速度，rad/s^2
-    JointVector max_tracking_error; ///< CSP 参考与反馈最大位置误差，rad
-    JointVector max_effort;    ///< 最大关节前馈力矩，N·m
+    JointVector min_pos;       ///< 各关节位置硬下限，rad 或 m
+    JointVector max_pos;       ///< 各关节位置硬上限，rad 或 m
+    JointVector max_vel;       ///< 各关节最大速度，rad/s 或 m/s
+    JointVector max_acc;       ///< 各关节最大加速度，rad/s² 或 m/s²
+    JointVector max_tracking_error; ///< CSP 各关节最大跟踪误差，rad 或 m
+    JointVector max_effort;    ///< 各关节最大总命令广义力，N·m 或 N
     JointVector max_kp;        ///< 硬件协议映射到 Joint 侧的最大 kp，非用户策略上限
     JointVector max_kd;        ///< 硬件协议映射到 Joint 侧的最大 kd，非用户策略上限
-    JointVector pos_margin;    ///< 命令位置距离硬限位的安全边距，rad
+    JointVector pos_margin;    ///< 各关节命令位置安全边距，rad 或 m
     JointVector kp_resolution; ///< Joint 侧协议 kp 步进，空或 0 表示连续或未声明
     JointVector kd_resolution; ///< Joint 侧协议 kd 步进，空或 0 表示连续或未声明
 };
@@ -96,9 +96,10 @@ struct JointLimitCfg {
  */
 struct FaultRecoveryCfg {
     FaultHoldMode default_mode{ FaultHoldMode::RIGID_HOLD };   ///< FAULT 入口默认模式，仅允许 rigid_hold
-    bool allow_drag_recovery{ true };                     ///< 是否允许人工请求柔性恢复
-    bool require_operator_request{ true };                     ///< 柔性恢复是否必须由操作员显式请求
-    double recovery_timeout_s{ 30.0 };                         ///< 柔性恢复最长持续时间，s，必须为正有限值
+    bool allow_drag_recovery{ true };                     ///< 是否允许人工请求拖拽恢复
+    bool require_operator_request{ true };                     ///< 拖拽恢复必须由操作员显式请求
+    double recovery_timeout_s{ 30.0 };                         ///< 拖拽恢复最长持续时间，s，必须为正有限值
+    JointVector velocity_tolerance;                            ///< 各关节故障清除静止门限，rad/s 或 m/s
 };
 
 /**

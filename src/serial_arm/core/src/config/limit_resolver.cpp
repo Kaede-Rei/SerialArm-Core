@@ -40,8 +40,9 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
         mapper.pos_ratio.size() != n || mapper.tor_ratio.size() != n || policy.max_acc.size() != n ||
         (!policy.max_tracking_error.empty() && policy.max_tracking_error.size() != n) ||
         mapper.direction.size() != n || mapper.joint_zero_offset.size() != n || mapper.actuator_zero_offset.size() != n ||
-        policy.position_margin < 0.0 || policy.cmd_vel_scale <= 0.0 || policy.cmd_vel_scale > 1.0 ||
-        policy.state_vel_scale <= 0.0 || policy.state_vel_scale < policy.cmd_vel_scale ||
+        policy.position_margin.size()!=n || !std::isfinite(policy.cmd_vel_scale) || policy.cmd_vel_scale <= 0.0 || policy.cmd_vel_scale > 1.0 ||
+        !std::isfinite(policy.state_vel_scale) || policy.state_vel_scale <= 0.0 || policy.state_vel_scale < policy.cmd_vel_scale ||
+        !std::isfinite(policy.max_dt_s) || !std::isfinite(policy.state_timeout_s) || !std::isfinite(policy.cmd_timeout_s) ||
         policy.max_dt_s <= 0.0 || policy.state_timeout_s <= 0.0 || policy.cmd_timeout_s <= 0.0) {
         return tl::make_unexpected(LimitResolverErr::INVALID_INPUT);
     }
@@ -62,8 +63,10 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
         if(capability.actuator_name.empty()) return tl::make_unexpected(LimitResolverErr::MISSING_ACTUATOR);
         if(!capability.joint_name.empty() && capability.joint_name != model.joint_names[i])
             return tl::make_unexpected(LimitResolverErr::INVALID_INPUT);
-        if(!std::isfinite(mapper.pos_ratio[i]) || mapper.pos_ratio[i] == 0.0 ||
-            !std::isfinite(mapper.tor_ratio[i]) || mapper.tor_ratio[i] == 0.0 ||
+        if(!std::isfinite(mapper.pos_ratio[i]) || mapper.pos_ratio[i] <= 0.0 ||
+            !std::isfinite(mapper.tor_ratio[i]) || mapper.tor_ratio[i] <= 0.0 ||
+            !std::isfinite(policy.position_margin[i]) || policy.position_margin[i]<0.0 ||
+            !std::isfinite(policy.max_acc[i]) || policy.max_acc[i]<=0.0 ||
             (mapper.direction[i] != 1 && mapper.direction[i] != -1) ||
             !std::isfinite(mapper.joint_zero_offset[i]) || !std::isfinite(mapper.actuator_zero_offset[i]) ||
             !std::isfinite(capability.min_pos) || !std::isfinite(capability.max_pos) ||
@@ -87,8 +90,8 @@ tl::expected<ResolvedSafetyCfg, LimitResolverErr> LimitResolver::resolve(const R
         resolved.has_position_limit = true;
         resolved.hard_min_pos = joint.has_position_limit ? std::max(joint.min_pos, std::min(a, b)) : std::min(a, b);
         resolved.hard_max_pos = joint.has_position_limit ? std::min(joint.max_pos, std::max(a, b)) : std::max(a, b);
-        resolved.cmd_min_pos = resolved.hard_min_pos + policy.position_margin;
-        resolved.cmd_max_pos = resolved.hard_max_pos - policy.position_margin;
+        resolved.cmd_min_pos = resolved.hard_min_pos + policy.position_margin[i];
+        resolved.cmd_max_pos = resolved.hard_max_pos - policy.position_margin[i];
         const double max_velocity = std::min(joint.max_vel, capability.max_vel / std::abs(mapper.pos_ratio[i]));
         resolved.max_cmd_vel = max_velocity * policy.cmd_vel_scale;
         resolved.max_state_vel = max_velocity * policy.state_vel_scale;

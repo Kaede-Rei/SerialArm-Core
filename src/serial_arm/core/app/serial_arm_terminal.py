@@ -78,15 +78,16 @@ runtime.write_enabled=true 时使用指定 Hardware Backend；false 时使用离
 
 模型前馈模式应在 INACTIVE 状态设置
 
-RobotSession.stop() 当前会直接停止 C++ worker 并调用底层 deactivate；
-它本身不包含 C++ 终端中的停放轨迹
+RobotSession.stop() 直接停止 C++ worker 并调用底层 deactivate，不执行停放轨迹
 
-本脚本的安全退出和“使能 / 失能 / 故障”子菜单中的正常停放会先执行
+“使能 / 失能 / 故障”子菜单中的显式停放先执行
 
     move_to(park_pos)
     → 等待实测位置与速度判据
     → hold_current()
     → stop()
+
+退出终端要求先完成失能；自动退出停放策略由桌面宿主按已验收计划执行
 
 通信中断或 FAULT 时，软件不能保证所有关节仍有保持力矩；
 应先使用机械支撑，再决定是否强制失能
@@ -233,7 +234,7 @@ class Terminal:
         print(" 4. 运动与命令")
         print(" 5. 动力学与配置")
         print(" 6. 工具与监视")
-        print(" 0. 回到停放姿态并安全退出")
+        print(" 0. 退出终端（需先失能）")
 
     def run(self) -> int:
         self.banner()
@@ -252,7 +253,9 @@ class Terminal:
             try:
                 choice = read_int("请选择: ")
                 if choice is None:
-                    self.safe_exit()
+                    if not self.safe_exit():
+                        print("输入已断开，未完成正常退出；仅执行底层资源清理，不启动停放轨迹")
+                        return 1
                     continue
                 handler = handlers.get(choice)
                 if handler is None:
@@ -260,7 +263,7 @@ class Terminal:
                     continue
                 handler()
             except KeyboardInterrupt:
-                print("\n收到 KeyboardInterrupt，将尝试安全停放")
+                print("\n收到 KeyboardInterrupt，退出前需先失能")
                 self.safe_exit()
             except self.serial_arm_module.SerialArmError as error:
                 print(f"serial_arm 调用失败: {error}")
@@ -370,91 +373,118 @@ class Terminal:
         print("start() 已返回，但尚未获得合法周期快照")
 
     def park_and_stop(self) -> bool:
-        if not self.session.running:
-            print("RobotSession 已经停止")
+        actual_cfg = self.session.config
+        path = actual_cfg.runtime.control_path
+        parking = actual_cfg.shutdown.for_path(path)
+        if not parking.enabled:
+            print("当前执行路径未允许停放再失能")
+            return False
+        if self.session.state == self.serial_arm_module.RobotState.INACTIVE:
+            print("Robot 已经处于 INACTIVE")
             return True
+        if not self.session.running:
+            print("控制线程未运行，不能执行停放轨迹")
+            return False
         if self.session.state == self.serial_arm_module.RobotState.FAULT:
             print("Robot 处于 FAULT，不能执行正常停放轨迹")
             return False
-
-        shutdown = self.cfg.shutdown
-        if not shutdown.park_before_disable:
-            print("park_before_disable=false；安全路径不会自动直接失能，请使用“使能 / 失能 / 故障 > 立即 stop()”")
+        target = vector(parking.park_pos)
+        position_tolerance = vector(parking.position_tolerance)
+        velocity_tolerance = vector(parking.velocity_tolerance)
+        n = len(self.joint_names)
+        if any(len(value) != n for value in (target, position_tolerance, velocity_tolerance)):
+            print("请先设置完整的停放目标和逐关节到位容差")
             return False
-
-        target = vector(shutdown.park_pos)
+        rigid_phase = parking.strategy == self.serial_arm_module.ParkingStrategy.RIGID
+        if not rigid_phase and path == self.serial_arm_module.ControlPath.CSP:
+            validation = actual_cfg.capability.admittance.validation
+            if not validation.observation_validated or not validation.response_validated:
+                print("CSP 柔性停放需要先完成外力和响应验收")
+                return False
+        requested_mode = (self.serial_arm_module.JointImpedanceMode.RIGID if rigid_phase
+                          else self.serial_arm_module.JointImpedanceMode.COMPLIANT)
         print("开始回到配置的停放姿态")
         print_vector("park_pos", target)
-
-        self.session.set_impedance_mode(
-            self.serial_arm_module.JointImpedanceMode.RIGID
-        )
-        self.session.move_to(target, float(shutdown.speed_scale))
-
+        self.session.set_impedance_mode(requested_mode)
+        mode_pending = True
+        motion_id = None
         started = time.monotonic()
         last_report = started
+        last_sequence = None
         settled: Optional[float] = None
-        max_pos_error = math.inf
-        max_vel = math.inf
-        pos_index = 0
-        vel_index = 0
-
+        completed = False
         while self.session.running:
             now = time.monotonic()
+            if now - started > float(parking.timeout_s):
+                self.session.hold_current()
+                print("停放超时，已取消停车并请求当前位置保持，取消 stop()")
+                return False
             snapshot = self.session.snapshot
+            if self.session.state != self.serial_arm_module.RobotState.ACTIVE:
+                print("停放被中断，机械臂已离开 ACTIVE")
+                return False
             if snapshot.last_error:
                 print(f"停放过程中后台错误: {snapshot.last_error}")
                 return False
-            if not snapshot.valid:
+            if not snapshot.valid or snapshot.sequence == last_sequence:
                 time.sleep(0.02)
                 continue
-
+            last_sequence = snapshot.sequence
+            if mode_pending:
+                if snapshot.cycle.interaction_mode == requested_mode:
+                    mode_pending = False
+                    if motion_id is None:
+                        motion_id = self.session.move_to(target, float(parking.speed_scale))
+                    settled = None
+                time.sleep(0.02)
+                continue
             pos_error = np.abs(vector(snapshot.cycle.joint_state.pos) - target)
             vel = np.abs(vector(snapshot.cycle.joint_state.vel))
-            pos_index = int(np.argmax(pos_error))
-            vel_index = int(np.argmax(vel))
-            max_pos_error = float(pos_error[pos_index])
-            max_vel = float(vel[vel_index])
-
-            reached = max_pos_error <= float(
-                shutdown.position_tolerance
-            ) and max_vel <= float(shutdown.velocity_tolerance)
+            if not np.all(np.isfinite(pos_error)) or not np.all(np.isfinite(vel)):
+                self.session.hold_current()
+                print("停放反馈含无效数值，取消 stop()")
+                return False
+            position_ratio = pos_error / position_tolerance
+            velocity_ratio = vel / velocity_tolerance
+            reference_complete = snapshot.motion.id == motion_id and snapshot.motion.reference_complete
+            # Same dimensionless following boundary as Core park_policy.hpp
+            position_boundary = 1.0 if rigid_phase else 2.0
+            reached = bool(reference_complete and np.all(position_ratio <= position_boundary)
+                           and np.all(velocity_ratio <= 1))
             if reached:
                 if settled is None:
                     settled = now
-                if now - settled >= float(shutdown.settle_time_s):
-                    break
+                if now - settled >= float(parking.settle_time_s):
+                    if rigid_phase:
+                        completed = True
+                        break
+                    requested_mode = self.serial_arm_module.JointImpedanceMode.RIGID
+                    self.session.set_impedance_mode(requested_mode)
+                    rigid_phase = True
+                    mode_pending = True
+                    settled = None
+                    print("柔性参考到位且实测接近并稳定，交接刚性，重新检查严格到位判据")
             else:
                 settled = None
-
             if now - last_report >= 1.0:
-                print(
-                    f"[停放] 最大位置误差={max_pos_error:.6f} rad ({self.joint_names[pos_index]})，"
-                    f"最大速度={max_vel:.6f} rad/s ({self.joint_names[vel_index]})"
-                )
+                pi, vi = int(np.argmax(position_ratio)), int(np.argmax(velocity_ratio))
+                print(f"[停放] 最差位置容差比例={position_ratio[pi]:.3f} ({self.joint_names[pi]})，"
+                      f"最差速度容差比例={velocity_ratio[vi]:.3f} ({self.joint_names[vi]})")
                 last_report = now
-
-            if now - started > float(shutdown.timeout_s):
-                ratio = float(getattr(shutdown, "relaxed_tolerance_ratio", 2.0))
-                relaxed_pos = float(shutdown.position_tolerance) * ratio
-                relaxed_vel = float(shutdown.velocity_tolerance) * ratio
-                if max_pos_error <= relaxed_pos and max_vel <= relaxed_vel:
-                    print("[停放] 严格判据超时，但满足宽松判据，将继续保持并失能")
-                    break
-                self.session.hold_current()
-                print("停放超时，已请求 RIGID 并取消 stop()")
-                return False
             time.sleep(0.02)
-
-        self.session.hold_current()
-        time.sleep(0.2)
+        if not completed or self.session.state != self.serial_arm_module.RobotState.ACTIVE:
+            print("停放被中断，未确认到位，取消 stop()")
+            return False
         self.session.stop()
+        if self.session.state != self.serial_arm_module.RobotState.INACTIVE:
+            print("停放后未确认失能")
+            return False
         print("已到达停放姿态并 stop()")
         return True
 
     def safe_exit(self) -> bool:
-        if self.session.running and not self.park_and_stop():
-            print("安全退出取消，RobotSession 仍在运行")
+        if self.session.state != self.serial_arm_module.RobotState.INACTIVE:
+            print("请先显式停放并失能，或在可靠支撑下立即失能，再退出终端")
             return False
         self.quit = True
         print("Python 终端退出")
@@ -719,16 +749,15 @@ class Terminal:
             f"model_feedforward_mode  : {enum_name(cfg.runtime.model_feedforward_mode)}"
         )
         print(f"control_path            : {enum_name(cfg.runtime.control_path)}")
-        print(f"park_before_disable     : {cfg.shutdown.park_before_disable}")
-        print_vector("park_pos", cfg.shutdown.park_pos)
-        print(f"park_speed_scale        : {cfg.shutdown.speed_scale}")
-        print(f"park_position_tolerance : {cfg.shutdown.position_tolerance}")
-        print(f"park_velocity_tolerance : {cfg.shutdown.velocity_tolerance}")
-        print(f"park_settle_time_s      : {cfg.shutdown.settle_time_s}")
-        print(
-            f"park_relaxed_ratio      : {getattr(cfg.shutdown, 'relaxed_tolerance_ratio', 2.0)}"
-        )
-        print(f"park_timeout_s          : {cfg.shutdown.timeout_s}")
+        parking = self.session.config.shutdown.for_path(self.session.config.runtime.control_path)
+        print(f"parking_enabled        : {parking.enabled}")
+        print(f"parking_strategy       : {enum_name(parking.strategy)}")
+        print_vector("park_pos", parking.park_pos)
+        print(f"park_speed_scale        : {parking.speed_scale}")
+        print_vector("park_position_tolerance", parking.position_tolerance)
+        print_vector("park_velocity_tolerance", parking.velocity_tolerance)
+        print(f"park_settle_time_s      : {parking.settle_time_s}")
+        print(f"park_timeout_s          : {parking.timeout_s}")
         print(f"cmd_timeout_s           : {cfg.safety.cmd_timeout_s}")
         print(f"state_timeout_s         : {cfg.safety.state_timeout_s}")
         print(f"max_dt_s                : {cfg.safety.max_dt_s}")

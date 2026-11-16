@@ -38,7 +38,9 @@ ExternalTorqueObserver::configure(const ExternalTorqueObserverCfg& cfg) {
     }
 
     const auto& friction = cfg.friction;
-    if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition <= 0.0 ||
+    if(((!friction.velocity_transition.empty() || friction.enabled) &&
+        (friction.velocity_transition.size()!=cfg.joints_count || !finite_vector(friction.velocity_transition) ||
+         std::any_of(friction.velocity_transition.begin(),friction.velocity_transition.end(),[](double x){return x<=0;}))) ||
         !valid_optional_joint_vector(friction.velocity_resolution, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.positive_coulomb, cfg.joints_count) ||
         !valid_optional_joint_vector(friction.positive_viscous, cfg.joints_count) ||
@@ -103,7 +105,7 @@ ExternalTorqueObserver::update(
                 cfg_.friction.positive_viscous[i] : cfg_.friction.negative_viscous[i];
             const double dynamic_prediction = coulomb + viscous * speed;
             const double resolution=cfg_.friction.velocity_resolution.empty()?0.0:cfg_.friction.velocity_resolution[i];
-            const double blend = friction_residual_blend(joint_velocity[i], cfg_.friction.velocity_transition, resolution);
+            const double blend = friction_residual_blend(joint_velocity[i], cfg_.friction.velocity_transition[i], resolution);
             friction_residual_hat = blend * dynamic_prediction;
         }
         estimate.friction_residual_hat[i] = friction_residual_hat;

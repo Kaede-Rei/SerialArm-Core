@@ -27,6 +27,10 @@ public:
             return tl::make_unexpected(MotorBusErr::INVALID_STATE);
         return {};
     }
+    tl::expected<void, MotorBusErr> activate(const ActuatorCtrlCmd& initial) override {
+        if(initial.path!=selected_ || initial.pos!=ActuatorVector{.2,.3})return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+        return activate();
+    }
     tl::expected<void, MotorBusErr> write(const ActuatorCtrlCmd&) override { return {}; }
     tl::expected<void, MotorBusErr> stop() override { return {}; }
     tl::expected<void, MotorBusErr> deactivate() override { return {}; }
@@ -55,6 +59,8 @@ int main(int argc, char** argv) {
     const auto selected=bus.select_control_path(ControlPath::CSP,{0.4,0.7});
     if(!selected) throw std::runtime_error("dynamic wrapper rejected supported CSP path");
     if(!bus.activate()) throw std::runtime_error("dynamic wrapper lost path or per-axis speed limits");
+    ActuatorCtrlCmd initial;initial.path=ControlPath::CSP;initial.pos={.2,.3};
+    if(!bus.activate(initial))throw std::runtime_error("dynamic wrapper lost prevalidated startup command");
     const auto rejected=bus.select_control_path(ControlPath::CSP,{0.4,-0.7});
     if(rejected || rejected.error()!=MotorBusErr::INVALID_CMD)
         throw std::runtime_error("dynamic wrapper did not preserve plugin rejection");

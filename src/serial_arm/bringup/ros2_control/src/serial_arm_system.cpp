@@ -66,7 +66,7 @@ public:
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
-        state_.enabled.assign(size, 1);
+        state_.enabled.assign(size, 0);
         state_.err_code.assign(size, 0);
     }
 
@@ -103,6 +103,7 @@ public:
     tl::expected<void, serial_arm::MotorBusErr> activate() override {
         if(!connected_) return tl::make_unexpected(serial_arm::MotorBusErr::NOT_CONNECTED);
         active_ = true;
+        state_.enabled.assign(size(),1);
         return {};
     }
     tl::expected<void, serial_arm::MotorBusErr> write(const serial_arm::ActuatorCtrlCmd& cmd) override {
@@ -115,6 +116,7 @@ public:
     tl::expected<void, serial_arm::MotorBusErr> stop() override { return {}; }
     tl::expected<void, serial_arm::MotorBusErr> deactivate() override {
         active_ = false;
+        state_.enabled.assign(size(),0);
         return {};
     }
     tl::expected<void, serial_arm::MotorBusErr> recover() override { return {}; }
@@ -231,16 +233,33 @@ hardware_interface::CallbackReturn SerialArmSystem::on_init(const hardware_inter
 }
 
 /**
- * @brief 配置动力学、达妙总线与 Robot，但不连接或使能真机
+ * @brief 配置动力学与 Robot，连接并读取未使能反馈
  * @param previous_state 生命周期切换前状态
  * @return 配置成功返回 SUCCESS，否则返回 ERROR
  */
 hardware_interface::CallbackReturn SerialArmSystem::on_configure(const rclcpp_lifecycle::State& previous_state) {
     static_cast<void>(previous_state);
-    if(configured_) {
-        return hardware_interface::CallbackReturn::SUCCESS;
+    if(!configured_) {
+        const auto configured=configure_robot();
+        if(configured!=hardware_interface::CallbackReturn::SUCCESS)return configured;
     }
-    return configure_robot();
+    std::lock_guard<std::mutex> robot_lock(robot_mutex_);
+    const auto connected=robot_->connect();
+    if(!connected) {
+        RCLCPP_ERROR(rclcpp::get_logger(kLoggerName),"%s",make_robot_error("Robot connect",connected.error()).c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+    }
+    const auto observed=robot_->observe();
+    if(!observed) {
+        RCLCPP_ERROR(rclcpp::get_logger(kLoggerName),"%s",make_robot_error("Robot observe",observed.error()).c_str());
+        return hardware_interface::CallbackReturn::ERROR;
+    }
+    cfg_.safety=robot_->get_config().safety;
+    std::lock_guard<std::mutex> state_lock(state_mutex_);
+    state_frame_.pos=observed->joint_state.pos;state_frame_.vel=observed->joint_state.vel;
+    state_frame_.effort=observed->joint_state.tor;state_frame_.valid=true;
+    hw_position_=state_frame_.pos;hw_velocity_=state_frame_.vel;hw_effort_=state_frame_.effort;
+    return hardware_interface::CallbackReturn::SUCCESS;
 }
 
 /**
@@ -310,7 +329,7 @@ hardware_interface::CallbackReturn SerialArmSystem::on_activate(const rclcpp_lif
 }
 
 /**
- * @brief 请求停放姿态、停止控制线程并失能真机
+ * @brief 停止控制线程并直接失能真机，不执行停放轨迹
  * @param previous_state 生命周期切换前状态
  * @return 失能成功返回 SUCCESS，否则返回 ERROR
  */
@@ -320,30 +339,9 @@ hardware_interface::CallbackReturn SerialArmSystem::on_deactivate(const rclcpp_l
         return hardware_interface::CallbackReturn::SUCCESS;
     }
 
-    bool active = false;
-    {
-        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-        active = robot_->get_state() == serial_arm::RobotState::ACTIVE;
-        std::lock_guard<std::mutex> command_lock(command_mutex_);
-        internal_commands_ = true;
-    }
-    if(active && cfg_.shutdown.park_before_disable && !park_before_deactivate()) {
-        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-        if(robot_->get_state() == serial_arm::RobotState::ACTIVE) {
-            return hardware_interface::CallbackReturn::ERROR;
-        }
-        // A fault while parking must still reach the disable path
-    }
-    bool holding = false;
-    {
-        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-        if(robot_->get_state() == serial_arm::RobotState::ACTIVE) {
-            const auto result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID,serial_arm::Robot::Clock::now(),serial_arm::HoldTargetPolicy::CAPTURE_MEASURED);
-            holding = static_cast<bool>(result);
-            if(!result) RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", result.error()).c_str());
-        }
-    }
-    if(holding) std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    // ROS2 deactivation is a direct lifecycle stop, never a parking motion
+    // The desktop host applies an independently accepted exit parking policy
+    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "ROS2 deactivate disables directly; desktop parking policies do not apply");
     stop_worker();
     std::lock_guard<std::mutex> robot_lock(robot_mutex_);
     const auto result = robot_->get_state() == serial_arm::RobotState::FAULT ?
@@ -397,6 +395,16 @@ std::vector<hardware_interface::CommandInterface> SerialArmSystem::export_comman
 hardware_interface::return_type SerialArmSystem::read(const rclcpp::Time& time, const rclcpp::Duration& period) {
     static_cast<void>(time);
     static_cast<void>(period);
+    if(!worker_running_.load()) {
+        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
+        if(robot_ && robot_->is_connected() && robot_->get_state()==serial_arm::RobotState::INACTIVE) {
+            const auto observed=robot_->observe();
+            if(!observed)return hardware_interface::return_type::ERROR;
+            std::lock_guard<std::mutex> state_lock(state_mutex_);
+            state_frame_.pos=observed->joint_state.pos;state_frame_.vel=observed->joint_state.vel;
+            state_frame_.effort=observed->joint_state.tor;state_frame_.valid=true;
+        }
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
     if(state_frame_.valid) {
         hw_position_ = state_frame_.pos;
@@ -617,153 +625,6 @@ void SerialArmSystem::stop_worker() {
     if(worker_.joinable()) {
         worker_.join();
     }
-}
-
-/**
- * @brief 按 shutdown 配置回到停放姿态
- * @return 停放姿态满足判据返回 true，否则返回 false
- */
-bool SerialArmSystem::park_before_deactivate() {
-    serial_arm::JointVector ref_pos;
-    const bool csp_parking=cfg_.runtime.control_path==serial_arm::ControlPath::CSP;
-    {
-        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-
-        const auto mode_result = runtime_.set_impedance_mode(*robot_,csp_parking ? serial_arm::JointImpedanceMode::RIGID : serial_arm::JointImpedanceMode::COMPLIANT);
-        if(!mode_result) {
-            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot set_impedance_mode", mode_result.error()).c_str());
-
-            return false;
-        }
-        ref_pos = robot_->get_joint_state().pos;
-        std::lock_guard<std::mutex> command_lock(command_mutex_);
-        command_frame_.pos = ref_pos;
-        std::fill(command_frame_.vel.begin(), command_frame_.vel.end(), 0.0);
-        command_frame_.received_at = serial_arm::Robot::Clock::now();
-        ++command_frame_.sequence;
-    }
-    const auto restore_admittance = [this]() {
-        std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-
-    };
-    serial_arm::JointVector ref_vel(cfg_.joint_names.size(), 0.0);
-    serial_arm::Robot::TimePoint last_update = serial_arm::Robot::Clock::now();
-    const serial_arm::Robot::TimePoint started_at = last_update;
-    serial_arm::Robot::TimePoint last_progress_at = started_at;
-    serial_arm::Robot::TimePoint settled_at = started_at;
-    bool settled = false;
-    bool rigid_finish_mode = csp_parking;
-    const double rigid_finish_switch_s = 0.75 * cfg_.shutdown.timeout_s;
-
-    RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking before deactivate in %s",csp_parking ? "RIGID CSP" : "COMPLIANT MIT");
-    while(worker_running_.load()) {
-        {
-            std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-            if(robot_->get_state() != serial_arm::RobotState::ACTIVE) break;
-        }
-        const serial_arm::Robot::TimePoint now = serial_arm::Robot::Clock::now();
-        double dt = std::chrono::duration<double>(now - last_update).count();
-        dt = std::clamp(dt, 1.0e-6, cfg_.safety.max_dt_s);
-
-        serial_arm::JointVector next_pos = ref_pos;
-        serial_arm::JointVector next_vel = ref_vel;
-        serial_arm::JointVector measured;
-        {std::lock_guard<std::mutex> lock(state_mutex_);if(state_frame_.valid)measured=state_frame_.pos;}
-        serial_arm::advance_joint_reference(next_pos,next_vel,cfg_.shutdown.park_pos,
-            cfg_.safety.limits.max_vel,cfg_.safety.limits.max_acc,cfg_.shutdown.speed_scale,dt,
-            measured.empty()?nullptr:&measured);
-
-        {
-            std::lock_guard<std::mutex> lock(command_mutex_);
-            command_frame_.pos = next_pos;
-            command_frame_.vel = next_vel;
-            command_frame_.received_at = serial_arm::Robot::Clock::now();
-            ++command_frame_.sequence;
-        }
-        ref_pos = std::move(next_pos);
-        ref_vel = std::move(next_vel);
-        last_update = now;
-
-        double max_position_error = 0.0;
-        double max_velocity = 0.0;
-        std::size_t position_index = 0;
-        std::size_t velocity_index = 0;
-        {
-            std::lock_guard<std::mutex> lock(state_mutex_);
-            for(std::size_t i = 0; i < cfg_.joint_names.size(); ++i) {
-                const double position_error = std::abs(state_frame_.pos[i] - cfg_.shutdown.park_pos[i]);
-                const double velocity = std::abs(state_frame_.vel[i]);
-                if(position_error > max_position_error) {
-                    max_position_error = position_error;
-                    position_index = i;
-                }
-                if(velocity > max_velocity) {
-                    max_velocity = velocity;
-                    velocity_index = i;
-                }
-            }
-        }
-
-        const bool reached = max_position_error <= cfg_.shutdown.position_tolerance && max_velocity <= cfg_.shutdown.velocity_tolerance;
-        if(reached) {
-            if(!settled) {
-                settled_at = now;
-                settled = true;
-            }
-            if(std::chrono::duration<double>(now - settled_at).count() >= cfg_.shutdown.settle_time_s) {
-                return true;
-            }
-        }
-        else {
-            settled = false;
-        }
-
-        const double elapsed_s = std::chrono::duration<double>(now - started_at).count();
-        if(!rigid_finish_mode && !reached && elapsed_s >= rigid_finish_switch_s) {
-            const auto rigid_result = [&]() {
-                std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-                const auto result = runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID);
-                if(result) {
-                    ref_pos = robot_->get_joint_state().pos;
-                    std::fill(ref_vel.begin(), ref_vel.end(), 0.0);
-                }
-                else {
-                    static_cast<void>(runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID));
-                }
-                clear_command();
-                return result;
-            }();
-            if(!rigid_result) {
-                RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "%s", make_robot_error("Robot switch parking to RIGID", rigid_result.error()).c_str());
-                restore_admittance();
-                return false;
-            }
-            rigid_finish_mode = true;
-            RCLCPP_WARN(rclcpp::get_logger(kLoggerName), "Parking exceeded 75%% of timeout and is not seated; switching to RIGID for final seating");
-        }
-
-        if(std::chrono::duration<double>(now - last_progress_at).count() >= 1.0) {
-            RCLCPP_INFO(rclcpp::get_logger(kLoggerName), "Parking error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
-            last_progress_at = now;
-        }
-
-        if(elapsed_s > cfg_.shutdown.timeout_s) {
-            {
-                std::lock_guard<std::mutex> robot_lock(robot_mutex_);
-                static_cast<void>(runtime_.set_impedance_mode(*robot_,serial_arm::JointImpedanceMode::RIGID));
-                clear_command();
-            }
-            RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking timeout; strict seating check still failed, keep ACTIVE in RIGID. error %.6f rad (%s), velocity %.6f rad/s (%s)", max_position_error, cfg_.joint_names[position_index].c_str(), max_velocity, cfg_.joint_names[velocity_index].c_str());
-            restore_admittance();
-            return false;
-        }
-
-        std::this_thread::sleep_for(std::chrono::duration<double>(std::min(0.02, 0.5 * cfg_.safety.cmd_timeout_s)));
-    }
-
-    RCLCPP_ERROR(rclcpp::get_logger(kLoggerName), "Parking aborted; Robot state is not ACTIVE or worker stopped");
-    restore_admittance();
-    return false;
 }
 
 /**

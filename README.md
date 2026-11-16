@@ -44,12 +44,12 @@ SerialArm-Core 将模型、硬件映射、动力学计算和控制参数组织�
   <tr>
     <td width="33%" align="center"><strong>工作区入口</strong></td>
     <td width="33%" align="center"><strong>机器人配置</strong></td>
-    <td width="33%" align="center"><strong>动力学标定</strong></td>
+    <td width="33%" align="center"><strong>控制整定与模型标定</strong></td>
   </tr>
   <tr>
     <td><img src="docs/images/launcher-start.png" alt="工作区入口" width="100%" /></td>
     <td><img src="docs/images/launcher-profile.png" alt="机器人 Profile 配置" width="100%" /></td>
-    <td><img src="docs/images/launcher-dynamics.png" alt="动力学标定工作台" width="100%" /></td>
+    <td><img src="docs/images/launcher-dynamics.png" alt="控制整定与模型标定工作台" width="100%" /></td>
   </tr>
   <tr>
     <td>新建机械臂、继续配置或进入已有机器人</td>
@@ -94,9 +94,9 @@ SerialArm-Core 将上层应用、机器人配置与硬件驱动解耦，控制�
 
 ![SerialArm-Core 系统架构](docs/images/architecture.svg)
 
-准备页面分别显示连接前配置、运行检查、基础标定、专项标定与检查记录；控制权限由当前配置、反馈和 Core 安全检查决定
+准备页按共同基础、路径专项、可选提升组织接入；模型与映射先检查，连接与使能分开；配置、自查、实测与实时连接分别记录，重启保留有效结果
 
-自动增益标定不需要用户配置 PD 上限；历史 PD 上限字段兼容接受但忽略，实际增益受硬件协议能力和分辨率约束，位置、速度、加速度与力矩等 Safety 限制继续生效
+MIT 自动整定使用模型初值和实测响应，CSP 单独进行外力与 MDK 验证；协议能力、分辨率和 Safety 限制共同约束执行
 
 ![新机械臂接入工作流程](docs/images/workflow.svg)
 

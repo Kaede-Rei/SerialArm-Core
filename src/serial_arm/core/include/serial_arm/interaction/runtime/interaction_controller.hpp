@@ -87,7 +87,6 @@ private:
     InteractionControllerCfg cfg_;
     bool is_configured_{ false };
     InteractionOutput last_observation_;
-    JointVector last_measured_position_;
     bool observation_initialized_{ false };
 };
 

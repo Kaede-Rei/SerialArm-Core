@@ -47,6 +47,8 @@ std::string make_robot_error(const char* action, const RobotFault& fault) {
 
     if(fault.code==RobotErr::REFERENCE_GOVERNOR_FAILED)
         stream << "; REFERENCE_GOVERNOR_FAILED / " << (fault.reference_governor_err==ReferenceGovernorErr::INFEASIBLE ? "INFEASIBLE" : "INVALID_INPUT");
+    if(fault.code==RobotErr::ADMITTANCE_NOT_VALIDATED)
+        stream << "; ADMITTANCE_NOT_VALIDATED: validate CSP external effort and finite-stiffness response";
     if(fault.code==RobotErr::MOTION_SOURCE_BUSY)
         stream << "; MOTION_SOURCE_BUSY: another motion task owns the reference";
     return stream.str();
@@ -70,7 +72,7 @@ public:
         state_.vel.assign(size, 0.0);
         state_.tor.assign(size, 0.0);
         state_.online.assign(size, 1);
-        state_.enabled.assign(size, 1);
+        state_.enabled.assign(size, 0);
         state_.err_code.assign(size, 0);
     }
 
@@ -103,6 +105,7 @@ public:
     tl::expected<void, MotorBusErr> activate() override {
         if(!connected_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
         active_ = true;
+        state_.enabled.assign(size(),1);
         return { };
     }
     tl::expected<void, MotorBusErr> write(const ActuatorCtrlCmd& cmd) override {
@@ -115,6 +118,7 @@ public:
     tl::expected<void, MotorBusErr> stop() override { return { }; }
     tl::expected<void, MotorBusErr> deactivate() override {
         active_ = false;
+        state_.enabled.assign(size(),0);
         return { };
     }
     tl::expected<void, MotorBusErr> recover() override { return { }; }
@@ -241,6 +245,39 @@ void PyRobotSession::configure(
     pending_admittance_.reset();admittance_sequence_=completed_admittance_sequence_=0;admittance_error_.clear();
     runtime_.clear_commands();
     configured_ = true;
+}
+
+void PyRobotSession::connect() {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(running_.load())throw SerialArmPythonError("connect requires a stopped control thread");
+    const auto connected=robot_->connect();
+    if(!connected)throw SerialArmPythonError(make_robot_error("Robot connect",connected.error()));
+    {std::lock_guard<std::mutex> lock(mutex_);
+        cfg_.safety=robot_->get_config().safety;
+        const auto caps=robot_->hardware_capabilities();
+        for(std::size_t i=0;i<caps.size();++i) {
+            const auto& c=caps[i];
+            actuator_info_[i]={c.actuator_name,cfg_.joint_names[i],c.min_pos,c.max_pos,c.max_vel,c.max_effort,
+                c.max_kp,c.max_kd,c.kp_resolution,c.kd_resolution,c.effort_resolution,c.supports_mit,c.supports_csp};
+        }
+    }
+    (void)observe();
+}
+
+RobotSessionSnapshot PyRobotSession::observe() {
+    std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
+    if(!configured_ || !robot_)throw SerialArmPythonError("RobotSession is not configured");
+    if(running_.load())throw SerialArmPythonError("observe requires a stopped control thread");
+    const auto observation=robot_->observe();
+    if(!observation)throw SerialArmPythonError(make_robot_error("Robot observe",observation.error()));
+    (void)dynamics_->update_state(observation->joint_state,JointVector(cfg_.joint_names.size(),0));
+    std::lock_guard<std::mutex> lock(mutex_);
+    snapshot_.robot_state=RobotState::INACTIVE;snapshot_.cycle=*observation;
+    snapshot_.dynamics=dynamics_->get_state();snapshot_.valid=true;snapshot_.last_error.clear();
+    ++snapshot_.sequence;
+    snapshot_.monotonic_ns=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(Robot::Clock::now().time_since_epoch()).count());
+    return snapshot_;
 }
 
 void PyRobotSession::start() {
@@ -422,6 +459,14 @@ void PyRobotSession::submit_execution_update(std::function<tl::expected<void,Rob
 void PyRobotSession::set_hold_compensation_cfg(const HoldCompensationCfg& cfg) {
     submit_execution_update([this,cfg]{auto result=robot_->set_hold_compensation_cfg(cfg);if(result){std::lock_guard<std::mutex> lock(mutex_);cfg_.hold_compensation=cfg;}return result;});
 }
+void PyRobotSession::set_admittance_validation(bool active) {
+    submit_execution_update([this,active] {
+        const auto result=robot_->set_admittance_validation(active);
+        if(result) runtime_.clear_commands();
+        return result;
+    });
+}
+
 void PyRobotSession::set_control_path(ControlPath path) {
     std::lock_guard<std::recursive_mutex> lifecycle_lock(lifecycle_mutex_);
     if(!configured_ || !robot_) throw SerialArmPythonError("RobotSession is not configured");
@@ -448,7 +493,7 @@ void PyRobotSession::set_admittance_cfg(const AdmittanceCapabilityCfg& cfg) {
         if(worker_.joinable())worker_.join();
         const auto result=robot_->set_admittance_cfg(candidate);
         if(!result)throw SerialArmPythonError(make_robot_error("Robot set_admittance_cfg",result.error()));
-        std::lock_guard<std::mutex> lock(mutex_);cfg_.capability.admittance=candidate;return;
+        std::lock_guard<std::mutex> lock(mutex_);cfg_.capability.admittance=robot_->get_admittance_cfg();return;
     }
     std::unique_lock<std::mutex> lock(mutex_);
     if(snapshot_.robot_state!=RobotState::ACTIVE)throw SerialArmPythonError("set_admittance_cfg() requires ACTIVE or INACTIVE");
@@ -648,7 +693,7 @@ void PyRobotSession::loop() noexcept {
         if(update) {
             const auto applied=robot_->set_admittance_cfg(*update);
             std::lock_guard<std::mutex> lock(mutex_);
-            if(applied){cfg_.capability.admittance=*update;admittance_error_.clear();}
+            if(applied){cfg_.capability.admittance=robot_->get_admittance_cfg();admittance_error_.clear();}
             else admittance_error_=make_robot_error("Robot set_admittance_cfg",applied.error());
             completed_admittance_sequence_=update_sequence;
             fault_recovery_cv_.notify_all();

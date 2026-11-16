@@ -38,7 +38,7 @@ enum class MotorBusErr {
 inline constexpr std::uint64_t motor_bus_abi_fingerprint =
     (static_cast<std::uint64_t>(sizeof(ActuatorCapability)) << 32) ^
     (static_cast<std::uint64_t>(sizeof(ActuatorState)) << 16) ^
-    sizeof(ActuatorCtrlCmd) ^ (sizeof(std::string) << 8);
+    sizeof(ActuatorCtrlCmd) ^ (sizeof(std::string) << 8) ^ 0x0200000000000000ULL;
 
 class MotorBus {
 public:
@@ -73,6 +73,9 @@ public:
      * rad、rad/s、N·m
      */
     virtual tl::expected<ActuatorState, MotorBusErr> read() = 0;
+    /** Read-only disabled observation may explicitly request fresh feedback;
+     * keep any blocking query out of the active control read path */
+    virtual tl::expected<ActuatorState, MotorBusErr> observe() { return read(); }
 
     /**
      * @brief 使 Backend 进入可写控制状态
@@ -89,6 +92,19 @@ public:
     }
 
     virtual tl::expected<void, MotorBusErr> activate() = 0;
+
+    /** Enable with a prevalidated current-position command. Backends should
+     * publish it immediately after each actuator is enabled, before waiting
+     * for acknowledgements or enabling the remaining axes. The fallback is
+     * for buses whose activation is already atomic with command publication
+     */
+    virtual tl::expected<void, MotorBusErr> activate(const ActuatorCtrlCmd& initial_cmd) {
+        const auto enabled=activate();
+        if(!enabled)return enabled;
+        const auto sent=write(initial_cmd);
+        if(!sent)(void)deactivate();
+        return sent;
+    }
 
     /**
      * @brief 写入执行器侧控制命令

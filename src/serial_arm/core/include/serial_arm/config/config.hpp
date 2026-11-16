@@ -40,8 +40,8 @@ struct HoldCompensationCfg {
     JointVector max_torque;
     JointVector max_rate;
     JointVector contact_threshold;
-    double velocity_threshold{0.02};
-    double error_threshold{0.03};
+    JointVector velocity_threshold;
+    JointVector error_threshold;
 };
 
 /**
@@ -55,8 +55,8 @@ struct AdmittanceObserverCfg {
  * @brief 与具体机器人绑定的导纳标定结果
  */
 struct AdmittanceCalibrationCfg {
-    JointVector torque_bias;                    ///< residual 固定零偏 Nm
-    JointVector torque_threshold;               ///< bias + friction 补偿后的小力矩忽略阈值 Nm
+    JointVector torque_bias;                    ///< 各关节残差固定零偏，N·m 或 N
+    JointVector torque_threshold;               ///< 补偿后连续死区，N·m 或 N
     FrictionResidualModelCfg friction;           ///< 速度相关摩擦 residual 模型
 };
 
@@ -70,14 +70,21 @@ struct AdmittanceControllerCfg {
     JointVector mass;                 ///< 虚拟质量 M
     JointVector damping;              ///< 虚拟阻尼 D
     JointVector stiffness;            ///< 虚拟刚度 K
-    JointVector max_delta_q;          ///< 最大位置退让绝对值 rad
-    JointVector max_delta_q_dot;      ///< 最大退让速度绝对值 rad/s
+    JointVector max_delta_q;          ///< 各关节最大位置退让，rad 或 m
+    JointVector max_delta_q_dot;      ///< 各关节最大退让速度，rad/s 或 m/s
 };
 
 /**
  * @brief 关节空间导纳能力的公开配置
  */
+struct AdmittanceValidationCfg {
+    bool observation_validated{false}; ///< 独立无接触残差验证
+    bool response_validated{false};    ///< 有限刚度受力与释放回位验证
+    JointVector velocity_tolerance;    ///< 各关节响应验收静止门限，rad/s 或 m/s
+};
+
 struct AdmittanceCapabilityCfg {
+    AdmittanceValidationCfg validation;
     bool observer_enabled{false};               ///< observer + calibration 完整时派生
     bool enabled{ false };                       ///< 完整导纳配置存在时由加载器派生，不是公开配置开关
     std::vector<std::uint8_t> joint_enabled;    ///< 每个关节是否参与导纳控制
@@ -96,16 +103,24 @@ struct CapabilityCfg {
 /**
  * @brief 正常停机配置
  */
+enum class ParkingStrategy { RIGID, COMPLIANT_THEN_RIGID };
+
+struct ParkingPathCfg {
+    bool enabled{ false };                     ///< 允许此路径执行停放
+    ParkingStrategy strategy{ ParkingStrategy::RIGID };
+    JointVector park_pos;                       ///< 停放姿态，rad 或 m
+    double speed_scale{ 0.1 };
+    JointVector position_tolerance;             ///< 各关节到位门限，rad 或 m
+    JointVector velocity_tolerance;             ///< 各关节静止门限，rad/s 或 m/s
+    double settle_time_s{ 0.25 };
+    double timeout_s{ 15.0 };
+};
+
 struct ShutdownCfg {
-    bool park_before_disable{ true };          ///< 正常停机前是否先回到停放姿态
-    JointVector park_pos;                      ///< 停放姿态关节位置
-    double speed_scale{ 0.1 };                 ///< 停放轨迹速度比例
-    double position_tolerance{ 0.03 };         ///< 停放姿态位置误差阈值
-    double velocity_tolerance{ 0.05 };         ///< 停放姿态速度阈值
-    double compliant_phase_ratio{ 0.75 };  ///< 自动停放柔性阶段所占总时间比例
-    double settle_time_s{ 0.25 };              ///< 严格判据下持续稳定时间
-    double relaxed_tolerance_ratio{ 2.0 };     ///< 超时前允许使用的宽松判据倍率
-    double timeout_s{ 15.0 };                  ///< 停放流程最大允许时间
+    ParkingPathCfg mit;
+    ParkingPathCfg csp;
+    ParkingPathCfg& for_path(ControlPath path) { return path == ControlPath::CSP ? csp : mit; }
+    const ParkingPathCfg& for_path(ControlPath path) const { return path == ControlPath::CSP ? csp : mit; }
 };
 
 /**

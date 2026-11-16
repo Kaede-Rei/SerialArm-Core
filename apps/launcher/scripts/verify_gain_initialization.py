@@ -28,12 +28,12 @@ def core_for(names):
                 'joint_zero_offset': 0., 'actuator_zero_offset': 0.} for name in names}},
             'control': {'controller': {'allow_full_cmd': False, **{name: {'kp': {j: (0 if name=='drag' else 20) for j in names}, 'kd': {j: .5 for j in names}}
                 for name in ('rigid','compliant','drag')}}},
-            'safety_policy': {'position_margin': .01, 'cmd_vel_scale': .25,
+            'safety_policy': {'position_margin': dict.fromkeys(names, .01), 'cmd_vel_scale': .25,
                 'max_acc': {name: 2 for name in names}, 'max_kp_override': {name: 50 for name in names},
                 'max_kd_override': {name: 2 for name in names},
                 'fault_recovery': {'default_mode': 'rigid_hold', 'allow_drag_recovery': True,
                     'require_operator_request': True, 'recovery_timeout_s': 30.}},
-            'shutdown': {'park_pos': {name: 0 for name in names}}}
+            'shutdown': {'paths': {path: {'park_pos': {name: 0 for name in names}} for path in ('MIT', 'CSP')}}}
 
 
 def urdf(names):
@@ -456,8 +456,8 @@ class NativeProfileInitializationTests(unittest.TestCase):
             # Artificial limits, park pose and old gains cannot change the raw
             # geometry/inertia design. This invokes the real native model.
             changed=deepcopy(core)
-            changed['shutdown']['park_pos']={'j2':1.8,'j1':-1.8}
-            changed['safety_policy'].update(position_margin=.5,cmd_vel_scale=.01,max_acc={'j2':.02,'j1':.03})
+            changed['shutdown']['paths']['MIT']['park_pos']={'j2':1.8,'j1':-1.8}
+            changed['safety_policy'].update(position_margin=dict.fromkeys(changed['model']['joint_names'], .5),cmd_vel_scale=.01,max_acc={'j2':.02,'j1':.03})
             alternate=source/'artificial-limits.urdf'
             alternate.write_text((source/'model.urdf').read_text().replace('lower="-2" upper="2" velocity="3" effort="20"','lower="-9" upper="9" velocity=".01" effort=".02"'))
             limit_preview=initialize_profile_gains(ProbeInspector(ROOT),config,changed,alternate,{})
@@ -473,7 +473,7 @@ class NativeProfileInitializationTests(unittest.TestCase):
             editor['profile_entry']['hardware']['plugin']='serial_arm_hardware_damiao'
             editor['hardware']={'buses':{'main':{'type':'can','backend':'damiao_usb2can','device':'/not-connected','baudrate':921600}},
                 'damiao':{'bus':'main','refresh_state_in_read':False,'feedback_timeout_s':.05,'activation_retries':3,'startup_read_cycles':5,
-                'stop_kp':10.,'stop_kd':.15,'stop_cycles':5,'actuators':{name:{'name':'actuator'+str(index+1),'motor_id':index+1,'master_id':0,'motor_type':'DM4310'} for index,name in enumerate(['j2','j1'])}}}
+                'actuators':{name:{'name':'actuator'+str(index+1),'motor_id':index+1,'master_id':0,'motor_type':'DM4310'} for index,name in enumerate(['j2','j1'])}}}
             editor['hardware_imported']=True
             saved_editor=library.profile_editor_save(created['config'],editor)
             self.assertTrue(all(value>0 for value in saved_editor['core']['control']['controller']['rigid']['kp'].values()))

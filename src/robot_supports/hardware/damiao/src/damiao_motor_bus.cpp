@@ -102,17 +102,16 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const std::string& con
         const YAML::Node damiao = root["damiao"] ? root["damiao"] : root;
         if(!damiao || !damiao.IsMap()) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
 
+        if(damiao["stop_kp"] || damiao["stop_kd"] || damiao["stop_cycles"])
+            return tl::make_unexpected(MotorBusErr::INVALID_CFG);
         DamiaoBusCfg cfg;
         auto bus = optional_as<std::string>(damiao, "bus", cfg.bus);
         auto refresh_state_in_read = require_as<bool>(damiao, "refresh_state_in_read");
         auto feedback_timeout_s = require_as<double>(damiao, "feedback_timeout_s");
         auto activation_retries = require_as<std::size_t>(damiao, "activation_retries");
         auto startup_read_cycles = require_as<std::size_t>(damiao, "startup_read_cycles");
-        auto stop_kp = require_as<double>(damiao, "stop_kp");
-        auto stop_kd = require_as<double>(damiao, "stop_kd");
-        auto stop_cycles = require_as<std::size_t>(damiao, "stop_cycles");
         if(!bus || !refresh_state_in_read || !feedback_timeout_s ||
-            !activation_retries || !startup_read_cycles || !stop_kp || !stop_kd || !stop_cycles) {
+            !activation_retries || !startup_read_cycles) {
             return tl::make_unexpected(MotorBusErr::INVALID_CFG);
         }
         cfg.bus = *bus;
@@ -137,9 +136,6 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::configure(const std::string& con
         cfg.feedback_timeout_s = *feedback_timeout_s;
         cfg.activation_retries = *activation_retries;
         cfg.startup_read_cycles = *startup_read_cycles;
-        cfg.stop_kp = *stop_kp;
-        cfg.stop_kd = *stop_kd;
-        cfg.stop_cycles = *stop_cycles;
 
         const YAML::Node actuators = damiao["actuators"];
         if(!actuators || !actuators.IsMap()) return tl::make_unexpected(MotorBusErr::INVALID_CFG);
@@ -411,6 +407,11 @@ tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::read() {
     return read_impl(cfg_.refresh_state_in_read);
 }
 
+tl::expected<ActuatorState, MotorBusErr> DamiaoMotorBus::observe() {
+    if(active_)return tl::make_unexpected(MotorBusErr::INVALID_STATE);
+    return read_impl(true);
+}
+
 /**
  * @brief 激活 DamiaoMotorBus
  * @return 如果激活成功，则返回空的 tl::expected，否则返回错误码
@@ -434,11 +435,21 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::select_control_path(ControlPath 
     }
     path_ = path;
     selected_position_speed_limit_ = position_speed_limit;
-    last_position_speed_limit_ = position_speed_limit;
     return {};
 }
 
 tl::expected<void, MotorBusErr> DamiaoMotorBus::activate() {
+    return tl::make_unexpected(MotorBusErr::INVALID_CMD);
+}
+
+tl::expected<void, MotorBusErr> DamiaoMotorBus::activate(const ActuatorCtrlCmd& initial_cmd) {
+    if(!connected_)return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
+    const auto valid=validate_cmd(initial_cmd);
+    if(!valid)return valid;
+    return activate_impl(initial_cmd);
+}
+
+tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_impl(const ActuatorCtrlCmd& initial_cmd) {
     if(!connected_ || !motor_ctrl_ || !can_channel_) {
         return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
     }
@@ -447,12 +458,13 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate() {
         !finite_vector(selected_position_speed_limit_)))
         return tl::make_unexpected(MotorBusErr::INVALID_CMD);
 
+    control_claimed_=true;
     try {
         if(can_channel_) can_channel_->flush();
         std::fill(enabled_.begin(), enabled_.end(), 0);
 
         for(std::size_t i = 0; i < motors_.size(); ++i) {
-            const auto result = activate_motor(i);
+            const auto result = activate_motor(i,initial_cmd);
             if(!result) {
                 disable_enabled_noexcept();
                 return result;
@@ -498,11 +510,6 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate() {
         }
         last_state_ = average;
 
-        auto stopped = stop();
-        if(!stopped) {
-            disable_enabled_noexcept();
-            return tl::make_unexpected(MotorBusErr::STOP_FAILED);
-        }
         return {};
     }
     catch(...) {
@@ -534,7 +541,6 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::write(const ActuatorCtrlCmd& cmd
                 return tl::make_unexpected(MotorBusErr::WRITE_FAILED);
             }
         }
-        if(path_ == ControlPath::CSP) last_position_speed_limit_ = cmd.position_speed_limit;
         return {};
     }
     catch(...) {
@@ -547,33 +553,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::write(const ActuatorCtrlCmd& cmd
  * @return 如果停止成功，则返回空的 tl::expected，否则返回错误码
  */
 tl::expected<void, MotorBusErr> DamiaoMotorBus::stop() {
-    if(!active_) return tl::make_unexpected(MotorBusErr::NOT_ACTIVE);
-    // The transport receiver can already have newer feedback queued when a
-    // stop arrives between control cycles. Anchor to that observation rather
-    // than the position cached by the previous read; this remains nonblocking.
-    const auto current = read_impl(false);
-    if(!current) return tl::make_unexpected(current.error());
-    if(std::any_of(online_.begin(), online_.end(), [](std::uint8_t value) { return value == 0; }))
-        return tl::make_unexpected(MotorBusErr::ACTUATOR_OFFLINE);
-
-    ActuatorCtrlCmd stop_cmd;
-    stop_cmd.path = path_;
-    stop_cmd.pos = last_state_.pos;
-    stop_cmd.vel.assign(motors_.size(), 0.0);
-    if(path_ == ControlPath::CSP) {
-        stop_cmd.position_speed_limit = last_position_speed_limit_;
-        if(stop_cmd.position_speed_limit.size() != motors_.size())
-            return tl::make_unexpected(MotorBusErr::INVALID_CMD);
-    }
-    stop_cmd.tor.assign(motors_.size(), 0.0);
-    stop_cmd.kp.assign(motors_.size(), path_ == ControlPath::MIT ? cfg_.stop_kp : 0.0);
-    stop_cmd.kd.assign(motors_.size(), path_ == ControlPath::MIT ? cfg_.stop_kd : 0.0);
-
-    for(std::size_t cycle = 0; cycle < cfg_.stop_cycles; ++cycle) {
-        auto result = write(stop_cmd);
-        if(!result) return result;
-    }
-    return {};
+    return deactivate();
 }
 
 /**
@@ -583,12 +563,6 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::stop() {
 tl::expected<void, MotorBusErr> DamiaoMotorBus::deactivate() {
     if(!connected_ || !motor_ctrl_) {
         return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
-    }
-
-    bool stop_failed = false;
-    if(active_) {
-        const auto stopped = stop();
-        stop_failed = !stopped;
     }
 
     bool disable_failed = false;
@@ -610,9 +584,6 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::deactivate() {
 
     if(disable_failed) {
         return tl::make_unexpected(MotorBusErr::DISABLE_FAILED);
-    }
-    if(stop_failed) {
-        return tl::make_unexpected(MotorBusErr::STOP_FAILED);
     }
     return {};
 }
@@ -698,7 +669,7 @@ const HardwareCapabilities& DamiaoMotorBus::capabilities() const noexcept {
  * @param index 电机索引
  * @return 如果准备成功，则返回空的 tl::expected，否则返回错误码
  */
-tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index) {
+tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index, const ActuatorCtrlCmd& initial_cmd) {
     if(index >= motors_.size() || !motor_ctrl_ || !can_channel_) return tl::make_unexpected(MotorBusErr::NOT_CONNECTED);
 
     MotorBusErr last_error = MotorBusErr::ENABLE_FAILED;
@@ -715,7 +686,7 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index
         // The first position command follows enable without the SDK settling
         // delay; the driver does not specify whether disabled commands latch.
         const float anchor = motors_[index]->get_position();
-        if(path_ == ControlPath::CSP && !std::isfinite(anchor))
+        if(!std::isfinite(anchor))
             return tl::make_unexpected(MotorBusErr::READ_FAILED);
         const auto mode = path_ == ControlPath::MIT ? damiao::MIT_MODE : damiao::POS_VEL_MODE;
         if(!motor_ctrl_->switch_control_mode(*motors_[index], mode)) {
@@ -725,16 +696,16 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index
         }
 
         previous_seq = motors_[index]->get_state_seq();
-        bool sent_enable = false;
-        if(path_ == ControlPath::CSP) {
-            sent_enable = motor_ctrl_->enable_immediate(*motors_[index]);
-            if(sent_enable && !motor_ctrl_->control_pos_vel(*motors_[index], anchor,
-                    static_cast<float>(selected_position_speed_limit_[index]), false)) {
-                (void)motor_ctrl_->disable(*motors_[index]);
-                return tl::make_unexpected(MotorBusErr::WRITE_FAILED);
-            }
-        } else {
-            sent_enable = motor_ctrl_->enable(*motors_[index]);
+        const bool sent_enable=motor_ctrl_->enable_immediate(*motors_[index]);
+        const bool sent_hold=!sent_enable ? false : path_==ControlPath::CSP ?
+            motor_ctrl_->control_pos_vel(*motors_[index],anchor,
+                static_cast<float>(initial_cmd.position_speed_limit[index]),false) :
+            motor_ctrl_->control_mit(*motors_[index],
+                static_cast<float>(initial_cmd.kp[index]),static_cast<float>(initial_cmd.kd[index]),
+                anchor,0.0f,static_cast<float>(initial_cmd.tor[index]),false);
+        if(sent_enable && !sent_hold) {
+            (void)motor_ctrl_->disable(*motors_[index]);
+            return tl::make_unexpected(MotorBusErr::WRITE_FAILED);
         }
         if(!sent_enable || !confirm_motor_status(index, 1, previous_seq)) {
             last_error = motors_[index]->get_status() > 1 && motors_[index]->get_status() != 0xFF ?
@@ -756,10 +727,8 @@ tl::expected<void, MotorBusErr> DamiaoMotorBus::activate_motor(std::size_t index
  */
 tl::expected<void, MotorBusErr> DamiaoMotorBus::validate_cfg(const DamiaoBusCfg& cfg) const {
     if(cfg.bus.empty() || cfg.serial_port.empty() || cfg.baudrate <= 0 || cfg.actuators.empty() ||
-        cfg.activation_retries == 0 || cfg.startup_read_cycles == 0 || cfg.stop_cycles == 0 ||
-        !std::isfinite(cfg.feedback_timeout_s) || cfg.feedback_timeout_s <= 0.0 ||
-        !std::isfinite(cfg.stop_kp) || !std::isfinite(cfg.stop_kd) ||
-        cfg.stop_kp < 0.0 || cfg.stop_kp > 500.0 || cfg.stop_kd < 0.0 || cfg.stop_kd > 5.0) {
+        cfg.activation_retries == 0 || cfg.startup_read_cycles == 0 ||
+        !std::isfinite(cfg.feedback_timeout_s) || cfg.feedback_timeout_s <= 0.0) {
         return tl::make_unexpected(MotorBusErr::INVALID_CFG);
     }
 
@@ -878,7 +847,8 @@ void DamiaoMotorBus::disable_enabled_noexcept() noexcept {
  * @param keep_config 是否保留配置
  */
 void DamiaoMotorBus::release_connection_noexcept(bool keep_config) noexcept {
-    disable_enabled_noexcept();
+    if(control_claimed_)disable_enabled_noexcept();
+    control_claimed_=false;
     motors_.clear();
     motor_ctrl_.reset();
     can_channel_.reset();
@@ -888,7 +858,6 @@ void DamiaoMotorBus::release_connection_noexcept(bool keep_config) noexcept {
     last_feedback_time_.clear();
     last_state_ = ActuatorState{};
     selected_position_speed_limit_.clear();
-    last_position_speed_limit_.clear();
     connected_ = false;
     active_ = false;
     if(!keep_config) {

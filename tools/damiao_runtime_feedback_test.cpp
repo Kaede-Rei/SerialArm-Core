@@ -4,6 +4,9 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <yaml-cpp/yaml.h>
 #include <iostream>
 #include <map>
 #include <stdexcept>
@@ -143,6 +146,18 @@ void check_axis_count(std::size_t count) {
         require(!sdk.control_pos_vel(motor,1.25f,0.5f,false),"POS_VEL send failure was swallowed");
         physical->fail_send=false;
     }
+    {
+        DamiaoMotorBus observer;
+        require(bool(observer.configure(cfg)) && bool(observer.connect()),"read-only connection failed");
+        const auto modes=physical->mode_writes;
+        const auto observation=observer.observe();
+        require(bool(observation),"disabled observation failed");
+        for(auto enabled:observation->enabled)require(enabled==0,"observation enabled an actuator");
+        const auto frames=physical->sent_frames.size();
+        observer.cleanup();
+        require(physical->mode_writes==modes && physical->sent_frames.size()==frames,
+            "closing read-only hardware connection sent a control command");
+    }
     DamiaoMotorBus bus;
     require(bool(bus.configure(cfg)),"hardware configuration failed");
     for(std::size_t i=0;i<count;++i) {
@@ -196,16 +211,35 @@ void check_axis_count(std::size_t count) {
     std::cout<<"PASS "<<count<<" axes: nonblocking drain, real timing, empty cache and unchanged stale timeout\n";
     std::cout<<"PASS "<<count<<" axes: configured/confirmed torque quantum, joint order and nonunit torque mapping\n";
     if(count==1) {
-        require(bool(bus.activate()),"explicit activation or MIT mode handshake changed");
+        ActuatorCtrlCmd initial;
+        initial.path=ControlPath::MIT;initial.pos={1.0};initial.vel={0};initial.tor={.2};initial.kp={10};initial.kd={.4};
+        const auto before_mit_activation=physical->sent_frames.size();
+        require(bool(bus.activate(initial)),"current-position MIT activation failed");
+        const auto& mit_frames=physical->sent_frames;
+        const auto mit_enable=std::find_if(mit_frames.begin()+before_mit_activation,mit_frames.end(),[](const auto& f){return f.id==1 && f.data[7]==0xfc;});
+        require(mit_enable!=mit_frames.end() && std::next(mit_enable)!=mit_frames.end() && std::next(mit_enable)->id==1 && std::next(mit_enable)->data[7]!=0xfc,
+            "MIT current-position command must immediately follow enable");
+        const auto& first_mit=*std::next(mit_enable);
+        const auto encoded_anchor=(static_cast<unsigned>(first_mit.data[0])<<8)|first_mit.data[1];
+        require(encoded_anchor>=32767 && encoded_anchor<=32769,"MIT startup reused an old target instead of disabled feedback");
+        const auto encoded_kp=(static_cast<unsigned>(first_mit.data[3]&0x0f)<<8)|first_mit.data[4];
+        require(encoded_kp>0,"MIT startup omitted Core's prevalidated holding gains");
         require(physical->mode_writes==1,"activation skipped MIT mode confirmation");
         require(!physical->mode_write_while_enabled,"mode switched while enabled");
         require(!bus.select_control_path(ControlPath::MIT),"active path change must be rejected");
         physical->reset_counts();
         require(bool(bus.read()) && physical->blocking_polls==0,"first read after startup blocked");
+        const auto before_disable=physical->sent_frames.size();
         require(bool(bus.deactivate()),"explicit disable/status confirmation changed");
+        require(physical->sent_frames.size()>before_disable,"deactivation omitted disable");
+        for(auto it=physical->sent_frames.begin()+before_disable;it!=physical->sent_frames.end();++it)
+            require(((it->id==1 && it->data[7]==0xfd) || (it->id==0x7ff && it->data[2]==0xcc)),"deactivation inserted a private PD command");
         require(bool(bus.select_control_path(ControlPath::CSP, ActuatorVector(count, 0.5))),"position path selection failed");
         const auto before_activation=physical->sent_frames.size();
-        require(bool(bus.activate()),"position mode activation failed");
+        require(!bus.activate() && physical->sent_frames.size()==before_activation,"bare activation enabled without an explicit first command");
+        ActuatorCtrlCmd first_position;first_position.path=ControlPath::CSP;
+        first_position.pos={0};first_position.vel={0};first_position.tor={0};first_position.kp={0};first_position.kd={0};first_position.position_speed_limit={.5};
+        require(bool(bus.activate(first_position)),"position mode activation failed");
         const auto& frames=physical->sent_frames;
         auto enable_it=std::find_if(frames.begin()+before_activation,frames.end(),[](const auto& f) {
             return f.id==1 && f.data[7]==0xfc;
@@ -227,22 +261,15 @@ void check_axis_count(std::size_t count) {
         physical->fail_send=true;
         require(!bus.write(position),"position transport error was swallowed");
         physical->fail_send=false;
-        physical->feedback(1,34000,2048,2048);
-        require(bool(bus.stop()),"position stop failed");
-        require(physical->sent_frames.back().id==0x101,"position stop used the wrong protocol");
-        float stopped_at=0;
-        std::memcpy(&stopped_at,physical->sent_frames.back().data.data(),sizeof(stopped_at));
-        require(std::abs(stopped_at-(34000.0*25.0/65535.0-12.5))<2e-6,
-            "position stop ignored the latest queued feedback");
         std::this_thread::sleep_for(std::chrono::milliseconds(60));
-        const auto before_stale_stop=physical->sent_frames.size();
-        require(!bus.stop(),"stale feedback must not be used as a hold position");
-        require(physical->sent_frames.size()==before_stale_stop,"stale position hold was transmitted");
-        (void)bus.deactivate();
-        require(physical->statuses[1]==0,"deactivation with stale feedback failed to disable");
+        const auto before_stop=physical->sent_frames.size();
+        require(bool(bus.stop()),"direct disable fallback failed with stale feedback");
+        require(physical->statuses[1]==0,"stop fallback left the motor enabled");
+        for(auto it=physical->sent_frames.begin()+before_stop;it!=physical->sent_frames.end();++it)
+            require(((it->id==1 && it->data[7]==0xfd) || (it->id==0x7ff && it->data[2]==0xcc)),"stop fallback transmitted an independent hold command");
         const auto before_failed_activation=physical->sent_frames.size();
         physical->fail_next_position=true;
-        require(!bus.activate(),"failed initial position hold must abort activation");
+        require(!bus.activate(first_position),"failed initial position hold must abort activation");
         require(physical->statuses[1]==0,"failed initial position hold must disable the motor");
         const auto& failed_frames=physical->sent_frames;
         auto failed_enable=std::find_if(failed_frames.begin()+before_failed_activation,failed_frames.end(),[](const auto& f) {
@@ -263,10 +290,37 @@ void check_axis_count(std::size_t count) {
 }
 }
 
+void check_yaml_configuration() {
+    const auto path=std::filesystem::temp_directory_path()/("damiao-config-"+std::to_string(clock_ns())+".yaml");
+    const auto base=YAML::Load(R"(damiao:
+  serial_port: /offline/config-only
+  baudrate: 921600
+  refresh_state_in_read: false
+  feedback_timeout_s: 0.05
+  activation_retries: 3
+  startup_read_cycles: 5
+  actuators:
+    joint: {name: motor, motor_id: 1, master_id: 0, motor_type: DM4310}
+)");
+    const auto configure=[&](const YAML::Node& node){std::ofstream(path)<<node;DamiaoMotorBus bus;return bool(bus.configure(path.string()));};
+    require(configure(base),"configuration without removed stop fields was rejected");
+    for(const char* key:{"stop_kp","stop_kd","stop_cycles"}) {
+        auto changed=YAML::Clone(base);changed["damiao"][key]=1;
+        require(!configure(changed),"removed backend stop field was accepted");
+    }
+    for(const char* key:{"activation_retries","startup_read_cycles"}) {
+        for(const double value:{0.0,-1.0,1.5}) {
+            auto changed=YAML::Clone(base);changed["damiao"][key]=value;
+            require(!configure(changed),"backend retry/read count accepted a non-positive integer");
+        }
+    }
+    std::filesystem::remove(path);
+}
+
 int main() {
     try {
         require(ActuatorCapability{}.effort_resolution==0.0,"undeclared torque resolution must remain unknown");
-        check_axis_count(1);check_axis_count(6);
+        check_yaml_configuration();check_axis_count(1);check_axis_count(6);
     }
     catch(const std::exception& error) { std::cerr<<error.what()<<'\n';return 1; }
 }

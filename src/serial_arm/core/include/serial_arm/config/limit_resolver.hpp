@@ -18,7 +18,7 @@ namespace serial_arm {
  * @brief Safety 运行策略配置
  */
 struct SafetyPolicyCfg {
-    double position_margin{ 0.0 };              ///< 命令位置软边距
+    JointVector position_margin;                ///< 各关节命令位置软边距，rad 或 m
     double cmd_vel_scale{ 1.0 };                ///< 命令速度比例
     double state_vel_scale{ 1.0 };              ///< 状态速度检查比例
     JointVector max_acc;                        ///< Joint 侧最大加速度

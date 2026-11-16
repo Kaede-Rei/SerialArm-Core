@@ -24,6 +24,14 @@ def main():
             native.request('set_control_path', {'path': 'CSP'})
             native.request('activate')
             native.ready()
+            try:
+                native.request('set_impedance_mode', {'mode': 'COMPLIANT'})
+            except RuntimeError as error:
+                assert 'ADMITTANCE_NOT_VALIDATED' in str(error), error
+            else:
+                raise AssertionError('unverified CSP admittance was accepted')
+            # Synthetic permission belongs only to this write-disabled fixture.
+            native.request('set_admittance', {'validation': {'observation_validated': True, 'response_validated': True}})
             results = {}
             for mode in ('RIGID', 'COMPLIANT', 'DRAG', 'SERVO_TRACKING'):
                 previous = native.request('status')['sequence']
@@ -45,6 +53,24 @@ def main():
                 assert status['admittance_active'] == (mode in ('COMPLIANT', 'DRAG')), status
                 # The mock rejects CSP writes containing any nonzero kp/kd/torque.
                 results[mode] = {'admittance_active': status['admittance_active']}
+            native.request('set_impedance_mode', {'mode': 'RIGID'})
+            native.request('calibration_begin', {'kind': 'static'})
+            started=time.monotonic()
+            capture=native.request('calibration_capture')
+            assert time.monotonic()-started<1.0 and capture['phase']=='collecting',capture
+            deadline=time.monotonic()+20
+            while time.monotonic()<deadline:
+                capture=native.request('calibration_status')
+                if capture['phase']!='collecting': break
+                time.sleep(.05)
+            assert capture['captured']==1 and capture['phase']=='waiting_user',capture
+            samples=native.request('calibration_samples')['poses'][0]['samples']
+            assert len(samples)>100 and samples[-1]['time_s']-samples[0]['time_s']>=13.5
+            assert all(len(sample['position'])==len(names) for sample in samples)
+            native.request('calibration_capture')
+            started=time.monotonic()
+            native.request('calibration_cancel')
+            assert time.monotonic()-started<2.0
             print(json.dumps({'status': 'passed', 'modes': results,
                               'scope': 'write-disabled mock IPC; no physical hardware'}))
         finally:
@@ -58,7 +84,7 @@ def main():
         document['model']['gravity_model_validated'] = False
         document.pop('capability', None)
         document['safety_policy']['max_tracking_error'] = {name: .5 for name in names}
-        document['shutdown'].update(park_before_disable=True, settle_time_s=.03, timeout_s=2)
+        document['shutdown']['paths']['CSP'].update(enabled=True,strategy='RIGID',settle_time_s=.03,timeout_s=2)
         config.write_text(json.dumps(document))
         native = Native(terminal, config, directory / 'storage-rigid')
         try:

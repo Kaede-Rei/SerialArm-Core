@@ -381,6 +381,8 @@ tl::expected<void, SafetyFault> Safety::validate_cfg(const SafetyCfg& cfg) const
         return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
 
     if(cfg.fault_recovery.default_mode != FaultHoldMode::RIGID_HOLD ||
+        !size_is_n(cfg.fault_recovery.velocity_tolerance) || !is_finite_vector(cfg.fault_recovery.velocity_tolerance) ||
+        std::any_of(cfg.fault_recovery.velocity_tolerance.begin(),cfg.fault_recovery.velocity_tolerance.end(),[](double v){return v<=0;}) ||
         !std::isfinite(cfg.fault_recovery.recovery_timeout_s) || cfg.fault_recovery.recovery_timeout_s<=0)
         return tl::make_unexpected(fault(SafetyErr::INVALID_CFG));
 

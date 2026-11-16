@@ -17,7 +17,8 @@ import yaml
 
 from model_calibration_source import matches_recorded_fingerprint, verified_source_urdf, resolve_relative_mesh
 from control_parameters import (add_mapping_value, canonical_control_text, canonical_core,
-                                four_mode_control_text, complete_mapping_values, interaction_configuration)
+                                four_mode_control_text, complete_mapping_values, interaction_configuration,
+                                revoke_changed_interaction_validation)
 from gravity_recovery_validation import gravity_validation_context, gravity_validation_changes, gravity_trusted, revoke_gravity_trust
 
 
@@ -81,10 +82,7 @@ def _targets(joints, runtime, fields):
         if not isinstance(friction['enabled'], bool):
             raise ValueError('摩擦启用状态必须为布尔值')
         values[('calibration', 'friction', 'enabled')] = friction['enabled']
-    if 'velocity_transition' in friction and wanted(('calibration', 'friction', 'velocity_transition')):
-        path = ('calibration', 'friction', 'velocity_transition')
-        values[path] = number(friction['velocity_transition'], path)
-    for key in ('positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
+    for key in ('velocity_transition', 'positive_coulomb', 'positive_viscous', 'negative_coulomb', 'negative_viscous'):
         if not wanted(('calibration', 'friction', key)):
             continue
         array = friction.get(key)
@@ -108,6 +106,7 @@ def _targets(joints, runtime, fields):
 
 
 def _runtime_text(text, joints, runtime, gravity_scale=None, *, fields=None):
+    before = yaml.safe_load(text)
     targets = _targets(joints, runtime, fields)
     additions = {}
     for path, encoded in targets.items():
@@ -117,10 +116,21 @@ def _runtime_text(text, joints, runtime, gravity_scale=None, *, fields=None):
         parent[path[-1]] = yaml.safe_load(encoded)
     text = complete_mapping_values(text, (), additions)
     after = patch_text(text, targets)
+    after_core = yaml.safe_load(after)
+    reset = revoke_changed_interaction_validation(before, after_core)
+    if reset:
+        after = patch_text(after, {('capability', 'admittance', 'validation', key): 'false' for key in reset})
     # Reject incomplete new observation/MDK blocks rather than filling them with
     # invented calibration values. Existing unrelated defaults remain untouched.
     interaction_configuration(yaml.safe_load(after))
     return after
+
+
+def revoke_interaction_quality(text):
+    validation = (((yaml.safe_load(text) or {}).get('capability') or {}).get('admittance') or {}).get('validation') or {}
+    targets = {('capability', 'admittance', 'validation', key): 'false'
+               for key in ('observation_validated', 'response_validated') if validation.get(key) is True}
+    return patch_text(text, targets) if targets else text
 
 
 def patch_text(text, targets):
@@ -570,7 +580,7 @@ def build_gravity_correction_payload(directory, *, allow_unvalidated=False, pref
             'torque_bias': torque_bias,
             'torque_threshold': _candidate_threshold(gravity, joints),
             'friction': {
-                'velocity_transition': 0.03,
+                'velocity_transition': [0.03] * len(joints),
                 'positive_coulomb': friction.get('positive_coulomb', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
                 'positive_viscous': friction.get('positive_viscous', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
                 'negative_coulomb': friction.get('negative_coulomb', [0.0] * len(joints)) if friction_matches else [0.0] * len(joints),
@@ -644,6 +654,8 @@ def save_gravity_correction(core_path, expected_sha, task_directory, storage_hom
     trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
     if trust_reset:
         after = revoke_gravity_trust(after)
+    if gravity_changes:
+        after = revoke_interaction_quality(after)
     after = four_mode_control_text(after)
     yaml.safe_load(after)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -868,6 +880,8 @@ def preview_gravity_correction(core_path, task_directory, *, candidate_source=No
     trust_reset = gravity_trusted(yaml.safe_load(before)) and bool(gravity_changes)
     if trust_reset:
         after = revoke_gravity_trust(after)
+    if gravity_changes:
+        after = revoke_interaction_quality(after)
     after = four_mode_control_text(after)
     yaml.safe_load(after)
     changes = []
@@ -922,6 +936,8 @@ def restore_gravity_correction(core_path, task_directory):
     trust_reset = gravity_trusted(yaml.safe_load(restored)) and (not gravity_trusted(current_config) or bool(gravity_changes))
     if trust_reset:
         restored = revoke_gravity_trust(restored)
+    # Restoring configuration is not a new independent measurement.
+    restored = revoke_interaction_quality(restored)
     temp = core_path.with_name(core_path.name + '.restore.tmp')
     temp.write_text(restored)
     try:

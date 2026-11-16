@@ -15,11 +15,11 @@ bool near(double a,double b){return std::abs(a-b)<1e-9;}
 class MemoryBus final:public MotorBus {
 public:
     HardwareCapabilities caps;ActuatorCtrlCmd last;JointVector position,velocity;
-    std::size_t writes{0},stops{0},deactivations{0};
+    std::size_t writes{0},stops{0},deactivations{0},activations{0};
     explicit MemoryBus(HardwareCapabilities values):caps(std::move(values)),position(caps.size(),0),velocity(caps.size(),0){}
     tl::expected<void,MotorBusErr> configure(const std::string&)override{return {};}
     tl::expected<void,MotorBusErr> connect()override{return {};}
-    tl::expected<void,MotorBusErr> activate()override{return {};}
+    tl::expected<void,MotorBusErr> activate()override{++activations;return {};}
     tl::expected<void,MotorBusErr> deactivate()override{++deactivations;return {};}
     tl::expected<void,MotorBusErr> stop()override{++stops;return {};}
     tl::expected<void,MotorBusErr> recover()override{return {};}
@@ -47,6 +47,7 @@ YAML::Node flat_config(const RobotCfg& cfg){
     safety["require_all_actuators_online"]=true;safety["require_all_actuators_enabled"]=true;safety["require_continuous_cmd"]=false;
     auto recovery=safety["fault_recovery"];recovery["default_mode"]="rigid_hold";recovery["allow_drag_recovery"]=false;
     recovery["require_operator_request"]=true;recovery["recovery_timeout_s"]=30;
+    for(std::size_t i=0;i<cfg.joint_names.size();++i)recovery["velocity_tolerance"][cfg.joint_names[i]]=cfg.safety.fault_recovery.velocity_tolerance[i];
     auto limits=root["limits"];limits["min_pos"]=cfg.safety.limits.min_pos;limits["max_pos"]=cfg.safety.limits.max_pos;
     limits["max_vel"]=cfg.safety.limits.max_vel;limits["max_acc"]=cfg.safety.limits.max_acc;limits["max_effort"]=cfg.safety.limits.max_effort;limits["pos_margin"]=cfg.safety.limits.pos_margin;
     auto map=root["mapping"];map["pos_ratio"]=cfg.mapper.pos_ratio;map["tor_ratio"]=cfg.mapper.tor_ratio;map["direction"]=cfg.mapper.direction;map["joint_zero_offset"]=cfg.mapper.joint_zero_offset;map["actuator_zero_offset"]=cfg.mapper.actuator_zero_offset;
@@ -65,6 +66,47 @@ int main(int argc,char** argv){try{
     const auto names=yaml["model"]["joint_names"].as<std::vector<std::string>>();HardwareCapabilities caps;
     for(const auto& name:names)caps.push_back({name,-12.5,12.5,30,28,500,5,name,500.0/4095,5.0/4095});
     const auto section=temp/"section.yaml";write_yaml(section,yaml);const auto baseline=load(section,caps);
+    auto fractional_direction=YAML::Clone(yaml);fractional_direction["calibration"]["joints"][names[0]]["direction"]=1.5;
+    write_yaml(section,fractional_direction);const auto direction_error=load_robot_cfg(section.string(),caps);
+    require(!direction_error && direction_error.error().message.find("direction must be -1 or 1")!=std::string::npos,"fractional direction was silently truncated");
+    auto scalar=YAML::Clone(yaml);scalar["safety_policy"]["position_margin"]=0;write_yaml(section,scalar);
+    require(!load_robot_cfg(section.string(),caps),"scalar position margin was accepted");
+    scalar=YAML::Clone(yaml);scalar["capability"]["admittance"]["calibration"]["friction"]["velocity_transition"]=.03;write_yaml(section,scalar);
+    require(!load_robot_cfg(section.string(),caps),"scalar friction transition was accepted");
+    auto legacy_park=YAML::Clone(yaml);legacy_park["shutdown"]["park_before_disable"]=false;
+    write_yaml(section,legacy_park);require(!load_robot_cfg(section.string(),caps),"removed flat shutdown schema was accepted");
+    for(const char* path:{"MIT","CSP"}) {
+        auto automatic_park=YAML::Clone(yaml);automatic_park["shutdown"]["paths"][path]["park_on_exit"]=true;
+        write_yaml(section,automatic_park);const auto automatic_error=load_robot_cfg(section.string(),caps);
+        require(!automatic_error && automatic_error.error().message.find("park_on_exit")!=std::string::npos,"removed automatic-exit key was accepted");
+    }
+    auto optional_park=YAML::Clone(yaml);optional_park["shutdown"]=YAML::Node(YAML::NodeType::Map);
+    write_yaml(section,optional_park);const auto disabled_park=load(section,caps);
+    require(!disabled_park.shutdown.mit.enabled && !disabled_park.shutdown.csp.enabled && disabled_park.shutdown.mit.park_pos.empty(),"missing parking paths were silently enabled");
+    auto enabled=optional_park["shutdown"]["paths"]["MIT"];
+    enabled["enabled"]=true;enabled["strategy"]="COMPLIANT_THEN_RIGID";
+    write_yaml(section,optional_park);require(!load_robot_cfg(section.string(),caps),"enabled parking accepted missing tolerances");
+    for(const auto& name:names) {enabled["position_tolerance"][name]=.01;enabled["velocity_tolerance"][name]=.05;}
+    write_yaml(section,optional_park);const auto zero_park=load(section,caps);
+    require(zero_park.shutdown.mit.park_pos==JointVector(names.size(),0) && !zero_park.shutdown.csp.enabled && zero_park.shutdown.mit.strategy==ParkingStrategy::COMPLIANT_THEN_RIGID,"enabled path lost its default zero target or strategy");
+    auto invalid_strategy=YAML::Clone(optional_park);invalid_strategy["shutdown"]["paths"]["MIT"]["strategy"]="soft";
+    write_yaml(section,invalid_strategy);require(!load_robot_cfg(section.string(),caps),"unknown parking strategy was accepted");
+    auto outside_zero=zero_park;outside_zero.safety.limits.min_pos[0]=.1;
+    const auto zero_error=validate_robot_core_cfg(outside_zero);
+    require(!zero_error && zero_error.error().message.find("park_pos is outside")!=std::string::npos && outside_zero.shutdown.mit.park_pos[0]==0,"invalid default zero parking target was clamped or accepted");
+    auto vector_fields=YAML::Clone(optional_park);vector_fields["shutdown"]["paths"]["MIT"]["position_tolerance"][names[0]]=.012;
+    vector_fields["shutdown"]["paths"]["MIT"]["position_tolerance"][names[1]]=.0002;
+    vector_fields["safety_policy"]["fault_recovery"]["velocity_tolerance"][names[0]]=.007;
+    vector_fields["capability"]["admittance"]["validation"]["velocity_tolerance"][names[0]]=.004;
+    write_yaml(section,vector_fields);const auto independent=load(section,caps);
+    require(near(independent.shutdown.mit.position_tolerance[0],.012)&&near(independent.shutdown.mit.position_tolerance[1],.0002),"per-joint parking tolerances were collapsed");
+    require(near(independent.safety.fault_recovery.velocity_tolerance[0],.007)&&near(independent.capability.admittance.validation.velocity_tolerance[0],.004),"unrelated velocity tolerances were coupled to parking");
+    const auto before_change=temp/"parking-before.yaml";write_yaml(before_change,vector_fields);
+    vector_fields["shutdown"]["paths"]["CSP"]["speed_scale"]=.2;write_yaml(section,vector_fields);
+    const auto parking_diff=compare_robot_cfg(before_change.string(),section.string(),caps);
+    require(parking_diff && std::find(parking_diff->begin(),parking_diff->end(),"shutdown.paths.CSP")!=parking_diff->end() && std::find(parking_diff->begin(),parking_diff->end(),"shutdown.paths.MIT")==parking_diff->end(),"parking diff mixed the two path scopes");
+    auto no_stationary_limit=YAML::Clone(yaml);no_stationary_limit["safety_policy"]["fault_recovery"].remove("velocity_tolerance");
+    write_yaml(section,no_stationary_limit);require(!load_robot_cfg(section.string(),caps),"fault clearing accepted an unspecified stationary tolerance");
     require(baseline.capability.admittance.enabled,"complete admittance section did not declare observation capability");
     auto removed=YAML::Clone(yaml);removed["capability"]["admittance"]["enabled"]=true;write_yaml(section,removed);
     const auto rejected_toggle=load_robot_cfg(section.string(),caps);
@@ -116,8 +158,20 @@ int main(int argc,char** argv){try{
     require(near(connected->limits.max_kp[0],700)&&near(connected->limits.kp_resolution[0],700.0/4095),"refreshed hardware PD/quantum missing");
     require(near(connected->limits.max_effort[0],9)&&near(connected->limits.max_vel[0],.5),"non-PD safety edits were discarded");
     const auto model=ModelLoader{}.load(baseline.dynamics.urdf_path,names);require(bool(model),"test model missing");
+    const auto mixed_urdf=temp/"mixed.urdf";
+    {std::ofstream file(mixed_urdf);file<<R"(<robot name="mixed"><link name="base"/><link name="link"/><link name="tool"/>
+      <joint name="rotary" type="revolute"><parent link="base"/><child link="link"/><axis xyz="0 0 1"/><limit lower="-1" upper="1" velocity="2" effort="10"/></joint>
+      <joint name="slide" type="prismatic"><parent link="link"/><child link="tool"/><axis xyz="1 0 0"/><limit lower="0" upper="0.1" velocity="0.02" effort="100"/></joint></robot>)";}
+    const auto mixed=ModelLoader{}.load(mixed_urdf.string(),{"rotary","slide"});require(bool(mixed),"mixed-unit model failed to load");
+    JointActuatorMapCfg mixed_map{2,{1,100},{1,100},{1,1},{0,0},{0,0}};
+    HardwareCapabilities mixed_caps{{"rotary",-2,2,3,10,500,5,"rotary"},{"slide",0,10,2,1,500,5,"slide"}};
+    SafetyPolicyCfg mixed_policy;mixed_policy.position_margin={.1,.001};mixed_policy.max_acc={2,.02};
+    mixed_policy.max_dt_s=.02;mixed_policy.state_timeout_s=.05;mixed_policy.cmd_timeout_s=.1;
+    const auto mixed_resolved=LimitResolver{}.resolve(*mixed,mixed_map,mixed_caps,mixed_policy);
+    require(bool(mixed_resolved)&&near(mixed_resolved->joints[0].cmd_min_pos,-.9)&&near(mixed_resolved->joints[1].cmd_min_pos,.001),"rotary and prismatic position margins were mixed");
+    require(near(mixed_resolved->joints[0].max_cmd_vel,2)&&near(mixed_resolved->joints[1].max_cmd_vel,.02),"mixed-unit velocity mapping changed scale");
     auto mapping=baseline.mapper;mapping.pos_ratio[0]=2;mapping.tor_ratio[0]=3;mapping.direction[0]=-1;
-    SafetyPolicyCfg policy;policy.max_acc.assign(names.size(),10);policy.max_dt_s=.05;policy.state_timeout_s=.05;policy.cmd_timeout_s=.1;
+    SafetyPolicyCfg policy;policy.position_margin.assign(names.size(),0);policy.max_acc.assign(names.size(),10);policy.max_dt_s=.05;policy.state_timeout_s=.05;policy.cmd_timeout_s=.1;
     policy.max_kp_override={-1};policy.max_kd_override={std::numeric_limits<double>::quiet_NaN()};
     const auto resolved=LimitResolver{}.resolve(*model,mapping,caps,policy);require(bool(resolved),"deprecated programmatic overrides were validated");
     require(near(resolved->joints[0].max_kp,3000)&&near(resolved->joints[0].kp_resolution,6*500.0/4095),"gain ratio or quantum mapping incorrect");
@@ -133,7 +187,7 @@ int main(int argc,char** argv){try{
         const double center=code*maximum/4095;const auto projected=project_protocol_gain(center,maximum,maximum/4095);
         require(bool(projected)&&damiao::encode_mit_gain(static_cast<float>(*projected),maximum)==code,"MIT gain centre changed code during encoding");
     }
-    auto cfg=baseline;cfg.runtime.write_enabled=true;cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::NONE;cfg.shutdown.park_before_disable=false;
+    auto cfg=baseline;cfg.runtime.write_enabled=true;cfg.runtime.model_feedforward_mode=ModelFeedforwardMode::NONE;
     cfg.ctrller.allow_full_cmd=true;
     cfg.ctrller.rigid_gains={JointVector(names.size(),.50001*500/4095),JointVector(names.size(),.50001*5/4095)};
     cfg.capability.admittance={};cfg.hold_compensation.enabled=false;cfg.safety.require_continuous_cmd=false;
@@ -180,7 +234,17 @@ int main(int argc,char** argv){try{
     for(const bool moving_at_start:{true,false}) {
         auto budget_bus=std::make_unique<MemoryBus>(caps);auto* budget_memory=budget_bus.get();
         if(moving_at_start)budget_memory->velocity[0]=negative_velocity;
-        Robot budget_robot;require(bool(budget_robot.configure(budget_cfg,std::move(budget_bus),gravity_model))&&bool(budget_robot.activate()),"budget memory fixture failed");
+        Robot budget_robot;require(bool(budget_robot.configure(budget_cfg,std::move(budget_bus),gravity_model)),"budget memory fixture failed");
+        if(moving_at_start) {
+            const auto initial=budget_robot.activate();
+            require(!initial && initial.error().code==RobotErr::SAFETY_FAILED && initial.error().safety_fault.code==SafetyErr::CMD_EFFORT_LIMIT,
+                "quantized over-budget startup command was not rejected");
+            require(budget_memory->writes==0 && budget_memory->activations==0 && budget_robot.get_state()==RobotState::INACTIVE,
+                "over-budget startup rejected after hardware enable");
+            budget_memory->velocity[0]=0;
+        }
+        require(bool(budget_robot.activate()),"budget memory activation at rest failed");
+        if(moving_at_start)budget_memory->velocity[0]=negative_velocity;
         require(bool(budget_robot.set_impedance_mode(JointImpedanceMode::RIGID)),"budget memory mode failed");
         auto bad=output.joint_cmd;bad.kp[0]=500.01;require(bool(budget_robot.set_full_cmd(bad)),"budget fault setup rejected");
         const auto before=budget_memory->writes;std::this_thread::sleep_for(std::chrono::milliseconds(5));require(!budget_robot.cycle(),"budget fault missing");

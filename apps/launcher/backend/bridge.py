@@ -102,8 +102,8 @@ def parameter_save_selection(inspector, native, config, active_config, active_fi
 from calibration_jobs import run_full_inertial_isolated, recompute_gravity_isolated
 
 
-def restore_temporary_candidates_for_disconnect(native, allow_park=False):
-    """Park and restore process-local candidates before a normal disconnect
+def restore_temporary_candidates_for_disconnect(native):
+    """Restore process-local candidates after explicit disable, before disconnect
 
     Keep the session running if restoration cannot be verified
     """
@@ -119,12 +119,7 @@ def restore_temporary_candidates_for_disconnect(native, allow_park=False):
         return []
     status = native.request('status', {}, timeout=8)
     if status.get('robot_state') != 'INACTIVE':
-        if not allow_park:
-            raise ValueError('临时候选仍生效且自动停放未通过验收，请先机械支撑后失能，再撤销候选并断开')
-        native.request('park', {}, timeout=120)
-        status = native.request('status', {}, timeout=8)
-    if status.get('robot_state') != 'INACTIVE':
-        raise ValueError('无法确认机械臂已安全停放，已保留连接，请检查机器人状态后重试')
+        raise ValueError('临时候选仍生效，请先在机械支撑下显式失能，再撤销候选并断开')
     for kind in enabled:
         native.request('candidate_' + kind + '_restore', {}, timeout=12)
     remaining = native.request('candidate_overrides', {}, timeout=8)
@@ -135,7 +130,7 @@ def restore_temporary_candidates_for_disconnect(native, allow_park=False):
 
 # Native sessions do not trust browser button states for control admission
 _READ_ONLY_MACHINE = {
-    'status', 'get_admittance', 'candidate_overrides', 'calibration_status',
+    'status', 'connect', 'observe', 'get_admittance', 'candidate_overrides', 'calibration_status', 'calibration_samples',
     'model_calibration_status', 'model_calibration_gain_plan', 'candidate_gain_status', 'candidate_gravity_status',
     'candidate_dynamics_status', 'teach_replay_status',
 }
@@ -158,13 +153,28 @@ def gain_mode_configured(readiness, mode, path='MIT'):
 
 
 def parking_configured(readiness, path='MIT'):
-    modes = ('RIGID',) if path == 'CSP' else ('RIGID', 'COMPLIANT')
-    return all(gain_mode_configured(readiness, mode, path) for mode in modes)
+    plan = (readiness.get('configuration_summary') or {}).get('parking_by_path', {}).get(path) or {}
+    return plan.get('enabled') is True and plan.get('configured') is True
+
+
+def prepare_normal_disconnect(native, readiness):
+    """Use the current path's parking permission before normal disconnect"""
+    status = native.request('status', {}, timeout=8)
+    if status.get('robot_state') == 'INACTIVE':
+        return
+    path = status.get('control_path', 'MIT')
+    if (status.get('robot_state') != 'ACTIVE' or not readiness.get('control_available') or
+            not parking_configured(readiness, path)):
+        raise ValueError('当前路径未允许停放或机械臂状态不允许停放，请先显式失能，再断开')
+    native.request('park', {}, timeout=120)
+    if native.request('status', {}, timeout=8).get('robot_state') != 'INACTIVE':
+        raise ValueError('停放未确认完成并失能，已保留工作台连接')
 
 
 def verify_machine_admission(library, config, method, params, native):
     # Keep exit and read-only operations available even when the Profile is invalid
-    if method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE:
+    if (method in _READ_ONLY_MACHINE or method in _SAFE_EXIT_MACHINE or
+            method == 'admittance_validation' and params.get('active') is False):
         return
     readiness = library._readiness(config)
     info = readiness.get('info') or {}
@@ -233,8 +243,14 @@ def verify_machine_admission(library, config, method, params, native):
         return
     if method == 'park':
         require_feedback()
-        if not parking_configured(readiness, status.get('control_path', 'MIT')):
-            raise ValueError('自动停放所需交互模式参数缺失或超出安全范围')
+        path = status.get('control_path', 'MIT')
+        plan = (readiness.get('configuration_summary') or {}).get('parking_by_path', {}).get(path) or {}
+        if not parking_configured(readiness, path):
+            raise ValueError(plan.get('reason') or '当前路径未允许停放，或停放目标、逐关节容差及所选策略参数尚未配置')
+        if path == 'CSP' and plan.get('strategy') == 'COMPLIANT_THEN_RIGID':
+            quality = (native.request('get_admittance', {}, timeout=8).get('validation') or {})
+            if quality.get('observation_validated') is not True or quality.get('response_validated') is not True:
+                raise ValueError('CSP 柔性停放需要完成外力和响应验收，临时有限刚度试验不能作为停放许可')
         return
     if method == 'set_model_feedforward_mode':
         if params.get('mode') not in ('NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'):
@@ -251,7 +267,7 @@ def verify_machine_admission(library, config, method, params, native):
         if path not in ('MIT', 'CSP'):
             raise ValueError('执行路径必须为 MIT 或 CSP')
         if robot_state != 'INACTIVE':
-            raise ValueError('请先停放并失能，再切换执行路径')
+            raise ValueError('请先失能，再切换执行路径')
         if ((status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled') or
                 (status.get('teach_replay') or {}).get('phase') in ('recording', 'playing')):
             raise ValueError('请先退出标定或示教回放任务，再切换执行路径')
@@ -262,7 +278,12 @@ def verify_machine_admission(library, config, method, params, native):
         require_feedback()
         mode = params.get('mode')
         require_gain_context(mode)
-        if mode == 'DRAG' and status.get('gravity_model_validated') is not True:
+        if status.get('control_path') == 'CSP' and mode in ('COMPLIANT', 'DRAG'):
+            quality = (native.request('get_admittance', {}, timeout=8).get('validation') or {})
+            finite_test = mode == 'COMPLIANT' and quality.get('test_active') is True
+            if quality.get('observation_validated') is not True or not (quality.get('response_validated') is True or finite_test):
+                raise ValueError('CSP 柔性与拖拽需要独立外力和有限刚度响应验收')
+        if mode == 'DRAG' and status.get('control_path', 'MIT') == 'MIT' and status.get('gravity_model_validated') is not True:
             raise ValueError('拖拽需要先验证当前模型与负载的重力补偿')
         if mode == 'DRAG' and status.get('control_path', 'MIT') == 'MIT':
             scales = status.get('gravity_scale') or []
@@ -290,6 +311,8 @@ def verify_machine_admission(library, config, method, params, native):
         # Native Core enforces applicable URDF and Safety bounds, and any enabled continuity checks
         return
     if method == 'set_admittance':
+        if 'validation' in params:
+            raise ValueError('质量许可由独立验收生成，不能通过运行参数接口设置')
         if robot_state != 'INACTIVE':
             require_feedback()
         if robot_state == 'ACTIVE' and status.get('impedance_mode') == 'DRAG':
@@ -298,6 +321,17 @@ def verify_machine_admission(library, config, method, params, native):
             raise ValueError('在线导纳调整要求先选择 CSP 执行路径')
         if (status.get('model_calibration') or {}).get('phase', 'idle') not in ('idle', 'complete', 'failed', 'cancelled'):
             raise ValueError('标定任务进行中不能修改导纳运行参数')
+        return
+    if method == 'admittance_validation':
+        if not isinstance(params.get('active'), bool):
+            raise ValueError('受限导纳试验需要明确的 active 布尔值')
+        if params['active']:
+            require_feedback()
+            if status.get('control_path') != 'CSP':
+                raise ValueError('受限导纳试验只适用于 CSP')
+            actual = native.request('get_admittance', {}, timeout=8)
+            if (actual.get('validation') or {}).get('observation_validated') is not True:
+                raise ValueError('请先完成独立外力验收，再开始有限刚度响应试验')
         return
     if method.startswith('teach_replay_'):
         if method in ('teach_replay_record_begin', 'teach_replay_play'):
@@ -514,6 +548,21 @@ def main():
                             linked_fingerprint = target_info['fingerprint']
                     result = profile_library.record_stage(
                         target, stage, params.get('answers', {}), linked_native, linked_fingerprint)
+                elif method == 'readiness_measurement_record':
+                    target = config_values(params.get('config', {}))
+                    if params.get('kind') != 'observation':
+                        raise ValueError('未知的独立验收类型')
+                    if not active_workbench_config or native.status().get('state') != 'running':
+                        raise ValueError('请先连接原生工作台并完成独立外力验证')
+                    target_info = inspector.inspect(target)
+                    active_info = inspector.inspect(active_workbench_config)
+                    if (target_info['fingerprint'] != active_workbench_fingerprint or
+                            active_info['fingerprint'] != active_workbench_fingerprint or
+                            target_info['resources'] != active_info['resources'] or
+                            target_info['profile_file'] != active_info['profile_file'] or
+                            target_info['profile'] != active_info['profile']):
+                        raise ValueError('验收与当前 Profile 或会话配置不一致，请重新连接并验证')
+                    result = profile_library.record_observation_measurement(target, native, active_workbench_fingerprint)
                 elif method == 'readiness_approve_mode': result = profile_library.approve_gain_mode(config_values(params.get('config', {})), params.get('mode', ''), params.get('candidate_path', ''), native, params.get('gain_purposes'))
                 elif method == 'profile_editor_load': result = profile_library.profile_editor_load(config_values(params.get('config', params)))
                 elif method == 'profile_editor_save': result = profile_library.profile_editor_save(config_values(params.get('config', {})), params.get('payload', {}))
@@ -700,12 +749,16 @@ def main():
                     active_workbench_config = config
                     active_workbench_fingerprint = info['fingerprint']
                     repeat_source = None
+                    if not offline:
+                        snapshot = native.request('connect', {}, timeout=15)
+                        result = {**native.status(), 'hardware_connected': snapshot.get('hardware_connected') is True}
                 elif method == 'workbench_request':
                     native_method = params.get('method')
                     machine_params = params.get('params', {})
                     if not isinstance(machine_params, dict): raise ValueError('控制参数必须是对象')
                     if not active_workbench_config: raise ValueError('没有已绑定 Profile 的控制会话')
-                    if native_method not in _READ_ONLY_MACHINE and native_method not in _SAFE_EXIT_MACHINE:
+                    if (native_method not in _READ_ONLY_MACHINE and native_method not in _SAFE_EXIT_MACHINE and
+                            not (native_method == 'admittance_validation' and machine_params.get('active') is False)):
                         info = inspector.inspect(active_workbench_config)
                         if info['fingerprint'] != active_workbench_fingerprint:
                             raise ValueError('连接期间配置发生变化，请先安全断连并重新检查')
@@ -719,26 +772,22 @@ def main():
                 elif method == 'workbench_stop':
                     # Temporary overrides are process-local, but restore explicitly
                     # before disconnect so the outcome is observable and auditable
-                    # When safe parking or restoration fails keep the session alive
+                    # If parking or restoration is incomplete keep the session alive
                     force = params.get('force') is True
                     disconnect_config = active_workbench_config
                     def disconnect(force=force, disconnect_config=disconnect_config):
                         nonlocal active_workbench_config, active_workbench_fingerprint, repeat_source
-                        try:
-                            if not force and native.status().get('state') == 'running':
-                                admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
-                                state_before = native.request('status', {}, timeout=8)
-                                safe_park = (admission.get('control_available') is True and
-                                    parking_configured(admission, state_before.get('control_path', 'MIT')))
-                                if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
-                                    raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
-                                if state_before.get('robot_state') == 'ACTIVE' and not safe_park:
-                                    raise ValueError('停放轨迹尚未通过检查，请先可靠支撑机械臂并在控制工作台执行立即失能，再断开连接')
-                                restore_temporary_candidates_for_disconnect(native)
-                            result = native.stop(force, cancel_event=control_cancel if not force else None)
-                        except Exception as error:
-                            native.note_disconnect_failure(error)
-                            raise
+                        if not force and native.status().get('state') == 'running':
+                            admission = profile_library._readiness(disconnect_config) if disconnect_config else {}
+                            state_before = native.request('status', {}, timeout=8)
+                            if (state_before.get('teach_replay') or {}).get('phase') in ('recording','playing'):
+                                raise ValueError('请先在示教回放页面停止当前任务，再断开工作台')
+                            restore_temporary_candidates_for_disconnect(native)
+                            if (state_before.get('robot_state') == 'ACTIVE' and
+                                    admission.get('fingerprint') != active_workbench_fingerprint):
+                                raise ValueError('连接期间配置已改变，请先显式处理机械臂并失能，再断开')
+                            prepare_normal_disconnect(native, admission)
+                        result = native.stop(force, cancel_event=control_cancel if not force else None)
                         active_workbench_config = None
                         active_workbench_fingerprint = None
                         repeat_source = None
@@ -764,6 +813,7 @@ def main():
                     metadata = {'profile': params.get('profile', ''), 'core': params.get('core', '')}
                     events = native.telemetry()
                     response = params.get('response_window')
+                    target = config_values(params.get('config', active_workbench_config or {}))
                     if response is not None:
                         if (not isinstance(response, dict) or response.get('recording') is not False or
                                 not isinstance(response.get('samples'), list) or not 1 <= len(response['samples']) <= 6000 or
@@ -777,9 +827,13 @@ def main():
                         response['execution_dynamics'] = analyze_interaction_response(response)
                         metadata['response_window'] = {key: value for key, value in response.items() if key != 'samples'}
                         events = [{'event': 'response_snapshot', 'data': sample} for sample in response['samples']]
-                    result = export_telemetry(profile_home(inspector.inspect(active_workbench_config), ROOT) if active_workbench_config else ROOT, events, metadata)
+                    result = export_telemetry(profile_home(inspector.inspect(target), ROOT) if target.get('profile') else ROOT, events, metadata)
                     if response is not None:
                         result['interaction_response'] = response['execution_dynamics']
+                        if target.get('profile'):
+                            result['readiness_measurement'] = profile_library.record_response_measurement(
+                                target, response, result['path'], native=native if active_workbench_config else None,
+                                native_fingerprint=active_workbench_fingerprint)
                 elif method == 'calibration_candidate_prepare':
                     from workflow_registry import prepare_gain_candidate, prepare_gravity_candidate, prepare_dynamics_candidate
                     kind = params.get('kind')

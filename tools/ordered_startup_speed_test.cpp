@@ -6,11 +6,14 @@ class Bus final : public MotorBus {
 public:
     HardwareCapabilities caps{{"b",-2,2,2,1,100,5,"b"},{"a",-2,2,2,1,100,5,"a"}};
     ActuatorVector speed;
+    ActuatorCtrlCmd initial;
+    bool observed=false;
     tl::expected<void,MotorBusErr> configure(const std::string&) override{return {};}
     tl::expected<void,MotorBusErr> connect() override{return {};}
     tl::expected<ActuatorState,MotorBusErr> read() override{return tl::make_unexpected(MotorBusErr::READ_FAILED);}
     tl::expected<void,MotorBusErr> select_control_path(ControlPath,const ActuatorVector& value = {}) override {speed=value;return {};}
     tl::expected<void,MotorBusErr> activate() override{return {};}
+    tl::expected<void,MotorBusErr> activate(const ActuatorCtrlCmd& value) override{initial=value;return {};}
     tl::expected<void,MotorBusErr> write(const ActuatorCtrlCmd&) override{return {};}
     tl::expected<void,MotorBusErr> stop() override{return {};}
     tl::expected<void,MotorBusErr> deactivate() override{return {};}
@@ -24,6 +27,9 @@ int main(){
     auto ordered=align_motor_bus(std::move(bus),{"a","b"});assert(ordered);
     assert((*ordered)->select_control_path(ControlPath::CSP,{.3,.6}));
     assert(raw->speed==ActuatorVector({.6,.3}));
+    ActuatorCtrlCmd initial;initial.path=ControlPath::CSP;initial.pos={.1,.2};initial.vel={0,0};initial.tor={0,0};initial.kp={0,0};initial.kd={0,0};initial.position_speed_limit={.3,.6};
+    assert((*ordered)->activate(initial));
+    assert(raw->initial.pos==ActuatorVector({.2,.1}) && raw->initial.position_speed_limit==ActuatorVector({.6,.3}));
     assert(!(*ordered)->select_control_path(ControlPath::CSP,{.3}));
     assert((*ordered)->select_control_path(ControlPath::MIT,{}));assert(raw->speed.empty());
     std::cout<<"ordered startup speed passed\n";

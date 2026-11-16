@@ -40,7 +40,7 @@ def config_case(directory, margin, widen):
         copied = directory / 'wider-limits.urdf'
         model.write(copied,encoding='utf-8',xml_declaration=True)
         document['model']['urdf_path'] = str(copied)
-    document['safety_policy']['position_margin'] = margin
+    document['safety_policy']['position_margin'] = dict.fromkeys(document['model']['joint_names'], margin)
     config.write_text(json.dumps(document))
     return config,names,original_lower
 

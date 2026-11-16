@@ -83,11 +83,11 @@ def model_gain_limits(core, urdf_path, hardware=None, driver=None):
             velocity, effort = min(velocity, vmax/ratio), min(effort, tmax*torque_ratio)
         else:
             hardware_complete = False
-        margin = float(policy.get('position_margin', 0))
+        margin = float(policy['position_margin'][name])
         low, high = low+margin, high-margin
         if low >= high:
             raise ValueError(f'{name} 模型、映射与 Safety 没有可用位置余量')
-        position = float(core['shutdown']['park_pos'][name])
+        position = (low+high)/2 if math.isfinite(low) and math.isfinite(high) else 0.0
         if math.isfinite(low) and math.isfinite(high) and min(position-low, high-position) < .02:
             position = (low+high)/2
         available = min(position-low, high-position, .25)

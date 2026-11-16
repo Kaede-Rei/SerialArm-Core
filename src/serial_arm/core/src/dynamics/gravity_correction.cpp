@@ -75,14 +75,14 @@ GravityCorrectionPackage load_gravity_correction_package(
     if(package.friction_pass && residual["friction"] && residual["friction"].IsMap()) {
         const YAML::Node friction = residual["friction"];
         package.friction.enabled = true;
-        package.friction.velocity_transition = friction["velocity_transition"] ? friction["velocity_transition"].as<double>() : 0.03;
+        package.friction.velocity_transition = required_vector(friction,"velocity_transition");
         package.friction.positive_coulomb = required_vector(friction, "positive_coulomb");
         package.friction.positive_viscous = required_vector(friction, "positive_viscous");
         package.friction.negative_coulomb = required_vector(friction, "negative_coulomb");
         package.friction.negative_viscous = required_vector(friction, "negative_viscous");
     }
     if(std::any_of(package.torque_threshold.begin(), package.torque_threshold.end(), [](double x) { return x < 0.0; }) ||
-        (package.friction.enabled && (!std::isfinite(package.friction.velocity_transition) || package.friction.velocity_transition <= 0.0)))
+        (package.friction.enabled && std::any_of(package.friction.velocity_transition.begin(),package.friction.velocity_transition.end(),[](double v){return v<=0;})))
         throw std::runtime_error("invalid gravity correction residual limits");
     return package;
 }

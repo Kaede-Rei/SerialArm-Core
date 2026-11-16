@@ -2,6 +2,7 @@
 #include "serial_arm/interaction/controllers/joint_admittance_controller.hpp"
 #include "serial_arm/interaction/estimators/generalized_momentum_observer.hpp"
 #include "serial_arm/interaction/runtime/interaction_controller.hpp"
+#include "serial_arm/interaction/runtime/observation_velocity.hpp"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -47,7 +48,7 @@ std::vector<AdmittanceFrictionSample> synthetic_friction_run(
 ExternalTorqueObserver calibrated_friction_observer(
     const AdmittanceFrictionCalibrationResult& fit, double resolution) {
     ExternalTorqueObserverCfg cfg;cfg.joints_count=1;
-    cfg.friction.enabled=true;cfg.friction.velocity_transition=0.03;
+    cfg.friction.enabled=true;cfg.friction.velocity_transition={0.03};
     cfg.friction.velocity_resolution={resolution};
     cfg.friction.positive_coulomb=fit.positive_coulomb;
     cfg.friction.positive_viscous=fit.positive_viscous;
@@ -59,7 +60,7 @@ ExternalTorqueObserver calibrated_friction_observer(
 
 void check_resolution_aware_friction_calibration() {
     for(double resolution:{0.0,0.005,0.02}) {
-        AdmittanceFrictionCalibrationCfg cfg;cfg.joints_count=1;
+        AdmittanceFrictionCalibrationCfg cfg;cfg.joints_count=1;cfg.velocity_transition={.03};
         cfg.velocity_resolution={resolution};
         // The default 0.05 rad/s exclusion would hide most of the low-speed
         // regression; these synthetic trajectories deliberately identify it.
@@ -122,7 +123,7 @@ void check_resolution_aware_friction_calibration() {
         }
     }
 
-    AdmittanceFrictionCalibrationCfg invalid;invalid.joints_count=1;
+    AdmittanceFrictionCalibrationCfg invalid;invalid.joints_count=1;invalid.velocity_transition={.03};
     const auto samples=synthetic_friction_run(0.0,false,false);
     for(const JointVector& resolution:{JointVector{-0.001},JointVector{0.001,0.002},
           JointVector{std::numeric_limits<double>::infinity()},
@@ -142,6 +143,13 @@ void check_resolution_aware_friction_calibration() {
 
 int main() {
     check_resolution_aware_friction_calibration();
+    ExternalTorqueObserverCfg per_axis;per_axis.joints_count=2;
+    per_axis.friction.enabled=true;per_axis.friction.velocity_transition={.1,.001};
+    per_axis.friction.positive_coulomb={1,1};per_axis.friction.negative_coulomb={-1,-1};
+    per_axis.friction.positive_viscous={0,0};per_axis.friction.negative_viscous={0,0};
+    ExternalTorqueObserver mixed;assert(mixed.configure(per_axis));
+    const auto corrected=mixed.update(TorqueResidualEstimate{{1,1},{}},{.05,.0005});
+    assert(corrected && std::abs(corrected->friction_residual_hat[0]-.5)<1e-12 && std::abs(corrected->friction_residual_hat[1]-.5)<1e-12);
     GeneralizedMomentumObserver observer;
     assert(observer.configure({1,{25},{0}}));
     GeneralizedMomentumInput in{{-0.7},{0},{0},{{1}},{0},0.005,{0.7}};
@@ -160,7 +168,7 @@ int main() {
     for(int i=0;i<2000;++i) {auto out=admittance.update(cmd);assert(out);final_q=out->delta_q[0];final_v=out->delta_q_dot[0];}
     assert(final_q>0.05 && std::abs(final_v)<1e-10);
 
-    AdmittanceFrictionCalibrationCfg cfg;
+    AdmittanceFrictionCalibrationCfg cfg;cfg.velocity_transition={.03};
     cfg.joints_count=1;cfg.momentum_gain={25};cfg.min_samples_per_direction=20;
     auto samples=[](bool reverse) {
         std::vector<AdmittanceFrictionSample> result;
@@ -187,24 +195,37 @@ int main() {
     // These observed stationary values must not turn the fitted Coulomb model on.
     InteractionControllerCfg ic;ic.enabled=true;ic.admittance_enabled=false;ic.momentum={1,{25},{0}};
     ic.external_torque.joints_count=1;ic.external_torque.torque_bias={0};ic.external_torque.torque_threshold={.1};
-    auto& friction=ic.external_torque.friction;friction.enabled=true;friction.velocity_transition=.001;
+    auto& friction=ic.external_torque.friction;friction.enabled=true;friction.velocity_transition={.001};
     friction.velocity_resolution={60.0/4095};friction.positive_coulomb={1};friction.negative_coulomb={-1};
     friction.positive_viscous={0};friction.negative_viscous={0};
     InteractionController interaction;assert(interaction.configure(ic));
+    ObservationVelocity velocity_filter;
     JointCtrlCmd nominal;nominal.pos={0};nominal.vel={0};nominal.tor={0};nominal.kp={0};nominal.kd={0};
     const JointVector measured_torque{0},full_model;
     for(double velocity:{-1.5*60/4095,-2.5*60/4095,1.5*60/4095,2.5*60/4095}) {
         for(int sample=0;sample<8;++sample) {
-            GeneralizedMomentumInput mi{{0},{0},{0},{{1}},{velocity},.005,{}};
-            auto out=interaction.update({measured_torque,full_model,nominal,.005,{0},{0},{0},{0},{velocity},mi,false,true,true,.005,false,false,{0}});
+            const auto processed=velocity_filter.update({0},{velocity},friction.velocity_resolution,.005);
+            GeneralizedMomentumInput mi{{0},{0},{0},{{1}},processed,.005,{}};
+            auto out=interaction.update({measured_torque,full_model,nominal,.005,{0},{0},{0},{0},processed,mi,false,true,true,.005,false,false,{0}});
             assert(out && out->state.valid);
             assert(std::abs(out->friction_residual_hat[0])<1e-12);
+            assert(std::abs(out->residual.residual[0])<1e-12);
             assert(std::abs(out->tau_ext_hat[0])<=std::abs(out->friction_compensated[0])+1e-12);
         }
     }
-    GeneralizedMomentumInput moving{{0},{0},{0},{{1}},{2.5*60/4095},.005,{}};
-    auto real_motion=interaction.update({measured_torque,full_model,nominal,.005,{0},{0},{0},{0},{2.5*60/4095},moving,false,true,true,.005,false,false,{.001}});
-    assert(real_motion && real_motion->friction_residual_hat[0]>0);
+    // Sub-LSB velocity remains observable through accumulated position motion.
+    // A per-cycle unchanged-position deadzone would erase most of these samples.
+    velocity_filter.reset();
+    double accumulated=0.0;
+    for(int sample=0;sample<2000;++sample) {
+        const double q=std::round(sample*.005*.001/.0001)*.0001;
+        const auto v=velocity_filter.update({q},{.5*60/4095},friction.velocity_resolution,.005);
+        if(sample>100) accumulated+=v[0]*.005;
+    }
+    assert(accumulated>.008 && accumulated<.011);
+    velocity_filter.reset();
+    const auto high_speed=velocity_filter.update({0},{.3},friction.velocity_resolution,.005);
+    assert(std::abs(high_speed[0]-.3)<1e-12);
     ExternalTorqueObserver deadband;ExternalTorqueObserverCfg dc;dc.joints_count=1;dc.torque_threshold={.1};
     assert(deadband.configure(dc));auto estimate=deadband.update(TorqueResidualEstimate{{.3},{}},JointVector{0});
     assert(estimate && std::abs(estimate->friction_compensated[0]-.3)<1e-12 && std::abs(estimate->tau_ext_hat[0]-.2)<1e-12);

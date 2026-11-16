@@ -91,9 +91,9 @@ control:
         joint6: 0.01
 # 04 safety_policy
 safety_policy:
-  position_margin: 0.0                              # 命令位置距离 URDF 硬限位的额外边距 rad
+  position_margin: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}                              # 命令位置距离 URDF 硬限位的额外边距 rad
   cmd_vel_scale: 1.0                                # 命令速度相对 URDF velocity 上限的缩放比例
-  state_vel_scale: 1.0                              # 状态速度检查相对 URDF velocity 上限的缩放比例
+  state_vel_scale: 1.0                              # 反馈超速阈值相对有效速度上限的比例
   # 各关节最大允许加速度 rad/s^2
   max_acc: {joint1: 10.8, joint2: 10.8, joint3: 10.8, joint4: 10.8, joint5: 10.8, joint6: 10.8}
   max_dt_s: 0.02                                    # Safety 接受的最大控制周期 s
@@ -109,16 +109,70 @@ safety_policy:
     require_operator_request: true                  # 是否要求操作员显式请求拖拽恢复
     recovery_timeout_s: 30.0                        # 拖拽恢复最大持续时间 s
 # 05 shutdown
+    velocity_tolerance:
+      joint1: 0.05
+      joint2: 0.05
+      joint3: 0.05
+      joint4: 0.05
+      joint5: 0.05
+      joint6: 0.05
+# 每条执行路径分别配置；许可关闭时禁止停放再失能
 shutdown:
-  park_before_disable: true                         # 正常停机前是否以 COMPLIANT 回到停放姿态
-  # 各关节停放目标位置 rad
-  park_pos: {joint1: 0.0, joint2: 0.0, joint3: 0.0, joint4: 0.0, joint5: 0.0, joint6: 0.0}
-  speed_scale: 0.10                                 # 停放轨迹速度相对正常速度的比例
-  position_tolerance: 0.05                          # 严格停放位置误差阈值 rad
-  velocity_tolerance: 0.05                          # 严格停放速度阈值 rad/s
-  settle_time_s: 0.25                               # 严格判据下持续稳定时间 s
-  relaxed_tolerance_ratio: 2.0                      # 超时前宽松判据相对严格阈值的倍率
-  timeout_s: 10.0                                   # 停放流程最大允许时间 s
+  paths:
+    MIT:
+      enabled: true
+      strategy: RIGID
+      park_pos:
+        joint1: 0.0
+        joint2: 0.0
+        joint3: 0.0
+        joint4: 0.0
+        joint5: 0.0
+        joint6: 0.0
+      speed_scale: 0.1
+      position_tolerance:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05
+      velocity_tolerance:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05
+      settle_time_s: 0.25
+      timeout_s: 10.0
+    CSP:
+      enabled: true
+      strategy: RIGID
+      park_pos:
+        joint1: 0.0
+        joint2: 0.0
+        joint3: 0.0
+        joint4: 0.0
+        joint5: 0.0
+        joint6: 0.0
+      speed_scale: 0.1
+      position_tolerance:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05
+      velocity_tolerance:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05
+      settle_time_s: 0.25
+      timeout_s: 10.0
 
 # 06 capability
 capability:
@@ -141,7 +195,7 @@ capability:
         # 是否使用双向 Coulomb + viscous 动态摩擦 residual 模型
         enabled: true
         # 动态摩擦从零速连续渐入，并在 |dq| 达到该速度时完整生效 rad/s
-        velocity_transition: 0.03
+        velocity_transition: {joint1: 0.03, joint2: 0.03, joint3: 0.03, joint4: 0.03, joint5: 0.03, joint6: 0.03}
         # dq>0 时的 signed Coulomb residual Nm，由摩擦标定生成
         positive_coulomb: {joint1: -0.462659, joint2: -0.838367, joint3: -1.270662, joint4: -0.152425, joint5: -0.167948, joint6: -0.162300}
         # dq>0 时的 signed viscous residual 斜率 Nm/(rad/s)，由摩擦标定生成
@@ -166,3 +220,11 @@ capability:
       max_delta_q: {joint1: 1.0, joint2: 1.0, joint3: 1.0, joint4: 1.0, joint5: 1.0, joint6: 1.0}
       # 最大导纳速度修正绝对值 rad/s，仅作安全限幅而不参与 M/D/K 动态关系
       max_delta_q_dot: {joint1: 2.0, joint2: 2.0, joint3: 2.0, joint4: 2.0, joint5: 2.0, joint6: 2.0}
+    validation:
+      velocity_tolerance:
+        joint1: 0.05
+        joint2: 0.05
+        joint3: 0.05
+        joint4: 0.05
+        joint5: 0.05
+        joint6: 0.05

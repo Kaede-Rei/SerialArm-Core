@@ -35,9 +35,6 @@ struct DamiaoBusCfg {
     double feedback_timeout_s{ 0.05 };              ///< 单个执行器反馈超时时间
     std::size_t activation_retries{ 3 };            ///< 单轴使能与模式切换重试次数
     std::size_t startup_read_cycles{ 5 };           ///< 激活后用于确认状态的读取次数
-    double stop_kp{ 3.0 };                          ///< 停止保持的执行器侧 kp
-    double stop_kd{ 0.1 };                          ///< 停止保持的执行器侧 kd
-    std::size_t stop_cycles{ 5 };                   ///< 停止保持命令发送次数
     std::vector<DamiaoActuatorCfg> actuators;       ///< 执行器列表
 };
 
@@ -91,12 +88,14 @@ public:
      * @return 如果读取成功，则返回 ActuatorState，否则返回错误码
      */
     tl::expected<ActuatorState, MotorBusErr> read() override;
+    tl::expected<ActuatorState, MotorBusErr> observe() override;
     /**
      * @brief 激活 DamiaoMotorBus
      * @return 如果激活成功，则返回空的 tl::expected，否则返回错误码
      */
     tl::expected<void, MotorBusErr> select_control_path(ControlPath path, const ActuatorVector& position_speed_limit = {}) override;
     tl::expected<void, MotorBusErr> activate() override;
+    tl::expected<void, MotorBusErr> activate(const ActuatorCtrlCmd& initial_cmd) override;
     /**
      * @brief 写入 DamiaoMotorBus 的命令
      * @param cmd 待写入的命令
@@ -169,7 +168,8 @@ private:
      * @param index 电机索引
      * @return 如果准备成功，则返回空的 tl::expected，否则返回错误码
      */
-    tl::expected<void, MotorBusErr> activate_motor(std::size_t index);
+    tl::expected<void, MotorBusErr> activate_impl(const ActuatorCtrlCmd& initial_cmd);
+    tl::expected<void, MotorBusErr> activate_motor(std::size_t index, const ActuatorCtrlCmd& initial_cmd);
     /**
      * @brief 解析 DamiaoMotorBus 的电机类型
      * @param value 电机类型字符串
@@ -208,9 +208,9 @@ private:
 
     ControlPath path_{ ControlPath::MIT }; ///< 失能状态选定的执行路径
     ActuatorVector selected_position_speed_limit_; ///< 选择路径时配置的执行器侧限速
-    ActuatorVector last_position_speed_limit_; ///< 已接受的执行器侧位置模式速度上限
     bool configured_{ false };      ///< 是否已配置 DamiaoMotorBus
     bool connected_{ false };       ///< 是否已连接 DamiaoMotorBus
+    bool control_claimed_{false};
     bool active_{ false };          ///< 是否已激活 DamiaoMotorBus
 };
 

@@ -92,9 +92,9 @@ Applications, robot configuration and hardware drivers share one C++ control and
 
 ![SerialArm-Core architecture](docs/images/architecture.svg)
 
-The readiness page separates configuration, runtime checks, basic calibration, specialist calibration and inspection records; control admission depends on the current configuration, feedback and Core checks
+Commissioning has three stages: common foundation, execution-path validation and optional improvements. Model and mapping checks come first; connection and observation precede enabling. Saved configuration, operator checks, measurements and live state remain distinct.
 
-Automatic gain calibration requires no user PD ceilings. Legacy PD limit fields remain readable and are ignored; hardware protocol bounds and gain resolution apply alongside the existing position, velocity, acceleration and torque safety limits.
+MIT tuning uses model-based initial gains and measured response. CSP uses separate external-effort and MDK validation. Protocol capabilities, resolution and safety limits constrain execution.
 
 ![Robot integration workflow](docs/images/workflow.svg)
 

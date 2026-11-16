@@ -328,7 +328,8 @@ JointCtrllerErr JointCtrller::validate_cfg(const JointCtrllerCfg& cfg) const {
         return kp_valid && kd_valid;
         };
 
-    if(cfg.control_path==ControlPath::MIT && !validate_gains(cfg.rigid_gains)) return JointCtrllerErr::INVALID_CFG;
+    // Missing gains permit disabled hardware observation; activate() requires
+    // a complete safe RIGID command before it can enable any actuator.
     for(const auto* gains:{&cfg.rigid_gains,&cfg.compliant_gains,&cfg.drag_gains}) {
         if(gains->kp.empty() && gains->kd.empty()) continue;
         if(!validate_gains(*gains)) return JointCtrllerErr::INVALID_CFG;

@@ -298,8 +298,8 @@ void load_hold_compensation(const YAML::Node& node,const std::vector<std::string
     cfg.max_torque=values("max_torque",.15);
     cfg.max_rate=values("max_rate",.05);
     cfg.contact_threshold=values("contact_threshold",.2);
-    if(node["velocity_threshold"])cfg.velocity_threshold=node["velocity_threshold"].as<double>();
-    if(node["error_threshold"])cfg.error_threshold=node["error_threshold"].as<double>();
+    if(node["velocity_threshold"])cfg.velocity_threshold=load_named_joint_vector(node["velocity_threshold"],joints,"hold_compensation.velocity_threshold");
+    if(node["error_threshold"])cfg.error_threshold=load_named_joint_vector(node["error_threshold"],joints,"hold_compensation.error_threshold");
 }
 
 void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<std::string>& joint_names, CapabilityCfg& capability) {
@@ -314,10 +314,17 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 
     const YAML::Node admittance = require_map(capability_node, "admittance", "capability");
     reject_unknown_keys(admittance, "capability.admittance", {
-        "joint_enabled", "observer", "calibration", "controller"
+        "joint_enabled", "observer", "calibration", "controller", "validation"
     });
 
     auto& cfg = capability.admittance;
+    if(admittance["validation"]) {
+        const auto validation = require_map(admittance, "validation", "capability.admittance");
+        reject_unknown_keys(validation, "capability.admittance.validation", {"observation_validated", "response_validated", "velocity_tolerance"});
+        cfg.validation.observation_validated = validation["observation_validated"] && validation["observation_validated"].as<bool>();
+        cfg.validation.response_validated = validation["response_validated"] && validation["response_validated"].as<bool>();
+        if(validation["velocity_tolerance"])cfg.validation.velocity_tolerance=load_named_joint_vector(validation["velocity_tolerance"],joint_names,"capability.admittance.validation.velocity_tolerance");
+    }
     // A complete section declares observation capability. Runtime path and
     // interaction mode select whether the estimated torque drives admittance.
     cfg.observer_enabled = true;
@@ -353,7 +360,7 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
     });
     cfg.calibration.friction.enabled = require_as<bool>(
         friction, "enabled", "capability.admittance.calibration.friction");
-    cfg.calibration.friction.velocity_transition = friction["velocity_transition"] ? friction["velocity_transition"].as<double>() : 0.03;
+    if(friction["velocity_transition"])cfg.calibration.friction.velocity_transition=load_named_joint_vector(friction["velocity_transition"],joint_names,"capability.admittance.calibration.friction.velocity_transition");
     if(cfg.calibration.friction.enabled || friction["positive_coulomb"]) cfg.calibration.friction.positive_coulomb = load_named_joint_vector(
         require_map(friction, "positive_coulomb", "capability.admittance.calibration.friction"),
         joint_names, "capability.admittance.calibration.friction.positive_coulomb");
@@ -393,14 +400,49 @@ void load_admittance_capability_cfg(const YAML::Node& root, const std::vector<st
 /**
  * @brief 从 YAML 读取 FAULT 恢复配置
  */
-void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::string>&, SafetyCfg& safety_cfg) {
+void load_fault_recovery_cfg(const YAML::Node& node, const std::vector<std::string>& joints, SafetyCfg& safety_cfg) {
     if(!node) return;
     if(!node.IsMap()) throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(node.Mark()) + "fault_recovery must be a map");
-    reject_unknown_keys(node, "fault_recovery", { "default_mode", "allow_drag_recovery", "require_operator_request", "recovery_timeout_s" });
+    reject_unknown_keys(node, "fault_recovery", { "default_mode", "allow_drag_recovery", "require_operator_request", "recovery_timeout_s", "velocity_tolerance" });
     safety_cfg.fault_recovery.default_mode = load_fault_hold_mode(node, "fault_recovery");
     safety_cfg.fault_recovery.allow_drag_recovery = require_as<bool>(node, "allow_drag_recovery", "fault_recovery");
     safety_cfg.fault_recovery.require_operator_request = require_as<bool>(node, "require_operator_request", "fault_recovery");
     safety_cfg.fault_recovery.recovery_timeout_s = require_as<double>(node, "recovery_timeout_s", "fault_recovery");
+    safety_cfg.fault_recovery.velocity_tolerance=load_named_joint_vector(require_map(node,"velocity_tolerance","fault_recovery"),joints,"fault_recovery.velocity_tolerance");
+}
+
+void load_shutdown_cfg(const YAML::Node& node,const std::vector<std::string>& joints,ShutdownCfg& cfg) {
+    if(!node)return;
+    if(!node.IsMap())throw ConfigLoadException(ConfigErr::INVALID_VALUE,"shutdown must be a map");
+    reject_unknown_keys(node,"shutdown",{"paths"});
+    if(!node["paths"])return;
+    const auto paths=require_map(node,"paths","shutdown");
+    reject_unknown_keys(paths,"shutdown.paths",{"MIT","CSP"});
+    for(const auto* name:{"MIT","CSP"}) {
+        if(!paths[name])continue;
+        const std::string context=std::string("shutdown.paths.")+name;
+        const auto path=require_map(paths,name,"shutdown.paths");
+        reject_unknown_keys(path,context.c_str(),{"enabled","strategy","park_pos","speed_scale","position_tolerance","velocity_tolerance","settle_time_s","timeout_s"});
+        auto& value=cfg.for_path(std::string(name)=="CSP"?ControlPath::CSP:ControlPath::MIT);
+        if(path["enabled"])value.enabled=path["enabled"].as<bool>();
+        if(path["strategy"]) {
+            const auto strategy=path["strategy"].as<std::string>();
+            if(strategy=="RIGID")value.strategy=ParkingStrategy::RIGID;
+            else if(strategy=="COMPLIANT_THEN_RIGID")value.strategy=ParkingStrategy::COMPLIANT_THEN_RIGID;
+            else throw ConfigLoadException(ConfigErr::INVALID_VALUE,context+".strategy must be RIGID or COMPLIANT_THEN_RIGID");
+        }
+        const auto vector=[&](const char* key) {
+            if(!path[key])return JointVector{};
+            const auto values=require_map(path,key,context.c_str());
+            return values.size()==0?JointVector{}:load_named_joint_vector(values,joints,(context+"."+key).c_str());
+        };
+        value.park_pos=vector("park_pos");
+        if(value.enabled && value.park_pos.empty())value.park_pos.assign(joints.size(),0.0);
+        value.position_tolerance=vector("position_tolerance");value.velocity_tolerance=vector("velocity_tolerance");
+        if(path["speed_scale"])value.speed_scale=path["speed_scale"].as<double>();
+        if(path["settle_time_s"])value.settle_time_s=path["settle_time_s"].as<double>();
+        if(path["timeout_s"])value.timeout_s=path["timeout_s"].as<double>();
+    }
 }
 
 } // namespace
@@ -431,22 +473,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_flat_robot_cfg(const std::string& pat
         cfg.runtime.model_feedforward_mode = load_model_feedforward_mode(runtime);
         cfg.runtime.control_path = load_control_path(runtime);
 
-        cfg.shutdown.park_pos.assign(cfg.joint_names.size(), 0.0);
-        const YAML::Node shutdown = root["shutdown"];
-        if(shutdown) {
-            if(!shutdown.IsMap()) {
-                throw ConfigLoadException(ConfigErr::INVALID_VALUE, yaml_location(shutdown.Mark()) + "root.shutdown must be a map");
-            }
-            cfg.shutdown.park_before_disable = require_as<bool>(shutdown, "park_before_disable", "shutdown");
-            cfg.shutdown.park_pos = require_as<JointVector>(shutdown, "park_pos", "shutdown");
-            cfg.shutdown.speed_scale = require_as<double>(shutdown, "speed_scale", "shutdown");
-            cfg.shutdown.position_tolerance = require_as<double>(shutdown, "position_tolerance", "shutdown");
-            cfg.shutdown.velocity_tolerance = require_as<double>(shutdown, "velocity_tolerance", "shutdown");
-            cfg.shutdown.settle_time_s = require_as<double>(shutdown, "settle_time_s", "shutdown");
-            cfg.shutdown.compliant_phase_ratio = shutdown["compliant_phase_ratio"] ? require_as<double>(shutdown, "compliant_phase_ratio", "shutdown") : 0.75;
-            cfg.shutdown.relaxed_tolerance_ratio = shutdown["relaxed_tolerance_ratio"] ? require_as<double>(shutdown, "relaxed_tolerance_ratio", "shutdown") : 2.0;
-            cfg.shutdown.timeout_s = require_as<double>(shutdown, "timeout_s", "shutdown");
-        }
+        load_shutdown_cfg(root["shutdown"],cfg.joint_names,cfg.shutdown);
 
         const YAML::Node safety = require_map(root, "safety", "root");
         cfg.safety.cmd_timeout_s = require_as<double>(safety, "cmd_timeout_s", "safety");
@@ -672,12 +699,11 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         const YAML::Node calibration_node = require_map(root, "calibration", "root");
         const YAML::Node control_node = require_map(root, "control", "root");
         const YAML::Node safety_node = require_map(root, "safety_policy", "root");
-        const YAML::Node shutdown_node = require_map(root, "shutdown", "root");
+        const YAML::Node shutdown_node = root["shutdown"];
         reject_unknown_keys(model_node, "model", { "urdf_path", "joint_names", "base_frame", "tool_frame", "gravity", "gravity_scale", "gravity_correction_path", "gravity_model_validated" });
         reject_unknown_keys(calibration_node, "calibration", { "joints" });
         reject_unknown_keys(control_node, "control", { "runtime", "controller", "hold_compensation" });
         reject_unknown_keys(safety_node, "safety_policy", { "position_margin", "cmd_vel_scale", "state_vel_scale", "max_acc", "max_tracking_error", "max_effort_override", "max_kp_override", "max_kd_override", "max_dt_s", "state_timeout_s", "cmd_timeout_s", "require_all_actuators_online", "require_all_actuators_enabled", "reject_motor_error", "require_continuous_cmd", "fault_recovery" });
-        reject_unknown_keys(shutdown_node, "shutdown", { "park_before_disable", "park_pos", "speed_scale", "position_tolerance", "velocity_tolerance", "settle_time_s", "relaxed_tolerance_ratio", "compliant_phase_ratio", "timeout_s" });
 
         RobotCfg cfg;
         cfg.joint_names = require_as<std::vector<std::string>>(model_node, "joint_names", "model");
@@ -718,13 +744,15 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
             reject_unknown_keys(item, joint_name.c_str(), { "direction", "pos_ratio", "tor_ratio", "joint_zero_offset", "actuator_zero_offset" });
             cfg.mapper.pos_ratio.push_back(require_as<double>(item, "pos_ratio", joint_name.c_str()));
             cfg.mapper.tor_ratio.push_back(require_as<double>(item, "tor_ratio", joint_name.c_str()));
-            cfg.mapper.direction.push_back(static_cast<int>(require_as<double>(item, "direction", joint_name.c_str())));
+            const double direction=require_as<double>(item,"direction",joint_name.c_str());
+            if(direction!=1.0 && direction!=-1.0)throw ConfigLoadException(ConfigErr::INVALID_VALUE,"calibration.joints."+joint_name+".direction must be -1 or 1");
+            cfg.mapper.direction.push_back(static_cast<int>(direction));
             cfg.mapper.joint_zero_offset.push_back(require_as<double>(item, "joint_zero_offset", joint_name.c_str()));
             cfg.mapper.actuator_zero_offset.push_back(require_as<double>(item, "actuator_zero_offset", joint_name.c_str()));
         }
 
         SafetyPolicyCfg policy;
-        policy.position_margin = require_as<double>(safety_node, "position_margin", "safety");
+        policy.position_margin = load_named_joint_vector(require_map(safety_node,"position_margin","safety_policy"),cfg.joint_names,"safety_policy.position_margin");
         policy.cmd_vel_scale = require_as<double>(safety_node, "cmd_vel_scale", "safety");
         policy.state_vel_scale = require_as<double>(safety_node, "state_vel_scale", "safety");
         policy.max_acc = load_named_joint_vector(require_map(safety_node, "max_acc", "safety"), cfg.joint_names, "safety.max_acc");
@@ -739,15 +767,7 @@ tl::expected<RobotCfg, ConfigErrInfo> load_sectioned_robot_cfg(const std::string
         policy.reject_motor_error = require_as<bool>(safety_node, "reject_motor_error", "safety");
         policy.require_continuous_cmd = safety_node["require_continuous_cmd"] ? require_as<bool>(safety_node, "require_continuous_cmd", "safety") : true;
 
-        cfg.shutdown.park_before_disable = require_as<bool>(shutdown_node, "park_before_disable", "shutdown");
-        cfg.shutdown.park_pos = load_named_joint_vector(require_map(shutdown_node, "park_pos", "shutdown"), cfg.joint_names, "shutdown.park_pos");
-        cfg.shutdown.speed_scale = require_as<double>(shutdown_node, "speed_scale", "shutdown");
-        cfg.shutdown.position_tolerance = require_as<double>(shutdown_node, "position_tolerance", "shutdown");
-        cfg.shutdown.velocity_tolerance = require_as<double>(shutdown_node, "velocity_tolerance", "shutdown");
-        cfg.shutdown.settle_time_s = require_as<double>(shutdown_node, "settle_time_s", "shutdown");
-        cfg.shutdown.compliant_phase_ratio = shutdown_node["compliant_phase_ratio"] ? require_as<double>(shutdown_node, "compliant_phase_ratio", "shutdown") : 0.75;
-        cfg.shutdown.relaxed_tolerance_ratio = require_as<double>(shutdown_node, "relaxed_tolerance_ratio", "shutdown");
-        cfg.shutdown.timeout_s = require_as<double>(shutdown_node, "timeout_s", "shutdown");
+        load_shutdown_cfg(shutdown_node,cfg.joint_names,cfg.shutdown);
 
         cfg.ctrller.joints_count = cfg.joint_names.size();
         cfg.mapper.joints_count = cfg.joint_names.size();
@@ -789,25 +809,31 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
     const auto size_is_n = [n](const auto& values) {
         return values.size() == n;
         };
+    if(cfg.capability.admittance.validation.response_validated &&
+       !cfg.capability.admittance.validation.observation_validated)
+        return fail(ConfigErr::INVALID_VALUE, "admittance response validation requires observation validation");
     const auto& limits = cfg.safety.limits;
     for(const auto* resolution:{&limits.kp_resolution,&limits.kd_resolution}) {
         if(!resolution->empty() && (!size_is_n(*resolution) || !finite_vector(*resolution) ||
            std::any_of(resolution->begin(),resolution->end(),[](double value){return value<0;})))
             return fail(ConfigErr::INVALID_VALUE,"invalid hardware gain resolution");
     }
-    if(!size_is_n(cfg.shutdown.park_pos)) {
-        return fail(ConfigErr::INVALID_SIZE, "shutdown.park_pos must have length " + std::to_string(n));
-    }
-    if(!finite_vector(cfg.shutdown.park_pos) || !std::isfinite(cfg.shutdown.speed_scale) ||
-        !std::isfinite(cfg.shutdown.position_tolerance) || !std::isfinite(cfg.shutdown.velocity_tolerance) ||
-        !std::isfinite(cfg.shutdown.settle_time_s) || !std::isfinite(cfg.shutdown.relaxed_tolerance_ratio) ||
-        !std::isfinite(cfg.shutdown.compliant_phase_ratio) || !std::isfinite(cfg.shutdown.timeout_s) ||
-        cfg.shutdown.speed_scale <= 0.0 || cfg.shutdown.speed_scale > 1.0 ||
-        cfg.shutdown.position_tolerance <= 0.0 || cfg.shutdown.velocity_tolerance <= 0.0 ||
-        cfg.shutdown.settle_time_s < 0.0 || cfg.shutdown.relaxed_tolerance_ratio < 1.0 ||
-        cfg.shutdown.compliant_phase_ratio <= 0.0 || cfg.shutdown.compliant_phase_ratio >= 1.0 ||
-        cfg.shutdown.timeout_s <= 0.0) {
-        return fail(ConfigErr::INVALID_VALUE, "invalid shutdown configuration");
+    const auto positive_joints=[&](const JointVector& values) {
+        return size_is_n(values) && finite_vector(values) && std::all_of(values.begin(),values.end(),[](double x){return x>0;});
+    };
+    for(const auto path:{ControlPath::MIT,ControlPath::CSP}) {
+        const auto& park=cfg.shutdown.for_path(path);
+        const std::string context=path==ControlPath::MIT?"shutdown.paths.MIT":"shutdown.paths.CSP";
+        if(park.strategy!=ParkingStrategy::RIGID && park.strategy!=ParkingStrategy::COMPLIANT_THEN_RIGID)
+            return fail(ConfigErr::INVALID_VALUE,context+" has an invalid parking strategy");
+        if(!park.enabled)continue;
+        if(!size_is_n(park.park_pos) || !finite_vector(park.park_pos) ||
+           !positive_joints(park.position_tolerance) || !positive_joints(park.velocity_tolerance))
+            return fail(ConfigErr::INVALID_VALUE,context+" requires complete finite per-joint targets and positive tolerances");
+        if(!std::isfinite(park.speed_scale) || park.speed_scale<=0 || park.speed_scale>1 ||
+           !std::isfinite(park.settle_time_s) || park.settle_time_s<0 ||
+           !std::isfinite(park.timeout_s) || park.timeout_s<=0)
+            return fail(ConfigErr::INVALID_VALUE,context+" has invalid speed or timing parameters");
     }
     if(!size_is_n(limits.min_pos) || !size_is_n(limits.max_pos) ||
         !size_is_n(limits.max_vel) || !size_is_n(limits.max_acc) ||
@@ -833,7 +859,7 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
 
     const auto& hold=cfg.hold_compensation;
     if(hold.enabled) {
-        if(!std::isfinite(hold.velocity_threshold)||hold.velocity_threshold<=0 || !std::isfinite(hold.error_threshold)||hold.error_threshold<=0)
+        if(!positive_joints(hold.velocity_threshold) || !positive_joints(hold.error_threshold))
             return fail(ConfigErr::INVALID_VALUE,"invalid hold_compensation thresholds");
         for(const auto* values:{&hold.integral_gain,&hold.max_torque,&hold.max_rate,&hold.contact_threshold})
             if(values->size()!=n || !finite_vector(*values) || std::any_of(values->begin(),values->end(),[](double v){return v<0;}))
@@ -854,6 +880,8 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
         !calibration.torque_bias.empty() || !calibration.torque_threshold.empty();
     const bool has_controller = admittance.enabled || !admittance.joint_enabled.empty() || !controller.mass.empty() ||
         !controller.damping.empty() || !controller.stiffness.empty() || !controller.max_delta_q.empty() || !controller.max_delta_q_dot.empty();
+    if((has_controller || !admittance.validation.velocity_tolerance.empty()) && !positive_joints(admittance.validation.velocity_tolerance))
+        return fail(ConfigErr::INVALID_VALUE,"admittance.validation.velocity_tolerance requires positive values for every joint");
     if(hold.enabled && !has_observer) return fail(ConfigErr::MISSING_FIELD,"hold_compensation requires observer and calibration");
     if(has_controller && !has_observer) return fail(ConfigErr::MISSING_FIELD,"admittance controller requires observer and calibration");
     if(has_observer) {
@@ -865,8 +893,10 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
             return fail(ConfigErr::INVALID_VALUE,"invalid observer/calibration joint parameter");
         const bool has_friction_parameters=!friction.positive_coulomb.empty() || !friction.positive_viscous.empty() ||
             !friction.negative_coulomb.empty() || !friction.negative_viscous.empty();
+        if(!friction.velocity_transition.empty() && !positive_joints(friction.velocity_transition))
+            return fail(ConfigErr::INVALID_VALUE,"friction.velocity_transition requires positive values for every joint");
         if(friction.enabled || has_friction_parameters) {
-            if(!std::isfinite(friction.velocity_transition) || friction.velocity_transition<=0 ||
+            if(!positive_joints(friction.velocity_transition) ||
                friction.positive_coulomb.size()!=n || friction.positive_viscous.size()!=n ||
                friction.negative_coulomb.size()!=n || friction.negative_viscous.size()!=n ||
                !finite_vector(friction.positive_coulomb) || !finite_vector(friction.positive_viscous) ||
@@ -947,12 +977,13 @@ tl::expected<void, ConfigErrInfo> validate_robot_core_cfg(const RobotCfg& cfg) {
                 return fail(ConfigErr::INVALID_VALUE, "controller gain exceeds configured Safety limit at index " + std::to_string(i));
             }
         }
-        if(limits.has_position_limit.empty() || limits.has_position_limit[i] != 0) {
-            const double park_min = limits.min_pos[i] + limits.pos_margin[i];
-            const double park_max = limits.max_pos[i] - limits.pos_margin[i];
-            if(cfg.shutdown.park_pos[i] < park_min || cfg.shutdown.park_pos[i] > park_max) {
-                return fail(ConfigErr::INVALID_VALUE, "shutdown.park_pos is outside the command range at index " + std::to_string(i));
-            }
+        for(const auto path:{ControlPath::MIT,ControlPath::CSP}) {
+            const auto& park=cfg.shutdown.for_path(path);
+            if(!park.enabled || (!limits.has_position_limit.empty() && limits.has_position_limit[i]==0))continue;
+            const double park_min=limits.min_pos[i]+limits.pos_margin[i];
+            const double park_max=limits.max_pos[i]-limits.pos_margin[i];
+            if(park.park_pos[i]<park_min || park.park_pos[i]>park_max)
+                return fail(ConfigErr::INVALID_VALUE,std::string("shutdown.paths.")+(path==ControlPath::MIT?"MIT":"CSP")+".park_pos is outside the command range at index "+std::to_string(i));
         }
     }
 
@@ -1028,6 +1059,7 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     if(lhs->safety.limits.max_kp != rhs->safety.limits.max_kp) add("limits.max_kp");
     if(lhs->safety.limits.max_kd != rhs->safety.limits.max_kd) add("limits.max_kd");
     if(lhs->safety.cmd_timeout_s != rhs->safety.cmd_timeout_s || lhs->safety.state_timeout_s != rhs->safety.state_timeout_s || lhs->safety.max_dt_s != rhs->safety.max_dt_s) add("safety.timeout");
+    if(lhs->safety.fault_recovery.velocity_tolerance != rhs->safety.fault_recovery.velocity_tolerance) add("safety.fault_recovery.velocity_tolerance");
     if(lhs->dynamics.gravity_model_validated != rhs->dynamics.gravity_model_validated) add("model.gravity_model_validated");
     if(lhs->dynamics.urdf_path != rhs->dynamics.urdf_path) add("dynamics.urdf_path");
     if(lhs->hold_compensation.enabled!=rhs->hold_compensation.enabled || lhs->hold_compensation.integral_gain!=rhs->hold_compensation.integral_gain ||
@@ -1038,6 +1070,9 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
     const auto& rhs_adm = rhs->capability.admittance;
     if(lhs_adm.observer_enabled != rhs_adm.observer_enabled || lhs_adm.enabled != rhs_adm.enabled ||
         lhs_adm.joint_enabled != rhs_adm.joint_enabled ||
+        lhs_adm.validation.observation_validated != rhs_adm.validation.observation_validated ||
+        lhs_adm.validation.response_validated != rhs_adm.validation.response_validated ||
+        lhs_adm.validation.velocity_tolerance != rhs_adm.validation.velocity_tolerance ||
         lhs_adm.observer.momentum_gain != rhs_adm.observer.momentum_gain ||
         lhs_adm.calibration.torque_bias != rhs_adm.calibration.torque_bias ||
         lhs_adm.calibration.torque_threshold != rhs_adm.calibration.torque_threshold ||
@@ -1054,10 +1089,13 @@ tl::expected<std::vector<std::string>, ConfigErrInfo> compare_robot_cfg(const st
         lhs_adm.controller.max_delta_q_dot != rhs_adm.controller.max_delta_q_dot) {
         add("capability.admittance");
     }
-    if(lhs->shutdown.park_before_disable != rhs->shutdown.park_before_disable || lhs->shutdown.park_pos != rhs->shutdown.park_pos ||
-        lhs->shutdown.speed_scale != rhs->shutdown.speed_scale ||
-        lhs->shutdown.compliant_phase_ratio != rhs->shutdown.compliant_phase_ratio ||
-        lhs->shutdown.timeout_s != rhs->shutdown.timeout_s) add("shutdown");
+    for(const auto path:{ControlPath::MIT,ControlPath::CSP}) {
+        const auto& a=lhs->shutdown.for_path(path);const auto& b=rhs->shutdown.for_path(path);
+        if(a.enabled!=b.enabled || a.strategy!=b.strategy || a.park_pos!=b.park_pos ||
+           a.speed_scale!=b.speed_scale || a.position_tolerance!=b.position_tolerance ||
+           a.velocity_tolerance!=b.velocity_tolerance || a.settle_time_s!=b.settle_time_s || a.timeout_s!=b.timeout_s)
+            add(path==ControlPath::MIT?"shutdown.paths.MIT":"shutdown.paths.CSP");
+    }
     return diffs;
 }
 
