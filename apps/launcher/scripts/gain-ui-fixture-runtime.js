@@ -178,8 +178,11 @@ function runDomTests(){
  const report={ok:true,checks};$('fixture-output').textContent=JSON.stringify(report,null,2);return report;
 }
 $('fixture-state').onchange=()=>scene($('fixture-state').value);
-$('fixture-theme').onchange=()=>document.documentElement.classList.toggle('light',$('fixture-theme').value==='light');
+function setFixtureTheme(theme){
+ const light=theme==='light';document.documentElement.classList.toggle('light',light);document.documentElement.dataset.theme=light?'light':'dark';
+}
+$('fixture-theme').onchange=()=>setFixtureTheme($('fixture-theme').value);
 $('fixture-tick').onclick=tick;
 $('fixture-test').onclick=()=>{try{runDomTests();}catch(error){$('fixture-output').textContent=error.stack;throw error;}};
 window.gainFixture={scene,tick,runDomTests,getState:()=>state};
-const query=new URLSearchParams(location.search);const theme=query.get('theme')||'light';$('fixture-theme').value=theme;document.documentElement.classList.toggle('light',theme==='light');scene(query.get('state')||'idle');
+const query=new URLSearchParams(location.search);const theme=query.get('theme')||'light';$('fixture-theme').value=theme;setFixtureTheme(theme);scene(query.get('state')||'idle');

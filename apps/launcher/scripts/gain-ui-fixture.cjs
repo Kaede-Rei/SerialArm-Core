@@ -6,11 +6,11 @@ const fs=require('node:fs');
 const path=require('node:path');
 const root=path.resolve(__dirname,'..');
 const functions=[
-  'canonicalGainPurpose','gainPurposeLabel','jointDisplaySpec','jointDisplayValue','jointMdkUnits','capabilityNumber',
+  'canonicalGainPurpose','gainPurposeLabel','jointDisplaySpec','jointDisplayValue','jointNativeUnits','jointNativeValue','jointMdkUnits','capabilityNumber',
   'modelCalibrationPhaseText','modelCalibrationActive','gainCandidateGroups','gainCandidatePurposeAvailable','gainCandidateReviewReady','gainCandidateDeployable',
   'gainCandidateAvailabilityLabel','gainCalibrationQualityWarning','gainTaskConclusion','gainMeasurementPhaseLabel','gainMeasurementReasonLabel','gainWarningLabel','gainSelectionKey','selectedGainPurposes',
   'gainCalibrationHasLinearAxes','gainProbePhaseLabel','gainProbeStageLabel',
-  'gainCompliantScopeSummaryHtml','gainCompliantScopeEvidenceHtml','gainDirectDisturbanceScope','gainMeasurementSourceKey','gainPurposeMeasurementEvidence','gainPurposeMeasurementWarnings','gainDirectDisturbanceEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainMotionEstablishmentHtml','gainFixedReferenceEvidenceHtml','gainExperimentHtml','gainProbeEvidenceHtml','gainProbeStatusHtml','refreshGainProbeStatus',
+  'gainCompliantScopeSummaryHtml','gainCompliantScopeEvidenceHtml','gainPurposeDirectionEvidenceHtml','gainEvidenceRecordHtml','bindGainEvidencePaths','gainDirectDisturbanceScope','gainMeasurementSourceKey','gainPurposeMeasurementEvidence','gainPurposeMeasurementWarnings','gainDirectDisturbanceEvidenceHtml','gainDragScopes','gainDragScopeSummaryHtml','gainDragScopeEvidenceHtml','gainProbeMessageLabel','gainProbeDiagnostic','gainProbeStatusValues','gainMotionEstablishmentHtml','gainFixedReferenceEvidenceHtml','gainExperimentHtml','gainProbeEvidenceHtml','gainProbeStatusHtml','refreshGainProbeStatus',
   'bindGainCandidateSelection','bindGainCalibrationOptions','gainTimeText','gainBudgetValues','gainBudgetHtml',
   'gainCalibrationPhaseText','gainCandidateResultCounts','gainCalibrationOptionsHtml','gainModelInitializationHtml','gainCheckStatus',
   'gainQualificationScopeHtml','gainResponseModelsHtml','gainTaughtPathMetricsHtml','gainCandidateParameterSourceHtml','gainCandidateParametersHtml','gainObserverAndBoundsHtml',

@@ -3,7 +3,7 @@
  * --use-angle=swiftshader --enable-unsafe-swiftshader scripts/verify-model-lifecycle.cjs
  * --collision-geometry uses the same URDF's actual collision STL for visual rendering.
  */
-const {app,BrowserWindow}=require('electron');
+const {app,BrowserWindow,ipcMain}=require('electron');
 const fs=require('node:fs'),path=require('node:path'),{spawnSync}=require('node:child_process');
 const {buildFixture}=require('./studio-ui-fixture.cjs');
 const launcher=path.resolve(__dirname,'..'),repo=path.resolve(launcher,'../..');
@@ -21,7 +21,7 @@ data.actualNative=JSON.parse(native.stdout);
 if(process.argv.includes('--collision-geometry'))for(const link of data.model.model.links)link.visuals=structuredClone(link.collisions||[]);
 fs.writeFileSync(dataPath,JSON.stringify(data));
 function fixtureApi(){
- const {contextBridge}=require('electron'),fs=require('node:fs'),path=require('node:path');
+ const {contextBridge,ipcRenderer}=require('electron'),fs=require('node:fs'),path=require('node:path');
  const data=require('__DATA_PATH__'),calls=[],reads={};let mode='normal',flags={};
  const fail=name=>{throw Error('Read-only lifecycle fixture rejects '+name);};
  contextBridge.exposeInMainWorld('studioUiData',data);
@@ -45,6 +45,7 @@ function fixtureApi(){
   modelResource:async(file)=>{const p=path.resolve(file);if(!data.model.mesh_files.includes(p))return fail('modelResource outside fixture');reads[p]=(reads[p]||0)+1;await new Promise(r=>setTimeout(r,12));if(flags.resourceError)throw Error('Fixture mesh read failure');return {path:p,extension:path.extname(p).toLowerCase(),data:fs.readFileSync(p).toString('base64')};},
   graphics:{status:async()=>({effectiveMode:mode,requestedMode:mode,requiresRestart:false,status:'ready'}),report:async()=>({}),setMode:async(value)=>{mode=value;return {};}},
   fixtureStats:async()=>({calls,reads}),fixtureFlags:async(value)=>{flags={...flags,...value};},
+  fixtureViewport:async(size)=>ipcRenderer.invoke('lifecycle-fixture-viewport',size),
   onEvent:()=>{},onCloseRequest:()=>{},window:()=>{},selectProfile:async()=>null,selectProfilePackage:async()=>null,
   revealFile:async()=>{},clipboard:{write:async()=>{},read:async()=>''}
  });
@@ -55,6 +56,11 @@ async function verifyLifecycle(){
  window.lifecycleChecks=[];
  const check=(ok,name,evidence)=>{if(!ok)throw Error(name+' '+JSON.stringify(evidence));lifecycleChecks.push({name,...(evidence?{evidence}:{})});};
  const settle=()=>new Promise(r=>setTimeout(()=>requestAnimationFrame(()=>requestAnimationFrame(r)),100));
+ const settlePreview=async()=>{
+  const started=performance.now();
+  while(document.querySelector('[data-workspace-preview][data-studio-disclosure-animating]')&&performance.now()-started<2500)await new Promise(requestAnimationFrame);
+  await mountCurrentPreview();await settle();
+ };
  const open=async id=>{await blockingOperation('Opening Profile...',()=>openLibraryEntry(id));await settle();};
  const goto=async page=>{await navigate(page);await mountCurrentPreview();await settle();};
  const total=s=>Object.values(s.reads).reduce((a,b)=>a+b,0);
@@ -71,11 +77,30 @@ async function verifyLifecycle(){
  const hiddenDrawCount=modelView.drawCount;modelView.requestRender();await settle();
  check(modelView.drawCount===hiddenDrawCount&&modelView.animationFrame===null&&modelView.frameTimer===null,'Hidden preview schedules no RAF/timer/draw');
  await goto('model');
- check(modelView===firstView&&modelView.canvas===firstCanvas&&modelView.renderer===firstRenderer&&!modelView.paused&&modelView.controls.enabled&&modelView.drawCount>hiddenDrawCount,'Model attaches and resumes exact prepared renderer/canvas');
+ check(modelView===firstView&&modelView.canvas===firstCanvas&&modelView.renderer===firstRenderer&&!modelView.paused&&modelView.controls.enabled&&modelView.drawCount>hiddenDrawCount,'Model attaches and resumes exact prepared renderer/canvas',{sameView:modelView===firstView,sameCanvas:modelView.canvas===firstCanvas,sameRenderer:modelView.renderer===firstRenderer,paused:modelView.paused,controls:modelView.controls.enabled,draws:modelView.drawCount,hiddenDrawCount,viewport:{width:innerWidth,height:innerHeight},host:{id:modelView.container.id,width:modelView.container.clientWidth,height:modelView.container.clientHeight},offscreen:modelView.offscreen});
  const originalPose=structuredClone(state.modelData.native);modelView.updatePose(originalPose);await settle();
  const idleDraw=modelView.drawCount;
  check(Array.from({length:12},()=>modelView.updatePose(structuredClone(originalPose))).every(changed=>changed===false),'Identical frame values skip redundant pose/COM updates');
  await settle();check(modelView.drawCount===idleDraw,'Identical feedback does not force redraw');
+ const themeViewState=JSON.stringify(modelView.captureViewState()),themeGeneration=modelView.modelGeneration;
+ const sceneResources=()=>{const geometries=[],textures=[];modelView.scene.traverse(node=>{if(node.geometry)geometries.push(node.geometry);if(node.userData.texture)textures.push(node.userData.texture);});return {geometries,textures};};
+ const resourcesBeforeTheme=sceneResources(),gridColorsBeforeTheme=modelView.grid.geometry.getAttribute('color');
+ const clearColor=()=>modelView.renderer.getClearColor(modelView.grid.material.color.clone()).getHexString();
+ const tokenColor=name=>{
+  const probe=document.createElement('span');probe.style.color=`var(${name})`;document.body.append(probe);
+  const channels=getComputedStyle(probe).color.match(/[\d.]+/g).slice(0,3);probe.remove();
+  return channels.map(value=>Math.round(Number(value)).toString(16).padStart(2,'0')).join('');
+ };
+ const sameViewState=(a,b)=>typeof a==='number'&&typeof b==='number'?Math.abs(a-b)<1e-9:a&&b&&typeof a==='object'&&typeof b==='object'?Object.keys(a).length===Object.keys(b).length&&Object.keys(a).every(key=>sameViewState(a[key],b[key])):a===b;
+ const drawBeforeTheme=modelView.drawCount;
+ await switchTheme('dark');await settle();
+ const resourcesAfterTheme=sceneResources();
+ value={background:clearColor(),reference:modelView.ghostMaterials.fill.color.getHexString(),draws:modelView.drawCount-drawBeforeTheme};
+ check(value.background===tokenColor('--viz-canvas')&&value.reference===tokenColor('--viz-reference')&&value.draws>0,'Visible theme change updates actual canvas and reference material from CSS tokens then redraws',value);
+ value={view:modelView===firstView,renderer:modelView.renderer===firstRenderer,canvas:modelView.canvas===firstCanvas,generation:modelView.modelGeneration===themeGeneration,viewState:sameViewState(modelView.captureViewState(),JSON.parse(themeViewState)),gridBuffer:modelView.grid.geometry.getAttribute('color')===gridColorsBeforeTheme,geometries:resourcesBeforeTheme.geometries.length===resourcesAfterTheme.geometries.length&&resourcesBeforeTheme.geometries.every((resource,index)=>resource===resourcesAfterTheme.geometries[index]),textures:resourcesBeforeTheme.textures.length===resourcesAfterTheme.textures.length&&resourcesBeforeTheme.textures.every((resource,index)=>resource===resourcesAfterTheme.textures[index])};
+ check(Object.values(value).every(Boolean),'Theme change preserves renderer, canvas, geometry, textures, camera, layers and model generation',value);
+ await switchTheme('light');await settle();
+ check(clearColor()===tokenColor('--viz-canvas')&&modelView.ghostMaterials.fill.color.getHexString()===tokenColor('--viz-reference'),'Light theme restores canvas and independent reference colors from CSS tokens');
  const comObjects=[...modelView.comGroup.children],changedCom=structuredClone(originalPose);changedCom.state.center_of_mass[0]+=.001;modelView.updatePose(changedCom);
  check(comObjects.every((object,index)=>modelView.comGroup.children[index]===object)&&Math.abs(modelView.totalComVisual.point.position.x-changedCom.state.center_of_mass[0])<1e-12,'Moving COM reuses its geometry and label while updating position');
  const inPlace=structuredClone(changedCom),frame=inPlace.state.frames.find(frame=>modelView.linkGroups.has(frame.name));modelView.updatePose(inPlace);frame.position[0]+=.001;modelView.updatePose(inPlace);
@@ -87,6 +112,11 @@ async function verifyLifecycle(){
  const savedCamera=modelView.camera.position.toArray();
  await goto('settings');
  check(modelView===firstView&&modelView.paused&&!modelView.controls.enabled,'Non-model page retains paused model');
+ const hiddenThemeDrawCount=modelView.drawCount,hiddenThemeState=JSON.stringify(modelView.captureViewState());
+ await switchTheme('dark');await settle();
+ check(clearColor()===tokenColor('--viz-canvas')&&modelView.ghostMaterials.fill.color.getHexString()===tokenColor('--viz-reference')&&modelView.drawCount===hiddenThemeDrawCount&&modelView.animationFrame===null&&modelView.frameTimer===null&&modelView.paused&&!modelView.controls.enabled&&JSON.stringify(modelView.captureViewState())===hiddenThemeState,'Hidden theme change updates retained colors without resuming, scheduling or drawing');
+ await switchTheme('light');await settle();
+ check(modelView.drawCount===hiddenThemeDrawCount&&modelView.animationFrame===null&&modelView.frameTimer===null,'Returning hidden theme to light keeps the renderer paused');
  await goto('model');
  check(modelView===firstView&&modelView.layers.collision&&modelView.camera.position.toArray().every((v,i)=>Math.abs(v-savedCamera[i])<1e-9),'Model camera and layers restored per preview slot',{camera:modelView.camera.position.toArray(),expected:savedCamera,layers:modelView.layers});
  state.session={state:'running',mode:'workbench'};
@@ -97,8 +127,38 @@ async function verifyLifecycle(){
  value=pose(studioUiData.actualNative);
  check(modelView.linkGroups.get(hiddenLink).visible,'Model-only hidden link is visible in workspace');
  check(modelView===firstView&&!modelView.layers.collision&&value.actual.every((v,i)=>Math.abs(v-value.expected[i])<1e-9),'Workspace uses own layers and latest real forward-kinematic pose',value);
- state.workbenchTab='monitor';render();await settle();
- check(modelView===firstView&&!modelView.paused,'Subpage refresh keeps mounted instance');
+ const preview=()=>document.querySelector('details.workspace-preview-disclosure[data-workspace-preview]');
+ const nav=document.querySelector('#workspace-navigation');
+ check(preview()?.open&&nav&&!nav.closest('.workbench-task'),'Wide control keeps its preview open and navigation outside the task');
+ document.querySelector('[data-workbench-tab="monitor"]').click();await settlePreview();
+ const taskBox=document.querySelector('.workbench-task').getBoundingClientRect(),layoutBox=document.querySelector('.studio-workspace-layout').getBoundingClientRect();
+ value={sameView:modelView===firstView,sameCanvas:modelView.canvas===firstCanvas,sameRenderer:modelView.renderer===firstRenderer,paused:modelView.paused,open:preview().open,taskWidth:taskBox.width,layoutWidth:layoutBox.width,navWidth:nav.getBoundingClientRect().width};
+ check(value.sameView&&value.sameCanvas&&value.sameRenderer&&value.paused&&!value.open&&value.taskWidth>=value.layoutWidth-2&&value.navWidth>=value.layoutWidth-2,'Monitor receives full width while retaining the exact paused preview',value);
+ const monitorDraws=modelView.drawCount,monitorCalls=(await serialArm.fixtureStats()).calls.filter(c=>c.name==='model_preview').length;
+ await updateStartGhost(true);modelView.requestRender();await settle();
+ check(modelView.drawCount===monitorDraws&&modelView.animationFrame===null&&modelView.frameTimer===null&&(await serialArm.fixtureStats()).calls.filter(c=>c.name==='model_preview').length===monitorCalls,'Collapsed monitor preview schedules no draw, timer or ghost request');
+ preview().querySelector(':scope > summary').click();await settlePreview();
+ check(preview().open&&modelView===firstView&&modelView.canvas===firstCanvas&&!modelView.paused,'Monitor preview opens by attaching and resuming the retained canvas');
+ preview().querySelector(':scope > summary').click();await settlePreview();
+ document.querySelector('[data-workbench-tab="control"]').click();await settlePreview();
+ check(preview().open&&modelView===firstView&&!modelView.paused,'Returning to wide control restores the mounted preview without rebuilding');
+ await serialArm.fixtureViewport({width:1000,height:720});await settlePreview();
+ const firstTaskSection=document.querySelector('.workbench-task .workspace-section');
+ value={width:innerWidth,height:innerHeight,narrow:document.querySelector('.studio-workspace').dataset.narrow==='true',open:preview().open,paused:modelView.paused,afterPrimary:!!(firstTaskSection.compareDocumentPosition(preview())&Node.DOCUMENT_POSITION_FOLLOWING)};
+ check(value.width===1000&&value.narrow&&!value.open&&value.paused&&value.afterPrimary,'Narrow control defaults to a collapsed preview after its primary task',value);
+ const narrowInput=document.querySelector('#workbench-speed'),inputValue=narrowInput?.value;
+ const hiddenNarrowDraws=modelView.drawCount,narrowStats=await serialArm.fixtureStats();
+ await updateStartGhost(true);modelView.requestRender();await settle();
+ check(modelView.drawCount===hiddenNarrowDraws&&modelView.animationFrame===null&&modelView.frameTimer===null&&(await serialArm.fixtureStats()).calls.filter(c=>c.name==='model_preview').length===narrowStats.calls.filter(c=>c.name==='model_preview').length,'Narrow collapsed preview performs no hidden ghost request or draw');
+ preview().querySelector(':scope > summary').click();await settlePreview();
+ check(preview().open&&modelView===firstView&&modelView.canvas===firstCanvas&&modelView.renderer===firstRenderer&&!modelView.paused&&(!narrowInput||narrowInput.isConnected&&narrowInput.value===inputValue),'Narrow preview expansion preserves renderer, canvas and current task inputs');
+ modelView.camera.position.multiplyScalar(1.1);const narrowCamera=modelView.camera.position.toArray();
+ preview().querySelector(':scope > summary').click();await settlePreview();
+ check(modelView.paused&&!modelView.controls.enabled,'Narrow preview collapse pauses camera controls');
+ preview().querySelector(':scope > summary').click();await settlePreview();
+ check(modelView.camera.position.toArray().every((v,i)=>Math.abs(v-narrowCamera[i])<1e-9),'Narrow preview reopening preserves its camera');
+ check(JSON.stringify((await serialArm.fixtureStats()).reads)===JSON.stringify(narrowStats.reads),'Monitor and narrow preview disclosure reuse all loaded model resources');
+ await serialArm.fixtureViewport({width:1200,height:900});await settlePreview();
  await goto('geometry');check(modelView===firstView,'Geometry reuses instance');
  await goto('calibration');check(modelView===firstView,'Calibration reuses instance');
  state.session={state:'idle'};state.telemetry=null;await goto('model');check(!modelView.linkGroups.get(hiddenLink).visible,'Returning to model restores its hidden link');value=pose(state.modelData.native);
@@ -153,7 +213,8 @@ async function verifyLifecycle(){
  function positionsZero(){return studioUiData.editor.joint_names.map(()=>0);}
 }
 app.whenReady().then(async()=>{
- const win=new BrowserWindow({width:1200,height:900,show:true,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
+ const win=new BrowserWindow({width:1200,height:900,frame:false,show:true,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
+ ipcMain.handle('lifecycle-fixture-viewport',(_event,size)=>{win.setContentSize(size.width,size.height);});
  const deadline=setTimeout(()=>app.exit(1),30000);
  win.webContents.on('render-process-gone',(_event,details)=>{fs.writeFileSync(path.join(output,'renderer-crash.json'),JSON.stringify(details,null,2));console.error('MODEL_LIFECYCLE_RENDERER_GONE',details);app.exit(1);});
  win.webContents.on('console-message',(_event,level,message)=>{if(level>=3)console.error('MODEL_LIFECYCLE_CONSOLE',message);});

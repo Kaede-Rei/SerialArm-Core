@@ -75,7 +75,7 @@
     reduced.addEventListener('change', resetMotion);
     new MutationObserver(resetMotion).observe(document.documentElement, {attributes:true,attributeFilter:['data-reduce-motion']});
     const contentChanges = new WeakMap();
-    const contentExcluded = '.page-head,nav,.workspace-operation-panel,.robot-operation-bar,.workbench-model,.model-center,.description-preview,#model-viewport,#workbench-viewport,#description-viewport,#runtime-panel,.xterm,canvas,[hidden]';
+    const contentExcluded = '.page-head,nav,.workspace-operation-panel,.robot-operation-bar,.workspace-preview-disclosure,.workbench-model,.model-center,.description-preview,#model-viewport,#workbench-viewport,#description-viewport,#runtime-panel,.xterm,canvas,[hidden]';
     function contentTargets(host) {
         const targets=[];
         function visit(node) {
@@ -206,7 +206,7 @@
             if(parent.scrollTop||parent.scrollLeft)scroll.push({node:parent,top:parent.scrollTop,left:parent.scrollLeft});
         const gap = record.open === node.open ? parseFloat(getComputedStyle(summary).marginBottom) || 0 : record.summaryGap;
         if (!open) {
-            if (node.contains(document.activeElement) && !summary.contains(document.activeElement)) summary.focus({preventScroll:true});
+            if (node.contains(document.activeElement) && !summary.contains(document.activeElement)) (document.querySelector(`[data-studio-disclosure-target="${node.id}"]`) || summary).focus({preventScroll:true});
             for (const child of node.children) if (child !== summary && !record.inert.has(child)) { record.inert.set(child,child.inert); child.inert = true; }
         } else restoreDisclosureChildren(record);
         record.open = open; node.open = open;
@@ -240,6 +240,14 @@
     document.addEventListener('compositionend', () => { composing = false; }, true);
     document.addEventListener('click', event => {
         if (!detailsSupported || event.defaultPrevented || composing || !(event.target instanceof Element)) return;
+        const trigger=event.target.closest('[data-studio-disclosure-target]');
+        if(trigger) {
+            const target=document.getElementById(trigger.dataset.studioDisclosureTarget);
+            if(target instanceof HTMLDetailsElement && !trigger.disabled) {
+                event.preventDefault(); animateDisclosure(target,!target.open,target.getBoundingClientRect().height);
+            }
+            return;
+        }
         const summary = event.target.closest('summary'), node = summary?.parentElement;
         if (!(node instanceof HTMLDetailsElement) || node.firstElementChild !== summary || event.target.closest('a,button,input,select,textarea,[contenteditable]')) return;
         event.preventDefault(); animateDisclosure(node,!node.open,node.getBoundingClientRect().height);
@@ -323,6 +331,10 @@
             // and telemetry refreshes do not replay disclosure entrance motion.
             else if (record.open !== node.open) { record.open=node.open; record.progress=node.open?1:0; record.height=node.getBoundingClientRect().height; restoreDisclosureChildren(record); }
             else if (!motions.has(node)) { record.height=node.getBoundingClientRect().height; record.summaryGap=parseFloat(getComputedStyle(node.firstElementChild).marginBottom)||0; }
+        }
+        for(const trigger of document.querySelectorAll('[data-studio-disclosure-target]')) {
+            const target=document.getElementById(trigger.dataset.studioDisclosureTarget);
+            if(target)trigger.setAttribute('aria-expanded',String(target.open));
         }
         updateSegments();
     }

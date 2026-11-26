@@ -8,7 +8,7 @@ body { height: 100dvh; overflow: hidden; background: var(--bg); font-size: 14px;
 #gain-live-status::before { content: ""; width: 7px; height: 7px; flex: none; border: 1px solid var(--muted); border-radius: 50%; }
 #gain-live-status[data-state="live"] { color:var(--green); }
 #gain-live-status[data-state="live"]::before { border-color:var(--green-indicator); background:var(--green-indicator); }
-#gain-live-status[data-state="stale"] { color:var(--warning); }
+#gain-live-status[data-state="stale"] { color:var(--warning-foreground); }
 #gain-live-status[data-state="stale"]::before { border-color:var(--warning-indicator); background:var(--warning-indicator); }
 .gain-live-meta { display:grid; grid-template-columns:minmax(100px,1fr) minmax(0,2fr) minmax(100px,1fr); gap:12px 20px; flex:none; margin:0; padding:14px 0; border-block:.5px solid var(--line); background:transparent; }
 .gain-live-meta > div { min-width: 0; }

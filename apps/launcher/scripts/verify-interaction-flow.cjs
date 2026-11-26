@@ -15,6 +15,9 @@ async function verify(){
  const a=editor.core.capability.admittance;
  a.joint_enabled=named(true);a.controller={mass:named(.1),damping:named(1.26),stiffness:named(4),max_delta_q:named(.01),max_delta_q_dot:named(.02)};
  Object.assign(state,{page:'profile_setup',profileGroup:'motion',language:'zh-CN',theme:'light',config:{profile:'fixture-flow',profile_file:'/offline/robot_profiles.yaml'},profileEditor:editor,capabilityProfile:structuredClone(editor),profileDirty:false,profileFieldErrors:{},profileRawInputs:{},profileError:'',modelData:null,session:{state:'idle'},telemetry:null,readiness:{control_available:true,checks:{},modes_by_path:{CSP:{RIGID:'configured',COMPLIANT:'configured',DRAG:'configured',SERVO_TRACKING:'configured'}},operation_readiness:{basic_control:{ready:true},gravity_verification:{ready:true},observation:{ready:true},drag:{ready:false,reason:'先完成重力验证'},admittance:{ready:true}},connection_readiness:{structurally_valid:true,read_only_connectable:true,write_enabled:true,basic_calibration_ready:true,basic_calibration_prerequisites:[]}},admittance:null,admittanceSaveSource:'draft',admittanceSaveScope:'response',admittanceSaveFields:['controller.mass'],savePreview:null});
+ // Rigid parking uses the saved per-path configuration in the production readiness contract.
+ state.readiness.configuration_summary={parking_by_path:{CSP:{enabled:true,configured:true,strategy:'RIGID'},MIT:{enabled:true,configured:true,strategy:'RIGID'}}};
+ state.readiness.operation_readiness.parking={allowed:true,reason:'',strategy:'RIGID',control_path:'CSP'};
  renderedPage='';shell();
  assert(document.querySelectorAll('#admittance-editor').length===1,'exactly one admittance editor in Configuration');
  assert(!document.querySelector('[data-goal-context="runtime"]'),'no separate runtime response draft');

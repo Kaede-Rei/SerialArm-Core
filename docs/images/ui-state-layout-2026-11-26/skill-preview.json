@@ -1,0 +1,54 @@
+[
+  {
+    "width": 1302,
+    "rootWidth": 1287,
+    "projects": [
+      {
+        "theme": "light",
+        "page": "rgb(250, 249, 245)",
+        "fill": "rgb(7, 193, 96)",
+        "ink": "rgb(255, 255, 255)",
+        "hover": "rgb(6, 173, 86)",
+        "pressed": "rgb(5, 155, 77)",
+        "warning": "rgb(166, 83, 24)",
+        "asset": "rgb(255, 255, 255)"
+      },
+      {
+        "theme": "dark",
+        "page": "rgb(41, 40, 38)",
+        "fill": "rgb(7, 193, 96)",
+        "ink": "rgb(255, 255, 255)",
+        "hover": "rgb(6, 173, 86)",
+        "pressed": "rgb(5, 155, 77)",
+        "warning": "rgb(255, 180, 126)",
+        "asset": "rgb(255, 255, 255)"
+      }
+    ]
+  },
+  {
+    "width": 1000,
+    "rootWidth": 985,
+    "projects": [
+      {
+        "theme": "light",
+        "page": "rgb(250, 249, 245)",
+        "fill": "rgb(7, 193, 96)",
+        "ink": "rgb(255, 255, 255)",
+        "hover": "rgb(6, 173, 86)",
+        "pressed": "rgb(5, 155, 77)",
+        "warning": "rgb(166, 83, 24)",
+        "asset": "rgb(255, 255, 255)"
+      },
+      {
+        "theme": "dark",
+        "page": "rgb(41, 40, 38)",
+        "fill": "rgb(7, 193, 96)",
+        "ink": "rgb(255, 255, 255)",
+        "hover": "rgb(6, 173, 86)",
+        "pressed": "rgb(5, 155, 77)",
+        "warning": "rgb(255, 180, 126)",
+        "asset": "rgb(255, 255, 255)"
+      }
+    ]
+  }
+]

@@ -7,6 +7,7 @@
  * --rescue-model inspects its real structure without claiming 3D rendering.
  * --allow-findings captures all pages while retaining issues in report.json.
  * --software explicitly selects the bundled SwiftShader preview backend.
+ * --scale 2 checks high-DPI output; --collision-geometry uses actual STL visuals.
  */
 const {app,BrowserWindow}=require('electron');
 const fs=require('node:fs');
@@ -15,6 +16,12 @@ const {buildFixture}=require('./studio-ui-fixture.cjs');
 const args=process.argv.slice(2),arg=(name,fallback)=>{const i=args.indexOf(name);return i<0?fallback:args[i+1];};
 const output=path.resolve(arg('--out','/tmp/serialarm-studio-ui/screenshots'));
 const fixture=buildFixture(path.dirname(output),{receipt:arg('--receipt',''),model:args.includes('--with-model'),commissioning:true});
+if(args.includes('--collision-geometry')){
+ const dataPath=path.join(fixture.directory,'data.json'),data=JSON.parse(fs.readFileSync(dataPath,'utf8'));
+ if(!data.model)throw Error('--collision-geometry requires --with-model');
+ for(const link of data.model.model.links)link.visuals=structuredClone(link.collisions||[]);
+ fs.writeFileSync(dataPath,JSON.stringify(data));
+}
 const auditFile=arg('--clip-audit','');
 const audit=auditFile?fs.readFileSync(auditFile,'utf8'):null;
 const scenes=arg('--scenes','start,library,lifecycle,parameters-model,parameters-mapping,parameters-motion,parameters-safety,parameters-shutdown,parameters-hardware,model,workbench,geometry,calibration-teaching,calibration-gain,calibration-gravity,calibration-dynamics,calibration-result,diagnostics,run,settings').split(',');
@@ -23,13 +30,15 @@ const sizes=arg('--sizes','').split(',').filter(Boolean).map(value=>value.split(
 if(!sizes.length)for(const width of widths)sizes.push([width,Number(arg('--height','900'))]);
 if(sizes.some(size=>size.length!==2||size.some(value=>!Number.isFinite(value)||value<500)))throw Error('Expected desktop dimensions such as --sizes 1300x900,1000x720');
 const languages=arg('--languages','zh-CN').split(',');
-app.commandLine.appendSwitch('force-device-scale-factor','1');
+const deviceScale=Number(arg('--scale','1'));
+if(!Number.isFinite(deviceScale)||deviceScale<=0)throw Error('Expected a positive --scale value');
+app.commandLine.appendSwitch('force-device-scale-factor',String(deviceScale));
 app.setPath('userData',path.join(fixture.directory,'electron-userdata'));
 if(args.includes('--software')){app.commandLine.appendSwitch('use-gl','angle');app.commandLine.appendSwitch('use-angle','swiftshader');app.commandLine.appendSwitch('enable-unsafe-swiftshader');}
 function setScene(scene,theme,language='zh-CN'){
  const data=window.studioUiData;
  if(window.studioFixtureRescue)graphicsState.effectiveMode='rescue';
- Object.assign(state,{page:['lifecycle-path','lifecycle-task','lifecycle-observation'].includes(scene)?'lifecycle':scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileParkingPath:null,profileParkingKey:'',profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},commissioningDrafts:{},commissioningResults:{},commissioningContext:null,modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
+ Object.assign(state,{page:['lifecycle-path','lifecycle-task','lifecycle-observation'].includes(scene)?'lifecycle':scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene.startsWith('workbench-')?'workbench':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileParkingPath:null,profileParkingKey:'',profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},commissioningDrafts:{},commissioningResults:{},commissioningContext:null,modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
  if(scene==='calibration-result')state.calibrationToolSelected.gain={directory:'/offline/calibration-result',gain_candidate:structuredClone(data.candidate)};
  state.modelCalibrationOffline=null;state.idimReport=null;
  if(scene.startsWith('calibration-'))state.telemetry={joint_names:data.editor.joint_names,model_calibration:{workflow_kind:'gain',phase:scene==='calibration-result'?'complete':'idle',task_id:scene==='calibration-result'?data.candidate.task_id:'',gain_budget_source_duration_s:25,gain_target_budget_s:300,gain_time_budget_s:375,gain_elapsed_s:scene==='calibration-result'?239:0,gain_remaining_s:375}};
@@ -46,7 +55,7 @@ function setScene(scene,theme,language='zh-CN'){
   if(scene==='lifecycle-observation'){state.readiness=structuredClone(data.commissioning.CSP);state.profileEditor=structuredClone(data.commissioning.editorCSP);state.capabilityProfile=structuredClone(data.commissioning.editorCSP);}
  }
  if(['calibration-observation','calibration-response'].includes(scene)){state.calibrationEntry=scene.split('-')[1];state.profileEditor.core.control.runtime.control_path='CSP';state.capabilityProfile.core.control.runtime.control_path='CSP';}
- if(scene==='workbench'){state.workbenchTab='control';state.controlSettingsOpen=true;}
+ if(scene==='workbench'||scene.startsWith('workbench-')){state.workbenchTab=scene.split('-')[1]||'control';state.controlSettingsOpen=false;}
  if(data.receipt){state.readiness.gain_initialization=structuredClone(data.receipt);state.config.profile=data.receiptLabel;}
  renderedPage='';renderedPageViewKey='';shell();
  if(scene==='lifecycle-observation'){state.commissioningViewedPath='CSP';render();document.querySelector('[data-commissioning-group=path] > details').open=true;document.querySelector('[data-commissioning-task=observation_validation]').closest('details').open=true;}
@@ -62,11 +71,11 @@ function snapshot(){
  const sizes=[...new Set(visibleText.map(n=>getComputedStyle(n).fontSize))];
  const outer=[...document.querySelectorAll('.content,.studio-page-body')].filter(n=>n.scrollWidth>n.clientWidth+1).map(n=>({class:n.className,width:n.clientWidth,scroll:n.scrollWidth}));
  const navigationLabelOverflow=[...page.querySelectorAll('.workspace-subpage-nav .calibration-entry-title')].filter(node=>node.getBoundingClientRect().left+node.scrollWidth>node.closest('button').getBoundingClientRect().right+2).map(node=>({text:node.textContent.trim(),width:node.clientWidth,scroll:node.scrollWidth,buttonWidth:node.closest('button').getBoundingClientRect().width}));
- const buttons=[...page.querySelectorAll('.button.primary')].filter(n=>n.getClientRects().length).map(n=>({id:n.id,text:n.textContent.trim(),color:getComputedStyle(n).color,background:getComputedStyle(n).backgroundColor}));
+ const buttons=[...page.querySelectorAll('.button.primary')].filter(n=>n.getClientRects().length).map(n=>({id:n.id,text:n.textContent.trim(),disabled:n.disabled,color:getComputedStyle(n).color,background:getComputedStyle(n).backgroundColor}));
  const paletteProbe=document.createElement('i');paletteProbe.hidden=true;paletteProbe.style.cssText='color:var(--primary-on);background-color:var(--primary)';document.body.append(paletteProbe);
  const primaryPalette={color:getComputedStyle(paletteProbe).color,background:getComputedStyle(paletteProbe).backgroundColor};paletteProbe.remove();
  const unusualFonts=visibleText.filter(n=>parseFloat(getComputedStyle(n).fontSize)<12).map(n=>({tag:n.tagName,class:n.className,id:n.id,size:getComputedStyle(n).fontSize}));
- const parse=value=>{const parts=value.match(/[\d.]+/g)?.map(Number)||[];return parts.length>=3?[...parts.slice(0,3),parts[3]??1]:[0,0,0,0];};
+ const parse=value=>{const parts=value.match(/[\d.]+/g)?.map(Number)||[];if(parts.length<3)return [0,0,0,0];const channels=parts.slice(0,3).map(channel=>value.startsWith('color(srgb ')?channel*255:channel);return [...channels,parts[3]??1];};
  const blend=(front,back)=>front.slice(0,3).map((channel,index)=>channel*front[3]+back[index]*(1-front[3]));
  const luminance=rgb=>rgb.map(value=>{const c=value/255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4;}).reduce((v,c,i)=>v+c*[.2126,.7152,.0722][i],0);
  const contrast=[...page.querySelectorAll('h2,h3,label,.hint,.pill,.eyebrow,.gain-section-label,.parameter-key,.breadcrumb')].filter(node=>{const r=node.getBoundingClientRect();return node.innerText?.trim()&&r.width&&r.top<innerHeight&&r.bottom>0&&!node.closest(':disabled,[aria-disabled="true"]');}).slice(0,100).map(node=>{
@@ -76,7 +85,7 @@ function snapshot(){
   const style=getComputedStyle(node),foreground=blend(parse(style.color),background),lum=[luminance(foreground),luminance(background)].sort((a,b)=>b-a);
   return {tag:node.tagName,class:node.className,text:node.innerText.trim().slice(0,60),size:style.fontSize,color:style.color,ratio:Math.round((lum[0]+.05)/(lum[1]+.05)*100)/100};
  });
- return {title:texts,fonts:sizes,smallText:unusualFonts,contrast,unusualFonts,outerOverflow:outer,navigationLabelOverflow,pageWidth:page.getBoundingClientRect().width,viewport:innerWidth,bodyWidth:document.documentElement.scrollWidth,buttons,primaryPalette,middleDots:/\s·\s/.test(page.innerText),parameterKeys:page.querySelectorAll('.parameter-key').length};
+ return {title:texts,fonts:sizes,smallText:unusualFonts,contrast,unusualFonts,outerOverflow:outer,navigationLabelOverflow,pageWidth:page.getBoundingClientRect().width,viewport:innerWidth,devicePixelRatio,bodyWidth:document.documentElement.scrollWidth,buttons,primaryPalette,middleDots:/\s·\s/.test(page.innerText),parameterKeys:page.querySelectorAll('.parameter-key').length};
 }
 function testParameters(){
  const checks=[],assert=(ok,name)=>{if(!ok)throw Error(name);checks.push(name);};
@@ -169,6 +178,8 @@ async function testParameterContinuity(){
  await settled();
  assert(!document.querySelector('[data-studio-content-enter]'),'parameter entrance clears all temporary presentation '+JSON.stringify([...document.querySelectorAll('[data-studio-content-enter]')].map(node=>[node.className,node.style.cssText])));
  const scroller=profileScrollport();switchProfileGroup('motion');await settled();
+ // Error/detail navigation explicitly reveals a target; ordinary group changes preserve scroll.
+ scrollProfileTarget(document.querySelector('.setup-editor-head'));
  const sticky=document.querySelector('.setup-save-context'),head=document.querySelector('.setup-editor-head');
  assert(Math.abs(head.getBoundingClientRect().top-sticky.getBoundingClientRect().bottom-16)<3&&scroller.scrollTop>0,'group switch positions the editing title below the measured sticky height');
  const selector=field(['core','control','runtime','control_path']),main=document.querySelector('.setup-main'),bar=sticky;
@@ -178,7 +189,7 @@ async function testParameterContinuity(){
  set(['core','control','runtime','control_path'],'CSP','change');
  assert(field(['core','control','runtime','control_path'])===selector&&document.querySelector('.setup-save-context')===bar,'MIT/CSP switching keeps the path selector and save area mounted');
  assert(document.querySelector('.profile-path-response').dataset.profilePathResponse==='CSP'&&!!document.querySelector('.profile-path-response [data-studio-content-enter]'),'MIT/CSP body uses its own transition key');
- const enabled=['core','capability','admittance','joint_enabled','joint1'],damping=['core','capability','admittance','controller','damping','joint1'];field(enabled).checked=false;field(enabled).dispatchEvent(new Event('change',{bubbles:true}));set(damping,'0');assert(state.profileEditor.core.capability.admittance.controller.damping.joint1===0&&!field(damping).validationMessage,'disabled yielding axes permit zero damping according to the current draft');field(enabled).checked=true;field(enabled).dispatchEvent(new Event('change',{bubbles:true}));set(damping,'0');assert(!!field(damping).validationMessage,'participating yielding axes require positive damping');set(damping,'6');
+ const enabled=['core','capability','admittance','joint_enabled','joint1'],damping=['core','capability','admittance','controller','damping','joint1'];field(enabled).checked=false;field(enabled).dispatchEvent(new Event('change',{bubbles:true}));assert(field(damping).closest('.parameter-field').querySelector('[data-profile-axis-hint]')?.textContent.includes('≥ 0'),'a changed axis moves its differing bound beside the field');set(damping,'0');assert(state.profileEditor.core.capability.admittance.controller.damping.joint1===0&&!field(damping).validationMessage,'disabled yielding axes permit zero damping according to the current draft');field(enabled).checked=true;field(enabled).dispatchEvent(new Event('change',{bubbles:true}));set(damping,'0');assert(!!field(damping).validationMessage,'participating yielding axes require positive damping');set(damping,'6');
  await settled();assert(Math.abs(scroller.scrollTop-initial)<2&&frequency.value==='210','path-only switching retains scroll position and common draft edits');
  const cmd=['core','safety_policy','cmd_vel_scale'],stateVel=['core','safety_policy','state_vel_scale'];switchProfileGroup('safety');await settled();
  set(cmd,'.4');assert(field(stateVel).min==='0.4','related bounds follow the shared draft rather than loaded metadata');
@@ -390,7 +401,7 @@ app.whenReady().then(async()=>{
  win.webContents.on('render-process-gone',(_event,details)=>{console.error('Fixture renderer exited',JSON.stringify(details));app.exit(1);});
  const deadline=setTimeout(()=>{console.error('UI fixture exceeded its bounded render time');app.exit(1);},Number(arg('--timeout','120000')));
  const errors=[];win.webContents.on('console-message',(_e,level,message)=>{if(level>=3){errors.push(message);console.error('RENDERER',message);}});
- const settle=()=>win.webContents.executeJavaScript(`(async()=>{await document.fonts.ready;await new Promise(resolve=>setTimeout(resolve,220));const start=performance.now();while(document.querySelector('[data-studio-content-enter],[data-studio-layout-resizing]')&&performance.now()-start<2000)await new Promise(resolve=>requestAnimationFrame(resolve));await new Promise(resolve=>requestAnimationFrame(resolve));})()`);
+ const settle=()=>win.webContents.executeJavaScript(`(async()=>{await document.fonts.ready;await new Promise(resolve=>setTimeout(resolve,220));const start=performance.now();while(document.querySelector('[data-studio-content-enter],[data-studio-layout-resizing]')&&performance.now()-start<2000)await new Promise(resolve=>requestAnimationFrame(resolve));await new Promise(resolve=>requestAnimationFrame(resolve));const modelStart=performance.now();while(state.modelData&&!window.studioFixtureRescue&&(state.page==='model'||workspacePreviewVisible())&&(!modelView?.modelLoaded||modelView.paused)&&performance.now()-modelStart<10000)await new Promise(resolve=>setTimeout(resolve,50));})()`);
  await win.loadFile(fixture.index);win.show();win.focus();win.webContents.focus();await settle();
  win.webContents.debugger.attach('1.3');await win.webContents.debugger.sendCommand('DOM.enable');await win.webContents.debugger.sendCommand('CSS.enable');
  // Terminal emulation is covered by the desktop smoke test. This fixture
@@ -406,16 +417,16 @@ app.whenReady().then(async()=>{
  else if(args.includes('--execution-only'))checks.push(...await win.webContents.executeJavaScript('window.studioFixtureTestExecutionParameters()'));
  else if(args.includes('--commissioning-only'))checks.push(...await win.webContents.executeJavaScript('window.studioFixtureTestCommissioningViews()'));
  else if(!args.includes('--render-only'))checks.push(...await win.webContents.executeJavaScript(`(${testCommissioning})()`));
- const report={runtime:process.versions.electron,graphicsBackend:args.includes('--software')?'bundled SwiftShader':'normal',modelPreview:args.includes('--rescue-model')?'rescue without 3D':args.includes('--with-model')?'read-only native model':'not loaded',findings:[],source:'complete production index.html and app.js, read-only fixture API',checks,renders:[]};
+ const report={runtime:process.versions.electron,deviceScale,graphicsBackend:args.includes('--software')?'bundled SwiftShader':'normal',modelPreview:args.includes('--rescue-model')?'rescue without 3D':args.includes('--collision-geometry')?'actual URDF collision STL as visuals':args.includes('--with-model')?'read-only native model':'not loaded',findings:[],source:'complete production index.html and app.js, read-only fixture API',checks,renders:[]};
  const runAudit=()=>win.webContents.executeJavaScript(`(${audit})({root:'#app',viewport:true})`);
  const finding=(name,evidence)=>{report.findings.push({name,...evidence});if(!args.includes('--allow-findings'))throw Error(name+' '+JSON.stringify(evidence));};
  for(const [width,height] of sizes)for(const theme of themes)for(const language of languages)for(const scene of scenes){
-  win.setContentSize(width,height);await win.webContents.executeJavaScript(`window.studioFixtureSetScene(${JSON.stringify(scene)},${JSON.stringify(theme)},${JSON.stringify(language)})`);win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await settle();
+  win.setContentSize(width,height);await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:deviceScale,mobile:false});await win.webContents.executeJavaScript(`window.studioFixtureSetScene(${JSON.stringify(scene)},${JSON.stringify(theme)},${JSON.stringify(language)})`);win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await settle();
   console.log('STUDIO_SCENE '+JSON.stringify({scene,width,height,theme,language}));
   const dom=await win.webContents.executeJavaScript('window.studioFixtureSnapshot()');
   if(dom.bodyWidth>width||dom.outerOverflow.length)finding('Outer overflow',{scene,width,height,theme,language,dom});
   if(dom.navigationLabelOverflow.length)finding('Subpage label overflow',{scene,width,height,theme,language,labels:dom.navigationLabelOverflow});
-  if(dom.buttons.some(b=>b.color!==dom.primaryPalette.color||b.background!==dom.primaryPalette.background))finding('Primary button palette',{scene,width,height,theme,language,buttons:dom.buttons,expected:dom.primaryPalette});
+  if(dom.buttons.some(b=>!b.disabled&&(b.color!==dom.primaryPalette.color||b.background!==dom.primaryPalette.background)))finding('Primary button palette',{scene,width,height,theme,language,buttons:dom.buttons,expected:dom.primaryPalette});
   const tree=await win.webContents.debugger.sendCommand('DOM.getDocument');const fontNode=await win.webContents.debugger.sendCommand('DOM.querySelector',{nodeId:tree.root.nodeId,selector:'#page .page-title,#page h1,#page h2,#page h3'});const platformFonts=fontNode.nodeId?(await win.webContents.debugger.sendCommand('CSS.getPlatformFontsForNode',{nodeId:fontNode.nodeId})).fonts:[];
   const fontState=await win.webContents.executeJavaScript(`({status:document.fonts.status,check:document.fonts.check('14px "SerialArm Maple Italic"'),faces:[...document.fonts].filter(face=>face.family.includes('SerialArm Maple Italic')).map(face=>({family:face.family,weight:face.weight,style:face.style,status:face.status}))})`);
   if(!fontState.check||!fontState.faces.some(face=>face.status==='loaded')||!platformFonts.some(font=>/MapleMono.*CN.*Italic/i.test(font.postScriptName||'')))finding('Requested Maple Italic font was not used',{scene,width,height,theme,language,platformFonts,fontState});

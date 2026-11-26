@@ -48,13 +48,17 @@ app.whenReady().then(async()=>{
  check(firstDrawCalls>beforeDrawCalls,'First ghost submits additional real draw calls');
  const framebuffer=new Uint8Array(view.gl.drawingBufferWidth*view.gl.drawingBufferHeight*4);
  view.gl.readPixels(0,0,view.gl.drawingBufferWidth,view.gl.drawingBufferHeight,view.gl.RGBA,view.gl.UNSIGNED_BYTE,framebuffer);
- let coloredPixels=0,tealPixels=0;
- for(let i=0;i<framebuffer.length;i+=4){if(framebuffer[i+3])coloredPixels++;if(framebuffer[i+1]>framebuffer[i]+20&&framebuffer[i+2]>framebuffer[i]+20&&framebuffer[i+3])tealPixels++;}
- check(coloredPixels>100&&tealPixels>10,'Actual framebuffer contains non-background teal target pixels');
+ let coloredPixels=0,referencePixels=0;
+ for(let i=0;i<framebuffer.length;i+=4){
+  const red=framebuffer[i],green=framebuffer[i+1],blue=framebuffer[i+2],alpha=framebuffer[i+3];if(alpha)coloredPixels++;
+  const reference=${baseline}?green>red+20&&blue>red+20:blue>red+20&&blue>green+20&&red>green+3;
+  if(alpha&&reference)referencePixels++;
+ }
+ check(coloredPixels>100&&referencePixels>10,'Actual framebuffer contains non-background '+(${baseline}?'legacy teal':'V2 Reference purple')+' target pixels');
  check(view.ghostRoot?.visible,'Ghost visible only after a real target pose');
  for(const frame of ghostNative.state.frames){const group=view.ghostLinkGroups.get(frame.name);check(group?.visible&&Math.abs(group.matrix.elements[12]-frame.position[0])<1e-12,'Ghost matrix matches the supplied target frame '+frame.name);}
  check(JSON.stringify(measuredBefore)===JSON.stringify([...view.linkGroups].map(([name,group])=>[name,group.matrix.toArray()])),'Ghost never changes measured model matrices');
- let outlines=0,meshes=0;view.ghostRoot.traverse(node=>{if(node.isMesh){meshes++;check(node.material.color.getHex()===0x16b8b0&&node.material.opacity===.2&&!node.material.depthWrite,'Teal filled overlay appearance retained');}if(node.isLineSegments){outlines++;check(node.material.color.getHex()===0x079e98&&node.material.opacity===.9,'Teal outline appearance retained');}});
+ let outlines=0,meshes=0;view.ghostRoot.traverse(node=>{if(node.isMesh){meshes++;check(node.material.color.getHex()===(${baseline}?0x16b8b0:0x6254a5)&&node.material.opacity===(${baseline}?.2:.16)&&!node.material.depthWrite,'Reference filled overlay uses the expected color and opacity');}if(node.isLineSegments){outlines++;check(node.material.color.getHex()===(${baseline}?0x079e98:0x6254a5)&&node.material.opacity===.9,'Reference outline uses the expected color and opacity');if(!${baseline})check(node.material.isLineDashedMaterial&&node.material.dashSize===.012&&node.material.gapSize===.016&&!!node.geometry.getAttribute('lineDistance'),'V2 Reference outline has its independent dashed encoding');}});
  check(outlines===meshes&&meshes>0,'Every full visual mesh keeps its outline');
  const secondStart=performance.now();view.setGhostPose(ghostNative);view.renderOnce();const secondEnd=performance.now();
  const cachedOutlines=[];view.ghostRoot.traverse(node=>{if(node.isLineSegments)cachedOutlines.push(node.geometry)});
@@ -65,7 +69,7 @@ app.whenReady().then(async()=>{
  view.setGhostPose(ghostNative);view.renderOnce();
  const afterPrograms=view.renderer.info.programs?.length||0;
  const edgeSignatures=[];view.ghostRoot.traverse(node=>{if(node.isLineSegments){const a=node.geometry.getAttribute('position').array;let hash=2166136261;const bytes=new Uint8Array(a.buffer,a.byteOffset,a.byteLength);for(const value of bytes)hash=Math.imul(hash^value,16777619);edgeSignatures.push({count:a.length,hash:hash>>>0})}});
- const output={checks,edgeSignatures,beforeDrawCalls,firstDrawCalls,framebuffer:{coloredPixels,tealPixels},geometryFiles:files.length,visualMeshes:meshes,load_ms:loadedAt-started,firstGhostSet_ms:firstSetEnd-firstStart,firstGhostDraw_ms:firstDrawEnd-firstSetEnd,firstGhostTotal_ms:firstDrawEnd-firstStart,repeatedGhost_ms:secondEnd-secondStart,recreatedGhost_ms:recreateEnd-recreateStart,programsBefore:beforePrograms,programsAfter:afterPrograms,heartbeats,renderer:view.getRenderState()};
+ const output={checks,edgeSignatures,beforeDrawCalls,firstDrawCalls,framebuffer:{coloredPixels,referencePixels},geometryFiles:files.length,visualMeshes:meshes,load_ms:loadedAt-started,firstGhostSet_ms:firstSetEnd-firstStart,firstGhostDraw_ms:firstDrawEnd-firstSetEnd,firstGhostTotal_ms:firstDrawEnd-firstStart,repeatedGhost_ms:secondEnd-secondStart,recreatedGhost_ms:recreateEnd-recreateStart,programsBefore:beforePrograms,programsAfter:afterPrograms,heartbeats,renderer:view.getRenderState()};
  await new Promise(r=>setTimeout(r,30));output.longTasks=tasks;clearInterval(heartbeat);observer.disconnect();
  window.ghostResult=output;
  window.ghostCleanup=async()=>{

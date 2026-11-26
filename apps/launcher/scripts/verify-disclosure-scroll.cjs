@@ -60,31 +60,38 @@ function disclosureChecks(){
   check(source&&!source.open&&units&&!units.open,'configuration source and SI information start collapsed');
   for(const [label,node] of [['source',source],['SI units',units]]){
    check(!!node,label+' disclosure is present');
-   const summary=node.firstElementChild;
-   const style=getComputedStyle(summary,'::before'),closed={content:style.content,width:style.width,height:style.height,borderRightWidth:style.borderRightWidth,borderBottomWidth:style.borderBottomWidth,transform:style.transform};
-   check(['\"\"',"''"].includes(closed.content)&&parseFloat(closed.width)===8&&parseFloat(closed.height)===8&&parseFloat(closed.borderRightWidth)>0&&parseFloat(closed.borderBottomWidth)>0,label+' uses one empty CSS chevron rather than a character plus borders',{content:closed.content,width:closed.width,height:closed.height});
-   summary.click();await settle(node);
-   const opened=getComputedStyle(summary,'::before');
-   check(node.open&&closed.transform!==opened.transform,label+' chevron follows the same disclosure state');
-   summary.click();await settle(node);
+   const trigger=document.querySelector(`[data-studio-disclosure-target="${node.id}"]`);
+   check(trigger?.getAttribute('aria-expanded')==='false',label+' visible trigger starts collapsed');
+   const before=trigger.getBoundingClientRect();trigger.click();await settle(node);
+   const after=trigger.getBoundingClientRect();
+   check(node.open&&trigger.getAttribute('aria-expanded')==='true',label+' visible trigger follows the disclosure state');
+   check(Math.abs(before.left-after.left)<1&&Math.abs(before.top-after.top)<1,label+' trigger stays in the compact summary row');
+   trigger.click();await settle(node);
   }
-  const inspector=document.querySelector('.setup-inspector');let review=document.querySelector('#profile-review-defaults');
-  check(!document.querySelector('.profile-setup-guide > summary')&&document.querySelector('.profile-guide-heading'),'configuration checks stay visible without a collapse control');
+  const inspector=document.querySelector('.setup-inspector');let checkDetails=document.querySelector('#profile-check-details'),review=document.querySelector('#profile-review-defaults');
+  check(checkDetails?.querySelector(':scope > summary')&&!document.querySelector('.profile-setup-guide > summary')&&document.querySelector('.profile-guide-heading'),'compact configuration check provides an expandable detailed guide');
+  if(!checkDetails.open){checkDetails.firstElementChild.click();await settle(checkDetails);}
   for(const node of [source,units,review])if(!node.open){node.firstElementChild.click();await settle(node);}
   const field=document.querySelector('[data-profile-field=\'["core","model","gravity_scale","joint1"]\']');
   field.value='1.234567';field.dispatchEvent(new Event('input',{bubbles:true}));
+  checkDetails=document.querySelector('#profile-check-details');
   review=document.querySelector('#profile-review-defaults');
-  check(review.open,'updating the draft preserves the hardware-review disclosure state');
+  check(checkDetails.open&&review.open,'updating the draft preserves the check-detail and hardware-review disclosure state');
   const scroller=document.querySelector('.studio-page-body');
   scroller.scrollTop=Math.max(150,document.querySelector('.setup-main').offsetTop-120);await frame();
   for(const group of ['motion','observation','safety','model']){
    const button=document.querySelector(`[data-profile-group="${group}"]`);
-   button.focus({preventScroll:true});
-   const before=scroller.scrollTop;button.click();await pause(350);
+   const select=document.querySelector('[data-profile-group-select]'),compact=!button.getClientRects().length;
+   const navigation=compact?select.closest('.studio-select').querySelector('.ros-select-trigger'):button;
+   navigation.focus({preventScroll:true});
+   const before=scroller.scrollTop;
+   if(compact){navigation.click();select.closest('.studio-select').querySelector(`[role="option"][data-value="${group}"]`).click();}
+   else button.click();
+   await pause(350);
    const after=scroller.scrollTop,max=scroller.scrollHeight-scroller.clientHeight;
-   check(inspector===document.querySelector('.setup-inspector')&&[source,units,review].every(node=>node.isConnected&&node.open),'parameter navigation retains mounted inspector and its expanded state '+group,{inspectorConnected:inspector.isConnected,sameInspector:inspector===document.querySelector('.setup-inspector'),details:[source,units,review].map(node=>({id:node.id,class:node.className,connected:node.isConnected,open:node.open}))});
+   check(inspector===document.querySelector('.setup-inspector')&&[checkDetails,source,units,review].every(node=>node.isConnected&&node.open),'parameter navigation retains mounted inspector and its expanded state '+group,{inspectorConnected:inspector.isConnected,sameInspector:inspector===document.querySelector('.setup-inspector'),details:[checkDetails,source,units,review].map(node=>({id:node.id,class:node.className,connected:node.isConnected,open:node.open}))});
    check(Math.abs(after-Math.min(before,max))<=1.1,'parameter navigation keeps the current editor scroll without jumping to the page top '+group,{before,after,max});
-   check(document.activeElement===button,'parameter navigation preserves the selected navigation focus '+group);
+   check(document.activeElement===navigation,'parameter navigation preserves the selected navigation focus '+group,{compact,width:innerWidth,focus:document.activeElement?.className});
    check(state.profileDirty&&state.profileEditor.core.model.gravity_scale.joint1===1.234567,'parameter navigation retains the edited draft '+group);
   }
   check(document.querySelector('[data-profile-field=\'["core","model","gravity_scale","joint1"]\']').value==='1.234567','returning to a parameter group restores its edited field');

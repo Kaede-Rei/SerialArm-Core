@@ -146,7 +146,6 @@ export class SerialArmModelView {
       this.renderer = new THREE.WebGLRenderer({canvas: this.canvas, context: this.gl, ...attributes});
       this.renderer.setPixelRatio(Math.min(globalThis.devicePixelRatio || 1, this.mode === 'compatibility' ? 1 : 2));
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-      this.renderer.setClearColor(0x000000, 0);
       Object.assign(this.renderer.domElement.style,{display:'block',width:'100%',height:'100%',maxWidth:'100%',maxHeight:'100%'});
       container.replaceChildren(this.renderer.domElement);
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -170,11 +169,12 @@ export class SerialArmModelView {
       this.scene.add(this.root);
       this.scene.add(new THREE.HemisphereLight(0xffffff, 0x29313a, 2.3));
       const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(2,2,3); this.scene.add(key);
-      this.grid = new THREE.GridHelper(2.5, 25, 0x6b7280, 0x343841); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
+      this.grid = new THREE.GridHelper(2.5, 25); this.grid.rotateX(Math.PI/2); this.scene.add(this.grid);
       this.linkGroups = new Map(); this.frameHelpers = new Map(); this.jointAxes = []; this.labels=[]; this.effectiveGroups=[]; this.comparisonGroups=[]; this.objectVisibility={links:new Map(),linkFrames:new Map(),joints:new Map()};
       this.comGroup = new THREE.Group(); this.root.add(this.comGroup);
       this.layers = {visual:true, collision:false, linkFrames:false, jointAxes:true, com:false, inertia:false, labels:false};
       this.inertiaSource = 'urdf';
+      this.applyTheme();
       this.resizeObserver = new ResizeObserver(() => this.resize()); this.resizeObserver.observe(container);
       this.onControlsChange = () => this.requestRender();
       this.controls.addEventListener('change', this.onControlsChange);
@@ -297,15 +297,55 @@ export class SerialArmModelView {
     this.camera.updateMatrixWorld(); this.requestRender();
   }
 
+  applyTheme() {
+    if (this.disposed || !this.renderer) return;
+    const style=getComputedStyle(document.documentElement);
+    const token=(name,fallback)=>style.getPropertyValue(name).trim()||fallback;
+    const colors={canvas:token('--viz-canvas','#f8f6ef'),grid:token('--viz-grid','rgba(23,63,52,.065)'),
+      label:token('--card-bg','#fffdf7'),ink:token('--text-primary','#17372f'),
+      reference:token('--viz-reference','#6254a5'),estimated:token('--viz-estimated','#14756d')};
+    const signature=JSON.stringify(colors);
+    if(signature===this.themeSignature)return;
+    this.themeColors=colors;this.themeSignature=signature;
+    this.renderer.setClearColor(colors.canvas,1);
+    // CSS grid tokens include alpha; keep it on the existing material rather
+    // than letting Three discard the alpha while parsing a Color.
+    const rgba=colors.grid.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/);
+    const gridColor=rgba?new THREE.Color(`rgb(${rgba[1]},${rgba[2]},${rgba[3]})`):new THREE.Color(colors.grid);
+    const gridColors=this.grid.geometry.getAttribute('color');
+    for(let i=0;i<gridColors.count;i++)gridColors.setXYZ(i,gridColor.r,gridColor.g,gridColor.b);
+    gridColors.needsUpdate=true;
+    this.grid.material.transparent=true;this.grid.material.opacity=rgba?.[4]===undefined?1:Number(rgba[4]);
+    if(this.ghostMaterials)for(const material of Object.values(this.ghostMaterials))material.color.set(colors.reference);
+    this.root.traverse(node=>{
+      for(const material of Array.isArray(node.material)?node.material:[node.material]){
+        const role=material?.userData?.themeRole;
+        if(role&&colors[role])material.color.set(colors[role]);
+      }
+      const label=node.userData?.themeLabel;
+      if(label){this.paintLabel(label.canvas,label.text,label.comparison);node.userData.texture.needsUpdate=true;}
+    });
+    // requestRender respects retained/paused views and never restarts a hidden loop.
+    this.requestRender();
+  }
+
+  paintLabel(canvas,text,comparison=false) {
+    const context=canvas.getContext('2d');context.clearRect(0,0,canvas.width,canvas.height);
+    context.font=`${comparison?'600 32px':'500 34px'} "SerialArm Maple Italic",sans-serif`;
+    const width=comparison?canvas.width:Math.min(context.measureText(text).width+36,500);
+    context.fillStyle=this.themeColors.label;context.fillRect(0,comparison?4:8,width,comparison?94:64);
+    if(comparison){context.fillStyle=this.themeColors.estimated;context.fillRect(0,4,7,94);}
+    context.fillStyle=this.themeColors.ink;context.fillText(text,comparison?22:18,comparison?66:52);
+    return width;
+  }
+
   makeLabel(text, position=[0,0,0], layers=['labels']) {
     const canvas=document.createElement('canvas'); canvas.width=512; canvas.height=96;
-    const context=canvas.getContext('2d'); context.clearRect(0,0,canvas.width,canvas.height);
-    context.font='500 34px sans-serif'; const width=Math.min(context.measureText(text).width+36,500);
-    context.fillStyle='rgba(12,14,20,.78)'; context.fillRect(0,8,width,64);
-    context.fillStyle='#e8eaf0'; context.fillText(text,18,52);
+    const width=this.paintLabel(canvas,text);
     const texture=new THREE.CanvasTexture(canvas); texture.colorSpace=THREE.SRGBColorSpace;
     const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false}));
     sprite.position.set(...position); sprite.scale.set(Math.max(width/1450,0.085),0.045,1); sprite.userData.layers=layers.slice(); sprite.userData.texture=texture;
+    sprite.userData.themeLabel={canvas,text,comparison:false};
     this.labels.push(sprite); return sprite;
   }
 
@@ -371,8 +411,8 @@ export class SerialArmModelView {
 
   ghostLinkGroup(name,original) {
     this.ghostMaterials ||= {
-      fill:new THREE.MeshBasicMaterial({color:0x16b8b0,transparent:true,opacity:0.2,depthTest:false,depthWrite:false,side:THREE.DoubleSide}),
-      line:new THREE.LineBasicMaterial({color:0x079e98,transparent:true,opacity:0.9,depthTest:false,depthWrite:false})};
+      fill:new THREE.MeshBasicMaterial({color:this.themeColors.reference,transparent:true,opacity:0.16,depthTest:false,depthWrite:false,side:THREE.DoubleSide}),
+      line:new THREE.LineDashedMaterial({color:this.themeColors.reference,dashSize:0.012,gapSize:0.016,transparent:true,opacity:0.9,depthTest:false,depthWrite:false})};
     const group=new THREE.Group();group.name=name;group.matrixAutoUpdate=false;
     for(const holder of original.children) {
       if(holder.userData?.layer!=='visual')continue;
@@ -382,6 +422,7 @@ export class SerialArmModelView {
         const edges=this.ghostEdges.get(child.geometry);if(!edges)throw new Error('Reference outline geometry is not prepared');
         child.material=this.ghostMaterials.fill;child.renderOrder=24;
         const outline=new THREE.LineSegments(edges,this.ghostMaterials.line);
+        outline.computeLineDistances();
         outline.renderOrder=25;outline.raycast=()=>{};outlines.push([child,outline]);
       });
       for(const [mesh,outline] of outlines)mesh.add(outline);
@@ -663,13 +704,12 @@ export class SerialArmModelView {
     const ctx=canvas.getContext('2d');ctx.font='600 32px sans-serif';
     const width=Math.min(620,Math.ceil(ctx.measureText(text).width+44));
     canvas.width=width;canvas.height=104;
-    ctx.fillStyle='rgba(9,25,40,.92)';ctx.fillRect(0,4,width,94);
-    ctx.fillStyle='#38bdf8';ctx.fillRect(0,4,7,94);
-    ctx.font='600 32px sans-serif';ctx.fillStyle='#f0f9ff';ctx.fillText(text,22,66);
+    this.paintLabel(canvas,text,true);
     const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;
     const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:texture,transparent:true,depthTest:false,depthWrite:false}));
     sprite.position.set(...position);sprite.scale.set(Math.max(width/1700,0.11),0.035,1);
     sprite.renderOrder=75;sprite.userData.layer='candidate';sprite.userData.texture=texture;
+    sprite.userData.themeLabel={canvas,text,comparison:true};
     return sprite;
   }
 
@@ -684,21 +724,24 @@ export class SerialArmModelView {
       const holder=this.linkGroups.get(item.linkName);
       if(!holder)continue;
       const group=new THREE.Group();group.userData.layer='candidate';group.userData.ownerKind='links';group.userData.ownerName=item.linkName;
-      const pink=0xff4f87,blue=0x38bdf8;
+      const pink=0xff4f87,estimated=this.themeColors.estimated;
       const original=new THREE.Vector3(...item.originalCom),candidate=new THREE.Vector3(...item.displayCom);
       const originalPoint=new THREE.Mesh(new THREE.SphereGeometry(0.009,18,14),new THREE.MeshBasicMaterial({color:pink,depthTest:false,depthWrite:false}));
       originalPoint.position.copy(original);originalPoint.renderOrder=66;group.add(originalPoint);
       const originalHalo=new THREE.Mesh(new THREE.SphereGeometry(0.015,16,12),new THREE.MeshBasicMaterial({color:pink,transparent:true,opacity:0.24,depthTest:false,depthWrite:false}));
       originalHalo.position.copy(original);originalHalo.renderOrder=65;group.add(originalHalo);
-      const candidatePoint=new THREE.Mesh(new THREE.SphereGeometry(0.009,18,14),new THREE.MeshBasicMaterial({color:blue,depthTest:false,depthWrite:false}));
+      const candidatePoint=new THREE.Mesh(new THREE.SphereGeometry(0.009,18,14),new THREE.MeshBasicMaterial({color:estimated,depthTest:false,depthWrite:false}));
+      candidatePoint.material.userData.themeRole='estimated';
       candidatePoint.position.copy(candidate);candidatePoint.renderOrder=69;group.add(candidatePoint);
       // Line and visible markers use the same visualization scale; the label always reports the true displacement
-      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([original,candidate]),new THREE.LineBasicMaterial({color:blue,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
+      const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([original,candidate]),new THREE.LineBasicMaterial({color:estimated,transparent:true,opacity:0.9,depthTest:false,depthWrite:false}));
+      line.material.userData.themeRole='estimated';
       line.renderOrder=67;group.add(line);
       const labelOffset=new THREE.Vector3(0.063,(index%2?-.052:.052),0.025);
       const anchor=candidate.clone().add(labelOffset);
       const leaderEnd=anchor.clone().add(new THREE.Vector3(-0.04,0,0));
-      const leader=new THREE.Line(new THREE.BufferGeometry().setFromPoints([candidate,leaderEnd]),new THREE.LineBasicMaterial({color:blue,transparent:true,opacity:0.6,depthTest:false,depthWrite:false}));
+      const leader=new THREE.Line(new THREE.BufferGeometry().setFromPoints([candidate,leaderEnd]),new THREE.LineBasicMaterial({color:estimated,transparent:true,opacity:0.6,depthTest:false,depthWrite:false}));
+      leader.material.userData.themeRole='estimated';
       leader.renderOrder=68;group.add(leader);
       const label=this.makeComparisonLabel(`${item.linkName}  Δ${item.offsetMm.toFixed(2)} mm`,anchor.toArray());
       group.add(label);

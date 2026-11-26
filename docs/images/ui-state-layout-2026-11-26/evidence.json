@@ -1,0 +1,2581 @@
+{
+  "states/report.json": {
+    "checks": 87,
+    "renders": 0
+  },
+  "profile-check/report.json": {
+    "checks": null,
+    "renders": null
+  },
+  "disclosure/report.json": {
+    "checks": 0,
+    "renders": 0
+  },
+  "units/report.json": {
+    "checks": 0,
+    "renders": 0
+  },
+  "interaction/report.json": {
+    "checks": 44,
+    "renders": 0
+  },
+  "continuity/report.json": {
+    "checks": 62,
+    "renders": 2
+  },
+  "model-lifecycle-stl/report.json": {
+    "checks": 56,
+    "renders": 0
+  },
+  "render-final/report.json": {
+    "checks": 0,
+    "renders": 18
+  },
+  "render-narrow-en/report.json": {
+    "checks": 0,
+    "renders": 8
+  },
+  "layoutMeasurements": [
+    {
+      "theme": "light",
+      "language": "zh-CN",
+      "initial": {
+        "width": 1300,
+        "height": 900,
+        "rootWidth": 1300,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 232,
+          "right": 1256,
+          "top": 157.59375,
+          "bottom": 1553.328125,
+          "width": 1024
+        },
+        "head": {
+          "left": 232,
+          "right": 1256,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1024
+        },
+        "title": {
+          "left": 247,
+          "right": 314.203125,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 324.203125,
+          "right": 432.609375,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 442.609375,
+            "right": 522.21875,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 542.21875,
+            "right": 636.234375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 644.234375,
+            "right": 723.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 436,
+          "right": 1256,
+          "top": 415.34375,
+          "bottom": 451.34375,
+          "width": 820
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 451.34375,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 555.34375,
+              "bottom": 645.53125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 1154.265625,
+              "bottom": 1244.453125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 820
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 1300,
+        "height": 900,
+        "rootWidth": 1300,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 232,
+          "right": 1256,
+          "top": 157.59375,
+          "bottom": 1838.75,
+          "width": 1024
+        },
+        "head": {
+          "left": 232,
+          "right": 1256,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1024
+        },
+        "title": {
+          "left": 247,
+          "right": 314.203125,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 324.203125,
+          "right": 432.609375,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 442.609375,
+            "right": 522.21875,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 542.21875,
+            "right": 636.234375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 644.234375,
+            "right": 723.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 436,
+          "right": 1256,
+          "top": 700.765625,
+          "bottom": 736.765625,
+          "width": 820
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 736.765625,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 840.765625,
+              "bottom": 930.953125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 1439.6875,
+              "bottom": 1529.875,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 820
+            }
+          }
+        ]
+      }
+    },
+    {
+      "theme": "light",
+      "language": "zh-CN",
+      "initial": {
+        "width": 1000,
+        "height": 720,
+        "rootWidth": 1000,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 208,
+          "right": 964,
+          "top": 153.59375,
+          "bottom": 1559.328125,
+          "width": 756
+        },
+        "head": {
+          "left": 208,
+          "right": 964,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 756
+        },
+        "title": {
+          "left": 223,
+          "right": 290.203125,
+          "top": 246.359375,
+          "bottom": 268.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 300.203125,
+          "right": 408.609375,
+          "top": 240.96875,
+          "bottom": 274.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 418.609375,
+            "right": 498.21875,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 518.21875,
+            "right": 612.234375,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 620.234375,
+            "right": 699.84375,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 208,
+          "right": 964,
+          "top": 421.34375,
+          "bottom": 457.34375,
+          "width": 756
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 393.34375,
+              "bottom": 457.34375,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 393.34375,
+              "bottom": 1364.640625,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 561.34375,
+              "bottom": 651.53125,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 393.34375,
+              "bottom": 1364.640625,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 1160.265625,
+              "bottom": 1250.453125,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 393.34375,
+              "bottom": 1364.640625,
+              "width": 756
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 1000,
+        "height": 720,
+        "rootWidth": 1000,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 208,
+          "right": 964,
+          "top": 153.59375,
+          "bottom": 1863.9375,
+          "width": 756
+        },
+        "head": {
+          "left": 208,
+          "right": 964,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 756
+        },
+        "title": {
+          "left": 223,
+          "right": 290.203125,
+          "top": 246.359375,
+          "bottom": 268.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 300.203125,
+          "right": 408.609375,
+          "top": 240.96875,
+          "bottom": 274.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 418.609375,
+            "right": 498.21875,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 518.21875,
+            "right": 612.234375,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 620.234375,
+            "right": 699.84375,
+            "top": 241.5625,
+            "bottom": 273.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 208,
+          "right": 964,
+          "top": 725.953125,
+          "bottom": 761.953125,
+          "width": 756
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 697.953125,
+              "bottom": 761.953125,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 697.953125,
+              "bottom": 1669.25,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 865.953125,
+              "bottom": 956.140625,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 697.953125,
+              "bottom": 1669.25,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 1464.875,
+              "bottom": 1555.0625,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 697.953125,
+              "bottom": 1669.25,
+              "width": 756
+            }
+          }
+        ]
+      }
+    },
+    {
+      "theme": "light",
+      "language": "en",
+      "initial": {
+        "width": 2400,
+        "height": 1100,
+        "rootWidth": 2400,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 654,
+          "right": 1934,
+          "top": 157.59375,
+          "bottom": 1572.515625,
+          "width": 1280
+        },
+        "head": {
+          "left": 654,
+          "right": 1934,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1280
+        },
+        "title": {
+          "left": 669,
+          "right": 828.609375,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 838.609375,
+          "right": 1026.21875,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 1036.21875,
+            "right": 1144.625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 1164.625,
+            "right": 1258.640625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 1266.640625,
+            "right": 1331.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 858,
+          "right": 1818,
+          "top": 415.34375,
+          "bottom": 451.34375,
+          "width": 960
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 451.34375,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 555.34375,
+              "bottom": 645.53125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 1154.265625,
+              "bottom": 1244.453125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 960
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 2400,
+        "height": 1100,
+        "rootWidth": 2400,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 654,
+          "right": 1934,
+          "top": 157.59375,
+          "bottom": 1857.9375,
+          "width": 1280
+        },
+        "head": {
+          "left": 654,
+          "right": 1934,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1280
+        },
+        "title": {
+          "left": 669,
+          "right": 828.609375,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 838.609375,
+          "right": 1026.21875,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 1036.21875,
+            "right": 1144.625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 1164.625,
+            "right": 1258.640625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 1266.640625,
+            "right": 1331.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 858,
+          "right": 1818,
+          "top": 700.765625,
+          "bottom": 736.765625,
+          "width": 960
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 736.765625,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 840.765625,
+              "bottom": 930.953125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 1439.6875,
+              "bottom": 1529.875,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 960
+            }
+          }
+        ]
+      }
+    },
+    {
+      "theme": "dark",
+      "language": "en",
+      "initial": {
+        "width": 1300,
+        "height": 900,
+        "rootWidth": 1300,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 232,
+          "right": 1256,
+          "top": 157.59375,
+          "bottom": 1572.515625,
+          "width": 1024
+        },
+        "head": {
+          "left": 232,
+          "right": 1256,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1024
+        },
+        "title": {
+          "left": 247,
+          "right": 406.609375,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 416.609375,
+          "right": 604.21875,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 614.21875,
+            "right": 722.625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 742.625,
+            "right": 836.640625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 844.640625,
+            "right": 909.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 436,
+          "right": 1256,
+          "top": 415.34375,
+          "bottom": 451.34375,
+          "width": 820
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 451.34375,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 555.34375,
+              "bottom": 645.53125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 1154.265625,
+              "bottom": 1244.453125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 387.34375,
+              "bottom": 1377.828125,
+              "width": 820
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 1300,
+        "height": 900,
+        "rootWidth": 1300,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 232,
+          "right": 1256,
+          "top": 157.59375,
+          "bottom": 1857.9375,
+          "width": 1024
+        },
+        "head": {
+          "left": 232,
+          "right": 1256,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1024
+        },
+        "title": {
+          "left": 247,
+          "right": 406.609375,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 416.609375,
+          "right": 604.21875,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 614.21875,
+            "right": 722.625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 742.625,
+            "right": 836.640625,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 844.640625,
+            "right": 909.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 436,
+          "right": 1256,
+          "top": 700.765625,
+          "bottom": 736.765625,
+          "width": 820
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 736.765625,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 840.765625,
+              "bottom": 930.953125,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 820
+            }
+          },
+          {
+            "field": {
+              "left": 436,
+              "right": 1256,
+              "top": 1439.6875,
+              "bottom": 1529.875,
+              "width": 820
+            },
+            "grid": {
+              "left": 436,
+              "right": 1256,
+              "top": 672.765625,
+              "bottom": 1663.25,
+              "width": 820
+            }
+          }
+        ]
+      }
+    },
+    {
+      "theme": "dark",
+      "language": "en",
+      "initial": {
+        "width": 1000,
+        "height": 720,
+        "rootWidth": 1000,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 208,
+          "right": 964,
+          "top": 153.59375,
+          "bottom": 1620.890625,
+          "width": 756
+        },
+        "head": {
+          "left": 208,
+          "right": 964,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 756
+        },
+        "title": {
+          "left": 223,
+          "right": 382.609375,
+          "top": 288.734375,
+          "bottom": 311.125,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 392.609375,
+          "right": 580.21875,
+          "top": 283.34375,
+          "bottom": 316.53125,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 590.21875,
+            "right": 698.625,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 718.625,
+            "right": 812.640625,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 820.640625,
+            "right": 885.84375,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 208,
+          "right": 964,
+          "top": 463.71875,
+          "bottom": 499.71875,
+          "width": 756
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 435.71875,
+              "bottom": 499.71875,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 435.71875,
+              "bottom": 1426.203125,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 603.71875,
+              "bottom": 693.90625,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 435.71875,
+              "bottom": 1426.203125,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 1202.640625,
+              "bottom": 1292.828125,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 435.71875,
+              "bottom": 1426.203125,
+              "width": 756
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 1000,
+        "height": 720,
+        "rootWidth": 1000,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 208,
+          "right": 964,
+          "top": 153.59375,
+          "bottom": 1948.59375,
+          "width": 756
+        },
+        "head": {
+          "left": 208,
+          "right": 964,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 756
+        },
+        "title": {
+          "left": 223,
+          "right": 382.609375,
+          "top": 288.734375,
+          "bottom": 311.125,
+          "width": 159.609375
+        },
+        "status": {
+          "left": 392.609375,
+          "right": 580.21875,
+          "top": 283.34375,
+          "bottom": 316.53125,
+          "width": 187.609375
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 590.21875,
+            "right": 698.625,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 108.40625
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 718.625,
+            "right": 812.640625,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 820.640625,
+            "right": 885.84375,
+            "top": 283.9375,
+            "bottom": 315.9375,
+            "width": 65.203125
+          }
+        ],
+        "first": {
+          "left": 208,
+          "right": 964,
+          "top": 791.421875,
+          "bottom": 827.421875,
+          "width": 756
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 763.421875,
+              "bottom": 827.421875,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 763.421875,
+              "bottom": 1753.90625,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 931.421875,
+              "bottom": 1021.609375,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 763.421875,
+              "bottom": 1753.90625,
+              "width": 756
+            }
+          },
+          {
+            "field": {
+              "left": 208,
+              "right": 964,
+              "top": 1530.34375,
+              "bottom": 1620.53125,
+              "width": 756
+            },
+            "grid": {
+              "left": 208,
+              "right": 964,
+              "top": 763.421875,
+              "bottom": 1753.90625,
+              "width": 756
+            }
+          }
+        ]
+      }
+    },
+    {
+      "theme": "dark",
+      "language": "zh-CN",
+      "initial": {
+        "width": 2400,
+        "height": 1100,
+        "rootWidth": 2400,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 654,
+          "right": 1934,
+          "top": 157.59375,
+          "bottom": 1553.328125,
+          "width": 1280
+        },
+        "head": {
+          "left": 654,
+          "right": 1934,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1280
+        },
+        "title": {
+          "left": 669,
+          "right": 736.203125,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 746.203125,
+          "right": 854.609375,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 864.609375,
+            "right": 944.21875,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 964.21875,
+            "right": 1058.234375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 1066.234375,
+            "right": 1145.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 858,
+          "right": 1818,
+          "top": 415.34375,
+          "bottom": 451.34375,
+          "width": 960
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 451.34375,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 555.34375,
+              "bottom": 645.53125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 1154.265625,
+              "bottom": 1244.453125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 387.34375,
+              "bottom": 1358.640625,
+              "width": 960
+            }
+          }
+        ]
+      },
+      "expanded": {
+        "width": 2400,
+        "height": 1100,
+        "rootWidth": 2400,
+        "bodyOverflow": false,
+        "settings": {
+          "left": 654,
+          "right": 1934,
+          "top": 157.59375,
+          "bottom": 1838.75,
+          "width": 1280
+        },
+        "head": {
+          "left": 654,
+          "right": 1934,
+          "top": 87,
+          "bottom": 124.59375,
+          "width": 1280
+        },
+        "title": {
+          "left": 669,
+          "right": 736.203125,
+          "top": 250.359375,
+          "bottom": 272.75,
+          "width": 67.203125
+        },
+        "status": {
+          "left": 746.203125,
+          "right": 854.609375,
+          "top": 244.96875,
+          "bottom": 278.15625,
+          "width": 108.40625
+        },
+        "tools": [
+          {
+            "id": "profile-check-details-trigger",
+            "left": 864.609375,
+            "right": 944.21875,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          },
+          {
+            "id": "profile-unit-policy-trigger",
+            "left": 964.21875,
+            "right": 1058.234375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 94.015625
+          },
+          {
+            "id": "profile-configuration-source-trigger",
+            "left": 1066.234375,
+            "right": 1145.84375,
+            "top": 245.5625,
+            "bottom": 277.5625,
+            "width": 79.609375
+          }
+        ],
+        "first": {
+          "left": 858,
+          "right": 1818,
+          "top": 700.765625,
+          "bottom": 736.765625,
+          "width": 960
+        },
+        "grids": [
+          2,
+          2
+        ],
+        "paths": [
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 736.765625,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 840.765625,
+              "bottom": 930.953125,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 960
+            }
+          },
+          {
+            "field": {
+              "left": 858,
+              "right": 1818,
+              "top": 1439.6875,
+              "bottom": 1529.875,
+              "width": 960
+            },
+            "grid": {
+              "left": 858,
+              "right": 1818,
+              "top": 672.765625,
+              "bottom": 1644.0625,
+              "width": 960
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "controls": [
+    {
+      "component": "summary-button",
+      "normal": {
+        "backgroundRgb": [
+          255,
+          254,
+          250
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(255, 254, 250)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(47, 49, 45, 0.22)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 442.609375,
+          "y": 245.5625,
+          "width": 79.609375,
+          "height": 32
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgb(78, 107, 89)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 442.609375,
+          "y": 245.5625,
+          "width": 79.609375,
+          "height": 32
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(230, 228, 220)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgb(78, 107, 89)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 442.609375,
+          "y": 245.5625,
+          "width": 79.609375,
+          "height": 32
+        }
+      }
+    },
+    {
+      "component": "input",
+      "normal": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgb(114, 115, 111)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 436,
+          "y": 415.34375,
+          "width": 820,
+          "height": 36
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgb(78, 107, 89)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 436,
+          "y": 415.34375,
+          "width": 820,
+          "height": 36
+        }
+      }
+    },
+    {
+      "component": "checkbox",
+      "checked": false,
+      "normal": {
+        "backgroundRgb": [
+          255,
+          254,
+          250
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(255, 254, 250)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(114, 115, 111)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(78, 107, 89)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(230, 228, 220)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(78, 107, 89)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "pixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 0,
+        "green": 0,
+        "hover": 0,
+        "pressed": 0
+      },
+      "hoverPixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 0,
+        "green": 0,
+        "hover": 0,
+        "pressed": 0
+      },
+      "pressedPixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 0,
+        "green": 0,
+        "hover": 0,
+        "pressed": 0
+      }
+    },
+    {
+      "component": "checkbox",
+      "checked": true,
+      "normal": {
+        "backgroundRgb": [
+          7,
+          193,
+          96
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(7, 193, 96)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(7, 193, 96)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": true,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          6,
+          173,
+          86
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(6, 173, 86)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(6, 173, 86)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": true,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          5,
+          155,
+          77
+        ],
+        "colorRgb": [
+          0,
+          0,
+          0
+        ],
+        "background": "rgb(5, 155, 77)",
+        "color": "rgb(0, 0, 0)",
+        "border": "rgb(5, 155, 77)",
+        "outline": "rgb(0, 0, 0)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "checked": true,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        }
+      },
+      "pixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 10,
+        "green": 130,
+        "hover": 0,
+        "pressed": 0
+      },
+      "hoverPixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 10,
+        "green": 0,
+        "hover": 122,
+        "pressed": 0
+      },
+      "pressedPixels": {
+        "rect": {
+          "x": 482.90625,
+          "y": 316.375,
+          "width": 16,
+          "height": 16
+        },
+        "white": 10,
+        "green": 0,
+        "hover": 0,
+        "pressed": 130
+      }
+    },
+    {
+      "component": "selection-card",
+      "selected": false,
+      "normal": {
+        "backgroundRgb": [
+          255,
+          254,
+          250
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "color(srgb 1 0.996078 0.980392)",
+        "color": "color(srgb 0.184314 0.192157 0.176471)",
+        "border": "color(srgb 0.184314 0.192157 0.176471 / 0.0784314)",
+        "outline": "color(srgb 0.184314 0.192157 0.176471)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 723.265625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "color(srgb 0.945098 0.937255 0.913725)",
+        "color": "color(srgb 0.184314 0.192157 0.176471)",
+        "border": "color(srgb 0.184314 0.192157 0.176471 / 0.0784314)",
+        "outline": "color(srgb 0.184314 0.192157 0.176471)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 723.265625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "color(srgb 0.901961 0.894118 0.862745)",
+        "color": "color(srgb 0.184314 0.192157 0.176471)",
+        "border": "color(srgb 0.184314 0.192157 0.176471 / 0.0784314)",
+        "outline": "color(srgb 0.184314 0.192157 0.176471)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 723.265625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      }
+    },
+    {
+      "component": "selection-card",
+      "selected": true,
+      "normal": {
+        "backgroundRgb": [
+          7,
+          193,
+          96
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "color(srgb 0.027451 0.756863 0.376471)",
+        "color": "color(srgb 1 1 1)",
+        "border": "color(srgb 0.027451 0.756863 0.376471)",
+        "outline": "color(srgb 1 1 1)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          6,
+          173,
+          86
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "color(srgb 0.0235294 0.678431 0.337255)",
+        "color": "color(srgb 1 1 1)",
+        "border": "color(srgb 0.0235294 0.678431 0.337255)",
+        "outline": "color(srgb 1 1 1)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 482.90625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          5,
+          155,
+          77
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "color(srgb 0.0196078 0.607843 0.301961)",
+        "color": "color(srgb 1 1 1)",
+        "border": "color(srgb 0.0196078 0.607843 0.301961)",
+        "outline": "color(srgb 1 1 1)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 482.90625,
+          "y": 501.15625,
+          "width": 228.359375,
+          "height": 101.578125
+        }
+      }
+    },
+    {
+      "component": "primary",
+      "normal": {
+        "backgroundRgb": [
+          7,
+          193,
+          96
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "rgb(7, 193, 96)",
+        "color": "rgb(255, 255, 255)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(255, 255, 255)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 1116.1875,
+          "y": 171.625,
+          "width": 126.8125,
+          "height": 36.296875
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          6,
+          173,
+          86
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "rgb(6, 173, 86)",
+        "color": "rgb(255, 255, 255)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(255, 255, 255)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 1116.1875,
+          "y": 171.625,
+          "width": 126.8125,
+          "height": 36.296875
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          5,
+          155,
+          77
+        ],
+        "colorRgb": [
+          255,
+          255,
+          255
+        ],
+        "background": "rgb(5, 155, 77)",
+        "color": "rgb(255, 255, 255)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(255, 255, 255)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 1117.1168212890625,
+          "y": 171.89100646972656,
+          "width": 124.953857421875,
+          "height": 35.764862060546875
+        }
+      }
+    },
+    {
+      "component": "secondary",
+      "normal": {
+        "backgroundRgb": [
+          255,
+          254,
+          250
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(255, 254, 250)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(47, 49, 45, 0.22)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 1014.984375,
+          "y": 171.625,
+          "width": 93.203125,
+          "height": 36.296875
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(47, 49, 45, 0.22)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 1014.984375,
+          "y": 171.625,
+          "width": 93.203125,
+          "height": 36.296875
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(230, 228, 220)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(47, 49, 45, 0.22)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 1014.984375,
+          "y": 171.625,
+          "width": 93.203125,
+          "height": 36.296875
+        }
+      }
+    },
+    {
+      "component": "navigation",
+      "normal": {
+        "backgroundRgb": [
+          0,
+          0,
+          0
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgba(0, 0, 0, 0)",
+        "color": "rgba(47, 49, 45, 0.75)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgba(47, 49, 45, 0.75)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 12,
+          "y": 168,
+          "width": 183,
+          "height": 38
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 12,
+          "y": 168,
+          "width": 183,
+          "height": 38
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgb(230, 228, 220)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 12,
+          "y": 168,
+          "width": 183,
+          "height": 38
+        }
+      }
+    },
+    {
+      "component": "navigation-selected",
+      "normal": {
+        "backgroundRgb": [
+          0,
+          0,
+          0
+        ],
+        "colorRgb": [
+          31,
+          73,
+          57
+        ],
+        "background": "rgba(0, 0, 0, 0)",
+        "color": "rgb(31, 73, 57)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(31, 73, 57)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 12,
+          "y": 252,
+          "width": 183,
+          "height": 38
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          199,
+          227,
+          210
+        ],
+        "colorRgb": [
+          31,
+          73,
+          57
+        ],
+        "background": "rgb(199, 227, 210)",
+        "color": "rgb(31, 73, 57)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(31, 73, 57)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 12,
+          "y": 252,
+          "width": 183,
+          "height": 38
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          186,
+          220,
+          199
+        ],
+        "colorRgb": [
+          31,
+          73,
+          57
+        ],
+        "background": "rgb(186, 220, 199)",
+        "color": "rgb(31, 73, 57)",
+        "border": "rgba(0, 0, 0, 0)",
+        "outline": "rgb(31, 73, 57)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "disabled": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 12,
+          "y": 252,
+          "width": 183,
+          "height": 38
+        }
+      }
+    },
+    {
+      "component": "disclosure",
+      "normal": {
+        "backgroundRgb": [
+          0,
+          0,
+          0
+        ],
+        "colorRgb": [
+          47,
+          49,
+          45
+        ],
+        "background": "rgba(0, 0, 0, 0)",
+        "color": "rgb(47, 49, 45)",
+        "border": "rgb(47, 49, 45) rgb(47, 49, 45) rgba(47, 49, 45, 0.08)",
+        "outline": "rgb(47, 49, 45)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 437,
+          "y": 495.53125,
+          "width": 818,
+          "height": 47.390625
+        }
+      },
+      "hover": {
+        "backgroundRgb": [
+          241,
+          239,
+          233
+        ],
+        "colorRgb": [
+          46,
+          118,
+          88
+        ],
+        "background": "rgb(241, 239, 233)",
+        "color": "rgb(46, 118, 88)",
+        "border": "rgb(46, 118, 88) rgb(46, 118, 88) rgba(47, 49, 45, 0.08)",
+        "outline": "rgb(46, 118, 88)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "hover": true,
+        "active": false,
+        "rect": {
+          "x": 437,
+          "y": 495.53125,
+          "width": 818,
+          "height": 47.390625
+        }
+      },
+      "pressed": {
+        "backgroundRgb": [
+          230,
+          228,
+          220
+        ],
+        "colorRgb": [
+          46,
+          118,
+          88
+        ],
+        "background": "rgb(230, 228, 220)",
+        "color": "rgb(46, 118, 88)",
+        "border": "rgb(46, 118, 88) rgb(46, 118, 88) rgba(47, 49, 45, 0.08)",
+        "outline": "rgb(46, 118, 88)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "hover": true,
+        "active": true,
+        "rect": {
+          "x": 437,
+          "y": 495.53125,
+          "width": 818,
+          "height": 47.390625
+        }
+      }
+    },
+    {
+      "component": "warning",
+      "value": {
+        "backgroundRgb": [
+          255,
+          243,
+          232
+        ],
+        "colorRgb": [
+          166,
+          83,
+          24
+        ],
+        "background": "rgb(255, 243, 232)",
+        "color": "rgb(166, 83, 24)",
+        "border": "rgba(255, 138, 61, 0.45)",
+        "outline": "rgb(166, 83, 24)",
+        "outlineStyle": "none",
+        "outlineWidth": "0px",
+        "focus": false,
+        "hover": false,
+        "active": false,
+        "rect": {
+          "x": 1032.5,
+          "y": 903.484375,
+          "width": 75.609375,
+          "height": 26
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "date": "2026-11-26",
+    "baseCommit": "fde62519882e866c5d53640b56941869fc93cf7c",
+    "workingTree": "Contains pre-existing changes plus this task; uncommitted local result",
+    "fixture": "Production renderer; builtin dm_arm_white + explicit unit variants; device-denying API",
+    "uiBackend": "Normal Electron graphics mode, device scale factor 1",
+    "modelVerified": "URDF real collision STL as visuals, SwiftShader; 56 checks",
+    "modelUnverified": "GLB: renderer exit 139 in both normal and SwiftShader fixture runs",
+    "sha256": {
+      "renderer/app.js": "f07149883a8562e33c0a3307f73ce48ce9f3d6d2425565e4d60bbf8391af690f",
+      "renderer/styles.css": "a7ff009e86f1870e580b7309584d0b5ad2f53570b56b99a5260f19040bf627ec",
+      "renderer/studio.css": "9f18e37a12d9bdc205994e8144710aa004a174d2329e9e2b40b8b890f3cb27ea",
+      "renderer/studio-inspector.css": "a5c7d4829e6c442ae9e1e261b9fc0cd8ea11072e83d4cf0a20181acceac8bac9",
+      "renderer/studio-motion.js": "9e2b3d2bbdad54a8755f1e63f1bf893a785f8be803335efe62d2694345b6d73d",
+      "renderer/error-i18n.js": "4b1a3d61f206dcc718941f5fcc7286def8c1985b604fe7986e142ef9442b5976"
+    },
+    "platformFonts": [
+      "MapleMono-CN-MediumItalic",
+      "MapleMono-CN-SemiBoldItalic"
+    ],
+    "latestControlEvidence": "/tmp/serialarm-state-layout/button-final/report.json",
+    "skillCommit": "f1cafdc743bce32cbc8c33e590b007e4106446cf"
+  }
+}

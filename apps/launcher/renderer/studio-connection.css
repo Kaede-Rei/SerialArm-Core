@@ -12,7 +12,7 @@
 .workspace-connection select { width:200px; min-height:36px; }
 .workspace-connection .ros-select-trigger { min-height:36px; }
 .workspace-connection #workspace-scan-ports { width:36px; min-width:36px; height:36px; }
-.workspace-connection [aria-busy="true"] { color:var(--info); }
+.workspace-connection [aria-busy="true"] { color:var(--info-foreground); }
 .workspace-connection .ros-select-trigger > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .connection-scan-anchor { flex:none; }
 .connection-scan-status { width:max-content; min-width:160px; max-width:min(320px,calc(100vw - 16px)); padding:10px 12px; border:1px solid var(--line); border-radius:9px; pointer-events:none; }
@@ -28,7 +28,7 @@
 }
 @media(max-width:1100px) {
   .page-head:has(.workspace-connection) { flex-wrap:wrap; gap:12px; }
-  .page-head:has(.workspace-connection) .page-heading { flex:1 1 160px; }
+  .page-head:has(.workspace-connection) .page-heading { flex:1 1 auto; }
   .page-head:has(.workspace-connection) .page-head-actions { flex:1 1 auto; }
 }
 

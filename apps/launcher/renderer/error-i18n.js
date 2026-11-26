@@ -207,7 +207,7 @@
         if(lang==='en'){
             const label=recorded?'Recorded position':command?'Playback reference position':'Trajectory position';
             const margin=recorded?'recording-check margin':command?'user Safety margin':'check margin';
-            const source=recorded?'Recording validity uses the hard-range intersection of URDF limits and mapped driver position capability; the user Safety command margin is checked separately for playback.':`The interval is the intersection of URDF limits and mapped driver position capability, narrowed by the ${command?'user Safety':'reported check'} margin.`;
+            const source=recorded?'Recording validity uses the hard-range intersection of URDF limits and mapped driver position capability; the user Safety command margin is checked separately for playback':`The interval is the intersection of URDF limits and mapped driver position capability, narrowed by the ${command?'user Safety':'reported check'} margin.`;
             return `${label} check failed at ${fields.joint}, sample index ${fields.sample}; position ${position(fields.value)}, effective interval ${interval}, ${margin} ${position(fields.margin)}. ${source} Check physical travel, joint mapping and the demonstrated path`;
         }
         const label=recorded?'录制位置':command?'回放参考位置':'轨迹位置',margin=recorded?'本次录制校验留量':command?'用户 Safety 留量':'本次检查留量';

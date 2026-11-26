@@ -16,13 +16,15 @@ function contrastSamples(){
  const parse=value=>{const parts=value.match(/[\d.]+/g)?.map(Number)||[];return parts.length>=3?[...parts.slice(0,3),parts[3]??1]:[0,0,0,0];};
  const blend=(front,back)=>front.slice(0,3).map((channel,index)=>channel*front[3]+back[index]*(1-front[3]));
  const luminance=rgb=>rgb.map(value=>{const channel=value/255;return channel<=.04045?channel/12.92:((channel+.055)/1.055)**2.4;}).reduce((value,channel,index)=>value+channel*[.2126,.7152,.0722][index],0);
+ const paletteProbe=document.createElement('i');paletteProbe.hidden=true;paletteProbe.style.color='var(--primary-on,var(--brand-ink))';document.body.append(paletteProbe);
+ const primaryInk=getComputedStyle(paletteProbe).color;paletteProbe.remove();
  const result=[];
  for(const [label,selector] of [['main','.gain-page-heading h3'],['muted','.gain-time-summary dt'],['hint','.gain-reference-notice'],['primary','.gain-task-actions .button.primary:not(:disabled)'],['start_primary','#model-calibration-replay-confirm:not(:disabled)'],['import_primary','#calibration-tool-import:not(:disabled)']]){
   const node=document.querySelector(selector);if(!node||!node.getClientRects().length)continue;
   let background=[255,255,255];const ancestors=[];for(let parent=node;parent;parent=parent.parentElement)ancestors.push(parent);
   for(const parent of ancestors.reverse())background=blend(parse(getComputedStyle(parent).backgroundColor),background);
   const color=getComputedStyle(node).color,foreground=blend(parse(color),background),lum=[luminance(foreground),luminance(background)].sort((a,b)=>b-a),ratio=(lum[0]+.05)/(lum[1]+.05);
-  result.push({label,color,background,ratio:Number(ratio.toFixed(3))});
+  result.push({label,color,background,ratio,...(label.endsWith('primary')?{expectedColor:primaryInk}:{})});
  }
  return result;
 }
@@ -54,11 +56,12 @@ app.whenReady().then(async()=>{
  for(const width of [1280,375])for(const scene of scenes)for(const theme of themes){
    await win.loadFile(path.join(fixture,'index.html'),{query:{state:scene,theme}});win.setContentSize(width,1000);await settle();
    const dom=await win.webContents.executeJavaScript(`(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,labels:[...document.querySelectorAll('.gain-page-heading h3')].map(n=>n.textContent),unmeasured:[...document.querySelectorAll('.gain-result-state')].map(n=>n.textContent),controls:[...document.querySelectorAll('[data-gain-candidate-purpose]')].map(n=>({purpose:n.dataset.gainCandidatePurpose,checked:n.checked,disabled:n.disabled})),title:document.querySelector('#gain-calibration-phase')?.textContent}))()`);
+   if(dom.labels.length!==1)throw Error('Calibration page did not render its heading: '+JSON.stringify({scene,width,theme,dom}));
    if(dom.scroll>width)throw Error('Page overflow at '+scene+' '+width+': '+dom.scroll);
    const file=path.join(output,`${scene}-${width}-${theme}.png`);const captured=await captureSegments(file);
    const contrast=await win.webContents.executeJavaScript(`(${contrastSamples})()`);
-   if(contrast.some(sample=>!sample.label.endsWith('primary')&&sample.ratio<4.5))throw Error('Body text contrast below 4.5: '+JSON.stringify({scene,width,contrast}));
-   if(contrast.some(sample=>sample.label.endsWith('primary')&&sample.color!=='rgb(255, 255, 255)'))throw Error('Primary button text must be white: '+JSON.stringify({scene,width,contrast}));
+   if(contrast.some(sample=>sample.ratio<4.5))throw Error('Text contrast below 4.5: '+JSON.stringify({scene,width,contrast}));
+   if(contrast.some(sample=>sample.label.endsWith('primary')&&sample.color!==sample.expectedColor))throw Error('Primary button text must use the theme brand ink: '+JSON.stringify({scene,width,contrast}));
    if(scene==='empty-result'&&!contrast.some(sample=>sample.label==='import_primary'))throw Error('Import button was not measured');
    const item={scene,width,file,...captured,dom,contrast};
    if(auditPath){
@@ -81,7 +84,7 @@ app.whenReady().then(async()=>{
    report.darkCapture=await captureSegments(path.join(output,'available-1280-dark.png'));
    await win.webContents.executeJavaScript("window.gainFixture.scene('idle')");await settle();
    report.darkContrast=await win.webContents.executeJavaScript(`(${contrastSamples})()`);
-   if(report.darkContrast.some(sample=>!sample.label.endsWith('primary')&&sample.ratio<4.5||sample.label.endsWith('primary')&&sample.color!=='rgb(255, 255, 255)'))throw Error('Dark button color or body text contrast failed: '+JSON.stringify(report.darkContrast));
+   if(report.darkContrast.some(sample=>sample.ratio<4.5||sample.label.endsWith('primary')&&sample.color!==sample.expectedColor))throw Error('Dark theme brand ink or text contrast failed: '+JSON.stringify(report.darkContrast));
  }
  fs.writeFileSync(path.join(output,'report.json'),JSON.stringify(report,null,2));
  console.log('GAIN_UI_DOM_RENDER_PASS '+JSON.stringify({checks:report.checks.checks.length,renders:report.renders.length,report:path.join(output,'report.json')}));
