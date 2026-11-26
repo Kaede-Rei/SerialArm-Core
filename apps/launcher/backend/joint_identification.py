@@ -28,6 +28,52 @@ def physical_coordinates(prior, free):
 def _subset(z,mask):return {k:v[mask]for k,v in z.items()}
 
 
+def _motion_cv_groups(train,count):
+    """Distribute whole blocks by phase and balance per-axis moving equations."""
+    groups=np.unique(train['segment']);folds=[[]for _ in range(count)];offset=0
+    phases=np.array([train['phase'][np.flatnonzero(train['segment']==group)[0]]for group in groups])
+    for phase in np.unique(phases):
+        phase_groups=groups[phases==phase]
+        for index,group in enumerate(phase_groups):folds[(offset+index)%count].append(group)
+        offset=(offset+len(phase_groups))%count
+    # Reassign complete blocks with swaps, retaining phase balance in every
+    # fold. Prefer satisfying the same axis thresholds used by fit_joint, then
+    # minimize the variation in held-out equation counts between folds.
+    assignment=np.empty(len(groups),dtype=int)
+    for fold,items in enumerate(folds):assignment[np.isin(groups,items)]=fold
+    axis_counts=np.array([train['moving'][train['segment']==group].sum(axis=0)for group in groups])
+    totals=axis_counts.sum(axis=0)
+    held=np.array([axis_counts[assignment==fold].sum(axis=0)for fold in range(count)])
+    phase_counts={phase:np.array([np.sum((phases==phase)&(assignment==fold))for fold in range(count)])
+                  for phase in np.unique(phases)}
+    def score(values):
+        deficit=np.maximum(5-values,0)+np.maximum(10-(totals-values),0)
+        imbalance=(values-totals/count)/np.maximum(totals,1)
+        return int(np.sum(deficit**2)),float(np.sum(imbalance**2))
+    while True:
+        best=score(held);swap=None
+        for a in range(len(groups)):
+            for b in range(a+1,len(groups)):
+                fa,fb=assignment[a],assignment[b]
+                if fa==fb:continue
+                pa,pb=phases[a],phases[b]
+                if pa!=pb:
+                    ca=phase_counts[pa].copy();ca[fa]-=1;ca[fb]+=1
+                    cb=phase_counts[pb].copy();cb[fb]-=1;cb[fa]+=1
+                    if np.ptp(ca)>1 or np.ptp(cb)>1:continue
+                trial=held.copy();trial[fa]+=axis_counts[b]-axis_counts[a];trial[fb]+=axis_counts[a]-axis_counts[b]
+                candidate=score(trial)
+                if candidate[0]<best[0] or (candidate[0]==best[0] and candidate[1]<best[1]-1e-12):
+                    best=candidate;swap=(a,b,trial)
+        if swap is None:break
+        a,b,held=swap;fa,fb=assignment[a],assignment[b];pa,pb=phases[a],phases[b]
+        if pa!=pb:
+            phase_counts[pa][fa]-=1;phase_counts[pa][fb]+=1
+            phase_counts[pb][fb]-=1;phase_counts[pb][fa]+=1
+        assignment[a],assignment[b]=fb,fa
+    return [list(groups[assignment==fold])for fold in range(count)]
+
+
 def _system(z,statics,basis,free,T,method):
     from dynamic_identification import solve
     rank=basis.shape[1];j=z['tau'].shape[1];mask=z['moving'].ravel();n=T.shape[1]
@@ -74,7 +120,10 @@ def constrained_fit(z,statics,engine,free,basis,method,penalty,parameter_target=
     if parameter_target=='inertia':
         indices=[i for i in range(len(engine.prior))if i%10<4]
         constraints.append(T[indices]@x[:n]==0)
-    objective=cp.sum_squares(R@x-rhs)+float(penalty)*cp.sum_squares(x[:n])/max(1,n)
+    # Keep the per-coordinate prior penalty unchanged when links are locked.
+    # The denominator is the full mapped model, not the number of free blocks.
+    prior_dimension=len(engine.prior)
+    objective=cp.sum_squares(R@x-rhs)+float(penalty)*cp.sum_squares(x[:n])/prior_dimension
     problem=cp.Problem(cp.Minimize(objective),constraints)
     problem.solve(solver='CLARABEL',tol_gap_abs=1e-8,tol_feas=1e-8,tol_gap_rel=1e-8,max_iter=300)
     if problem.status!='optimal' or x.value is None:raise ValueError('物理联合求解未收敛: '+str(problem.status))
@@ -85,7 +134,10 @@ def constrained_fit(z,statics,engine,free,basis,method,penalty,parameter_target=
     return candidate,dict(beta=beta,sigma=raw['sigma'],iterations=int(problem.solver_stats.num_iters or 0),
                          equation_rank=raw['equation_rank'],equation_columns=raw['equation_columns'],singular_values=raw['singular_values']),dict(
                          status='physical_constraints_in_joint_fit',solver='CLARABEL',solver_status=problem.status,
-                         minimum_normalized_cone_eigenvalue=minimum,regularization=float(penalty),physical_prior_metric='source_pseudo_inertia_congruence_frobenius',empirical_mass_com_bounds=False,weighting='common_training_source_residual_scale_not_measured_sensor_noise',robust_preweighting='unconstrained_IRLS_Huber_then_constrained_refit'if method=='IRLS'else None)
+                         minimum_normalized_cone_eigenvalue=minimum,regularization=float(penalty),
+                         regularization_normalization_dimension=prior_dimension,
+                         regularization_per_coordinate=float(penalty)/prior_dimension,
+                         physical_prior_metric='source_pseudo_inertia_congruence_frobenius',empirical_mass_com_bounds=False,weighting='common_training_source_residual_scale_not_measured_sensor_noise',robust_preweighting='unconstrained_IRLS_Huber_then_constrained_refit'if method=='IRLS'else None)
 
 
 def fit_prior(z,statics,engine,free,basis,method='WLS'):
@@ -118,11 +170,12 @@ def fit_joint(train,statics,engine,free,basis,method='WLS',parameter_target='ful
     for s in statics:s['mapped_Y']=s['Y'][:,engine.cols]
     groups=np.unique(train['segment']);count=min(3,len(groups),len(statics))
     if count<3:raise ValueError('至少需要三个训练姿态组和三个连续时间块进行联合模型选择')
+    motion_folds=_motion_cv_groups(train,count)
     grid=[None,.01,.1,1.,10.,100.,1000.];scores=[];failures=[]
     for penalty in grid:
         losses=[];errors=[]
         for fold in range(count):
-            held=np.isin(train['segment'],groups[fold::count]);tr=_subset(train,~held);va=_subset(train,held)
+            held=np.isin(train['segment'],motion_folds[fold]);tr=_subset(train,~held);va=_subset(train,held)
             ts=[s for i,s in enumerate(statics)if i%count!=fold];vs=[s for i,s in enumerate(statics)if i%count==fold]
             if min(tr['moving'].sum(0))<10 or min(va['moving'].sum(0))<5:raise ValueError('分块验证时至少一轴激励不足，不能可靠选择完整模型')
             try:
@@ -141,5 +194,6 @@ def fit_joint(train,statics,engine,free,basis,method='WLS',parameter_target='ful
     params,fit,diagnostic=constrained_fit(train,statics,engine,free,basis,method,penalty,parameter_target)
     diagnostic.update(cv_penalties=grid,cv_scores=scores,cv_failures=failures,prior_preferred=recommendation==0,recommendation='keep_source_prior'if recommendation==0 else'physical_fit',
                       cv_scope='training_only_disjoint_time_blocks_and_pose_groups',folds=count,
+                      motion_cv_stratification='phase_and_axis_balanced_whole_blocks',
                       selection_metric='normalized_motion_mse_plus_raw_gravity_mse')
     return params,fit,diagnostic

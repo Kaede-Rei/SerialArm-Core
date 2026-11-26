@@ -72,19 +72,20 @@ def load_observations(directory):
     good = np.array([row.get('valid') == '1' for row in rows])
     good &= (np.isfinite(q).all(1) & np.isfinite(v).all(1) & np.isfinite(tau).all(1)
              & np.isfinite(age) & (age >= 0) & (age <= 30) & np.isin(phases, PHASES))
-    # Slice complete ~10s blocks exactly once, independent of fit/filter scope
+    # Split each uninterrupted phase into balanced blocks no longer than
+    # approximately 10 s. Avoid a short final block that leaves almost no
+    # samples after the filter edge guard.
     segments, lo = [], None
     for i in range(len(t)+1):
         boundary = (i == len(t) or not good[i] or
                     (i > 0 and (t[i]-t[i-1] > .025 or phases[i] != phases[i-1])))
         if boundary and lo is not None:
-            start = lo
-            while start < i:
-                end = min(i, int(np.searchsorted(t, t[start]+10., side='left')))
+            count = max(1, int(np.ceil((t[i-1]-t[lo])/10.)))
+            edges = np.linspace(lo, i, count+1, dtype=int)
+            for start, end in zip(edges[:-1], edges[1:]):
                 if end-start >= 12:
                     segments.append(dict(id=len(segments), lo=start, hi=end,
                                          phase=str(phases[start])))
-                start = max(end, start+1)
             lo = None
         if i < len(t) and good[i] and lo is None: lo = i
     if not segments: raise ValueError('没有连续有效自动运动段')
@@ -197,6 +198,7 @@ class Model:
 
 
 def preprocess(observations, engine, free, basis, cutoff=5.):
+    from scipy.interpolate import interp1d
     from scipy.signal import butter, sosfiltfilt
     if cutoff not in (2., 5., 10.): raise ValueError('位置滤波带宽仅支持已核验的 2/5/10 Hz')
     d = observations; packs = []; j = len(d['names'])
@@ -221,13 +223,18 @@ def preprocess(observations, engine, free, basis, cutoff=5.):
         x = sosfiltfilt(sos,np.asarray(xs),axis=0)
         baseline = sosfiltfilt(sos,np.asarray(baselines),axis=0)
         target = sosfiltfilt(sos,tau,axis=0)
-        ids = np.arange(0,len(grid),max(1,int(round(fs/20.))))
-        ids = ids[(grid[ids]>grid[0]+1.5)&(grid[ids]<grid[-1]-1.5)]
-        if not len(ids): continue
-        packs.append(dict(X=x[ids], baseline=baseline[ids], tau=target[ids],
-                          moving=abs(v[ids])>.03, segment=np.full(len(ids),seg['id']),
-                          phase=np.full(len(ids),seg['phase']), time=grid[ids],
-                          q=qf[ids], v=v[ids], a=a[ids]))
+        # Integer-stride selection cannot represent 50 Hz -> 20 Hz. Interpolate
+        # the already anti-aliased regressors and targets on the same time grid.
+        sample_t = grid[0] + np.arange(int(np.ceil((grid[-1]-grid[0])*20.)))/20.
+        sample_t = sample_t[(sample_t>grid[0]+1.5)&(sample_t<grid[-1]-1.5)]
+        if not len(sample_t): continue
+        def resample(values):
+            return interp1d(grid,values,axis=0,assume_sorted=True)(sample_t)
+        sample_v = resample(v)
+        packs.append(dict(X=resample(x), baseline=resample(baseline), tau=resample(target),
+                          moving=abs(sample_v)>.03, segment=np.full(len(sample_t),seg['id']),
+                          phase=np.full(len(sample_t),seg['phase']), time=sample_t,
+                          q=resample(qf), v=sample_v, a=resample(a)))
     if not packs: raise ValueError('有效连续段太短，需至少 3.5 秒以独立滤波并去除边缘')
     z = {key:np.concatenate([p[key] for p in packs]) for key in packs[0]}
     if np.any(z['moving'].sum(0)<30): raise ValueError('至少一轴动态激励不足 30 个有效方程，请检查轨迹覆盖')
@@ -358,10 +365,58 @@ def _gravity_review(engine, parameters, directory, *, held_only=False):
 
 
 def _disjoint_split(z):
-    groups=np.unique(z['segment'])
-    if len(groups)<5: raise ValueError('独立连续块不足 5 个，无法留出完整时间块')
-    held=set(groups[4::5]);mask=np.isin(z['segment'],list(held))
+    """Reserve whole blocks per motion phase, retaining training in each phase."""
+    held=set()
+    for phase in PHASES[2:]:
+        groups=np.unique(z['segment'][z['phase']==phase])
+        if len(groups)>1:
+            count=max(1,len(groups)//5)
+            equations={group:z['moving'][z['segment']==group].sum(axis=0) for group in groups}
+            total=sum(equations.values())
+            selected=set();selected_equations=np.zeros_like(total)
+            for _ in range(count):
+                def quality(group):
+                    validation=selected_equations+equations[group]
+                    training=total-validation
+                    shared=np.minimum(training,validation)
+                    # First preserve joint coverage in both partitions; when
+                    # it is impossible, preserve training and report the gap.
+                    return (int(np.sum(shared>0)),int(np.sum(training>0)),
+                            int(np.sum(validation>0)),int(np.min(shared)),
+                            int(np.sum(shared)))
+                choice=max((group for group in groups if group not in selected),key=quality)
+                selected.add(choice);selected_equations+=equations[choice]
+            held.update(selected)
+    if not held: raise ValueError('各运动阶段均不足两个独立连续块，无法分层留出；请使用独立验证会话或延长采集')
+    mask=np.isin(z['segment'],list(held))
+    if len(np.unique(z['segment'][~mask]))<3:
+        raise ValueError('分层留出后训练连续块不足 3 个，请使用独立验证会话或延长采集')
     return ({k:v[~mask] for k,v in z.items()}, {k:v[mask] for k,v in z.items()})
+
+
+def _motion_only(z):
+    # Static poses are handled separately by static_equations and its own
+    # pose-group split. They must not leak into motion training or validation.
+    mask=np.isin(z['phase'],PHASES[2:])
+    if not np.any(mask):raise ValueError('没有经过滤波的动态运动阶段')
+    return {k:v[mask] for k,v in z.items()}
+
+
+def _motion_coverage(train,hold):
+    def describe(z,phase):
+        mask=z['phase']==phase
+        return dict(blocks=int(len(np.unique(z['segment'][mask]))),
+                    samples=int(mask.sum()),
+                    moving_equations_per_joint=z['moving'][mask].sum(axis=0).tolist())
+    phases={phase:dict(training=describe(train,phase),validation=describe(hold,phase))
+            for phase in PHASES[2:]}
+    return dict(phases=phases,
+                all_motion_phases_in_both=all(
+                    phases[p]['training']['blocks'] and phases[p]['validation']['blocks']
+                    for p in PHASES[2:]),
+                all_joints_in_all_motion_phases=all(
+                    all(count>0 for count in phases[p][part]['moving_equations_per_joint'])
+                    for p in PHASES[2:] for part in ('training','validation')))
 
 
 def _compatible(a,b):
@@ -383,16 +438,19 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
     if parameter_target not in ('full','inertia'):raise ValueError('完整动力学参数目标无效')
     if parameter_target=='inertia':free=free[free%10>=4]
     basis,sv=engine.basis(free);rank=basis.shape[1]
-    z=preprocess(observations,engine,free,basis,float(cutoff_hz))
+    z=_motion_only(preprocess(observations,engine,free,basis,float(cutoff_hz)))
     validation_engine=None;validation_receipt=None
     if validation_directory:
         validation_engine=Model(validation_directory,fixed_joint_positions,load_description);_compatible(engine,validation_engine)
         validation_receipt=_receipt(validation_engine.folder)
         if before['frames.csv']==validation_receipt['frames.csv']:
             raise ValueError('训练与验证是同一份 frames.csv，复制目录不能充当独立会话')
-        hold=preprocess(load_observations(validation_engine.folder),validation_engine,free,basis,float(cutoff_hz))
+        hold=_motion_only(preprocess(load_observations(validation_engine.folder),validation_engine,free,basis,float(cutoff_hz)))
         train=z;scope='independent_session'
     else: train,hold=_disjoint_split(z);scope='same_session_disjoint_blocks'
+    if np.any(train['moving'].sum(axis=0)<30):raise ValueError('训练运动阶段至少一轴不足 30 个有效方程')
+    if np.any(hold['moving'].sum(axis=0)==0):raise ValueError('验证运动阶段至少一轴没有有效方程')
+    motion_coverage=_motion_coverage(train,hold)
     from static_observations import static_equations
     from joint_identification import fit_joint,fit_prior
     static_rows=static_equations(engine,folder)
@@ -412,6 +470,7 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
     identifiable=fit['equation_rank']==fit['equation_columns']
     validation_audit=audit_record(validation_engine.folder)if validation_engine else None
     checks=dict(training_measurement=audit['measurement_ready'],training_phases=audit['acquisition_complete'],
+                motion_phase_coverage=motion_coverage['all_joints_in_all_motion_phases'],
                 load_description=bool(str(engine.meta.get('load_description')or'').strip()not in ('','unspecified')),unmeasured_joint_positions=engine.unmeasured_known,
                 independent_session=bool(validation_engine),
                 validation_measurement=bool(validation_audit and validation_audit['measurement_ready']),
@@ -421,6 +480,7 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
     exportable=bool(changed and not completion.get('prior_preferred') and scope=='independent_session' and motion_pass and gravity['passed'] and physical_pass and quality_pass and identifiable)
     reason=[]
     labels=dict(training_measurement='训练记录量程或 q/dq 一致性未通过',training_phases='训练记录六阶段未齐全',
+                motion_phase_coverage='训练或验证中有运动阶段的关节缺少有效方程',
                 load_description='未记录装机与载荷说明',unmeasured_joint_positions='未声明未采样关节的实际固定位置',
                 independent_session='缺少另一个独立验证会话',validation_measurement='独立验证记录的量程/反馈一致性尚未通过',
                 validation_phases='独立验证记录六阶段尚未齐全',validation_load_description='独立验证记录未声明装机与载荷')
@@ -443,13 +503,14 @@ def identify(directory, *, mode='global', locked_links=None, validation_director
         unmeasured_joints=engine.unmeasured,fixed_joint_positions=engine.fixed_joint_positions,
         fixed_positions_provenance='operator_declared_constant_positions_not_measured',
         preprocessing=dict(position_filter='zero_phase_butterworth4',parallel_filter_hz=5.,
-                           decimation_hz=20.,block_s=10.,edge_guard_s=1.5,min_joint_speed=.03),
+                           decimation_hz=20.,resampling_method='linear_interpolation_after_antialias_filter',
+                           block_s=10.,block_partition='balanced_within_continuous_phase',edge_guard_s=1.5,min_joint_speed=.03),
         parameter_basis=basis,free_parameter_indices=free,structural_rank=rank,
         structural_singular_values=sv,numerical_fit={k:v for k,v in fit.items() if k!='beta'},
         original_dynamic_parameters=engine.prior,raw_dynamic_parameters=raw_parameters,
         selected_dynamic_parameters=full,physical_completion=completion,
         training_motion=dict(baseline=score(train,base),candidate=score(train,fit)),
-        validation_motion=dict(baseline=motion_before,candidate=motion_after,passed=bool(motion_pass)),
+        validation_motion=dict(baseline=motion_before,candidate=motion_after,passed=bool(motion_pass),coverage=motion_coverage),
         validation_scope=scope,gravity_validation=gravity,physical_review=physical,
         physical_pass=physical_pass,exportable=exportable,review_exportable=physical_pass and changed,report_exportable=True,candidate_changed=changed,automatic_application_allowed=False,
         validated_on_hardware=False,status='prior_retained'if not changed else 'offline_candidate_ready_for_supervised_test'if exportable else 'review_only_candidate'if physical_pass else 'diagnostic_only',
