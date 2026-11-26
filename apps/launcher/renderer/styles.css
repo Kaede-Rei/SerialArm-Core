@@ -479,8 +479,6 @@
 
 /* Animate only the alert card; a full-screen modal must not scale the backdrop */
 .priority-error-overlay[open]{animation:none!important;transform:none!important}
-.priority-error-overlay[open] .priority-error-card{animation:dialog-spring-in .36s var(--spring-ui) both}
-@media(prefers-reduced-motion:reduce){.priority-error-overlay[open] .priority-error-card{animation:none!important}}
 
 /* Read-only original/candidate COM visualization in the calibration workbench */
 .calibration-com-overlay{position:absolute;z-index:4;top:12px;left:12px;width:max-content;max-width:calc(100% - 24px);padding:11px 13px;border:.5px solid var(--line-strong);border-radius:12px;background:var(--surface-overlay);color:var(--text);box-shadow:var(--shadow-panel);font-size:12px;line-height:1.5}

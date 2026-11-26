@@ -971,8 +971,11 @@ export class SerialArmModelView {
     this.drawing = true;
     try {
       let changed = this.controls.update(seconds);
-      changed = this.cameraTransition.update(seconds) || changed;
-      changed = this.smoothZoom.update(seconds) || changed;
+      // Camera springs follow the same stall policy as desktop UI springs;
+      // direct orbit/pan input above keeps its own elapsed-time handling.
+      const springSeconds = Math.min(.04, seconds);
+      changed = this.cameraTransition.update(springSeconds) || changed;
+      changed = this.smoothZoom.update(springSeconds) || changed;
       if (this.needsRender || changed) this.drawScene();
       this.drawing = false;
       // A change event wakes the next frame until OrbitControls' damping is

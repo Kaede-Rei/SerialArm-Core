@@ -41,7 +41,7 @@ const words = {
     baseFrame: ['Base Frame', 'Base Frame'], toolFrame: ['Tool Frame', 'Tool Frame'], controlledJoints: ['受控关节', 'Controlled joints'], profileId: ['Profile 标识', 'Profile id'], destination: ['保存位置', 'Destination'], chooseDirectory: ['选择目录', 'Choose directory'],
     actuatorName: ['执行器名称', 'Actuator name'], motorId: ['Motor ID', 'Motor ID'], masterId: ['Master ID', 'Master ID'], motorType: ['电机型号', 'Motor type'], hardwareDriver: ['硬件驱动', 'Hardware driver'],
     gravityStage: ['重力补偿验证', 'Gravity verification'],
-    readiness: ['机械臂准备状态', 'Manipulator readiness'], readinessDesc: ['核对模型与硬件，完成所选控制路径验收，再按需提升性能', 'Check the model and hardware, validate the selected control path, then improve performance as needed'], nextStep: ['下一步', 'Next step'], confirmStage: ['确认当前阶段完成', 'Confirm current stage'],
+    readiness: ['接入与优化', 'Connect & improve'], readinessDesc: ['核对模型与硬件，完成所选控制路径验收，再按需提升性能', 'Check the model and hardware, validate the selected control path, then improve performance as needed'], nextStep: ['下一步', 'Next step'], confirmStage: ['确认当前阶段完成', 'Confirm current stage'],
     descriptionStage: ['描述模型', 'Description'], profileSetupStage: ['Profile 配置', 'Profile Setup'], modelCheckStage: ['模型检查', 'Model check'], bringupStage: ['真机检查', 'Hardware bring-up'], mappingStage: ['映射校准', 'Mapping calibration'], geometryStage: ['几何标定', 'Geometry calibration'], dynamicsStage: ['动力学校准', 'Dynamics calibration'], validationStage: ['验证', 'Validation'], readyStage: ['可使用', 'Ready'],
     expertTools: ['专业工具', 'Expert tools'], backHome: ['返回开始页', 'Back to start'], profileSetup: ['参数配置', 'Parameter configuration'], editProfile: ['编辑 Profile', 'Edit Profile'], continueAction: ['继续配置', 'Continue configuration'], saveProfile: ['保存 Profile', 'Save Profile'], profileSetupSubtitle: ['编辑当前 Profile 参数；保存配置与应用到会话分别操作', 'Edit the current Profile; saving configuration and applying it to a session are separate actions'], profileManagedHint: ['从机械臂列表移除后，磁盘文件仍保留', 'Removing a manipulator from the list keeps its files on disk'],
 };
@@ -80,7 +80,8 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;
 const $ = id => document.getElementById(id);
 let state = { workbenchEpoch: 0, workbenchIdentity: null, page: 'start', previousPage: 'start', language: 'zh-CN', theme: 'light', mode: 'terminal', source: 'builtin', entryIntent: '', libraryQuery: '', libraryFilter: 'all', library: [], libraryPath: '', activeLibraryId: '', readiness: null, descriptionAnalysis: null, descriptionStep: 1, createdProfileWizard: false, descriptionDraft: { source: '', profile: '', destination: '', base_frame: '', tool_frame: '', joint_names: [], hardware_plugin: 'serial_arm_hardware_damiao', bus: 'main_can', device: '/dev/ttyACM0', baudrate: '921600', actuators: [] }, profileEditor: null, config: { profile: '', profile_file: '', serial_port: '', baudrate: '', bus: '', resource_paths: '' }, info: null, status: {}, profiles: [], session: { state: 'idle' }, busy: false, backendError: '', inspecting: 0, modelData: null, modelLoading: false, modelPositions: [], modelSelection: '', modelLayers: { visual: true, collision: false, linkFrames: false, jointAxes: true, com: false, inertia: false, labels: false }, modelInertiaSource: 'urdf', modelVisibility: { links: {}, linkFrames: {}, joints: {} }, workbenchTab: 'control', capabilityProfile: null, capabilityProfileError: '', telemetry: null, telemetryHistory: [], admittance: null, workbenchTargets: [], speedScale: 0.2, commandState: 'idle', pendingTarget: null, savePreview: null, lastAction: '', calibrationFlow: '', selectedFrame: '', telemetryReceivedAt: 0, workbenchPending: { kind: '', value: '' }, blockingBusy: false, modelCalibrationOffline: null, modelCalibrationRecords: [], modelCalibrationDirectory: '', modelCalibrationSavePreview: null, modelCalibrationExport: null, modelCalibrationObjective: 'bias_separated', modelCalibrationCandidateSource: 'online', modelCalibrationSaved: null, modelCalibrationFrictionExport: null, modelCalibrationDisplayScale: 1, modelCalibrationShowUnchanged: false, modelCalibrationPreviewAlignment: null, calibrationEntry: 'gravity_verify', calibrationToolRecords: { teaching: [], gain: [], gravity: [], dynamics: [] }, calibrationToolSelected: { teaching: null, gain: null, gravity: null, dynamics: null }, calibrationRuntimeCandidates: null, gainCandidateLoadPending: '', gainCandidateLoadAttempted: '', gainCandidateLoadError: '', gainMode: 'all', gainTuningMode: 'quick', gainFinePurpose: 'rigid', idimReport: null, idimAudit: null, idimScope: 'global', idimLocked: [], idimPreview: true, idimLoadDescription: '', idimEstimator: 'WLS', idimCutoff: 5, idimValidationDirectory: '', idimFixedJointText: '', advancedTarget: 'mass_com', advancedAssessment: null, advancedReport: null, advancedLocked: [], advancedProgress: '', autoAssessedTaskId: '', teachTrajectories: [], teachSelectedId: '', teachLoadedId: '', teachRate: 0.3, teachRepeats: 30, teachDirection: 'forward', teachReplayBehavior: null, teachGainPurpose: 'RIGID', teachPreviewDirection: null, teachStorageDirectory: '', teachLastFilePath: '', teachRuntime: null, geometryTab: 'fixed', geometryState: null, geometryPurpose: 'diagnostic', geometryFrame: '', geometryRms: 2, geometryMax: 4, geometryCycles: 20, geometryDwell: 3, geometryRate: 0.2, geometryReplayBehavior: null, geometryGainPurpose: 'RIGID', geometryTrajectories: [], geometrySelectedId: '', geometryLoadedId: '', geometryContactReady: false, geometryRepeatSupported: null, geometryRepeatError: '', ghostRequestKey: '', modelCalibrationOptions: { load_description: '', mode: 'global', locked_links: [], pose_budget: 12, validation_fraction: 0.25, regularization: 0.01, svd_relative_threshold: 0.0001, minimum_information_score: 0.0001 } };
 Object.assign(state, {fontLigatures:true,speedInputRaw:null, speedInputError:'', pendingMotionId:null, modelIdentity:null, calibrationHistoryPages:{}, calibrationCandidateRounds:{}, calibrationCandidateSelection:{}, geometryTcpPreview:null, responseTolerances:{}});
-Object.assign(state, {driverInspection:null,controlSettingsOpen:true,teachPreviewFraction:0,teachPosePreview:null,readinessSections:{}});
+Object.assign(state, {driverInspection:null,controlSettingsOpen:true,teachPreviewFraction:0,teachPosePreview:null,readinessSections:{},workbenchFineJoint:0});
+Object.assign(state,{profileCenterView:'edit',profileSearchQuery:'',profileReviewSelection:null,profileHardwareSection:'connection',profileResponsePath:null,studioHardwareObject:'driver',studioContextJoint:'',responseWorkspaceView:'experiment',responseRecordSelection:null,responseGainPurpose:null,studioEvents:[],studioEventId:'',studioEventFilter:'all',studioObservedJoint:'',studioObservedSignal:'pos'});
 const profileWorkspaceDefaults = structuredClone(state);
 let term, fit, outputBuffer = '', modelView = null, modelModule = null;
 const t = key => (words[key] || [key, key])[state.language === 'en' ? 1 : 0];
@@ -177,7 +178,7 @@ function paintPriorityError() {
     if (action) {action.hidden=!entry.action?.page;action.textContent=busyText('前往处理','Open relevant settings');action.onclick=()=>{const target=entry.action;acknowledgePriorityError();operation(()=>openSetupTarget(target));};}
     const ack = $('priority-error-ack');
     if (ack) ack.textContent = entry.kind === 'fault' ? busyText('我已知晓（不恢复运行）', 'Acknowledge (no recovery)') : busyText('关闭', 'Close');
-    if (!layer.open) layer.showModal();
+    if (!layer.open) { layer.showModal(); window.serialArmStudio?.enterSurface(layer.querySelector('.priority-error-card')); }
     layer.setAttribute('aria-hidden', 'false');
     if (ack) ack.focus();
 }
@@ -210,7 +211,7 @@ function acknowledgePriorityError() {
 function toast(message, error = false) {
     if (error) { showPriorityError(message); return; }
     const node = document.createElement('div'); node.className = 'toast'; node.textContent = message;
-    $('toasts').append(node); setTimeout(() => node.remove(), 8000);
+    $('toasts').append(node); window.serialArmStudio?.enterSurface(node); setTimeout(() => node.remove(), 8000);
 }
 function describeRuntimeFault(snapshot) {
     const f = snapshot?.fault || {};
@@ -306,6 +307,7 @@ function showWorkspaceDialog(dialog) {
         dialog.setAttribute('aria-describedby', description.id);
     } else dialog.removeAttribute('aria-describedby');
     dialog.showModal();
+    window.serialArmStudio?.enterSurface(dialog);
 }
 function configField(key, label, placeholder = '') { return `<div class="field"><label for="${key}">${t(label)}</label><input id="${key}" value="${esc(state.config[key])}" placeholder="${esc(placeholder)}" autocomplete="off"></div>`; }
 function active() { return ['running', 'stopping'].includes(state.session.state); }
@@ -348,7 +350,12 @@ async function switchTheme(nextTheme, _event = null, rerender = false) {
     await save();
 }
 function pageLabel(page = state.page) {
-    const keys = { start: 'manageProfiles', library: state.entryIntent === 'use' ? 'readyLibrary' : 'continueLibrary', description: 'newDescription', lifecycle: 'readiness', profile_setup: 'profileSetup', workbench: 'workbenchNav', geometry: 'geometryNav', calibration: 'calibrationNav', run: 'adapterNav', diagnostics: 'connectionDiagNav', model: 'model', settings: 'settings' };
+    if(page==='calibration'){const item=calibrationAvailableTools().find(item=>item[0]===state.calibrationEntry);if(item)return busyText(item[1],item[2]);}
+    if(page==='lifecycle')return busyText('接入与优化','Connect & improve');
+    if(page==='hardware')return busyText('设备与映射','Devices & mapping');
+    if(page==='events')return busyText('事件与故障','Events & faults');
+    if(page==='workbench')return busyText(({control:'关节目标',replay:'示教与回放',tuning:'响应与交互',monitor:'实时观测'})[state.workbenchTab]||'运行与轨迹',({control:'Joint targets',replay:'Teach & replay',tuning:'Response & interaction',monitor:'Live observation'})[state.workbenchTab]||'Motion & trajectories');
+    const keys = { start: 'manageProfiles', library: state.entryIntent === 'use' ? 'readyLibrary' : 'continueLibrary', description: 'newDescription', lifecycle: '接入与优化', profile_setup: 'profileSetup', workbench: 'workbenchNav', geometry: 'geometryNav', calibration: 'calibrationNav', run: 'adapterNav', diagnostics: 'connectionDiagNav', model: 'model', settings: 'settings' };
     return t(keys[page] || page);
 }
 async function openSettings() {
@@ -386,11 +393,7 @@ function shell() {
     const titlebar = `<header class="titlebar"><div class="brand-mini">${associationArtwork()}<strong>SerialArm Studio</strong></div><div class="title-center">${esc(state.config.profile || t('workspace'))}<span class="title-connection" id="title-connection"></span></div><div class="title-actions">${quickTheme}<button id="settings-quick" class="title-button" aria-label="${t('settings')}">${icon('settings')}</button><div class="window-controls"><button id="win-min" class="title-button" aria-label="${busyText('最小化', 'Minimize')}">${icon('minus')}</button><button id="win-max" class="title-button" aria-label="${busyText('最大化或还原', 'Maximize or restore')}">${icon('max')}</button><button id="win-close" class="title-button close" aria-label="${busyText('关闭窗口', 'Close window')}">${icon('close')}</button></div></div></header>`;
     const runtimePanel = `<section id="runtime-panel" class="card terminal-card is-hidden" aria-labelledby="runtime-panel-title"><div class="terminal-head">${icon('terminal')}<b id="runtime-panel-title">${t('logs')}</b><span class="terminal-state" id="terminal-state"></span>${button('copy-log', 'copyAll', '')}${button('paste-log', 'paste', '')}${button('clear-log', 'clear', '')}${button('stop-runtime', 'stop', 'stop')}${button('force-runtime', 'force', '', 'danger')}</div><div id="terminal"></div><div class="terminal-note">${t('terminalHint')}</div></section>`;
     const overlays = `<div id="toasts" aria-live="polite"></div><dialog id="confirm-dialog" class="studio-dialog"></dialog><dialog id="profile-picker" class="project-sheet" aria-label="${t('manageProfiles')}"></dialog><dialog id="priority-error-overlay" class="priority-error-overlay" role="alertdialog" aria-modal="true" aria-labelledby="priority-error-title" aria-hidden="true"><div class="priority-error-card"><div id="priority-error-kicker" class="priority-error-kicker">SERIALARM　ERROR</div><h3 id="priority-error-title"></h3><pre id="priority-error-detail"></pre><div id="priority-error-evidence" hidden></div><details id="priority-error-technical" class="error-technical"><summary>${state.language === 'en' ? 'Raw diagnostic details' : '展开原始技术诊断'}</summary><pre id="priority-error-raw"></pre></details><p id="priority-error-guidance"></p><div class="actions"><button type="button" id="priority-error-action" class="button" hidden></button><button type="button" id="priority-error-copy" class="button">${state.language === 'en' ? 'Copy diagnostics' : '复制诊断信息'}</button><button id="priority-error-ack" class="button danger">${state.language === 'en' ? 'Understood (no recovery)' : '我已知晓（不恢复运行）'}</button></div></div></dialog><div id="operation-overlay" class="operation-overlay" hidden aria-hidden="true"><div class="operation-progress" role="status" aria-live="assertive" aria-busy="true"><span class="operation-spinner" aria-hidden="true"></span><div><div class="operation-kicker">SERIALARM</div><div id="operation-message" class="operation-message">${t('processing')}</div><div id="operation-safety-actions" class="workspace-actions" hidden><button id="operation-hold" class="button">${t('holdRobot')}</button><button id="operation-disable" class="button danger">${t('deactivateRobot')}</button><button id="operation-force-disconnect" class="button danger">${state.language === 'en' ? 'Force disconnect' : '强制断开'}</button></div></div></div></div><div id="model-calibration-overlay" class="model-calibration-overlay" hidden aria-hidden="true"><div class="model-calibration-task-window" role="dialog" aria-modal="true" aria-labelledby="model-calibration-task-title"><div class="task-window-head"><span class="operation-spinner" aria-hidden="true"></span><div><div id="model-calibration-task-kicker" class="operation-kicker">${state.language === 'en' ? 'Calibration task' : '标定任务'}</div><h2 id="model-calibration-task-title" class="operation-message">${t('modelCalibration')}</h2></div></div><p id="model-calibration-task-conclusion" class="task-window-conclusion" role="status" hidden></p><div id="model-calibration-task-preview" class="task-preview-slot" hidden></div><div class="task-window-content"><div class="task-progress-track" role="progressbar" aria-label="${esc(busyText('标定任务进度', 'Calibration task progress'))}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="model-calibration-task-progress-bar"></span></div><div class="task-live-grid"><span id="model-calibration-task-progress">0%</span><span id="model-calibration-task-samples">${t('validStaticSamples')} —</span><span id="model-calibration-task-feedback">${t('feedbackAge')} —</span><span id="model-calibration-task-id">${t('taskIdentifier')} —</span></div><details class="calibration-locks task-joint-values" open><summary>${state.language === 'en' ? 'Joint targets and differences' : '关节目标与偏差'}</summary><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${t('actual')}</th><th>${t('target')}</th><th>${state.language === 'en' ? 'Target − actual' : '目标 − 当前'}</th></tr></thead><tbody id="model-calibration-task-joints"></tbody></table></div></details>${gainProbeStatusHtml({}, 'gain-task-probe')}</div><div class="task-window-actions" role="group" aria-label="${esc(busyText('标定任务操作', 'Calibration task actions'))}"><button id="model-calibration-task-gains" class="button">${state.language === 'en' ? 'Live gains in separate window' : '独立窗口查看实时增益'}</button><button id="model-calibration-task-stop-teach" class="button primary">${t('stopTeaching')}</button><button id="model-calibration-task-pause" class="button">${t('pauseTask')}</button><button id="model-calibration-task-resume" class="button">${t('resumeTask')}</button><button id="model-calibration-task-hold" class="button">${t('holdRobot')}</button><button id="model-calibration-task-cancel" class="button danger">${t('cancelTask')}</button><button id="model-calibration-task-disable" class="button danger">${t('deactivateRobot')}</button><button id="model-calibration-task-close" class="button primary" hidden>${state.language === 'en' ? 'Close results' : '关闭结果'}</button></div><div id="model-calibration-task-error" class="workspace-error" role="alert"></div></div></div>`;
-    const lifecycle = [['lifecycle', 'readiness', 'readiness'], ['model', 'model', 'model'], ['profile_setup', 'profileSetup', 'parameters'], ['workbench', 'workbenchNav', 'workbench']];
-    const expert = [['geometry', 'geometryNav', 'geometry'], ['calibration', 'calibrationNav', 'calibration'], ['run', 'adapterNav', 'adapter'], ['diagnostics', 'connectionDiagNav', 'diagnostics']];
-    const nav = ([name, key, ico]) => `<button type="button" class="nav-item" data-page="${name}" title="${t(key)}" aria-label="${t(key)}" aria-controls="page" ${!state.config.profile ? 'disabled' : ''}>${icon(ico)}<span>${state.language === 'en' ? ({ lifecycle: 'Readiness', profile_setup: 'Parameters', model: 'Model viewer', workbench: 'Control', geometry: 'Geometry & positioning', calibration: 'Tuning & models', run: 'Adapters', diagnostics: 'Diagnostics' }[name] || t(key)) : t(key)}</span></button>`;
-    const lifecycleLabel = busyText('机械臂工作区', 'WORKSPACE');
-    const navigation = `<section class="sidebar-nav-group" aria-labelledby="lifecycle-caption"><div class="nav-caption" id="lifecycle-caption">${lifecycleLabel}</div><nav aria-label="${lifecycleLabel}">${lifecycle.map(nav).join('')}</nav></section><section class="sidebar-nav-group" aria-labelledby="expert-caption"><div class="nav-caption" id="expert-caption">${t('expertTools')}</div><nav aria-label="${t('expertTools')}">${expert.map(nav).join('')}</nav></section>`;
+    const navigation = studioNavigationHtml();
     const body = onboarding
         ? `<div class="onboarding-body"><main class="content onboarding-content studio-shell-onboarding"><div class="page" id="page" tabindex="-1"></div>${runtimePanel}</main></div>`
         : `<div class="body"><aside class="sidebar studio-shell-sidebar" aria-label="${busyText('机械臂工作区导航', 'Manipulator workspace navigation')}"><button id="profile-picker-open" class="sidebar-project project-picker-trigger" aria-label="${t('manageProfiles')}" aria-haspopup="dialog">${robotArtwork()}<span class="studio-shell-profile"><small>${busyText('当前机械臂', 'Current robot')}</small><strong title="${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}">${esc(state.config.profile || busyText('选择机械臂', 'Choose a manipulator'))}</strong></span>${icon('chevron')}</button>${navigation}<div class="sidebar-spacer"></div><div class="studio-shell-sidebar-footer"><button id="back-home" class="nav-item" title="${t('backHome')}" aria-label="${t('backHome')}">${icon('folder')}<span>${t('backHome')}</span></button><button id="settings-nav" class="nav-item" data-page="settings" title="${t('settings')}" aria-label="${t('settings')}">${icon('settings')}<span>${t('settings')}</span></button><div class="runtime-card" id="sidebar-runtime"></div></div></aside><section class="content-wrap"><div class="studio-location top-status studio-shell-context" aria-label="${busyText('当前对象与会话', 'Current object and session')}"><span class="studio-route breadcrumb" id="breadcrumb"></span><div class="studio-location-end"><span class="pill" id="env-pill"></span><span class="pill" id="session-pill"></span></div></div><main class="content"><div class="page" id="page" tabindex="-1"></div>${runtimePanel}</main></section></div>`;
@@ -487,7 +490,7 @@ function statusUI() {
     const sidebar = $('sidebar-runtime'); if (sidebar) sidebar.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>${t(ready ? 'connected' : 'notInstalled')}<small>${esc(state.info?.profile || state.config.profile || '—')}</small><small>${state.backendError ? esc(localizedError(state.backendError)) : busyText('原生运行时', 'Native runtime')}</small>`;
     const env = $('env-pill'); if (env) env.innerHTML = `<span class="dot ${ready ? 'ready' : ''}"></span>Core ${t(ready ? 'ready' : 'unavailable')}`;
     const session = $('session-pill'); if (session) session.innerHTML = `<span class="dot ${active() ? 'ready' : ''}"></span>${t(state.session.state || 'idle')}`;
-    const breadcrumb = $('breadcrumb'); if (breadcrumb) breadcrumb.innerHTML = `<span>${esc(state.config.profile || t('workspace'))}</span>${icon('arrow')}<strong>${pageLabel()}</strong>`;
+    const breadcrumb = $('breadcrumb'); if (breadcrumb) breadcrumb.innerHTML = studioBreadcrumbHtml();
     const connection = $('title-connection'); if (connection) { connection.innerHTML = `<span class="dot ${active() ? 'ready' : ''}"></span>`; connection.title = t(active() ? 'running' : 'idle'); }
     const terminalState = $('terminal-state'); if (terminalState) terminalState.textContent = active() ? `${t(state.session.state)}　PID ${state.session.pid}` : state.session.state === 'exited' ? `${t('exited')}　${state.session.exit_code}` : t('noSession');
     const stop = $('stop-runtime'); if (stop) stop.disabled = !active() || state.session.state === 'stopping'; const force = $('force-runtime'); if (force) force.classList.toggle('is-hidden', state.session.state !== 'stopping');
@@ -702,7 +705,7 @@ const setupDestinations = {
     dynamics_calibration: {page:'calibration',tool:'gain'}, gravity_model: {page:'calibration',tool:'gravity'}, advanced_dynamics: {page:'calibration',tool:'dynamics'}, validation: {page:'workbench',tab:'control',anchor:'robot-operation'},
 };
 function setupActionHtml(action, label, primary = false) {
-    if (action?.page === 'profile_setup' && action.group) action = {...action,group:canonicalProfileGroup(action.group)};
+    if (action?.page === 'profile_setup' && action.group) action = {...action,section:action.group==='mapping'?'mapping':action.section,group:canonicalProfileGroup(action.group)};
     return `<button type="button" class="button ${primary ? 'primary' : ''}" data-setup-target="${esc(JSON.stringify(action))}">${esc(label)}</button>`;
 }
 function readinessConnectionState(editor = null) {
@@ -796,6 +799,8 @@ function bindReadinessSections() {
 }
 function profileGroupForField(field = '') {
     if (/^(hardware|profile_entry|profile\.)/.test(field)) return 'hardware';
+    if (field.startsWith('core.calibration.') || /^core\.control\.runtime\.(control_path|write_enabled|ctrl_frequency_hz)$/.test(field)) return 'hardware';
+    if (field === 'core.control.runtime.joint_acc_filter_alpha') return 'observation';
     if (/^core\.capability\.admittance\.(observer|calibration)/.test(field)) return 'observation';
     if (field.startsWith('core.capability.') || field.startsWith('core.control.')) return 'motion';
     return profileGroups.find(([, , key]) => field.startsWith('core.' + key))?.[0] || 'model';
@@ -804,12 +809,16 @@ async function openSetupTarget(action) {
     if (!action?.page) return;
     if(action.commissioning_task)state.commissioningContext={profile:JSON.stringify([state.config.profile_file,state.config.profile]),task:action.commissioning_task,path:action.commissioning_path || state.readiness?.commissioning?.selected_path};
     const before = {page:state.page,group:state.profileGroup,tool:state.calibrationEntry,tab:state.workbenchTab,
-        scroll:document.querySelector('.content')?.scrollTop || 0};
+        scroll:document.querySelector('.content')?.scrollTop || 0,view:capturePageView()};
         await navigate(action.page);
     if (state.page !== action.page) return; // An unsaved form may cancel navigation
     if (action.page === 'profile_setup') {
+        state.profileCenterView='edit';state.profileSearchQuery='';
         if (before.page !== 'profile_setup') state.setupReturn = before;
         state.profileGroup = canonicalProfileGroup(action.group || profileGroupForField(action.field));
+        if (state.profileGroup === 'hardware') state.profileHardwareSection = action.group === 'mapping' || action.section === 'mapping' || /^(core\.calibration\.|hardware\.damiao\.actuators\.)/.test(action.field || '') ? 'mapping' : 'connection';
+        if(action.field?.startsWith('core.control.controller.')||action.field?.startsWith('core.control.hold_compensation.')||action.field==='core.control.runtime.model_feedforward_mode')state.profileResponsePath='MIT';
+        else if(/^core\.capability\.admittance\.(controller|joint_enabled|validation\.velocity_tolerance)\./.test(action.field || ''))state.profileResponsePath='CSP';
         const parkingPath=action.field?.match(/^core\.shutdown\.paths\.(MIT|CSP)\./)?.[1];
         if(parkingPath){profileParkingPath();state.profileParkingPath=parkingPath;}
     }
@@ -853,7 +862,10 @@ async function returnToPreparation() {
     if (state.page === 'profile_setup') return;
     state.setupReturn = null;
     if (previous && state.page === previous.page) {state.profileGroup=previous.group;state.calibrationEntry=previous.tool;state.workbenchTab=previous.tab;render();}
-    if (previous && state.page === previous.page) document.querySelector('.content')?.scrollTo({top:previous.scroll,behavior:'instant'});
+    if (previous && state.page === previous.page) {
+        if(previous.view)restorePageView(previous.view);
+        else document.querySelector('.content')?.scrollTo({top:previous.scroll,behavior:'instant'});
+    }
 }
 
 function commissioningTask(stepId, path = state.readiness?.commissioning?.selected_path) {
@@ -925,10 +937,10 @@ async function returnToCommissioning() {
     await navigate('lifecycle');if(state.page!=='lifecycle')return;
     if(alreadyThere)state.readiness=await api.request('readiness',{config:state.config});
     state.commissioningViewedPath=context.path;
-    render();
-    const task=document.querySelector(`[data-commissioning-task="${CSS.escape(context.task)}"]`),fold=task?.closest('details');
-    for(let node=fold;node;node=node.parentElement)if(node instanceof HTMLDetailsElement)node.open=true;
-    requestAnimationFrame(()=>fold?.scrollIntoView({block:'start',behavior:'instant'}));
+    const view=onboardingState();view.view='task';view.task=context.task;
+    render({resetScroll:true});
+    window.serialArmStudio?.enterSurface(document.querySelector('.onboarding-step-editor'));
+    document.querySelector('.onboarding-task-heading')?.focus({preventScroll:true});
 }
 async function syncInspectionPermissions(readiness) {
     if(readiness.requires_reconnect!==true)return false;
@@ -936,11 +948,7 @@ async function syncInspectionPermissions(readiness) {
     const fresh=await api.request('profile_editor_load',{config:state.config});
     state.capabilityProfile=structuredClone(fresh);
     if(state.profileEditor){
-        const draft=state.profileEditor;
-        draft.core.model.gravity_model_validated=fresh.core.model.gravity_model_validated;
-        const validation=fresh.core.capability?.admittance?.validation;
-        if(validation&&draft.core.capability?.admittance)draft.core.capability.admittance.validation=structuredClone(validation);
-        state.profileEditor={...fresh,core:draft.core,hardware:draft.hardware,profile_entry:draft.profile_entry};
+        rebaseProfileDraft(fresh,['core.model.gravity_model_validated','core.capability.admittance.validation.observation_validated','core.capability.admittance.validation.response_validated']);
     }
     return true;
 }
@@ -960,6 +968,7 @@ async function saveCommissioningInspection(task) {
     await refreshLibrary();render();
 }
 function bindCommissioningTasks() {
+    bindOnboardingNavigation();
     document.querySelectorAll('[data-commissioning-task]').forEach(task=>{
         const step=commissioningTask(task.dataset.commissioningTask,task.dataset.commissioningTaskPath);
         if(!step)return;
@@ -987,29 +996,91 @@ function commissioningTaskStatusHtml(step) {
     const [label,tone]=labels[step.evidence_status] || [busyText('待完成','Pending'),'pending'];
     return readinessStatusHtml(label,tone);
 }
+function onboardingState() {
+    const profile = JSON.stringify([state.config.profile_file,state.config.profile]);
+    if (state.onboarding?.profile !== profile) state.onboarding = {profile,view:'overview',task:'',scroll:0};
+    return state.onboarding;
+}
+function onboardingLabel(step) {
+    const labels = {model_connection:['模型与能力','Model and capabilities'],mapping_safety:['映射与边界','Mapping and limits'],startup_hold:['保持与逐轴运动','Holding and joint motion'],stop_fault_check:['停止与故障检查','Stopping and faults']};
+    return labels[step.id]?.[state.language==='en'?1:0] || (state.language==='en'?step.label_en || step.label:step.label);
+}
+function onboardingSteps(path = state.commissioningViewedPath || state.readiness?.commissioning?.selected_path) {
+    const commissioning=state.readiness?.commissioning;
+    return {foundation:commissioning?.groups?.find(group=>group.id==='foundation')?.steps || [],path:commissioning?.paths?.[path]?.steps || [],optional:commissioning?.groups?.find(group=>group.id==='optional')?.steps || []};
+}
+function onboardingOpenTask(task, path = state.readiness?.commissioning?.selected_path) {
+    const view=onboardingState();
+    if(view.view==='overview')view.scroll=document.querySelector('.content')?.scrollTop || 0;
+    state.commissioningViewedPath=path;
+    view.view='task';view.task=task;
+    render({resetScroll:true});
+    document.querySelector('.onboarding-task-heading')?.focus({preventScroll:true});
+}
+function onboardingTaskButton(step, {index='',compact=false}={}) {
+    return `<button type="button" class="onboarding-task-link ${compact?'is-compact':''}" data-onboarding-task="${esc(step.id)}" data-onboarding-path="${esc(step.control_path || state.readiness.commissioning.selected_path)}"><span class="onboarding-step-index" aria-hidden="true">${step.completed?icon('readiness'):esc(index || '→')}</span><span class="onboarding-task-label"><strong>${esc(onboardingLabel(step))}</strong>${compact?'':`<small>${esc(state.language==='en'?step.description_en || step.description:step.description)}</small>`}</span>${commissioningTaskStatusHtml(step)}${icon('arrow')}</button>`;
+}
+function onboardingNavigationHtml() {
+    const view=onboardingState().view, optional=onboardingSteps().optional.some(step=>step.id===onboardingState().task), selected=view==='task'?(optional?'goals':'foundation'):view;
+    return `<nav class="onboarding-navigation" aria-label="${busyText('接入与优化视图','Commissioning views')}">${[['overview','接入总览','Overview'],['foundation','基础接入','Foundation'],['goals','优化目标','Optimization goals']].map(([key,zh,en])=>`<button type="button" class="button ${selected===key?'active':''}" data-onboarding-view="${key}" ${selected===key?'aria-current="page"':''}>${busyText(zh,en)}</button>`).join('')}</nav>`;
+}
+function onboardingOverviewHtml() {
+    const commissioning=state.readiness.commissioning,steps=onboardingSteps(commissioning.selected_path),required=[...steps.foundation,...steps.path],complete=required.filter(step=>step.completed).length,next=required.find(step=>!step.completed);
+    const nextAction=next?`<button type="button" class="button primary" data-onboarding-task="${esc(next.id)}" data-onboarding-path="${esc(commissioning.selected_path)}">${busyText('继续此任务','Continue task')}${icon('arrow')}</button>`:`<button type="button" class="button primary" data-onboarding-view="goals">${busyText('选择优化目标','Choose an optimization goal')}${icon('arrow')}</button>`;
+    return `<div class="onboarding-overview"><section class="onboarding-next"><div><span class="eyebrow">${busyText('下一步','Next task')}</span><h2>${esc(next?onboardingLabel(next):busyText('基础接入已完成','Foundation commissioning complete'))}</h2><p class="hint">${esc(next?(state.language==='en'?next.description_en || next.description:next.description):busyText('进入运行，或根据实际问题选择下一项优化','Start operating or choose an optimization from the issue you want to improve'))}</p></div>${nextAction}</section><div class="onboarding-overview-grid"><section class="onboarding-checklist" data-commissioning-group="foundation"><div class="onboarding-section-heading"><h2>${busyText('基础接入','Foundation commissioning')}</h2><span class="hint">${busyText(`必需任务 ${complete} / ${required.length}`,`Required tasks ${complete} / ${required.length}`)}</span></div><p class="hint onboarding-progress-label">${busyText('共同基础 → 路径专项','Foundation → control-path tasks')}</p><div class="onboarding-progress" role="progressbar" aria-label="${busyText('基础接入进度','Foundation progress')}" aria-valuemin="0" aria-valuemax="${required.length}" aria-valuenow="${complete}"><span style="width:${required.length?100*complete/required.length:0}%"></span></div>${steps.foundation.map((step,index)=>onboardingTaskButton(step,{index:String(index+1).padStart(2,'0')})).join('')}<div class="onboarding-path-row" data-commissioning-group="path"><div><strong>${esc(commissioning.selected_path)} ${busyText('路径专项','path commissioning')}</strong><small>${busyText(`${steps.path.filter(step=>step.completed).length} / ${steps.path.length} 项完成`,`${steps.path.filter(step=>step.completed).length} / ${steps.path.length} tasks complete`)}</small></div><button type="button" class="button" data-onboarding-task="${esc((steps.path.find(step=>!step.completed) || steps.path[0])?.id || '')}" data-onboarding-path="${esc(commissioning.selected_path)}">${busyText('查看专项','View path tasks')}${icon('arrow')}</button></div><div class="onboarding-overview-goals"><div class="onboarding-section-heading"><h2>${busyText('按目标进一步优化','Improve by goal')}</h2><button type="button" class="button" data-onboarding-view="goals">${busyText('查看优化工作流','View optimization tasks')}${icon('arrow')}</button></div><div class="onboarding-goal-cards">${[['geometry','定位更准','Improve positioning','geometry'],['workbench:tuning','响应更稳','Improve response','calibration'],['calibration:gravity','重力更准确','Improve gravity model','model'],['workbench:monitor','反馈更可信','Improve feedback','diagnostics']].map(([route,zh,en,ico])=>`<button type="button" class="onboarding-goal-card" data-studio-route="${route}">${icon(ico)}<strong>${busyText(zh,en)}</strong>${icon('arrow')}</button>`).join('')}</div></div></section><aside class="onboarding-overview-aside"><section class="onboarding-current"><h2>${busyText('当前机械臂','Current manipulator')}</h2><dl><dt>Profile</dt><dd>${esc(state.config.profile || '—')}</dd><dt>${busyText('执行路径','Execution path')}</dt><dd>${esc(profileOptionLabel(commissioning.selected_path))}</dd><dt>${busyText('本次连接','Current feedback')}</dt><dd data-readiness-live="feedback">${readinessFeedbackStatusHtml()}</dd></dl>${setupActionHtml({page:'profile_setup'},busyText('打开参数配置','Open parameters'))}</section><section class="onboarding-goals-invitation" data-commissioning-group="optional"><h2>${busyText('按目标优化','Optimize by goal')}</h2><p class="hint">${busyText('定位精度、运动响应、模型与停放分别进入专项任务','Choose a task for positioning, response, models or parking')}</p><button type="button" class="button" data-onboarding-view="goals">${busyText('查看优化目标','View optimization goals')}${icon('arrow')}</button></section></aside></div><section class="onboarding-session"><h2>${busyText('本次连接与配置','Connection and configuration')}</h2>${readinessConnectionHtml(readinessConnectionState())}<p class="hint">${busyText('检查记录随 Profile 保留；连接状态与实测反馈按当前会话更新','Inspection records stay with the Profile; connection and feedback follow the current session')}</p></section></div>`;
+}
+function onboardingGoalsHtml() {
+    const steps=onboardingSteps(),groups=[
+        [busyText('定位与几何','Positioning and geometry'),busyText('核对 TCP、重复到位与外部参考','Check TCP, repeated positioning and external references'),['geometry_calibration','position_repeatability','absolute_accuracy']],
+        [busyText('控制与响应','Control and response'),busyText('按当前执行路径检查跟踪、交互与释放响应','Inspect tracking, interaction and release response for the selected path'),state.readiness.commissioning.selected_path==='CSP'?['observation_validation','admittance_response','csp_interaction']:['mit_tracking_validation','mit_interaction']],
+        [busyText('模型与补偿','Models and compensation'),busyText('使用采样、候选比较和独立验证改进模型','Improve the model with samples, candidate comparisons and independent validation'),['gravity_correction','dynamics_calibration']],
+        [busyText('停放与退出','Parking and exit'),busyText('核对停放路径、到位与退出条件','Review parking paths, arrival and exit conditions'),['parking_validation']]
+    ],all=[...steps.optional,...steps.path];
+    return `<div class="onboarding-goals"><p class="parameter-guidance">${busyText('按实际问题选择任务；优化记录与基础接入记录分别保留','Choose a task for the issue at hand; optimization and foundation records remain separate')}</p>${groups.map(([title,description,ids])=>`<section class="onboarding-goal-group"><header><h2>${title}</h2><p class="hint">${description}</p></header><div>${ids.map(id=>all.find(step=>step.id===id)).filter(Boolean).map(step=>onboardingTaskButton(step,{compact:true})).join('')}</div></section>`).join('')}</div>`;
+}
+function onboardingTaskContextHtml(step) {
+    const info=state.info || {},model=state.profileEditor?.core?.model || state.capabilityProfile?.core?.model || {};
+    if(step.id==='model_connection')return `<section class="onboarding-model-summary"><dl><dt>${busyText('受控链','Control chain')}</dt><dd>${esc(info.base_frame || model.base_frame || '—')} → ${esc(info.tool_frame || model.tool_frame || '—')}</dd><dt>${busyText('受控关节','Controlled joints')}</dt><dd>${esc((state.profileEditor?.joint_names || model.joint_names || info.joint_names || []).join('、') || '—')}</dd><dt>${busyText('硬件驱动','Hardware driver')}</dt><dd>${esc(info.hardware_plugin || state.profileEditor?.profile_entry?.hardware?.plugin || '—')}</dd></dl><div class="workspace-actions">${setupActionHtml({page:'profile_setup',group:'model',commissioning_task:step.id},busyText('模型参数','Model parameters'))}${setupActionHtml({page:'profile_setup',group:'hardware',commissioning_task:step.id},busyText('核对硬件配置','Review hardware settings'))}</div></section>`;
+    return '';
+}
+function onboardingTaskPageHtml() {
+    const view=onboardingState(),commissioning=state.readiness.commissioning,path=state.commissioningViewedPath || commissioning.selected_path,steps=onboardingSteps(path);
+    let step=[...steps.foundation,...steps.path,...steps.optional].find(item=>item.id===view.task);
+    if(!step){step=[...steps.foundation,...steps.path].find(item=>!item.completed) || steps.foundation[0];view.task=step?.id || '';}
+    if(!step)return '';
+    const optional=steps.optional.some(item=>item.id===step.id),pathTask=steps.path.some(item=>item.id===step.id),items=optional?steps.optional:[...steps.foundation,...steps.path];
+    const index=items.findIndex(item=>item.id===step.id),next=items[index+1];
+    const picker=`<label class="onboarding-step-picker"><span>${busyText('当前任务','Current task')}</span><select data-onboarding-task-select>${items.map(item=>`<option value="${esc(item.id)}" data-path="${esc(item.control_path || path)}" ${item.id===step.id?'selected':''}>${esc(onboardingLabel(item))}${item.completed?busyText('（已完成）',' (Complete)'):''}</option>`).join('')}</select></label>`;
+    const taskNavigation=optional?steps.optional.map(item=>onboardingTaskButton(item,{compact:true})).join(''):steps.foundation.map((item,i)=>onboardingTaskButton(item,{index:String(i+1).padStart(2,'0'),compact:true})).join('')+`<div class="onboarding-step-group-label">05　${busyText('路径专项','Control-path tasks')}</div>`+steps.path.map(item=>onboardingTaskButton(item,{compact:true})).join('');
+    const content=`<div class="onboarding-step-layout"><aside class="onboarding-step-navigation">${picker}<div class="onboarding-section-heading"><h2>${optional?busyText('优化任务','Optimization tasks'):busyText('基础接入','Foundation commissioning')}</h2></div><nav aria-label="${busyText('接入任务步骤','Commissioning task steps')}">${taskNavigation}</nav><p class="hint">${busyText('步骤可以往返；查看与编辑不以运动检查完成为前提','Steps can be revisited; viewing and editing do not require completed motion checks')}</p></aside><section class="onboarding-step-editor"><header class="onboarding-task-heading" tabindex="-1"><div><span class="eyebrow">${optional?busyText('优化任务','Optimization task'):pathTask?`${esc(path)} ${busyText('路径专项','path task')}`:busyText(`基础接入 ${index+1} / ${steps.foundation.length+1}`,`Foundation ${index+1} / ${steps.foundation.length+1}`)}</span><h2>${esc(onboardingLabel(step))}</h2></div>${commissioningTaskStatusHtml(step)}</header>${pathTask?commissioningPathHtml(commissioning,path):''}${onboardingTaskContextHtml(step)}${commissioningTaskHtml(step,step.control_path || path)}<footer class="onboarding-task-footer"><button type="button" class="button" data-onboarding-view="${optional?'goals':'overview'}">${busyText(optional?'返回优化目标':'返回接入总览',optional?'Back to goals':'Back to overview')}</button>${next?`<button type="button" class="button" data-onboarding-task="${esc(next.id)}" data-onboarding-path="${esc(path)}">${busyText('下一任务','Next task')}${icon('arrow')}</button>`:''}</footer></section></div>`;
+    return typeof studioContextWorkspaceHtml==='function'?studioContextWorkspaceHtml(content,'lifecycle'):content;
+}
 function newArmStagesHtml() {
     const commissioning=state.readiness?.commissioning;
-    if(!commissioning?.groups?.length)return `<section class="workspace-section commissioning-empty"><p class="hint">${busyText('重新读取当前 Profile 的接入状态','Refresh commissioning status for this Profile')}</p><button id="ready-refresh" class="button">${busyText('刷新检查','Refresh checks')}</button></section>`;
+    if(!commissioning?.groups?.length)return `<section class="workspace-section commissioning-empty"><p class="hint">${busyText('重新读取当前 Profile 的接入状态','Refresh commissioning status for this Profile')}</p></section>`;
     readinessDisclosurePreferences();
-    const en=state.language==='en',viewedPath=state.commissioningViewedPath || commissioning.selected_path;
-    const titles={foundation:busyText('一、共同基础','1　Common foundation'),path:busyText('二、路径专项','2　Control-path commissioning'),optional:busyText('三、可选提升','3　Optional improvements')};
-    return `<div class="commissioning-groups">${commissioning.groups.map(group=>{
-        const path=group.id==='path'?viewedPath:commissioning.selected_path;
-        const view=group.id==='path'?(commissioning.paths?.[path] || group):group;
-        const steps=(view.steps || []).map(step=>({...step,view_only:group.id==='path'&&path!==commissioning.selected_path}));
-        const required=steps.filter(step=>step.required),completed=required.filter(step=>step.completed).length;
-        const rows=steps.map(step=>{
-            const title=en?step.label_en || step.label:step.label;
-            const body=commissioningTaskHtml(step,path);
-            return readinessSectionHtml('step:'+path+':'+step.id,title,'',body,false,commissioningTaskStatusHtml(step));
-        }).join('');
-        const description=group.required===false?busyText('按任务选择，不影响基础接入完成','Choose as needed; not required for basic commissioning'):busyText(`必需步骤 ${completed} / ${required.length}`,`Required steps ${completed} / ${required.length}`);
-        const body=(group.id==='path'?commissioningPathHtml(commissioning,viewedPath):'')+rows;
-        return `<section class="commissioning-group" data-commissioning-group="${esc(group.id)}">${readinessSectionHtml('group:'+commissioning.selected_path+':'+group.id,titles[group.id] || (en?group.label_en:group.label),description,body,false,readinessStatusHtml(view.completed?busyText('已完成','Complete'):group.required===false?busyText('可选','Optional'):busyText('待完成','Pending'),view.completed?'ready':'pending'))}</section>`;
-    }).join('')}</div>`;
+    const view=onboardingState();
+    if(view.view==='foundation'){const steps=onboardingSteps();view.task=[...steps.foundation,...steps.path].find(step=>!step.completed)?.id || steps.foundation[0]?.id;view.view='task';}
+    return (view.view==='overview'?'':onboardingNavigationHtml())+(view.view==='task'?onboardingTaskPageHtml():view.view==='goals'?onboardingGoalsHtml():onboardingOverviewHtml());
 }
 function lifecyclePage() {
-    return pageHead('readiness','readinessDesc',`<button id="ready-control" class="button primary">${busyText('进入工作台','Open workspace')}</button>`)+`<div class="readiness-workspace">${newArmStagesHtml()}${readinessSectionHtml('connection',busyText('本次连接与配置条件','Connection and configuration'),busyText('历史结果保留；每次连接重新读取反馈','Saved results are retained; feedback is read after each connection'),readinessConnectionHtml(readinessConnectionState()),false)}</div>`;
+    return pageHead('readiness','readinessDesc',`<div class="actions"><button id="ready-refresh" class="button">${icon('refresh')}${busyText('刷新检查','Refresh checks')}</button><button id="ready-control" class="button primary">${busyText('进入运行','Open operation')}</button></div>`)+`<div class="readiness-workspace onboarding-workspace">${newArmStagesHtml()}</div>`;
+}
+function bindOnboardingNavigation() {
+    if(state.page!=='lifecycle')return;
+    const view=onboardingState();
+    document.querySelectorAll('[data-onboarding-task]').forEach(button=>{
+        const selected=view.view==='task'&&button.dataset.onboardingTask===view.task;
+        button.classList.toggle('active',selected);
+        if(selected)button.setAttribute('aria-current','step');
+        button.onclick=()=>onboardingOpenTask(button.dataset.onboardingTask,button.dataset.onboardingPath);
+    });
+    const picker=document.querySelector('[data-onboarding-task-select]');if(picker)picker.onchange=()=>onboardingOpenTask(picker.value,picker.selectedOptions[0]?.dataset.path);
+    document.querySelectorAll('[data-onboarding-view]').forEach(button=>button.onclick=()=>{
+        view.view=button.dataset.onboardingView;render({resetScroll:true});
+        window.serialArmStudio?.enterSurface(document.querySelector('.onboarding-overview,.onboarding-goals,.onboarding-step-editor'));
+        if(view.view==='overview')document.querySelector('.content')?.scrollTo({top:view.scroll,behavior:'instant'});
+    });
 }
 function refreshLifecycleBringup() {
     if(state.page!=='lifecycle')return;
@@ -1066,16 +1137,15 @@ async function showGainAdmission() {
 }
 // One authoritative draft is shared by creation and continued configuration
 const profileGroups = [
-    ['model', '模型与控制链', 'model'],
-    ['hardware', '硬件与总线', 'hardware'],
-    ['motion', '执行路径与响应', 'control'],
-    ['mapping', '关节映射', 'calibration'],
-    ['safety', '安全边界与故障', 'safety_policy'],
-    ['observation', '外力估计', 'capability.admittance'],
-    ['shutdown', '停放与退出策略', 'shutdown'],
+    ['model', '模型与机构', 'model'],
+    ['hardware', '硬件与关节映射', 'hardware'],
+    ['motion', '控制与响应', 'control'],
+    ['observation', '观测与估计', 'capability.admittance'],
+    ['safety', '运动与故障边界', 'safety_policy'],
+    ['shutdown', '停放与退出', 'shutdown'],
 ];
 function canonicalProfileGroup(group) {
-    return ['execution','runtime','gains','admittance'].includes(group) ? 'motion' : group || 'model';
+    return ['mapping','execution'].includes(group) ? 'hardware' : ['runtime','gains','admittance'].includes(group) ? 'motion' : group || 'model';
 }
 const profileEnums = {
     'core.control.runtime.model_feedforward_mode': ['NONE', 'GRAVITY', 'FULL_INVERSE_DYNAMICS'],
@@ -1287,6 +1357,7 @@ function validateProfileConstraint(path,value) {
     if(Number.isFinite(rule.max)&&value>rule.max)throw Error(busyText('不能大于 ','Must be at most ')+rule.max);
 }
 function profileField(path, value, labelOverride = '', shared = {}) {
+    profileSavedValues();
     const id = path.join('.');
     const fieldId = `profile-field-${encodeURIComponent(JSON.stringify(path))}`;
     const label = labelOverride || paramLabel(path.at(-1));
@@ -1514,10 +1585,9 @@ function bindAdmittanceEditor() {
         const params=admittanceSaveParams();
         const result=await api.request('workbench_config_save',{...params,expected_sha:state.savePreview.sha256});
         state.savePreview=null;
-        const current=state.profileEditor,fresh=await api.request('profile_editor_load',{config:state.config});
+        const fresh=await api.request('profile_editor_load',{config:state.config});
         state.capabilityProfile=structuredClone(fresh);
-        state.profileEditor={...fresh,core:current.core,hardware:current.hardware,profile_entry:current.profile_entry};
-        state.profileDirty=['core','hardware','profile_entry'].some(key=>JSON.stringify(current[key])!==JSON.stringify(fresh[key]));
+        rebaseProfileDraft(fresh,params.source==='draft'?params.fields.map(field=>'core.capability.admittance.'+field):[]);
         state.info=state.readiness?.info || state.info;
         // Keep other unsaved form fields; only the selected leaves were persisted
         state.readiness=await api.request('readiness',{config:state.config});
@@ -1629,12 +1699,12 @@ function profileHoldCompensationHtml(editor) {
 }
 function profileExecutionHtml(editor) {
     const runtime=editor.core.control.runtime;
-    return `<section class="calibration-step profile-execution-settings"><h3>${busyText('执行路径与连接','Execution path and connection')}</h3><div class="parameter-fields">${['control_path','write_enabled','ctrl_frequency_hz'].map(key=>profileField(['core','control','runtime',key],runtime[key])).join('')}</div><p class="hint">${busyText('切换后在下方编辑对应参数，两条路径的草稿均会保留；保存并重新连接后生效','Switch to edit the matching parameters below; both path drafts are retained. Save and reconnect to apply')}</p></section>`;
+    return `<section class="calibration-step profile-execution-settings"><h3>${busyText('执行路径与连接','Execution path and connection')}</h3><div class="parameter-fields">${['control_path','write_enabled','ctrl_frequency_hz'].map(key=>profileField(['core','control','runtime',key],runtime[key])).join('')}</div><p class="hint">${busyText('响应参数在“控制与响应”集中编辑；两条路径的草稿均会保留，保存并重新连接后生效','Edit response parameters in Control & response; both path drafts are retained. Save and reconnect to apply')}</p></section>`;
 }
-function profileMotionControlHtml(editor) {
-    const csp = editor.core.control.runtime.control_path === 'CSP', runtime = editor.core.control.runtime;
+function profileMotionControlHtml(editor, viewPath=editor.core.control.runtime.control_path) {
+    const csp = viewPath === 'CSP', runtime = editor.core.control.runtime;
     const commonKeys = ['ctrl_frequency_hz','write_enabled'];
-    const advanced = Object.fromEntries(Object.entries(runtime).filter(([key])=>!['control_path','model_feedforward_mode',...commonKeys].includes(key)));
+    const advanced = Object.fromEntries(Object.entries(runtime).filter(([key])=>!['control_path','model_feedforward_mode','joint_acc_filter_alpha',...commonKeys].includes(key)));
     return `<div class="profile-motion-control">${profileExecutionHtml(editor)}<div class="profile-path-response" data-profile-path-response="${runtime.control_path}">${csp ? profileAdmittanceHtml(editor) : profileGainPurposeHtml(editor)+`<section class="calibration-step"><h3>${busyText('动力学前馈','Dynamics feedforward')}</h3><div class="parameter-fields">${profileField(['core','control','runtime','model_feedforward_mode'],runtime.model_feedforward_mode)}</div></section>`+profileHoldCompensationHtml(editor)}<details class="calibration-locks"><summary>${busyText('高级运行参数','Advanced runtime settings')}</summary>${profileTree(advanced,['core','control','runtime'])}${!csp ? profileField(['core','control','controller','allow_full_cmd'],editor.core.control.controller.allow_full_cmd) : ''}</details></div></div>`;
 }
 function profileSafetyHtml(editor) {
@@ -1817,43 +1887,182 @@ function bindHardwareTools() {
         state.driverInspection=null;state.profileDirty=true;state.profileError='';render();
     });
 }
+function profileGroupTitle(key) {
+    return state.language === 'en' ? ({model:'Model & mechanism',hardware:'Hardware & joint mapping',motion:'Control & response',observation:'Observation & estimation',safety:'Motion & fault bounds',shutdown:'Parking & exit'}[key] || key) : profileGroups.find(item=>item[0]===key)?.[1] || key;
+}
+function profileSavedValues() {
+    const editor=state.profileEditor;
+    if(!editor)return {};
+    // Older/offline fixtures can initialize the same baseline before the first edit.
+    editor.saved_values ||= structuredClone({core:editor.core,hardware:editor.hardware,profile_entry:editor.profile_entry});
+    return editor.saved_values;
+}
+function profileChanges() {
+    const changes=[], saved=profileSavedValues(), editor=state.profileEditor;
+    if(!editor)return changes;
+    const visit=(before,after,path)=>{
+        if(JSON.stringify(before)===JSON.stringify(after))return;
+        if(after&&typeof after==='object'&&!Array.isArray(after)&&(!before||typeof before==='object'&&!Array.isArray(before))) {
+            for(const key of new Set([...Object.keys(before || {}),...Object.keys(after)]))visit(before?.[key],after[key],[...path,key]);
+        } else changes.push({path,id:path.join('.'),before,after,group:profileGroupForField(path.join('.'))});
+    };
+    for(const key of ['core','hardware','profile_entry'])visit(saved[key],editor[key],[key]);
+    for(const [id,error] of Object.entries(state.profileFieldErrors || {}))if(!changes.some(item=>item.id===id))changes.push({path:id.split('.'),id,before:profileGet(saved,id.split('.')),after:state.profileRawInputs?.[id],group:profileGroupForField(id),error});
+    return changes;
+}
+function profileAssignPath(root,path,value) {
+    let target=root;
+    for(const key of path.slice(0,-1)){target[key] ||= {};target=target[key];}
+    if(value===undefined)delete target[path.at(-1)];else target[path.at(-1)]=structuredClone(value);
+}
+function rebaseProfileDraft(fresh,savedPrefixes=[]) {
+    const current=state.profileEditor,changes=profileChanges();
+    const saved=id=>savedPrefixes.some(prefix=>id===prefix||id.startsWith(prefix+'.'));
+    fresh.saved_values ||= structuredClone({core:fresh.core,hardware:fresh.hardware,profile_entry:fresh.profile_entry});
+    for(const item of changes)if(!item.error&&!saved(item.id))profileAssignPath(fresh,item.path,item.after);
+    if(changes.some(item=>item.path[0]==='hardware'&&!saved(item.id))){fresh.hardware_imported=current.hardware_imported;fresh.hardware_import_source=current.hardware_import_source;}
+    state.profileEditor=fresh;
+    for(const map of [state.profileFieldErrors,state.profileRawInputs])for(const id of Object.keys(map || {}))if(saved(id))delete map[id];
+    state.profileDirty=profileChanges().length>0;
+}
+function profileValueText(value) {
+    if(value===undefined)return busyText('未设置','Not set');
+    if(typeof value==='boolean')return value?'ON':'OFF';
+    return typeof value==='object'?JSON.stringify(value):String(value);
+}
+function profileFieldTitle(path) {
+    const names=state.profileEditor?.joint_names || [],joint=path.find(key=>names.includes(key));
+    const key=joint===path.at(-1)?path.at(-2):path.at(-1);
+    return paramLabel(key)+(joint?' · '+joint:'');
+}
+function profileReviewHtml(changes) {
+    const selection=state.profileReviewSelection || (state.profileReviewSelection=changes.filter(item=>!item.error).map(item=>item.id));
+    return `<section class="profile-review"><div class="setup-editor-head"><div><h2 class="section-title">${busyText('改动审阅','Review changes')}</h2><p class="hint">${busyText('勾选要保存的字段；其余修改继续保留在共享草稿中','Select fields to save; all other changes remain in the shared draft')}</p></div><button type="button" class="button" data-profile-review-close>${busyText('返回编辑','Back to editing')}</button></div><div class="profile-review-toolbar"><label class="profile-review-select-all"><input type="checkbox" data-profile-review-all ${changes.length&&changes.every(item=>selection.includes(item.id))?'checked':''}>${busyText('全选改动','Select all changes')}</label><span data-profile-selection-count>${selection.filter(id=>changes.some(item=>item.id===id)).length} / ${changes.length} ${busyText('项已选择','selected')}</span></div>${changes.length?`<div class="table-scroll profile-review-scroll"><table class="workspace-table profile-review-table"><thead><tr><th>${busyText('保存','Save')}</th><th>${busyText('字段与归属','Field and group')}</th><th>${busyText('已保存值','Saved value')}</th><th>${busyText('草稿值','Draft value')}</th><th>${busyText('操作','Actions')}</th></tr></thead><tbody>${changes.map(item=>`<tr><td><input type="checkbox" data-profile-review-field="${esc(item.id)}" aria-label="${esc(busyText('保存 ','Save ')+item.id)}" ${selection.includes(item.id)?'checked':''}></td><th><span>${esc(profileGroupTitle(item.group))} / ${esc(profileFieldTitle(item.path))}</span><code>${esc(item.id)}</code></th><td><code>${esc(profileValueText(item.before))}</code></td><td><code>${esc(profileValueText(item.after))}</code>${item.error||state.profileFieldErrors?.[item.id]?`<p class="parameter-error">${esc(item.error || state.profileFieldErrors[item.id])}</p>`:''}</td><td><div class="profile-review-row-actions">${setupActionHtml({page:'profile_setup',field:item.id},busyText('定位','Locate'))}<button type="button" class="button" data-profile-revert="${esc(item.id)}">${busyText('撤销','Revert')}</button></div></td></tr>`).join('')}</tbody></table></div>`:`<div class="empty-state">${busyText('没有未保存的改动','No unsaved changes')}</div>`}<footer class="profile-review-footer"><span>${busyText('保存到 Profile；当前运行会话保持原值','Save to the Profile; the current session keeps its running values')}</span><button type="button" class="button primary" data-profile-save-selected ${selection.length?'':'disabled'}>${busyText('保存所选字段','Save selected fields')}</button></footer></section>`;
+}
+function profileCenterBody(editor,key) {
+    if(key==='hardware') {
+        const mapping=state.profileHardwareSection==='mapping',hardware=structuredClone(editor.hardware || {});
+        if(hardware.damiao)delete hardware.damiao.actuators;
+        const complete=editor.profile_entry?.hardware?.plugin==='serial_arm_hardware_damiao'&&profileJointTemplateMissing(editor,'hardware')?`<button type="button" class="button" data-profile-complete="hardware">${busyText('补齐执行器字段','Add missing actuator fields')}</button>`:'';
+        return `<div class="segmented profile-subtabs" role="group" aria-label="${busyText('硬件与映射分类','Hardware and mapping sections')}"><button type="button" data-profile-hardware-section="connection" class="${mapping?'':'active'}" aria-pressed="${!mapping}">${busyText('驱动、总线与执行路径','Driver, buses and execution path')}</button><button type="button" data-profile-hardware-section="mapping" class="${mapping?'active':''}" aria-pressed="${mapping}">${busyText('关节与执行器映射','Joint and actuator mapping')}</button></div>${mapping?`<section class="calibration-step"><h3>${busyText('执行器对应','Actuator assignments')}</h3>${complete}${profileJointTableHtml(editor,'hardware') || `<p class="hint">${busyText('先在驱动与总线页导入或初始化硬件配置','Import or initialize hardware in the driver and buses section first')}</p>`}</section><section class="calibration-step"><h3>${busyText('方向、比例与零位','Direction, ratios and zero offsets')}</h3>${profileJointTemplateMissing(editor,'mapping')?`<button type="button" class="button" data-profile-complete="mapping">${busyText('补齐映射字段','Add missing mapping fields')}</button>`:''}${profileJointTableHtml(editor,'mapping')}</section>`:`<section class="calibration-step"><h3>${busyText('硬件驱动','Hardware driver')}</h3><div class="parameter-fields">${profileField(['profile_entry','hardware','plugin'],editor.profile_entry?.hardware?.plugin || '')}</div>${profileHardwareToolsHtml(editor)}${!Object.keys(hardware).length?`<button id="profile-init-damiao" class="button">${busyText('初始化达妙驱动配置','Initialize Damiao driver configuration')}</button>`:profileTree(hardware,['hardware'])}</section>${profileExecutionHtml(editor)}`}`;
+    }
+    if(key==='motion')return `<div class="segmented profile-subtabs" role="group" aria-label="${busyText('响应参数路径','Response parameter path')}">${['MIT','CSP'].map(path=>`<button type="button" data-profile-response-path="${path}" class="${path===(state.profileResponsePath || editor.core.control.runtime.control_path)?'active':''}" aria-pressed="${path===(state.profileResponsePath || editor.core.control.runtime.control_path)}">${path==='MIT'?busyText('MIT 阻抗与前馈','MIT impedance and feedforward'):busyText('CSP 导纳响应','CSP admittance response')}</button>`).join('')}</div><div class="profile-control-context"><span>${busyText('当前草稿执行路径','Draft execution path')} <strong>${esc(editor.core.control.runtime.control_path)}</strong></span>${setupActionHtml({page:'profile_setup',group:'hardware',field:'core.control.runtime.control_path'},busyText('修改执行路径','Change execution path'))}</div>${profileMotionControlHtml(editor,state.profileResponsePath || editor.core.control.runtime.control_path).replace(profileExecutionHtml(editor),'')}`;
+    if(key==='observation')return `<section class="calibration-step"><h3>${busyText('采样与滤波','Sampling and filtering')}</h3><p class="hint">${busyText('控制采样频率由硬件连接组统一配置','Control sampling frequency is configured in the hardware group')}</p>${setupActionHtml({page:'profile_setup',field:'core.control.runtime.ctrl_frequency_hz'},busyText('查看采样频率','View sampling frequency'))}${'joint_acc_filter_alpha' in editor.core.control.runtime?`<div class="parameter-fields">${profileField(['core','control','runtime','joint_acc_filter_alpha'],editor.core.control.runtime.joint_acc_filter_alpha)}</div>`:`<button class="button" id="profile-add-filter">${busyText('添加加速度滤波系数','Add acceleration filter')}</button>`}</section>${profileObservationHtml(editor)}`;
+    if(key==='safety')return profileSafetyHtml(editor)+(!('max_effort_override' in editor.core.safety_policy)?`<button class="button" id="profile-add-effort">${busyText('添加广义力预算','Add effort limits')}</button>`:'')+(!('require_continuous_cmd' in editor.core.safety_policy)?`<button class="button" id="profile-add-continuity">${busyText('添加命令连续性配置','Add command continuity check')}</button>`:'')+profileUrdfLimitsHtml(editor);
+    if(key==='shutdown')return profileShutdownHtml(editor);
+    const model=editor.core.model;
+    return profileTree({...Object.fromEntries(Object.entries(model).filter(([name])=>!['gravity_model_validated','joint_names'].includes(name))),joint_names:model.joint_names,gravity_model_validated:model.gravity_model_validated},['core','model'])+(!('gravity_correction_path' in model)?`<button class="button" id="profile-add-correction">${busyText('添加重力校正文件路径','Add gravity correction file')}</button>`:'')+`<div class="workspace-actions">${setupActionHtml({page:'calibration',entry:'gravity_verify'},busyText('打开重力模型验证','Open gravity verification'))}</div>`+profileUrdfLimitsHtml(editor);
+}
+function profileSearchResultsHtml(query) {
+    const terms=query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean),results=[];
+    const walk=(value,path)=>{
+        if(value&&typeof value==='object'&&!Array.isArray(value)){for(const [key,child] of Object.entries(value))walk(child,[...path,key]);return;}
+        const id=path.join('.'),group=profileGroupForField(id),text=[id,...path.map(paramLabel),profileGroupTitle(group)].join(' ').toLocaleLowerCase();
+        if(/^profile_entry\.(?!hardware\.plugin$)/.test(id)||/^core\.safety_policy\.(max_kp_override|max_kd_override)\./.test(id)||/^core\.shutdown\.(compliant_phase_ratio|relaxed_tolerance_ratio)$/.test(id)||/^core\.capability\.admittance\.validation\.(observation_validated|response_validated)$/.test(id))return;
+        if(terms.every(term=>text.includes(term)))results.push({id,path,group,value});
+    };
+    for(const key of ['core','hardware','profile_entry'])walk(state.profileEditor[key],[key]);
+    return `<p class="hint">${results.length} ${busyText('个匹配字段','matching fields')}</p><div class="profile-search-list">${results.map(item=>`<button type="button" class="profile-search-result" data-profile-search-target="${esc(item.id)}"><span><strong>${esc(profileFieldTitle(item.path))}</strong><small>${esc(profileGroupTitle(item.group))}</small><code>${esc(item.id)}</code></span><code>${esc(profileValueText(item.value))}</code></button>`).join('')}</div>`;
+}
 function profileSetupPage() {
-    const e = state.profileEditor;
-    if(e&&!state.capabilityProfile&&!state.profileDirty)state.capabilityProfile=structuredClone(e);
-    if (!e) return pageHead('profileSetup', 'profileSetupSubtitle') + `<div class="empty-state">${state.language === 'en' ? 'Loading configuration' : '正在加载机械臂参数'}</div>`;
-    const key = canonicalProfileGroup(state.profileGroup);
-    const current = profileGroups.find(g => g[0] === key) || profileGroups[0];
-    const value = key === 'hardware' ? e.hardware : profileGet(e.core, current[2].split('.'));
-    const info = key === 'motion' ? busyText('选择阻抗 + MIT 或导纳 + CSP，在同页配置对应响应','Choose impedance + MIT or admittance + CSP and configure its response here') :
-        key === 'model' ? (state.language === 'en' ? 'URDF model and joint ordering are shared by all groups' : '模型和受控关节顺序由全部参数分组共享') :
-            key === 'hardware' ? (state.language === 'en' ? 'Select an installed driver that supports the actuators, then configure its bus and actuator assignments' : '选择支持当前执行器的已安装驱动，再填写对应的总线与执行器映射') : '';
-    const profilePlugin = profileField(['profile_entry', 'hardware', 'plugin'], e.profile_entry?.hardware?.plugin || '');
-    const optional = [
-
-        key === 'model' && !('gravity_correction_path' in e.core.model) ? `<button class="button" id="profile-add-correction">${state.language === 'en' ? 'Add optional correction path' : '添加可选重力校正文件路径'}</button>` : '',
-        key === 'safety' && !('max_effort_override' in e.core.safety_policy) ? `<button class="button" id="profile-add-effort">${state.language === 'en' ? 'Add optional effort limits' : '添加可选广义力预算'}</button>` : '',
-        key === 'motion' && !('joint_acc_filter_alpha' in e.core.control.runtime) ? `<button class="button" id="profile-add-filter">${state.language === 'en' ? 'Add acceleration filter' : '添加加速度滤波系数'}</button>` : '',
-        key === 'safety' && !('require_continuous_cmd' in e.core.safety_policy) ? `<button class="button" id="profile-add-continuity">${state.language === 'en' ? 'Add command continuity check' : '添加命令连续性配置'}</button>` : '',
-    ].join('');
-    const noHardware = key === 'hardware' && !Object.keys(e.hardware || {}).length;
-    const completeHardware = (e.profile_entry?.hardware?.plugin === 'serial_arm_hardware_damiao' && (!e.hardware?.damiao || !Object.keys(e.hardware?.buses || {}).length || profileJointTemplateMissing(e,'hardware'))) ? `<button type="button" class="button" data-profile-complete="hardware">${busyText('补齐缺少的硬件字段','Add missing hardware fields')}</button>` : '';
-    const completeMapping = key === 'mapping' && profileJointTemplateMissing(e,'mapping') ? `<button type="button" class="button" data-profile-complete="mapping">${busyText('补齐缺少的映射字段','Add missing mapping fields')}</button>` : '';
-    const hardwarePluginId = e.profile_entry?.hardware?.plugin || '';
-    const hardwareInitialization = !hardwarePluginId || hardwarePluginId === 'serial_arm_hardware_damiao' ? `<button id="profile-init-damiao" class="button">${hardwarePluginId ? busyText('初始化达妙驱动配置','Initialize Damiao driver configuration') : busyText('使用内置达妙驱动并初始化','Use the built-in Damiao driver and initialize')}</button>` : '';
-    const hardwarePanel = noHardware ? `<div class="parameter-empty">${busyText('尚无硬件参数，请导入所选驱动对应的配置 YAML','Hardware parameters are empty; import the configuration YAML for the selected driver')}${hardwareInitialization}</div>` : profileHardwareHtml(e);
-    const orderedModel = key === 'model' ? {...Object.fromEntries(Object.entries(value).filter(([name])=>!['gravity_model_validated','joint_names'].includes(name))),joint_names:value.joint_names,gravity_model_validated:value.gravity_model_validated} : value;
-    const body = (key === 'hardware' ? `${profilePlugin}${profileHardwareToolsHtml(e)}${completeHardware}${hardwarePanel}` : key === 'motion' ? profileMotionControlHtml(e) : key === 'observation' ? profileObservationHtml(e) : key === 'safety' ? profileSafetyHtml(e) : key === 'shutdown' ? profileShutdownHtml(e) : key === 'mapping' && e.core.calibration?.joints ? profileJointTableHtml(e,'mapping') : profileTree(orderedModel, ['core', ...current[2].split('.')])) + (key === 'model' ? `<div class="workspace-actions">${setupActionHtml({page:'calibration',entry:'gravity_verify'},busyText('打开重力模型专用验证','Open dedicated gravity verification'))}</div>` : '') + (key === 'safety' || key === 'model' ? profileUrdfLimitsHtml(e) : '');
-    const changed = state.profileDirty;
-    const backAction = `<button type="button" id="profile-return-ready" class="button">${busyText('重新检查并返回','Recheck and return')}</button>`;
-    const err = state.profileError ? `<div class="parameter-error" role="alert">${esc(state.profileError)}</div>` : '';
-    const sectionTitle = state.language === 'en' ? ({model:'Model and control chain',hardware:'Hardware and buses',mapping:'Joint mapping',safety:'Safety bounds and faults',motion:'Execution path and response',observation:'External effort estimation',shutdown:'Parking and exit policy'}[key]) : current[1];
-    const sourcePath = key === 'hardware' ? e.hardware_path : e.core_path;
-    return (state.createdProfileWizard ? descriptionStepper(4) + `<div class="wizard-profile-note">${t('newHardwareHint')}</div>` : '') + `<header class="page-head profile-page-head"><div class="page-heading"><h1 class="page-title">${t('profileSetup')} <span class="profile-heading-name">/ ${esc(state.config.profile || e.profile || 'Profile')}</span></h1></div></header>` + `<div class="profile-settings"><section class="setup-save-context" aria-label="${busyText('参数保存','Save configuration')}"><div class="profile-save-summary"><div class="profile-value-states"><span><small>${busyText('草稿','Draft')}</small><span id="profile-dirty-state" role="status">${changed?busyText('有未保存修改','Unsaved changes'):busyText('与保存值一致','Matches saved values')}</span></span><span><small>${busyText('磁盘','Saved')}</small><span>${state.profileSaveNotice?busyText('已保存','Saved'):busyText('已加载','Loaded')}</span></span><span><small>${busyText('运行会话','Session')}</small><span>${state.profileSavedForSession&&workbenchConnected()?busyText('重新连接后应用','Reconnect to apply'):workbenchConnected()?busyText('已连接，运行值见工作台','Connected; inspect running values in workspace'):busyText('未连接','Disconnected')}</span></span></div><small class="profile-save-help">${busyText('保存至磁盘；重新连接后应用到运行会话','Save to disk; reconnect to apply to the runtime session')}</small></div><div class="parameter-top-actions">${backAction}<button id="profile-reload" class="button">${state.language === 'en' ? 'Reload' : '重新加载'}</button><button id="profile-save" class="button primary">${t('saveProfile')}</button></div></section>${gravityValidationNoticeHtml(e)}<section class="setup-inspector"><div id="profile-guide-container">${profileGuidanceHtml(e)}</div><div class="setup-reference-notes">${profileUnitsNoticeHtml(e)}<details class="parameter-source" id="profile-configuration-source"><summary class="profile-native-summary">${busyText('配置来源','Configuration source')}</summary><code data-profile-source-path>${esc(sourcePath)}</code></details></div></section><section class="parameter-layout setup-editor"><aside class="setup-sidebar"><div class="setup-group-compact"><label for="profile-group-select">${busyText('参数分组','Configuration group')}</label><select id="profile-group-select" data-profile-group-select>${profileGroups.map(([id,title])=>`<option value="${id}" ${id===key?'selected':''}>${esc(state.language==='en'?({model:'Model and control chain',hardware:'Hardware and buses',mapping:'Joint mapping',safety:'Safety bounds and faults',motion:'Execution path and response',observation:'External effort estimation',shutdown:'Parking and exit policy'}[id]):title)}</option>`).join('')}</select></div><nav class="parameter-groups" aria-label="${busyText('参数分组','Configuration groups')}">${profileGroups.map(([id, title]) => `<button class="parameter-group ${id === key ? 'active' : ''}" data-profile-group="${id}" ${id === key ? 'aria-current="page"' : ''}>${esc(state.language === 'en' ? ({model:'Model and control chain',hardware:'Hardware and buses',mapping:'Joint mapping',safety:'Safety bounds and faults',motion:'Execution path and response',observation:'External effort estimation',shutdown:'Parking and exit policy'}[id]) : title)}</button>`).join('')}</nav></aside><section class="card parameter-card setup-main"><div class="setup-editor-head"><h2 class="section-title">${esc(sectionTitle)}</h2>${info ? `<p class="parameter-guidance">${info}</p>` : ''}</div><div class="card-body">${err}${completeMapping}${body}${optional}</div></section></section></div>`;
+    const e=state.profileEditor;
+    if(!e)return pageHead('profileSetup','profileSetupSubtitle')+`<div class="empty-state">${busyText('正在加载机械臂参数','Loading configuration')}</div>`;
+    if(!state.capabilityProfile&&!state.profileDirty)state.capabilityProfile=structuredClone(e);
+    profileSavedValues();
+    if(state.profileGroup==='mapping')state.profileHardwareSection='mapping';
+    const key=canonicalProfileGroup(state.profileGroup),changes=profileChanges(),review=state.profileCenterView==='review';
+    const source=key==='hardware'?`${e.hardware_path || ''}\n${e.core_path || ''}`:e.core_path;
+    const html = (state.createdProfileWizard?descriptionStepper(4):'')+`<header class="page-head profile-page-head"><div class="page-heading"><h1 class="page-title">${t('profileSetup')} <span class="profile-heading-name">/ ${esc(state.config.profile || e.profile || 'Profile')}</span></h1><p>${busyText('一份共享草稿，按对象与参数归属组织','One shared draft, organized by object and parameter')}</p></div><div class="page-head-actions profile-header-actions"><button type="button" data-profile-review class="button">${busyText('查看改动','Review changes')} <span data-profile-change-count>${changes.length}</span></button><button type="button" data-profile-save-all class="button primary">${busyText('保存全部改动','Save all changes')}</button><button type="button" data-profile-toggle-model class="button">${busyText('收起模型','Hide model')}</button></div></header><div class="profile-settings profile-center"><section class="setup-save-context"><div class="profile-save-summary"><strong id="profile-dirty-state" role="status">${changes.length?`${changes.length} ${busyText('项未保存改动','unsaved changes')}`:busyText('草稿与保存值一致','Draft matches saved values')}</strong><small class="profile-save-help">${workbenchConnected()?busyText('当前会话已连接；保存默认值与应用到会话分别操作','Session connected; saving defaults and applying to the session are separate actions'):busyText('Profile 默认值；连接后使用保存的配置','Profile defaults; connection uses the saved configuration')}</small></div><div class="parameter-top-actions"><button type="button" id="profile-return-ready" class="button">${busyText('返回任务','Return to task')}</button><button type="button" id="profile-reload" class="button">${busyText('重新加载','Reload')}</button>${review?'':`<button type="button" data-profile-save-group class="button">${busyText('保存当前组','Save this group')}</button>`}</div></section>${gravityValidationNoticeHtml(e)}<section class="setup-inspector"><div id="profile-guide-container">${profileGuidanceHtml(e)}</div><div class="setup-reference-notes">${profileUnitsNoticeHtml(e)}<details class="parameter-source" id="profile-configuration-source"><summary class="profile-native-summary">${busyText('配置来源','Configuration source')}</summary><code data-profile-source-path>${esc(source)}</code></details></div></section>${review?profileReviewHtml(changes):`<section class="parameter-layout setup-editor"><aside class="setup-sidebar"><div class="setup-group-compact"><label for="profile-group-select">${busyText('参数分组','Configuration group')}</label><select id="profile-group-select" data-profile-group-select>${profileGroups.map(([id])=>`<option value="${id}" ${id===key?'selected':''}>${esc(profileGroupTitle(id))}</option>`).join('')}</select></div><nav class="parameter-groups" aria-label="${busyText('参数分组','Configuration groups')}">${profileGroups.map(([id])=>`<button type="button" class="parameter-group ${id===key?'active':''}" data-profile-group="${id}" ${id===key?'aria-current="page"':''}><span>${esc(profileGroupTitle(id))}</span><small data-profile-group-count="${id}">${changes.filter(item=>item.group===id).length || ''}</small></button>`).join('')}</nav></aside><section class="parameter-card setup-main"><div class="setup-editor-head"><div><h2 class="section-title">${esc(profileGroupTitle(key))}</h2></div></div><div class="profile-search"><label for="profile-search">${busyText('搜索全部参数','Search all parameters')}</label><input type="search" id="profile-search" value="${esc(state.profileSearchQuery || '')}" placeholder="${busyText('名称、关节或字段标识','Name, joint or field identifier')}"><div id="profile-search-results" ${state.profileSearchQuery?'':'hidden'}>${state.profileSearchQuery?profileSearchResultsHtml(state.profileSearchQuery):''}</div></div><div class="card-body" data-profile-editor-fields ${state.profileSearchQuery?'hidden':''}>${state.profileError?`<div class="parameter-error" role="alert">${esc(state.profileError)}</div>`:''}${profileCenterBody(e,key)}</div></section></section>`}</div>`;
+    const bodyStart=html.indexOf('<div class="profile-settings');
+    return typeof studioContextWorkspaceHtml==='function'?html.slice(0,bodyStart)+studioContextWorkspaceHtml(html.slice(bodyStart),'profile_setup'):html;
+}
+function refreshProfileCenterState() {
+    if(!state.profileEditor)return;
+    const changes=profileChanges();state.profileDirty=changes.length>0;
+    const dirty=$('profile-dirty-state');if(dirty)dirty.textContent=changes.length?`${changes.length} ${busyText('项未保存改动','unsaved changes')}`:busyText('草稿与保存值一致','Draft matches saved values');
+    document.querySelectorAll('[data-profile-change-count]').forEach(node=>node.textContent=String(changes.length));
+    document.querySelectorAll('[data-profile-group-count]').forEach(node=>node.textContent=String(changes.filter(item=>item.group===node.dataset.profileGroupCount).length || ''));
+    document.querySelectorAll('[data-profile-field]').forEach(input=>input.closest('.parameter-field')?.classList.toggle('is-modified',changes.some(item=>item.id===JSON.parse(input.dataset.profileField).join('.'))));
+}
+async function saveProfileSelected(paths) {
+    if(!paths.length)return toast(busyText('请选择要保存的字段','Select fields to save'));
+    for(const field of document.querySelectorAll('[data-profile-field]'))if(!field.disabled)try{readProfileInput(field);}catch{}
+    const selected=new Set(paths.map(path=>path.join('.'))),error=Object.entries(state.profileFieldErrors || {}).find(([id])=>[...selected].some(parent=>id===parent||id.startsWith(parent+'.')));
+    if(error)return toast(error[1],true);
+    const editor=state.profileEditor,remaining=profileChanges().filter(item=>!selected.has(item.id));
+    const payload={core_sha:editor.core_sha,hardware_sha:editor.hardware_sha,profile_sha:editor.profile_sha,core:editor.core,hardware:editor.hardware,profile_entry:editor.profile_entry,hardware_imported:editor.hardware_imported===true,hardware_import_source:editor.hardware_import_source,selected_paths:paths,gravity_confirmed:false};
+    return blockingOperation(busyText('正在验证并保存所选参数','Validating and saving selected parameters'),async()=>{
+        try {
+            const saved=await api.request('profile_editor_save',{config:state.config,payload});
+            // Rebase only remaining draft differences onto the fresh disk values.
+            // Disk hashes, validation and saved values all come from the actual save.
+            saved.saved_values ||= structuredClone({core:saved.core,hardware:saved.hardware,profile_entry:saved.profile_entry});
+            state.capabilityProfile=structuredClone(saved);
+            for(const item of remaining)if(!item.error)profileAssignPath(saved,item.path,item.after);
+            if(remaining.some(item=>item.path[0]==='hardware')){saved.hardware_imported=editor.hardware_imported;saved.hardware_import_source=editor.hardware_import_source;}
+            state.profileEditor=saved;
+            for(const map of [state.profileFieldErrors,state.profileRawInputs])for(const id of Object.keys(map || {}))if([...selected].some(parent=>id===parent||id.startsWith(parent+'.')))delete map[id];
+            state.profileReviewSelection=[];state.profileError='';state.profileDirty=remaining.length>0;state.profileSaveNotice=true;state.profileSavedForSession=workbenchConnected();
+            state.info=null;await inspect();state.readiness=await api.request('readiness',{config:state.config});await refreshLibrary();
+            toast(busyText('所选参数已保存，其余草稿已保留','Selected parameters saved; other draft changes retained'));render();
+        } catch(error) {
+            state.profileError=error.message || String(error);
+            const target=error.serialarm?.action;
+            if(target?.field){state.profileFieldErrors ||= {};state.profileFieldErrors[target.field]=state.profileError;}
+            render();throw error;
+        }
+    });
+}
+function openProfileReview(scope=null) {
+    for(const field of document.querySelectorAll('[data-profile-field]'))if(!field.disabled)try{readProfileInput(field);}catch{}
+    const changes=profileChanges();
+    state.profileReviewSelection=changes.filter(item=>!scope||typeof scope==='string'&&item.group===scope||Array.isArray(scope)&&scope.some(path=>item.id===path||item.id.startsWith(path+'.'))).map(item=>item.id);
+    state.profileCenterView='review';state.profileSearchQuery='';render();
+}
+function bindProfileCenter() {
+    if(!state.profileEditor)return;
+    profileSavedValues();
+    document.querySelectorAll('[data-profile-review],[data-profile-save-all]').forEach(button=>button.onclick=()=>openProfileReview());
+    document.querySelectorAll('[data-profile-toggle-model]').forEach(button=>{const preview=document.querySelector('[data-workspace-preview]');if(!preview)return;const sync=()=>button.textContent=preview.open?busyText('收起模型','Hide model'):busyText('显示模型','Show model');sync();preview.ontoggle=sync;button.onclick=()=>{preview.querySelector(':scope > summary')?.click();sync();};});
+    document.querySelectorAll('[data-profile-save-group]').forEach(button=>button.onclick=()=>openProfileReview(canonicalProfileGroup(state.profileGroup)));
+    document.querySelectorAll('[data-profile-review-close]').forEach(button=>button.onclick=()=>{state.profileCenterView='edit';render();});
+    document.querySelectorAll('[data-profile-review-field]').forEach(input=>input.onchange=()=>{
+        const selected=new Set(state.profileReviewSelection || []);if(input.checked)selected.add(input.dataset.profileReviewField);else selected.delete(input.dataset.profileReviewField);
+        state.profileReviewSelection=[...selected];
+        const all=document.querySelector('[data-profile-review-all]');if(all)all.checked=profileChanges().every(item=>selected.has(item.id));
+        const count=document.querySelector('[data-profile-selection-count]');if(count)count.textContent=`${selected.size} / ${profileChanges().length} ${busyText('项已选择','selected')}`;
+        const save=document.querySelector('[data-profile-save-selected]');if(save)save.disabled=!selected.size;
+    });
+    document.querySelectorAll('[data-profile-review-all]').forEach(input=>input.onchange=()=>{state.profileReviewSelection=input.checked?profileChanges().map(item=>item.id):[];render();});
+    document.querySelectorAll('[data-profile-save-selected]').forEach(button=>button.onclick=()=>saveProfileSelected(profileChanges().filter(item=>(state.profileReviewSelection || []).includes(item.id)).map(item=>item.path)));
+    document.querySelectorAll('[data-profile-revert]').forEach(button=>button.onclick=()=>{
+        const item=profileChanges().find(change=>change.id===button.dataset.profileRevert);if(!item)return;
+        profileAssignPath(state.profileEditor,item.path,item.before);
+        if(item.before===undefined)for(let length=item.path.length-1;length>1;length--){const path=item.path.slice(0,length),current=profileGet(state.profileEditor,path);if(profileGet(profileSavedValues(),path)===undefined&&current&&typeof current==='object'&&!Object.keys(current).length)profileAssignPath(state.profileEditor,path,undefined);else break;}
+        delete state.profileFieldErrors?.[item.id];delete state.profileRawInputs?.[item.id];state.profileError='';
+        state.profileReviewSelection=(state.profileReviewSelection || []).filter(id=>id!==item.id);state.profileDirty=profileChanges().length>0;render();
+    });
+    document.querySelectorAll('[data-profile-hardware-section]').forEach(button=>button.onclick=()=>{state.profileHardwareSection=button.dataset.profileHardwareSection;state.profileSearchQuery='';switchProfileGroup('hardware',true);});
+    document.querySelectorAll('[data-profile-response-path]').forEach(button=>button.onclick=()=>{state.profileResponsePath=button.dataset.profileResponsePath;state.profileSearchQuery='';switchProfileGroup('motion',true);});
+    const search=$('profile-search');
+    if(search)search.oninput=()=>{
+        state.profileSearchQuery=search.value;const query=search.value.trim(),results=$('profile-search-results'),fields=document.querySelector('[data-profile-editor-fields]');
+        results.hidden=!query;fields.hidden=!!query;results.innerHTML=query?profileSearchResultsHtml(query):'';bindSearchTargets();
+    };
+    function bindSearchTargets(){document.querySelectorAll('[data-profile-search-target]').forEach(button=>button.onclick=()=>{const field=button.dataset.profileSearchTarget;state.profileSearchQuery='';state.profileCenterView='edit';operation(()=>openSetupTarget({page:'profile_setup',field}));});}
+    bindSearchTargets();
+    document.querySelectorAll('[data-profile-field]').forEach(field=>{
+        if(field.dataset.profileCenterBound==='true')return;field.dataset.profileCenterBound='true';
+        field.addEventListener('input',refreshProfileCenterState);field.addEventListener('change',refreshProfileCenterState);
+    });
+    refreshProfileCenterState();
 }
 function switchProfileGroup(group, refresh = false) {
+    if(group==='mapping')state.profileHardwareSection='mapping';
     group = canonicalProfileGroup(group);
+    state.profileCenterView='edit';state.profileSearchQuery='';
     if (!refresh && group === state.profileGroup) return;
-    if(refresh&&group===state.profileGroup&&group==='motion')return refreshProfilePathResponse();
+    if(refresh&&group===state.profileGroup&&group==='motion'&&!document.querySelector('[data-profile-response-path]'))return refreshProfilePathResponse();
     const editor = document.querySelector('.setup-editor');
     const main = editor?.querySelector('.setup-main');
     if (!main) { state.profileGroup = group; render(); return; }
@@ -1885,7 +2094,7 @@ function switchProfileGroup(group, refresh = false) {
     window.serialArmStudio?.finishContentChange(editor, pageViewKey());
     window.serialArmStudio?.finishContentChange($('page'), pageViewKey());
 }
-function profileScrollport() {return document.querySelector('#page > .studio-page-body') || document.querySelector('.content');}
+function profileScrollport() {return document.querySelector('.studio-context-workspace .studio-workspace-task') || document.querySelector('#page > .studio-page-body') || document.querySelector('.content');}
 function profileStickyInset() {
     const save=document.querySelector('.setup-save-context');
     return save&&getComputedStyle(save).position==='sticky'?save.getBoundingClientRect().height+Math.max(0,parseFloat(getComputedStyle(save).top)||0):0;
@@ -1894,7 +2103,7 @@ function updateProfileEditorViewport() {
     if(state.page!=='profile_setup')return;
     const editor=document.querySelector('.setup-editor'),scroll=profileScrollport();if(!editor||!scroll)return;
     const inset=profileStickyInset();
-    editor.style.setProperty('--setup-editor-min-height',`${Math.max(0,scroll.clientHeight-inset-32)}px`);
+    editor.style.setProperty('--setup-editor-min-height',document.querySelector('.studio-context-workspace')?'0px':`${Math.max(0,scroll.clientHeight-inset-32)}px`);
     editor.style.setProperty('--setup-sticky-offset',`${inset+16}px`);
 }
 function scrollProfileTarget(target, center = false) {
@@ -1935,23 +2144,38 @@ function robotPage() { return pageHead('robotTitle', 'robotDesc') + connectionSe
 function vectorText(values, digits = 5) { return Array.isArray(values) ? values.map(v => Number(v).toFixed(digits)).join(', ') : '—'; }
 function inertiaFields(matrix) { if (!Array.isArray(matrix) || matrix.length !== 3) return []; return [['ixx', matrix[0][0]], ['ixy', matrix[0][1]], ['ixz', matrix[0][2]], ['iyy', matrix[1][1]], ['iyz', matrix[1][2]], ['izz', matrix[2][2]]]; }
 function inspectorSection(title, rows) { return `<section class="inspector-section"><h4>${title}</h4><dl class="kv">${rows.map(([k, v, cls = '']) => `<dt>${k}</dt><dd class="${cls}">${v}</dd>`).join('')}</dl></section>`; }
+function inspectorNumber(value, digits = 6) {
+    return Number.isFinite(Number(value)) && value !== null ? Number(value).toPrecision(digits) : '—';
+}
+function inspectorVectorHtml(title, values, unit, axes = ['X', 'Y', 'Z']) {
+    return `<section class="inspector-data-group"><h5>${title}<span class="inspector-unit">${unit}</span></h5><dl class="inspector-vector">${axes.map((axis,index)=>`<div><dt>${axis}</dt><dd>${inspectorNumber(values?.[index])}</dd></div>`).join('')}</dl></section>`;
+}
+function inspectorMatrixHtml(title, values) {
+    const valid = Array.isArray(values) && values.length === 3 && values.every(row=>Array.isArray(row) && row.length===3);
+    return `<section class="inspector-data-group"><h5>${title}<span class="inspector-unit">kg·m²</span></h5>${valid ? `<div class="inspector-matrix-scroll"><table class="inspector-inertia-matrix" aria-label="${esc(title)}"><thead><tr><th></th>${['X','Y','Z'].map(axis=>`<th scope="col">${axis}</th>`).join('')}</tr></thead><tbody>${values.map((row,index)=>`<tr><th scope="row">${'XYZ'[index]}</th>${row.map(value=>`<td>${inspectorNumber(value,5)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p class="hint">—</p>'}</section>`;
+}
 function modelInspectorHtml() {
     const data = state.modelData; if (!data) return `<div class="empty-state">${t('noModel')}</div>`;
     const link = data.model.links.find(x => x.name === state.modelSelection); const joint = data.model.joints.find(x => x.name === state.modelSelection);
+    const sourceButton = `<button class="button inspector-source-button" data-urdf-source>${busyText('定位 URDF 源文件','Show URDF source file')}</button>`;
     if (link) {
         const inertial = link.inertial; const childJoint = data.model.joints.find(j => j.child === link.name && j.controlled); const effective = data.native.info.effective_inertias.find(x => x.joint_name === childJoint?.name);
-        const urdfRows = inertial ? [['&lt;origin xyz&gt;', `${vectorText(inertial.origin?.xyz)} m`], ['&lt;origin rpy&gt;', `${vectorText(inertial.origin?.rpy)} rad`], ['&lt;mass value&gt;', `${Number(inertial.mass).toFixed(6)} kg`], ...inertiaFields(inertial.inertia).map(([k, v]) => [`&lt;inertia ${k}&gt;`, `${Number(v).toPrecision(6)} kg·m²`]), ['校验', inertial.valid ? t('pass') : esc(inertial.reason || '—')]] : [['状态', 'URDF 未定义 &lt;inertial&gt;']];
-        const effectiveRows = effective ? [['关联关节', esc(effective.joint_name)], ['参考坐标系', esc(link.name) + ' / ' + esc(effective.joint_name)], ['mass', `${Number(effective.mass).toFixed(6)} kg`], ['center_of_mass', `${vectorText(effective.center_of_mass)} m`], ['inertia matrix　kg·m²', effective.inertia.map(r => r.map(v => Number(v).toPrecision(6)).join('  ')).join('\n'), 'mono-block']] : [['状态', '当前 Link 无对应 Core 约简惯性']];
-        return `<div class="summary-caption">LINK</div><div class="summary-name">${esc(link.name)}</div><button class="button" data-urdf-source>${busyText('定位 URDF 源文件','Show URDF source file')}</button>${inspectorSection(t('urdfInertial'), urdfRows)}<p class="inertia-description">${state.language === 'en' ? 'Inertia belongs to the link. Core values are reduced-body equivalents associated with a controlled joint, not joint mass' : '质量与惯量属于连杆；Core 显示受控关节对应约简刚体的等效惯性'}</p>${inspectorSection(t('coreReducedInertia'), effectiveRows)}`;
+        const urdf = inertial ? `${inspectorSection(t('urdfInertial'),[[busyText('质量','Mass'),`<span class="inspector-scalar">${inspectorNumber(inertial.mass)} <span>kg</span></span>`],[busyText('校验','Validation'),inertial.valid?t('pass'):esc(inertial.reason||'—')]])}${inspectorVectorHtml('origin xyz',inertial.origin?.xyz,'m')}${inspectorVectorHtml('origin rpy',inertial.origin?.rpy,'rad',['R','P','Y'])}${inspectorMatrixHtml(busyText('惯性矩阵','Inertia matrix'),inertial.inertia)}` : inspectorSection(t('urdfInertial'),[[busyText('状态','State'),'URDF '+busyText('未定义','has no')+' &lt;inertial&gt;']]);
+        const reduced = effective ? `${inspectorSection(t('coreReducedInertia'),[[busyText('关联关节','Controlled joint'),esc(effective.joint_name)],[busyText('参考坐标系','Reference frame'),esc(link.name)+' / '+esc(effective.joint_name)],[busyText('质量','Mass'),`<span class="inspector-scalar">${inspectorNumber(effective.mass)} <span>kg</span></span>`]])}${inspectorVectorHtml(busyText('质心','Center of mass'),effective.center_of_mass,'m')}${inspectorMatrixHtml(busyText('约简惯性矩阵','Reduced inertia matrix'),effective.inertia)}` : inspectorSection(t('coreReducedInertia'),[[busyText('状态','State'),busyText('当前 Link 无对应 Core 约简惯性','No Core reduced inertia for this link')]]);
+        return `<header class="inspector-object-heading"><div class="summary-caption">LINK</div><div class="summary-name">${esc(link.name)}</div>${sourceButton}</header>${urdf}<p class="inertia-description">${busyText('质量与惯量属于连杆；Core 显示受控关节对应约简刚体的等效惯性','Inertia belongs to the link; Core values describe the reduced body associated with its controlled joint')}</p>${reduced}`;
     }
     if (joint) {
-        const lim = joint.limit || {}; const origin = joint.origin || {}; const urdfRows = [['&lt;joint type&gt;', esc(joint.type)], ['&lt;parent link&gt;', esc(joint.parent)], ['&lt;child link&gt;', esc(joint.child)], ['&lt;origin xyz&gt;', `${vectorText(origin.xyz)} m`], ['&lt;origin rpy&gt;', `${vectorText(origin.rpy)} rad`], ['&lt;axis xyz&gt;', `${vectorText(joint.axis, 4)} ${busyText('无量纲','dimensionless')}`]];
-        for (const key of ['lower', 'upper', 'effort', 'velocity']) if (Number.isFinite(lim[key])) urdfRows.push([`&lt;limit ${key}&gt;`, `${Number(lim[key]).toPrecision(7)}${['lower','upper'].includes(key) ? (joint.type === 'prismatic' ? ' m' : ' rad') : key === 'velocity' ? (joint.type === 'prismatic' ? ' m/s' : ' rad/s') : joint.type === 'prismatic' ? ' N' : ' N·m'}`]);
-        if (joint.mimic) { urdfRows.push(['&lt;mimic joint&gt;', esc(joint.mimic.joint)]); urdfRows.push(['&lt;mimic multiplier&gt;', `${Number(joint.mimic.multiplier).toPrecision(7)} ${busyText('无量纲','dimensionless')}`]); urdfRows.push(['&lt;mimic offset&gt;', `${Number(joint.mimic.offset).toPrecision(7)} ${joint.type === 'prismatic' ? 'm' : 'rad'}`]); }
-        const coreRows = [['controlled', joint.controlled ? t('enabled') : t('disabled')], ['preview_status', esc(joint.preview_status || '—')]];
-        return `<div class="summary-caption">JOINT</div><div class="summary-name">${esc(joint.name)}</div><button class="button" data-urdf-source>${busyText('定位 URDF 源文件','Show URDF source file')}</button>${inspectorSection('URDF &lt;joint&gt;', urdfRows)}${inspectorSection('Core mapping', coreRows)}`;
+        const lim = joint.limit || {}, origin = joint.origin || {}, linear = joint.type === 'prismatic';
+        const rows = [[busyText('类型','Type'),esc(joint.type)],[busyText('父 Link','Parent link'),esc(joint.parent)],[busyText('子 Link','Child link'),esc(joint.child)]];
+        const limitRows = [];
+        for (const key of ['lower','upper','effort','velocity']) if (Number.isFinite(lim[key])) {
+            const unit=['lower','upper'].includes(key)?(linear?'m':'rad'):key==='velocity'?(linear?'m/s':'rad/s'):(linear?'N':'N·m');
+            limitRows.push([key,`<span class="inspector-scalar">${inspectorNumber(lim[key],7)} <span>${unit}</span></span>`]);
+        }
+        const mimicRows = joint.mimic ? [[busyText('从属关节','Mimic joint'),esc(joint.mimic.joint)],['multiplier',inspectorNumber(joint.mimic.multiplier,7)],['offset',`<span class="inspector-scalar">${inspectorNumber(joint.mimic.offset,7)} <span>${linear?'m':'rad'}</span></span>`]] : [];
+        return `<header class="inspector-object-heading"><div class="summary-caption">JOINT</div><div class="summary-name">${esc(joint.name)}</div>${sourceButton}</header>${inspectorSection('URDF &lt;joint&gt;',rows)}${inspectorVectorHtml('origin xyz',origin.xyz,'m')}${inspectorVectorHtml('origin rpy',origin.rpy,'rad',['R','P','Y'])}${inspectorVectorHtml('axis xyz',joint.axis,busyText('无量纲','dimensionless'))}${limitRows.length?inspectorSection(busyText('运动边界','Joint limits'),limitRows):''}${mimicRows.length?inspectorSection('Mimic',mimicRows):''}${inspectorSection('Core mapping',[['controlled',joint.controlled?t('enabled'):t('disabled')],['preview_status',esc(joint.preview_status||'—')]])}`;
     }
-    const native = data.native; return `<div class="summary-caption">CORE MODEL</div><div class="summary-name">${esc(data.model.robot_name || data.profile)}</div><dl class="kv"><dt>URDF</dt><dd class="path-chip">${esc(data.urdf)}</dd><dt>base_frame</dt><dd>${esc(native.config.base_frame)}</dd><dt>tool_frame</dt><dd>${esc(native.config.tool_frame)}</dd><dt>joints_count</dt><dd>${native.info.joints_count}</dd><dt>URDF total_mass</dt><dd>${Number(native.info.total_mass).toFixed(4)} kg</dd><dt>Core reduced_total_mass</dt><dd>${Number(native.info.reduced_total_mass).toFixed(4)} kg</dd><dt>${t('effectiveInertia')}</dt><dd>${native.info.effective_inertias.length}</dd></dl>${data.description_mismatch ? `<div class="callout">Core URDF 与 description 资源不同，当前以 Core URDF 为准</div>` : ''}`;
+    const native = data.native; return `<div class="summary-caption">CORE MODEL</div><div class="summary-name">${esc(data.model.robot_name || data.profile)}</div><dl class="kv"><dt>URDF</dt><dd class="path-chip">${esc(data.urdf)}</dd><dt>base_frame</dt><dd>${esc(native.config.base_frame)}</dd><dt>tool_frame</dt><dd>${esc(native.config.tool_frame)}</dd><dt>joints_count</dt><dd>${native.info.joints_count}</dd><dt>URDF total_mass</dt><dd><span class="inspector-scalar">${Number(native.info.total_mass).toFixed(4)} <span>kg</span></span></dd><dt>Core reduced_total_mass</dt><dd><span class="inspector-scalar">${Number(native.info.reduced_total_mass).toFixed(4)} <span>kg</span></span></dd><dt>${t('effectiveInertia')}</dt><dd>${native.info.effective_inertias.length}</dd></dl>${data.description_mismatch ? `<div class="callout">Core URDF 与 description 资源不同，当前以 Core URDF 为准</div>` : ''}`;
 }
 function modelObjectVisible(kind, name) { return state.modelVisibility[kind]?.[name] !== false; }
 function modelTreeHtml() {
@@ -2280,7 +2504,7 @@ async function refreshGraphicsStatus() {
 function mountCurrentPreview() {
     if (state.page === 'model') return mountModelView();
     if (state.page === 'description') return mountDescriptionView();
-    if (['workbench', 'geometry', 'calibration'].includes(state.page)) return mountWorkbenchView();
+    if ($('workbench-viewport')) return mountWorkbenchView();
 }
 async function retryModelPreview() {
     if (graphicsState.effectiveMode === 'rescue') return changeGraphicsMode(graphicsState.status?.backendMode || 'normal');
@@ -2449,7 +2673,7 @@ async function mountPageModelView(page, hostId, getPayload, configure) {
     if (pageModelMount?.host === host && pageModelMount.payload === payload) return pageModelMount.promise;
     if (modelView?.container === host && modelView.payload === payload && !modelView.paused) return;
     const record = previewRecord(host, payload);
-    if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
+    if (graphicsState.effectiveMode === 'rescue' || record.fault) { if(!host.querySelector('[data-graphics-panel]'))showGraphicsFailure(record); return; }
     const request = {host, payload}; pageModelMount = request;
     request.promise = (async () => {
         let view, phase = 'renderer';
@@ -2533,16 +2757,8 @@ function refreshTelemetryFreshness() {
         updateWorkbenchLive();
     }
 }
-function workbenchTabs() {
-    const en = state.language === 'en';
-    const tabs = [
-        ['control', 'controlTab', en ? 'Gain use and joint targets' : '增益用途与关节目标'],
-        ['replay', 'replayTab', en ? 'Record and replay trajectories' : '录制与回放示教轨迹'],
-        ['tuning', 'tuningTab', en ? 'Adjust interaction and record response' : '调整交互响应并记录'],
-        ['monitor', 'monitorTab', en ? 'Feedback, references and torque' : '反馈、参考与力矩'],
-    ];
-    return `<nav class="workbench-tab-grid workspace-task-navigation workspace-subpage-nav" data-studio-subpage-nav="workbench" aria-label="${en ? 'Workspace pages' : '工作台子页'}">${tabs.map(([key, label, description]) => `<button type="button" data-workbench-tab="${key}" data-studio-subpage-key="${key}" class="calibration-entry workspace-task-tab workspace-subpage-button ${state.workbenchTab === key ? 'selected' : ''}" aria-pressed="${state.workbenchTab === key}" ${state.workbenchTab === key ? 'aria-current="page"' : ''} aria-controls="workbench-task-panel" title="${esc(description)}"><span class="calibration-entry-title">${t(label)}</span></button>`).join('')}</nav>`;
-}
+function workbenchTabs() { return studioSubnavigation(); }
+
 function taskStateLabel(mode) {
     if (['RIGID','COMPLIANT','DRAG','SERVO_TRACKING'].includes(mode)) return gainPurposeLabel(mode);
     if (false) return state.language === 'en' ? 'Holding' : '保持';
@@ -2642,7 +2858,41 @@ function workbenchJointRows() {
     ensureWorkbenchTargetDraft();
     const names = state.telemetry?.joint_names || state.modelData?.native?.config?.joint_names || [];
     const joints = new Map((state.modelData?.model?.joints || []).map(joint => [joint.name, joint]));
-    return names.map((name, index) => jointSliderRowHtml(name, index, joints.get(name) || {}, state.workbenchTargets[index], 'target', state.telemetry?.joint?.pos?.[index], workbenchTargetFeedbackReady())).join('');
+    state.workbenchFineJoint = Math.min(Math.max(0,state.workbenchFineJoint),Math.max(0,names.length-1));
+    const rows = names.map((name,index) => {
+        const joint = joints.get(name) || {}, spec = jointDisplaySpec(name,joint.type==='prismatic'?'m':'rad');
+        const bounds = effectiveJointBounds(name,index,joint), bounded = Number.isFinite(bounds.lower) && Number.isFinite(bounds.upper) && bounds.lower < bounds.upper;
+        const value = state.workbenchTargets[index], actual = state.telemetry?.joint?.pos?.[index];
+        const enabled = workbenchTargetFeedbackReady() && (joint.type==='continuous' || bounded);
+        return `<tr data-target-row="${index}" class="${index===state.workbenchFineJoint?'is-selected':''}"><th scope="row"><button type="button" class="button control-joint-select" data-target-select="${index}" aria-pressed="${index===state.workbenchFineJoint}" aria-controls="workbench-fine-control">${esc(name)}</button></th><td id="target-actual-${index}">${Number.isFinite(actual)?(actual*spec.factor).toFixed(3):'—'}</td><td><input id="target-value-${index}" data-target-joint="${index}" type="number" step="0.01" ${bounded?`min="${bounds.lower*spec.factor}" max="${bounds.upper*spec.factor}"`:''} value="${Number.isFinite(value)?(value*spec.factor).toFixed(3):''}" ${enabled?'':'disabled'} aria-label="${esc(name)} ${busyText('目标','Target')} / ${spec.unit}"></td><td id="target-difference-${index}">${Number.isFinite(value)&&Number.isFinite(actual)?((value-actual)*spec.factor).toFixed(3):'—'}</td><td>${spec.unit}</td></tr>`;
+    }).join('');
+    return `<div class="table-scroll"><table class="workspace-table control-joint-table"><thead><tr><th scope="col">${t('joint')}</th><th scope="col">${t('actual')}</th><th scope="col">${t('target')}</th><th scope="col">${busyText('目标 − 实际','Target − actual')}</th><th scope="col">${busyText('单位','Unit')}</th></tr></thead><tbody>${rows}</tbody></table></div><div id="workbench-fine-control" class="control-fine-control">${workbenchFineControlHtml(names,joints)}</div>`;
+}
+function workbenchFineControlHtml(names = state.telemetry?.joint_names || state.modelData?.native?.config?.joint_names || [], joints = new Map((state.modelData?.model?.joints || []).map(joint => [joint.name,joint]))) {
+    const index = state.workbenchFineJoint, name = names[index];
+    if (!name) return '';
+    const joint = joints.get(name) || {}, spec = jointDisplaySpec(name,joint.type==='prismatic'?'m':'rad');
+    const bounds = effectiveJointBounds(name,index,joint), bounded = Number.isFinite(bounds.lower) && Number.isFinite(bounds.upper) && bounds.lower < bounds.upper;
+    const value = state.workbenchTargets[index], center = Number.isFinite(value)?value:0;
+    const lower = (bounded?bounds.lower:Math.min(0,center-Math.PI))*spec.factor, upper = (bounded?bounds.upper:Math.max(0,center+Math.PI))*spec.factor;
+    const enabled = workbenchTargetFeedbackReady() && (joint.type==='continuous' || bounded);
+    return `<div class="control-fine-head"><label for="workbench-fine-joint">${busyText('单关节精调','Fine adjustment · one joint')}</label><select id="workbench-fine-joint">${names.map((item,i)=>`<option value="${i}" ${i===index?'selected':''}>${esc(item)}</option>`).join('')}</select></div><div class="control-fine-range"><input type="range" data-target-range="${index}" min="${lower}" max="${upper}" step="0.01" value="${center*spec.factor}" ${enabled?'':'disabled'} aria-label="${esc(name)} ${busyText('目标精调','Target adjustment')} / ${spec.unit}" aria-describedby="workbench-fine-bounds"><div class="control-fine-bounds" id="workbench-fine-bounds"><span>${lower.toFixed(2)} ${spec.unit}</span><span>${busyText('仅修改所选关节的目标草稿','Edits the selected joint target draft')}</span><span>${upper.toFixed(2)} ${spec.unit}</span></div></div>`;
+}
+function selectWorkbenchFineJoint(index) {
+    state.workbenchFineJoint = index;
+    const fine = $('workbench-fine-control'); if (!fine) return;
+    const restoreFocus = fine.contains(document.activeElement);
+    fine.innerHTML = workbenchFineControlHtml();
+    document.querySelectorAll('[data-target-row]').forEach(row=>row.classList.toggle('is-selected',Number(row.dataset.targetRow)===index));
+    document.querySelectorAll('[data-target-select]').forEach(button=>button.setAttribute('aria-pressed',String(Number(button.dataset.targetSelect)===index)));
+    bindWorkbenchFineControl(); window.serialArmStudio?.enhanceSelects();
+    if (restoreFocus) (fine.querySelector('.ros-select-trigger') || $('workbench-fine-joint'))?.focus({preventScroll:true});
+}
+function bindWorkbenchFineControl() {
+    const select = $('workbench-fine-joint'); if (select) select.onchange = () => selectWorkbenchFineJoint(Number(select.value));
+    document.querySelectorAll('[data-target-select]').forEach(button=>button.onclick=()=>selectWorkbenchFineJoint(Number(button.dataset.targetSelect)));
+    document.querySelectorAll('[data-target-row]').forEach(row=>row.onclick=event=>{if (!event.target.closest('button,input,select,textarea,a,label')) selectWorkbenchFineJoint(Number(row.dataset.targetRow));});
+    document.querySelectorAll('[data-target-range]').forEach(input=>input.oninput=()=>editWorkbenchTarget(Number(input.dataset.targetRange),input.value));
 }
 function refreshWorkbenchTargetFields(writeInputs = false) {
     if (!$('workbench-target-editor')) return;
@@ -2650,12 +2900,15 @@ function refreshWorkbenchTargetFields(writeInputs = false) {
     const initialized = before !== state.workbenchTargetEpoch;
     for (const [index, value] of state.workbenchTargets.entries()) {
         const name = state.telemetry?.joint_names?.[index], spec = jointDisplaySpec(name);
-        if ($('target-value-' + index)) $('target-value-' + index).textContent = jointDisplayValue(value,name);
+        const joint = state.modelData?.model?.joints?.find(item=>item.name===name) || {};
+        const bounds = effectiveJointBounds(name,index,joint);
+        const boundsKnown = joint.type==='continuous' || Number.isFinite(bounds.lower)&&Number.isFinite(bounds.upper)&&bounds.lower<bounds.upper;
         const actual = state.telemetry?.joint?.pos?.[index];
         if ($('target-actual-' + index)) $('target-actual-' + index).textContent = Number.isFinite(actual) ? (actual * spec.factor).toFixed(3) : '—';
+        if ($('target-difference-' + index)) $('target-difference-' + index).textContent = Number.isFinite(value)&&Number.isFinite(actual) ? ((value-actual)*spec.factor).toFixed(3) : '—';
         for (const selector of [`[data-target-joint="${index}"]`, `[data-target-range="${index}"]`]) {
             const input = document.querySelector(selector); if (!input) continue;
-            input.disabled = !workbenchTargetFeedbackReady();
+            input.disabled = !workbenchTargetFeedbackReady() || !boundsKnown;
             if ((writeInputs || initialized) && document.activeElement !== input && Number.isFinite(value)) input.value = (value * spec.factor).toFixed(3);
         }
     }
@@ -2690,7 +2943,7 @@ function robotOperationHtml() {
         return `<button type="button" data-workbench-action="${action}" class="button ${action === 'deactivate' ? 'danger' : action === 'activate' ? 'primary' : ''}" ${reason ? 'disabled' : ''} ${action === 'activate' ? 'aria-describedby="control-operation-hint"' : ''} title="${esc(reason)}">${title}</button>`;
     }).join('');
     return `<section class="workspace-section robot-operation-bar" id="robot-operation" aria-label="${en ? 'Robot controls' : '机械臂控制'}">
-      <div class="robot-operation-state"><span class="robot-operation-dot ${robotState === 'ACTIVE' ? 'on' : 'off'}" aria-hidden="true"></span><strong>${en ? 'Robot state' : '机械臂状态'}</strong><span id="control-task-state">${esc(robotState)}</span></div>
+      <div class="robot-operation-state"><span class="robot-operation-dot ${robotState === 'ACTIVE' ? 'on' : robotState === 'FAULT' ? 'fault' : 'idle'}" aria-hidden="true"></span><strong>${en ? 'Robot state' : '机械臂状态'}</strong><span id="control-task-state">${esc(robotState)}</span></div>
       <div class="robot-operation-group robot-operation-main" role="group" aria-label="${en ? 'Power and stop' : '使能与停放'}">${actions([['activate', t('activateRobot')], ['park', t('parkRobot')], ['deactivate', t('deactivateRobot')]])}</div>
       <div class="robot-operation-group robot-operation-recovery" role="group" aria-label="${en ? 'Hold and recovery' : '保持与恢复'}">${actions([['rigid_hold', en ? 'Rigid hold here' : '当前位置刚性保持'], ['fault_drag_recovery', t('dragRecovery')], ['clear_fault', t('clearFault')]])}</div>
       <div class="robot-operation-guidance"><p id="control-operation-hint" class="hint"></p><div id="control-operation-next"></div></div>
@@ -2781,9 +3034,15 @@ function controlPanelHtml() {
     return `<div class="workspace-panel control-workspace">
       <section class="workspace-section workbench-target-card" aria-labelledby="workbench-target-title">
         <div class="workspace-section-head control-target-head"><div><h3 id="workbench-target-title">${en ? 'Joint target' : '关节目标'}</h3><p class="hint">${en ? 'Preview the target, then move' : '先预览目标，再执行移动'}</p></div>
-          <label class="control-speed-field">${t('speedScale')} %<input id="workbench-speed" aria-describedby="workbench-speed-error" class="workspace-number" type="number" min="0.1" max="100" step="1" value="${esc(state.speedInputRaw ?? state.speedScale*100)}" aria-invalid="${!!state.speedInputError}"><small id="workbench-speed-error" role="alert">${esc(state.speedInputError)}</small></label></div><div id="workbench-motion-limits" class="motion-limits-summary">${motionLimitsHtml()}</div>
+        </div>
         <div id="workbench-target-editor">${workbenchJointRows()}</div><p id="target-draft-hint" class="hint"></p>
-        <div class="workspace-target-actions"><div class="workspace-actions target-draft-actions"><button id="target-sync" class="button">${en ? 'Sync actual' : '同步实际'}</button><button type="button" data-open-workspace-preview class="button workspace-preview-action">${en ? 'Preview model' : '查看模型'}</button><button id="target-zero" class="button">${en ? 'Zero draft' : '草稿归零'}</button></div><div class="workspace-actions target-execute-actions"><span id="target-command-state" class="command-state" role="status">${esc(commandStateText(state.commandState))}</span><button id="target-move" class="button primary" ${workbenchTargetMayMove() ? '' : 'disabled'}>${en ? 'Move to target' : '移动到目标'}</button></div></div>
+        <div class="workspace-actions target-draft-actions"><button id="target-sync" class="button">${en ? 'Sync actual' : '同步实际'}</button><button type="button" data-open-workspace-preview class="button workspace-preview-action">${en ? 'Preview model' : '查看模型'}</button><button id="target-zero" class="button">${en ? 'Zero draft' : '草稿归零'}</button></div>
+      </section>
+      <section class="workspace-section control-execution-panel" aria-labelledby="control-execution-title">
+        <div class="control-execution-head"><h3 id="control-execution-title">${en?'Execute the whole motion':'整次运动'}</h3><p class="hint" id="workbench-speed-scope">${en?'This speed applies to all joints in the next move. It is remembered for this Profile.':'速度比例作用于下一次移动的全部关节，按当前 Profile 记忆'}</p></div>
+        <div class="control-execution-fields"><label class="control-speed-field" for="workbench-speed"><span>${en?'Whole-motion speed / %':'整次运动速度比例 / %'}</span><input id="workbench-speed" aria-describedby="workbench-speed-scope workbench-speed-error" class="workspace-number" type="number" min="0.1" max="100" step="1" value="${esc(state.speedInputRaw ?? state.speedScale*100)}" aria-invalid="${!!state.speedInputError}"><small id="workbench-speed-error" role="alert">${esc(state.speedInputError)}</small></label></div>
+        <details class="control-motion-limits"><summary>${en?'Motion limits':'运动边界'}</summary><div id="workbench-motion-limits" class="motion-limits-summary">${motionLimitsHtml()}</div></details>
+        <div class="workspace-actions target-execute-actions"><span id="target-command-state" class="command-state" role="status">${esc(commandStateText(state.commandState))}</span><button id="target-move" class="button primary" ${workbenchTargetMayMove() ? '' : 'disabled'}>${en ? 'Move to target' : '移动到目标'}</button></div>
       </section>
       <details class="workspace-section control-settings" id="control-settings" ${state.controlSettingsOpen ? 'open' : ''}><summary>${en?'Control parameters':'控制参数'}</summary><div class="control-settings-body workspace-settings-list">
         <section class="workspace-section workspace-setting control-gain-settings" aria-labelledby="control-gain-title"><div class="workspace-section-head"><h3 id="control-gain-title">${en ? 'Interaction mode' : '交互模式'}</h3></div><div class="segmented workspace-choice-group" role="group" aria-labelledby="control-gain-title">${purposes.map(purpose => `<button type="button" data-gain-purpose="${purpose}" aria-pressed="${x.impedance_mode === purpose}" class="button ${x.impedance_mode === purpose ? 'active' : ''}" ${controlGainPurposeMayChange(purpose) ? '' : 'disabled'}>${esc(gainPurposeLabel(purpose))}</button>`).join('')}</div><details class="workspace-setting-details" id="control-runtime-details"><summary>${en?'Active mode parameters':'当前模式参数'}</summary><div id="control-gain-context">${controlGainContextHtml()}</div></details></section>
@@ -3021,27 +3280,29 @@ function readExternalTcpMeasurement() {
     return { source: 'manual_external_measurement', displacement_m: numbers.slice(0, 3).map(value => value / 1000), tolerance_m: numbers[3] / 1000 };
 }
 function responsePanelHtml() {
-    const en = state.language === 'en', capture = state.responseCapture, names = capture?.joint_names || state.telemetry?.joint_names || [];
+    const en = state.language === 'en', capture = state.responseCapture;
+    const names = [capture?.joint_names, state.telemetry?.joint_names, state.profileEditor?.joint_names, state.profileEditor?.core?.model?.joint_names].find(items => Array.isArray(items) && items.length) || [];
     return `<section class="workspace-section capability-response"><div class="workspace-section-head"><div><h3>${en ? 'Interaction response recording' : '交互响应记录'}</h3><p class="hint">${en ? 'Record the existing motion and force response; these controls issue no motion command' : '记录当前运动与外力响应，以下操作不发送运动命令'}</p></div><span class="result-badge neutral" id="response-phase">${capture?.recording ? (en ? 'Recording' : '记录中') : capture?.samples.length ? (en ? 'Stopped' : '已停止') : (en ? 'Not started' : '未开始')}</span></div>
       <div class="workspace-actions"><button id="response-start" class="button primary" ${responseMayRecord() && !capture?.recording ? '' : 'disabled'}>${en ? 'Start new recording' : '开始新记录'}</button><button id="response-release" class="button" ${capture?.recording && capture.samples.length && capture.release_time_s == null ? '' : 'disabled'}>${en ? 'Mark force released' : '标记外力已释放'}</button><button id="response-stop" class="button" ${capture?.recording ? '' : 'disabled'}>${en ? 'Stop recording' : '结束记录'}</button><button id="response-export" class="button" ${capture?.samples.length && !capture.recording ? '' : 'disabled'}>${en ? 'Analyze and export recording' : '分析并导出记录'}</button></div>
       <label>${en ? 'Observed joint' : '观测关节'}<select id="response-joint">${names.map((name, i) => `<option value="${i}" ${i === (state.responseJoint || 0) ? 'selected' : ''}>${esc(name)}</option>`).join('')}</select></label>${responseToleranceFieldsHtml()}
-      <canvas id="capability-response-chart" height="190" aria-label="${en ? 'Nominal reference, virtual output, accepted target and measured position history' : '名义参考、虚拟输出、最终目标与实测位置曲线'}"></canvas><div class="capability-chart-legend"><span data-line="nominal">${en ? 'Nominal reference' : '名义参考'}</span><span data-line="virtual">${en ? 'Virtual output' : '虚拟输出'}</span><span data-line="accepted">${en ? 'Accepted target' : '最终目标'}</span><span data-line="pos">${en ? 'Measured' : '实测'}</span></div><div id="response-metrics">${responseMetricHtml()}</div><div id="response-analysis">${responseAnalysisHtml()}</div><div id="response-acceptance">${measurementFeedbackHtml(state.responseAcceptance,'response')}</div>${externalTcpMeasurementHtml()}<p class="hint">${en ? 'Use a separate recording for each strategy, parameter set, model or load; mark the release time and keep the comparison conditions unchanged' : '每组策略、参数、模型或载荷使用独立记录；松手时标记释放，比较时保持其余条件一致'}</p></section>`;
+      <div class="response-chart-frame"><canvas id="capability-response-chart" height="190" aria-label="${en ? 'Nominal reference, virtual output, accepted target and measured position history' : '名义参考、虚拟输出、最终目标与实测位置曲线'}"></canvas><div id="response-chart-empty" class="response-chart-empty" ${capture?.samples?.length >= 2 ? 'hidden' : ''}><strong>${en ? 'No response data yet' : '尚无响应数据'}</strong><span>${en ? 'The curve appears here after recording begins' : '开始记录后，响应曲线会显示在这里'}</span></div></div><div class="capability-chart-legend"><span data-line="nominal">${en ? 'Nominal reference' : '名义参考'}</span><span data-line="virtual">${en ? 'Virtual output' : '虚拟输出'}</span><span data-line="accepted">${en ? 'Accepted target' : '最终目标'}</span><span data-line="pos">${en ? 'Measured' : '实测'}</span></div><div id="response-metrics">${responseMetricHtml()}</div><div id="response-analysis">${responseAnalysisHtml()}</div><div id="response-acceptance">${measurementFeedbackHtml(state.responseAcceptance,'response')}</div>${externalTcpMeasurementHtml()}<p class="hint">${en ? 'Use a separate recording for each strategy, parameter set, model or load; mark the release time and keep the comparison conditions unchanged' : '每组策略、参数、模型或载荷使用独立记录；松手时标记释放，比较时保持其余条件一致'}</p></section>`;
 }
 function drawResponseChart() {
     const canvas = $('capability-response-chart'); if (!canvas) return;
+    const capture = state.responseCapture, samples = capture?.samples || [];
+    const index = state.responseJoint || 0;
+    const values = samples.flatMap(s => ['nominal', 'virtual', 'accepted', 'pos'].map(key => s[key]?.[index])).filter(x => typeof x === 'number' && Number.isFinite(x));
+    const duration = samples.length >= 2 ? samples.at(-1).time_s - samples[0].time_s : 0;
+    const empty = $('response-chart-empty'); if (empty) empty.hidden = samples.length >= 2 && values.length > 0 && duration > 0;
     const rect = canvas.getBoundingClientRect(); if(rect.width<=0||document.hidden)return;
     const width = rect.width, height = 190, ratio = devicePixelRatio || 1;
     canvas.width = width * ratio; canvas.height = height * ratio;
     const ctx = canvas.getContext('2d'); ctx.scale(ratio, ratio);
     const style=getComputedStyle(canvas),token=name=>style.getPropertyValue(name).trim();
     ctx.fillStyle=token('--viz-canvas');ctx.fillRect(0,0,width,height);
-    const capture = state.responseCapture, samples = capture?.samples || [];
-    if (samples.length < 2) return;
-    const index = state.responseJoint || 0, spec = jointDisplaySpec(capture.joint_names[index],capture.joint_units?.[index]);
-    const values = samples.flatMap(s => ['nominal', 'virtual', 'accepted', 'pos'].map(key => s[key]?.[index])).filter(x => typeof x === 'number' && Number.isFinite(x));
-    if (!values.length) return;
-    const low = Math.min(...values), high = Math.max(...values), range = Math.max(0.01 / spec.factor, high - low), duration = samples.at(-1).time_s - samples[0].time_s;
-    if (duration <= 0) return;
+    if (samples.length < 2 || !values.length || !(duration > 0)) return;
+    const spec = jointDisplaySpec(capture.joint_names[index],capture.joint_units?.[index]);
+    const low = Math.min(...values), high = Math.max(...values), range = Math.max(0.01 / spec.factor, high - low);
     const px = sample => 8 + (sample.time_s - samples[0].time_s) / duration * (width - 16);
     const py = value => height - 25 - (value - low + range * 0.05) / (range * 1.1) * (height - 40);
     ctx.strokeStyle=token('--viz-grid');ctx.lineWidth=1;
@@ -3112,10 +3373,57 @@ function refreshCapabilityDiagnostics() {
     refreshAdmittanceValidationControls();
     drawResponseChart();
 }
+function responseWorkspaceView() {
+    return ['experiment','parameters','records'].includes(state.responseWorkspaceView)?state.responseWorkspaceView:'experiment';
+}
+function responseJointDraftFields() {
+    const editor=state.profileEditor,names=editor?.joint_names || [],joint=names[Math.min(state.responseJoint || 0,names.length-1)];
+    if(!editor||!joint)return [];
+    if(referenceBehavior()==='CSP')return ['mass','damping','stiffness'].map(key=>({path:['core','capability','admittance','controller',key,joint],label:{mass:'M · '+busyText('虚拟惯性','Virtual inertia'),damping:'D · '+busyText('虚拟阻尼','Virtual damping'),stiffness:'K · '+busyText('虚拟刚度','Virtual stiffness')}[key]})).filter(item=>profileGet(editor,item.path)!==undefined);
+    const requested=String(state.responseGainPurpose || state.telemetry?.gain_profile || 'rigid').toLowerCase();
+    const purpose=editor.core.control.controller[requested]?requested:'rigid';
+    return [...['kp','kd'].map(key=>({path:['core','control','controller',purpose,key,joint],label:key==='kp'?'Kp · '+busyText('刚度','Stiffness'):'Kd · '+busyText('阻尼','Damping')})),{path:['core','model','gravity_scale',joint],label:busyText('重力比例','Gravity scale')}].filter(item=>profileGet(editor,item.path)!==undefined);
+}
+function responseJointDraftHtml() {
+    const editor=state.profileEditor;if(!editor)return '';
+    const fields=responseJointDraftFields(),names=editor.joint_names || [],index=Math.min(state.responseJoint || 0,names.length-1),csp=referenceBehavior()==='CSP';
+    const requested=String(state.responseGainPurpose || state.telemetry?.gain_profile || 'rigid').toLowerCase();
+    return `<section class="response-draft-strip"><div class="response-draft-toolbar"><div class="response-draft-selection"><label>${busyText('调试关节','Tuning joint')}<select data-response-draft-joint>${names.map((name,i)=>`<option value="${i}" ${i===index?'selected':''}>${esc(name)}</option>`).join('')}</select></label>${!csp?`<label>${busyText('参数用途','Gain purpose')}<select data-response-gain-purpose>${['rigid','compliant','drag'].filter(key=>editor.core.control.controller[key]).map(key=>`<option value="${key}" ${key===requested?'selected':''}>${esc(gainPurposeLabel(key.toUpperCase()))}</option>`).join('')}</select></label>`:''}</div><div class="workspace-actions"><button type="button" class="button" data-response-save-joint ${fields.length?'':'disabled'}>${busyText('审阅本关节改动','Review this joint')}</button><button type="button" class="button" data-response-view="parameters">${busyText('完整参数与应用','Parameters and application')}</button></div></div>${fields.length?`<div class="response-quick-fields">${fields.map(item=>profileField(item.path,profileGet(editor,item.path),item.label)).join('')}</div>`:`<p class="hint">${busyText('先在完整参数页补齐响应参数','Complete response parameters in the parameter view first')}</p>`}<p class="response-draft-note">${busyText('共享草稿 · 编辑不会自动改变运行值','Shared draft · editing does not automatically change running values')}</p></section>`;
+}
 function tuningPanelHtml() {
-    const csp=referenceBehavior()==='CSP', editor=state.profileEditor;
-    const edit=csp && editor?`<details class="workspace-section tuning-parameters" open><summary>${busyText('导纳响应参数','Admittance response parameters')}</summary><div class="tuning-parameters-body">${profileAdmittanceHtml(editor)}</div></details>`:!csp?`<section class="workspace-section"><h3>${busyText('MIT 响应检查','MIT response inspection')}</h3><p class="hint">${busyText('使用当前 PD 与前馈参数记录真实响应；增益标定在专项工具中进行','Record the response using current PD and feedforward; tune gains in the dedicated tool')}</p>${setupActionHtml({page:'calibration',tool:'gain'},busyText('打开 MIT 增益标定','Open MIT gain calibration'))}${runtimeExecutionSettingsHtml()}</section>`:'';
-    return `<div class="workspace-panel capability-workspace tuning-workspace">${edit}${csp?admittanceValidationPanelHtml():''}${responsePanelHtml()}<details class="workspace-section"><summary>${busyText('实时参考与力矩','Live references and torque')}</summary>${capabilityDiagnosticsHtml()}</details></div>`;
+    const csp=referenceBehavior()==='CSP',editor=state.profileEditor,view=responseWorkspaceView();
+    const navigation=`<nav class="response-workspace-tabs" role="tablist" aria-label="${busyText('响应整定视图','Response tuning views')}">${[['experiment','响应实验','Response experiment'],['parameters','响应参数','Response parameters'],['records','实验记录','Experiment records']].map(([key,zh,en])=>`<button type="button" role="tab" id="response-tab-${key}" aria-selected="${view===key}" aria-controls="response-workspace-panel" data-response-view="${key}" class="${view===key?'active':''}">${busyText(zh,en)}${key==='records'?` <small>${state.readiness?.response_records?.length || 0}</small>`:''}</button>`).join('')}</nav>`;
+    let body;
+    if(view==='records')body=responseHistoryHtml();
+    else if(view==='parameters')body=`<section class="workspace-section tuning-parameters"><div class="workspace-section-head"><div><h3>${busyText('响应参数草稿','Response parameter draft')}</h3><p class="hint">${busyText('与参数中心共用；保存与应用分别操作','Shared with the parameter center; saving and application are separate')}</p></div>${setupActionHtml({page:'profile_setup',group:'motion'},busyText('参数中心','Parameter center'))}</div><div class="tuning-parameters-body">${editor?(csp?profileAdmittanceHtml(editor):profileGainPurposeHtml(editor)+`<section class="calibration-step"><h3>${busyText('动力学前馈','Dynamics feedforward')}</h3>${profileJointParametersHtml(editor,[{path:['core','model','gravity_scale'],label:busyText('重力比例','Gravity scale')}])}</section><div class="workspace-actions">${setupActionHtml({page:'calibration',tool:'gain'},busyText('自动增益标定','Automatic gain calibration'))}<button type="button" class="button" data-response-save-all>${busyText('审阅响应参数改动','Review response parameter changes')}</button></div>`):`<p class="hint">${busyText('请先加载机械臂 Profile','Load a robot Profile first')}</p>`}</div></section>`;
+    else body=`${responseJointDraftHtml()}${responsePanelHtml()}${csp?admittanceValidationPanelHtml():''}<details class="workspace-section response-live-diagnostics"><summary>${busyText('实时参考与力矩','Live references and torque')}</summary>${capabilityDiagnosticsHtml()}</details>`;
+    return `<div class="workspace-panel capability-workspace tuning-workspace response-workflow">${navigation}<section id="response-workspace-panel" role="tabpanel" aria-labelledby="response-tab-${view}" data-response-workspace-view="${view}">${body}</section></div>`;
+}
+function responseRecordStatus(record) {
+    return record.status==='verified'?busyText('验收通过','Verified'):record.status==='failed'?busyText('未通过验收','Not passed'):record.status==='stale'?busyText('需重新验证','Needs revalidation'):busyText('记录待补测','More measurements required');
+}
+function responseRecordTime(record) {
+    const value=record.recorded_at;
+    return typeof value==='number'?new Date(value*1000).toLocaleString(state.language==='en'?'en-GB':'zh-CN'):value || record.id || '—';
+}
+function responseHistoryHtml() {
+    const records=state.readiness?.response_records || [],selected=records.find(record=>(record.id || record.path)===state.responseRecordSelection);
+    if(selected){
+        const summary=selected.summary || {};
+        return `<section class="response-record-detail"><div class="response-record-heading"><button type="button" class="button" data-response-record-back>${busyText('返回实验记录','Back to experiment records')}</button>${readinessStatusHtml(responseRecordStatus(selected),selected.status==='verified'?'ready':selected.status==='failed'?'warning':'muted')}</div><h3>${esc(selected.control_path || '')} · ${esc(responseRecordTime(selected))}</h3><dl class="response-record-facts"><div><dt>${busyText('记录编号','Record')}</dt><dd>${esc(selected.id || '—')}</dd></div><div><dt>${busyText('样本数','Samples')}</dt><dd>${Number(selected.sample_count || 0)}</dd></div><div><dt>${busyText('通过轴','Passed axes')}</dt><dd>${esc((summary.passed_axes || []).join(', ') || '—')}</dd></div><div><dt>${busyText('要求验证的轴','Required axes')}</dt><dd>${esc((summary.required_axes || []).join(', ') || '—')}</dd></div></dl>${summary.binding_error || summary.reason?`<p class="response-record-conclusion">${esc(summary.binding_error || summary.reason)}</p>`:''}${returnVerificationHtml(summary.return_verification)}${Array.isArray(summary.axes)&&summary.axes.length?`<div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>${busyText('实际退让','Actual motion')}</th><th>${busyText('稳定速度','Settled velocity')}</th><th>${busyText('跟踪边界内','Within tracking bound')}</th><th>${busyText('结果','Result')}</th></tr></thead><tbody>${summary.axes.map(axis=>`<tr><th>${esc(axis.joint)}</th>${['actual_motion','stable_velocity','tracking_within_limit','passed'].map(key=>`<td>${axis[key]===true?busyText('通过','Passed'):axis[key]===false?busyText('未通过','Not passed'):'—'}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}<section class="response-record-source"><h4>${busyText('原始记录与配置绑定','Original record and configuration binding')}</h4><code>${esc(selected.path || selected.artifact_path || '')}</code><div class="workspace-actions"><button type="button" class="button" data-response-record-reveal ${selected.path || selected.artifact_path?'':'disabled'}>${busyText('定位记录文件','Show recording file')}</button></div><details class="calibration-locks"><summary>${busyText('记录标识与摘要','Record identifiers and summary')}</summary><pre>${esc(JSON.stringify({id:selected.id,scope:selected.scope,artifact_sha256:selected.artifact_sha256,kind:selected.kind,result:selected.result,summary},null,2))}</pre></details></section></section>`;
+    }
+    return `<section class="workspace-section response-history"><div class="workspace-section-head"><div><h3>${busyText('已保存响应记录','Saved response recordings')}</h3><p class="hint">${busyText('查看独立记录的采样、回位结果及配置绑定','Inspect samples, return results and configuration binding for each recording')}</p></div><span>${records.length} ${busyText('条','records')}</span></div><div class="response-record-list">${records.length?records.slice().reverse().map(record=>`<button type="button" class="response-record-item" data-response-record="${esc(record.id || record.path || '')}"><span><strong>${esc(record.control_path || '')} · ${esc(responseRecordTime(record))}</strong><small>${Number(record.sample_count || 0)} ${busyText('帧','samples')} · ${esc(record.id || '')}</small></span><span>${esc(responseRecordStatus(record))} ${icon('arrow')}</span></button>`).join(''):`<div class="empty-state">${busyText('尚无已保存的响应记录；分析并导出实验后，记录会显示在这里','No saved response recordings yet; analyze and export an experiment to add one here')}</div>`}</div></section>`;
+}
+function bindResponseWorkspace() {
+    document.querySelectorAll('[data-response-view]').forEach(button=>button.onclick=()=>{state.responseWorkspaceView=button.dataset.responseView;if(state.responseWorkspaceView!=='records')state.responseRecordSelection=null;render();refreshCapabilityDiagnostics();window.serialArmStudio?.enterSurface($('response-workspace-panel'));});
+    document.querySelectorAll('[data-response-draft-joint]').forEach(select=>select.onchange=()=>{state.responseJoint=Number(select.value);render();refreshCapabilityDiagnostics();});
+    document.querySelectorAll('[data-response-gain-purpose]').forEach(select=>select.onchange=()=>{state.responseGainPurpose=select.value;render();});
+    const joint=$('response-joint');if(joint&&!joint.dataset.responseViewBound){joint.dataset.responseViewBound='true';joint.addEventListener('change',()=>{if(document.querySelector('.response-workflow'))render();});}
+    document.querySelectorAll('[data-response-record]').forEach(button=>button.onclick=()=>{state.responseRecordSelection=button.dataset.responseRecord;render();window.serialArmStudio?.enterSurface($('response-workspace-panel'));});
+    document.querySelectorAll('[data-response-record-back]').forEach(button=>button.onclick=()=>{state.responseRecordSelection=null;render();window.serialArmStudio?.enterSurface($('response-workspace-panel'));});
+    document.querySelectorAll('[data-response-record-reveal]').forEach(button=>button.onclick=()=>{const record=(state.readiness?.response_records || []).find(item=>(item.id || item.path)===state.responseRecordSelection);if(record)operation(()=>api.revealFile(record.path || record.artifact_path));});
+    document.querySelectorAll('[data-response-save-joint]').forEach(button=>button.onclick=()=>{const paths=responseJointDraftFields().map(item=>item.path.join('.'));operation(async()=>{await studioReviewScope(paths);});});
+    document.querySelectorAll('[data-response-save-all]').forEach(button=>button.onclick=()=>operation(async()=>{await studioReviewScope(['core.control.controller','core.model.gravity_scale']);}));
 }
 function admittanceValidationState() {
     const validation=state.admittance?.validation || {},active=validation.test_active===true;
@@ -3148,10 +3456,6 @@ function measurementFeedbackHtml(result,kind) {
     const label=needsConfirmation?busyText('独立实测通过，待完成检查确认','Independent measurements passed; operator confirmation remains'):passed?busyText('实测验收通过','Measured acceptance passed'):busyText('实测验收未通过','Measured acceptance not passed');
     const reason=needsConfirmation?busyText('返回准备任务确认加载方向与无接触条件，无需重复采样','Return to the commissioning task to confirm load direction and contact-free conditions; no new sampling is needed'):summary.binding_error || summary.reason || (!passed?busyText('请检查逐轴结果与验证覆盖，补齐后重新采集','Review per-axis results and coverage, then record again'):'');
     return `<section class="measurement-feedback" role="status">${readinessStatusHtml(label,passed?'ready':'warning')}${reason?`<p class="hint">${esc(reason)}</p>`:''}${result.requires_reconnect?`<p class="hint">${busyText('记录已保存，重新连接后应用当前验收许可','Recording saved; reconnect to apply current validation permissions')}</p>`:''}${measurement?.artifact_path?`<code class="commission-artifact">${esc(measurement.artifact_path)}</code>`:''}</section>`;
-}
-function responseHistoryHtml() {
-    const records=state.readiness?.response_records || [];
-    return `<details class="workspace-section response-history"><summary>${busyText('已保存响应记录','Saved response recordings')}　${records.length}</summary><div class="readiness-inspection-records">${records.length?records.map(record=>`<article class="readiness-record"><div><b>${esc(record.control_path || '')}　${esc(record.recorded_at || record.id || '')}</b><p class="hint">${Number(record.sample_count || 0)} ${busyText('帧','samples')}　${esc(record.status==='verified'?busyText('验收通过','Verified'):record.status==='failed'?busyText('未通过验收','Not passed'):record.status==='stale'?busyText('需重新验证','Needs revalidation'):busyText('记录待补测','More measurements required'))}</p>${record.summary?.binding_error || record.summary?.reason?`<p class="hint">${esc(record.summary.binding_error || record.summary.reason)}</p>`:''}<code class="commission-artifact">${esc(record.path || '')}</code></div></article>`).join(''):`<p class="hint">${busyText('导出响应记录后会保留历史摘要','Export a response recording to retain its historical summary')}</p>`}</div></details>`;
 }
 // A persisted offline fit is a separate, explicitly selected gravity source
 // No live control command is sent when reading or displaying it
@@ -4016,7 +4320,7 @@ function modelCalibrationPanelHtml() {
             : (state.language === 'en' ? 'Historical offline candidate　inspect the recorded solver and scope before reuse' : '历史离线候选　重用前核对记录的求解方法与辨识范围'))
         : (state.language === 'en' ? 'Online quick preview; fixed mass; final analysis uses the saved bidirectional observations' : '在线快速预览　固定质量；最终模型以保存后的双向数据分析为准');
     const resultBlock = result?.first_moments?.length && ['complete', 'failed'].includes(phase) ? `<div class="callout"><b>${state.language === 'en' ? 'Candidate meaning' : '当前候选含义'}</b><div>${resultBasis}</div>${result.prior_preferred ? `<div class="idim-recommendation">${state.language==='en'?'Source model retained; no new mass or COM update':'保留原模型：没有新的质量或质心更新；偏置变化不等于重力补偿改善'}</div>` : ''}<div>${state.language === 'en' ? 'Validation covers the saved holdout poses; test the candidate on hardware before adopting it' : '验证结果覆盖本次留出姿态，采用候选前还需进行实机对比'}</div></div><div class="candidate-compare-head"><h4>${t('candidateComparison')}</h4><span>${t('candidateScope')}</span></div>${(!result.static_pass || result.review_warnings?.length) ? `<div class="callout"><b>${state.language === 'en' ? 'Needs human review' : '需要人工审核'}</b>　${esc(result.failure_reason || 'holdout result not approved')}　${state.language === 'en' ? 'Candidate may be exported for manual review if values are finite and physically valid, but automatic application requires passing validation' : '未通过自动验收的候选仍可导出供人工审核，但不会被允许临时应用到真机'}</div>` : ''}${result.identification_mode === 'local' ? `<div class="callout">${state.language === 'en' ? 'Local fit' : '局部辨识'}　${state.language === 'en' ? 'Locked' : '锁定'} ${esc((result.locked_links || []).join(', ') || '—')}　${state.language === 'en' ? 'Fitted' : '允许校正'} ${esc((result.fitted_links || []).join(', ') || '—')}</div>` : ''}${status.friction_status === 'requires_refit_or_review' ? `<div class="callout">${state.language === 'en' ? 'Friction result belongs to a different gravity candidate; do not reuse it' : '摩擦参数属于原来的重力候选，当前离线重算结果尚未重新匹配摩擦模型，不可直接复用'}</div>` : ''}${gravityValidationSummary(result)}${modelCalibrationMetricTable(status)}${modelCalibrationCandidateTable(status)}<div class="workspace-actions">${result.static_pass ? `<button id="model-calibration-preview-save" class="button">${t('previewSave')}</button>${state.modelCalibrationSavePreview ? `<button id="model-calibration-save" class="button primary">${t('saveCandidate')}</button>` : ''}` : ''}<span class="gravity-export-hint">${state.modelCalibrationCandidateSource === 'offline' ? (state.language === 'en' ? 'Offline candidate mass and COM, computed from saved data; source inertia-at-COM remains unchanged; review holdout separately' : '离线重算的质量与质心候选，质量和质心可同时变化；惯性张量保留原值，须独立评估留出表现') : (state.language === 'en' ? 'Original masses and inertia tensors are retained; only fitted COM values are updated' : '保留原始质量和惯性张量，仅更新辨识质心')}</span>${state.modelCalibrationSaved ? `<button id="model-calibration-restore-config" class="button">${t('restoreSavedConfig')}</button>` : ''}</div>${gravityValidationNoticeHtml(state.modelCalibrationSaved)}${state.modelCalibrationSavePreview ? `${gravityValidationNoticeHtml(state.modelCalibrationSavePreview,true)}<div class="diff-box"><b>${esc(state.modelCalibrationSavePreview.path)}</b>${(state.modelCalibrationSavePreview.changes || []).map(x => `<div><del>${esc(x.before)}</del><ins>${esc(x.after)}</ins></div>`).join('') || `<p>${t('noChanges')}</p>`}</div>` : ''}${state.modelCalibrationFrictionExport ? `<div class="callout"><b>${state.language === 'en' ? 'Friction candidate　review only' : '摩擦候选　仅供审核'}</b><div class="path-chip">${esc(state.modelCalibrationFrictionExport.path || '')}</div><div>${state.modelCalibrationFrictionExport.matches_current_candidate ? (state.language === 'en' ? 'Gravity source matches' : '重力来源一致') : (state.language === 'en' ? 'Gravity model has changed; friction fit needs revalidation' : '重力候选已变化，原摩擦结果需要重新验证')}</div></div>` : ''}${state.modelCalibrationExport ? `<div class="callout"><b>${t('exportCandidate')}</b><div class="path-chip">${esc(state.modelCalibrationExport.path || state.modelCalibrationExport.candidate_urdf || '')}</div>${state.modelCalibrationExport.verification_warning ? `<div class="callout">${esc(state.modelCalibrationExport.verification_warning)}</div>` : ''}${state.modelCalibrationExport.verification ? `<div>gravity RMS ${Number(state.modelCalibrationExport.verification.gravity_rms_nm || 0).toExponential(3)} ${aggregateEffortUnit()}　FK Δp ${Number(state.modelCalibrationExport.verification.fk_max_position_error_m || 0).toExponential(3)} m</div>` : ''}</div>` : ''}` : '';
-    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div>${calibrationTaskGuidance('gravity')}<label>${state.language === 'en' ? 'Tool, payload and gripper state' : '末端配置、载荷与夹爪状态'}<input id="model-cal-load" type="text" value="${esc(options.load_description || '')}" placeholder="${state.language === 'en' ? 'Record the actual mounting and gripper state before acquisition' : '采集前填写，例如：剪夹+相机，夹爪闭合，无额外载荷'}" ${optionsDisabled ? 'disabled' : ''}></label><div class="model-calibration-identification"><b>${state.language === 'en' ? 'Gravity identification' : '重力模型辨识范围'}</b><div class="mode-buttons"><button id="model-cal-mode-global" type="button" class="button ${options.mode !== 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Global' : '全局辨识'}</button><button id="model-cal-mode-local" type="button" class="button ${options.mode === 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Local' : '局部辨识'}</button>${options.mode === 'local' ? `<button id="model-cal-lock-select" type="button" class="button" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Trusted links' : '选择可信 Link'}</button><span>${state.language === 'en' ? 'Locked' : '已锁定'} ${(options.locked_links || []).length}</span>` : ''}</div><p class="hint">${options.mode === 'local' ? (state.language === 'en' ? 'Trusted links stay fixed; online estimates first moments, offline fits mass and first moments from static poses' : '可信 Link 始终固定；在线仅修正一阶质量矩，离线使用静态姿态估计质量与一阶质量矩') : (state.language === 'en' ? 'Global selects all controlled links; online fixes mass, offline fits mass + first moments' : '全局选择全部受控 Link；在线固定质量，离线联合估计质量与一阶质量矩')}${!calibrationSelectableLinks().length ? (state.language === 'en' ? '　No link list yet: load the model or a calibration record' : '　尚未取得 Link 清单，请加载模型或历史任务') : ''}</p></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="model-calibration-options"><label>${state.language === 'en' ? 'Next offline fitting objective' : '下一次离线拟合目标'}<select id="model-calibration-objective" ${taskActive ? 'disabled' : ''}><option value="urdf" ${state.modelCalibrationObjective === 'urdf' ? 'selected' : ''}>${state.language === 'en' ? 'Raw URDF prediction (experimental)' : 'URDF 直接预测（实验对照）'}</option><option value="bias_separated" ${state.modelCalibrationObjective === 'bias_separated' ? 'selected' : ''}>${state.language === 'en' ? 'Separate constant feedback offsets (compatibility default)' : '分离反馈常值偏置（兼容默认）'}</option></select></label></div><p class="hint">${state.language === 'en' ? 'Used for the next recompute. Raw prediction may absorb feedback errors into mass/COM; both objectives use raw URDF holdout evaluation before hardware comparison' : '仅用于下一次重算，加载报告不改变此选择；直接预测是实验对照，可能把反馈误差吸收入质量/质心；两种目标均不保证实机改善，仍按原始 URDF 留出预测验收'}</p><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button><button id="model-calibration-scan-records" class="button">${state.language === 'en' ? 'Scan saved tasks' : '扫描已有任务'}</button>${state.modelCalibrationOffline ? `<button id="model-calibration-refresh-record" class="button">${state.language === 'en' ? 'Refresh record' : '重新检查记录'}</button>` : ''}${directory && (!state.modelCalibrationOffline || state.modelCalibrationOffline.has_result) ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.static_pair_quality?.position_warnings ? `<div class="callout">双向静态姿态重复性：${Number(status.static_pair_quality.position_warnings)} 组位置差超过 0.01 rad；观测均已保留，离线按实际姿态与迟滞不确定性分析，不视为精确摩擦抵消</div>` : ''}${status.preview_error ? `<div class="callout">${state.language === 'en' ? 'Static quick preview unavailable; complete observations are retained for offline IDIM' : '静态快速预览未得到候选；完整采集继续保留，后续使用离线 IDIM 验证'}: ${esc(status.preview_error)}</div>` : ''}${status.error ? `<div class="callout error-callout">${esc(localizedError(status.error))}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${modelCalibrationModelBinding().historical ? `<div class="callout"><b>${state.language === 'en' ? 'Historical model preview　read only' : '历史模型对照　仅预览'}</b><div>${state.language === 'en' ? 'Only inertial parameters differ, geometry and joints match, this does not validate the updated dynamics or authorize replay or application' : '已核对只有惯量参数改变，几何与关节保持一致，历史 RMS 不代表当前模型的预测精度，此预览不授权回放或参数应用'}</div><div>${state.language === 'en' ? 'Changed links' : '变化的 Link'} ${esc(modelCalibrationModelBinding().alignment.changed_links.join(', '))}</div>${(modelCalibrationModelBinding().alignment.warnings || []).map(w => `<div class="workspace-error">${esc(w)}</div>`).join('')}</div>` : ''}${replayHint}${resumeSafetyHint}${offlineHint}${recordInventory}${resultBlock}${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
+    return `<section class="workspace-section model-calibration-card"><div class="workspace-section-head"><div><h3>${t('modelCalibration')}</h3><p class="hint">${t('modelCalibrationDesc')}</p></div><div class="result-badges">${sourceTag}<span id="model-calibration-phase" class="result-badge neutral">${esc(modelCalibrationPhaseText(phase))}</span></div></div>${calibrationTaskGuidance('gravity')}<label>${state.language === 'en' ? 'Tool, payload and gripper state' : '末端配置、载荷与夹爪状态'}<input id="model-cal-load" type="text" value="${esc(options.load_description || '')}" placeholder="${state.language === 'en' ? 'Record the actual mounting and gripper state before acquisition' : '采集前填写，例如：剪夹+相机，夹爪闭合，无额外载荷'}" ${optionsDisabled ? 'disabled' : ''}></label><div class="model-calibration-identification"><b>${state.language === 'en' ? 'Gravity identification' : '重力模型辨识范围'}</b><div class="mode-buttons"><button id="model-cal-mode-global" type="button" class="button ${options.mode !== 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Global' : '全局辨识'}</button><button id="model-cal-mode-local" type="button" class="button ${options.mode === 'local' ? 'active' : ''}" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Local' : '局部辨识'}</button>${options.mode === 'local' ? `<button id="model-cal-lock-select" type="button" class="button" ${optionsDisabled ? 'disabled' : ''}>${state.language === 'en' ? 'Trusted links' : '选择可信 Link'}</button><span>${state.language === 'en' ? 'Locked' : '已锁定'} ${(options.locked_links || []).length}</span>` : ''}</div><p class="hint">${options.mode === 'local' ? (state.language === 'en' ? 'Trusted links stay fixed; online estimates first moments, offline fits mass and first moments from static poses' : '可信 Link 始终固定；在线仅修正一阶质量矩，离线使用静态姿态估计质量与一阶质量矩') : (state.language === 'en' ? 'Global selects all controlled links; online fixes mass, offline fits mass + first moments' : '全局选择全部受控 Link；在线固定质量，离线联合估计质量与一阶质量矩')}${!calibrationSelectableLinks().length ? (state.language === 'en' ? '　No link list yet: load the model or a calibration record' : '　尚未取得 Link 清单，请加载模型或历史任务') : ''}</p></div><div class="model-calibration-options"><label>${t('poseBudget')}<input id="model-cal-pose-budget" type="number" min="5" max="16" step="1" value="${Number(options.pose_budget)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('validationFraction')}<input id="model-cal-validation" type="number" min="0.15" max="0.45" step="0.05" value="${Number(options.validation_fraction)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('regularizationStrength')}<input id="model-cal-regularization" type="number" min="0.00000001" max="10" step="0.001" value="${Number(options.regularization)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('svdRelativeThreshold')}<input id="model-cal-svd" type="number" min="0.00000001" max="0.2" step="0.0001" value="${Number(options.svd_relative_threshold)}" ${optionsDisabled ? 'disabled' : ''}></label><label>${t('minimumInformationScore')}<input id="model-cal-information" type="number" min="0.00000001" max="1000" step="0.0001" value="${Number(options.minimum_information_score)}" ${optionsDisabled ? 'disabled' : ''}></label></div><div class="model-calibration-options"><label>${state.language === 'en' ? 'Next offline fitting objective' : '下一次离线拟合目标'}<select id="model-calibration-objective" ${taskActive ? 'disabled' : ''}><option value="urdf" ${state.modelCalibrationObjective === 'urdf' ? 'selected' : ''}>${state.language === 'en' ? 'Raw URDF prediction (experimental)' : 'URDF 直接预测（实验对照）'}</option><option value="bias_separated" ${state.modelCalibrationObjective === 'bias_separated' ? 'selected' : ''}>${state.language === 'en' ? 'Separate constant feedback offsets (compatibility default)' : '分离反馈常值偏置（兼容默认）'}</option></select></label></div><p class="hint">${state.language === 'en' ? 'Used for the next recompute. Raw prediction may absorb feedback errors into mass/COM; both objectives use raw URDF holdout evaluation before hardware comparison' : '仅用于下一次重算，加载报告不改变此选择；直接预测是实验对照，可能把反馈误差吸收入质量/质心；两种目标均不保证实机改善，仍按原始 URDF 留出预测验收'}</p><div class="workspace-actions">${actions.join('')}<button id="model-calibration-load-record" class="button">${t('loadRecord')}</button><button id="model-calibration-scan-records" class="button">${state.language === 'en' ? 'Scan saved tasks' : '扫描已有任务'}</button>${state.modelCalibrationOffline ? `<button id="model-calibration-refresh-record" class="button">${state.language === 'en' ? 'Refresh record' : '重新检查记录'}</button>` : ''}${directory && (!state.modelCalibrationOffline || state.modelCalibrationOffline.has_result) ? `<button id="model-calibration-recompute" class="button">${t('recomputeRecord')}</button>` : ''}</div><div class="model-calibration-summary"><div><span>${t('taskIdentifier')}</span><b id="model-calibration-task-id-inline">${esc(status.task_id || '—')}</b></div><div><span>${t('progressLabel')}</span><b id="model-calibration-progress-inline">${Math.round(Number(status.progress || 0) * 100)}%</b></div><div><span>${t('trajectorySamples')}</span><b id="model-calibration-trajectory-inline">${esc(status.trajectory_samples ?? '—')}</b></div><div><span>${t('trainingValidationGroups')}</span><b id="model-calibration-groups-inline">${training} / ${validation}</b></div><div><span>${t('validStaticSamples')}</span><b id="model-calibration-static-inline">${esc(status.valid_static_samples ?? '—')}</b></div><div><span>${t('acceptedDroppedFrames')}</span><b id="model-calibration-recorder-inline">${esc(status.recorder?.accepted ?? '—')} / ${esc(status.recorder?.dropped ?? '—')}</b></div></div>${status.static_pair_quality?.position_warnings ? `<div class="callout">双向静态姿态重复性：${Number(status.static_pair_quality.position_warnings)} 组位置差超过 0.01 rad；观测均已保留，离线按实际姿态与迟滞不确定性分析，不视为精确摩擦抵消</div>` : ''}${status.preview_error ? `<div class="callout">${state.language === 'en' ? 'Static quick preview unavailable; complete observations are retained for offline IDIM' : '静态快速预览未得到候选；完整采集继续保留，后续使用离线 IDIM 验证'}: ${esc(status.preview_error)}</div>` : ''}${status.error ? `<div class="callout error-callout">${esc(localizedError(status.error))}</div>` : ''}${!modelCalibrationModelBinding().comparable ? `<div class="callout error-callout">${esc(modelCalibrationModelBinding().reason)}</div>` : ''}${modelCalibrationModelBinding().historical ? `<div class="callout"><b>${state.language === 'en' ? 'Historical model preview　read only' : '历史模型对照　仅预览'}</b><div>${state.language === 'en' ? 'Only inertial parameters differ, geometry and joints match, this does not validate the updated dynamics or authorize replay or application' : '已核对只有惯量参数改变，几何与关节保持一致，历史 RMS 不代表当前模型的预测精度，此预览不授权回放或参数应用'}</div><div>${state.language === 'en' ? 'Changed links' : '变化的 Link'} ${esc(modelCalibrationModelBinding().alignment.changed_links.join(', '))}</div>${(modelCalibrationModelBinding().alignment.warnings || []).map(w => `<div class="workspace-error">${esc(w)}</div>`).join('')}</div>` : ''}${replayHint}${resumeSafetyHint}${offlineHint}${recordInventory}<section class="task-gravity-results">${resultBlock || `<p class="hint">${busyText('完成采集与拟合后，在此审核候选、独立验证与参数差异','Complete acquisition and fitting to review candidates, validation and parameter differences')}</p>`}</section>${directory ? `<div class="task-directory"><span>${t('taskDirectory')}</span><code>${esc(directory)}</code></div>` : ''}</section>`;
 }
 function singleCalibrationToolsHtml() {
     const c = state.telemetry?.calibration || { kind: 'none', phase: 'idle', captured: 0, expected: 0 }; const progress = c.expected ? `${c.captured}/${c.expected}` : '';
@@ -4189,21 +4493,24 @@ function selectedCandidateParams(kind) {
     return kind==='gravity' ? {candidate_source:candidate?.source || state.modelCalibrationCandidateSource,
         ...(candidate?.path ? {candidate_path:candidate.path} : {})} : candidate?.path ? {report:candidate.path} : {};
 }
-function candidateSummaryRows(item) {
+function candidateSummaryValues(item) {
     const r=item?.summary || {}, raw=r.gravity_validation?.raw_urdf?.validation || r.evaluation?.raw_urdf?.validation || r.raw_urdf?.validation || r.metrics?.raw_urdf?.validation || {};
     const rows=[['轮次 / Run',item?.id],['来源 / Source',item?.source],['范围 / Scope',r.identification_mode || r.mode || r.scope],
         ['可信连杆 / Locked links',(r.locked_links || []).join(', ') || '—'],['目标 / Objective',r.objective || r.fit_objective],
         ['基线 RMS / Baseline RMS',raw.baseline?.aggregate_rms_nm ?? r.baseline_rms_nm ?? r.metrics?.validation?.baseline_rms_nm],
         ['候选 RMS / Candidate RMS',raw.candidate?.aggregate_rms_nm ?? r.candidate_rms_nm ?? r.metrics?.validation?.candidate_rms_nm],
         ['结论 / Verdict',r.recommendation || r.status || (r.static_pass===true ? 'static_pass' : r.static_pass===false ? 'static_failed' : '—')]];
-    return rows.filter(([,v])=>v!==undefined && v!==null).map(([label,value])=>`<tr><th>${esc(label)}</th><td>${esc(typeof value==='object' ? JSON.stringify(value) : value)}</td></tr>`).join('');
+    return rows;
 }
 function calibrationCandidatesHtml(kind) {
     const items=state.calibrationCandidateRounds[kind] || [];if(!['gravity','dynamics'].includes(kind) || !items.length)return '';
     const selected=state.calibrationCandidateSelection[kind], compare=items.find(item=>item.id===state.calibrationCandidateCompare?.[kind]);
     const options=items.map((item,index)=>`<option value="${esc(item.id)}" ${item.id===selected?.id ? 'selected' : ''}>${index+1}　${esc(item.source)}　${esc(item.id)}　${new Date(item.created_at*1000).toLocaleString()}</option>`).join('');
-    return `<section class="candidate-rounds"><h4>${busyText('候选轮次与比较','Candidate runs and comparison')}</h4><label>${busyText('当前选中轮次，应用与导出均使用此结果','Selected run used by Apply and Export')}<select data-candidate-run="${kind}">${options}</select></label><label>${busyText('对照轮次','Compare with')}<select data-candidate-compare="${kind}"><option value="">${busyText('不比较','No comparison')}</option>${items.map(item=>`<option value="${esc(item.id)}" ${item.id===compare?.id ? 'selected' : ''}>${esc(item.id)}</option>`).join('')}</select></label><div class="candidate-comparison-grid"><table class="workspace-table"><tbody>${candidateSummaryRows(selected)}</tbody></table>${compare ? `<table class="workspace-table"><tbody>${candidateSummaryRows(compare)}</tbody></table>` : ''}</div><details><summary>${busyText('所选结果文件','Selected result file')}</summary><code>${esc(selected?.path || '')}</code></details></section>`;
+    const values=candidateSummaryValues(selected),compared=candidateSummaryValues(compare),valueHtml=value=>esc(value==null?'—':typeof value==='object'?JSON.stringify(value):value);
+    const rows=values.map(([label,value],index)=>`<tr><th scope="row">${esc(label)}</th><td>${valueHtml(value)}</td>${compare?`<td>${valueHtml(compared[index]?.[1])}</td>`:''}</tr>`).join('');
+    return `<section class="candidate-rounds"><div class="workspace-section-head"><h4>${busyText('候选轮次与比较','Candidate comparison')}</h4><span class="hint">${busyText('应用和导出使用当前选中轮次','Apply and Export use the selected run')}</span></div><div class="candidate-run-selectors"><label>${busyText('当前候选','Selected candidate')}<select data-candidate-run="${kind}">${options}</select></label><label>${busyText('对照轮次','Reference run')}<select data-candidate-compare="${kind}"><option value="">${busyText('不比较','No comparison')}</option>${items.map(item=>`<option value="${esc(item.id)}" ${item.id===compare?.id ? 'selected' : ''}>${esc(item.id)}</option>`).join('')}</select></label></div><div class="table-scroll"><table class="workspace-table candidate-comparison-table"><thead><tr><th>${busyText('参数 / 证据','Parameter / evidence')}</th><th>${busyText('当前候选','Selected candidate')}</th>${compare?`<th>${busyText('对照轮次','Reference run')}</th>`:''}</tr></thead><tbody>${rows}</tbody></table></div><details><summary>${busyText('所选结果文件','Selected result file')}</summary><code>${esc(selected?.path || '')}</code></details></section>`;
 }
+
 function calibrationToolHistoryHtml(kind) {
     const selected=state.calibrationToolSelected[kind],records=state.calibrationToolRecords[kind] || [],page=state.calibrationHistoryPages[kind] || {},recent=state.telemetry?.model_calibration || {};
     const canExport=!!selected || (kind==='dynamics' && !!state.advancedReport?.candidate_urdf) || (kind==='gravity' && !!state.modelCalibrationOffline?.result?.gravity_result) || (recent.workflow_kind===kind && !!recent.directory);
@@ -5450,7 +5757,7 @@ function wireCalibrationQuickControls() {
     updateWorkbenchControlState();
 }
 function calibrationQuickControlsHtml() {
-    return `<div class="workspace-operation-panel">${robotOperationHtml()}</div>`;
+    return `<div class="workspace-operation-panel studio-workspace-controls">${robotOperationHtml()}</div>`;
 }
 // Refresh controls that depend on live robot state without replacing the panel or dialogs
 function refreshCalibrationActionControls() {
@@ -5539,12 +5846,8 @@ function calibrationAvailableTools() {
         ['dynamics','完整动力学辨识','Full dynamics identification']
     ];
 }
-function calibrationNavigationHtml(entry,locked) {
-    return `<nav class="workspace-subpage-nav calibration-subpage-nav" data-studio-subpage-nav="calibration" aria-label="${esc(busyText('整定与标定工具','Tuning and calibration tools'))}">${calibrationAvailableTools().map(([key,zh,en])=>{
-        const selected=entry===key,title=busyText(zh,en);
-        return `<button data-calibration-entry="${key}" data-studio-subpage-key="${key}" type="button" aria-pressed="${selected}" ${selected?'aria-current="page"':''} aria-controls="calibration-task-panel" class="calibration-entry workspace-subpage-button ${selected?'selected':''}" ${locked&&!selected?'disabled':''}><span class="calibration-entry-title">${esc(title)}</span></button>`;
-    }).join('')}</nav>`;
-}
+function calibrationNavigationHtml(entry,locked) { return studioSubnavigation(); }
+
 function calibrationPanelHtml(includeControls = true) {
     const en = state.language === 'en';
     const verifying = state.telemetry?.gravity_verification?.active === true;
@@ -5578,7 +5881,7 @@ function monitorPanelHtml() {
     const names = x.joint_names || [];
     const live = telemetryFresh(x);
     const stateLabel = live ? busyText('实时反馈','Live feedback') : x.valid ? busyText('反馈已过期，请检查连接','Feedback expired; check the connection') : busyText('等待实时会话','Waiting for live session');
-    return `<div class="workspace-panel"><section class="workspace-section"><h3>${state.language === 'en' ? 'Current robot state' : '当前机械臂状态'}</h3><p class="hint" id="monitor-live-state">${stateLabel}</p><dl class="kv"><dt>Robot</dt><dd id="monitor-robot-state">${esc(live ? x.robot_state : '—')}</dd><dt>${state.language === 'en' ? 'Task state' : '任务状态'}</dt><dd id="monitor-impedance">${esc(live ? taskStateLabel(x.impedance_mode) : '—')}</dd><dt>${t('modelFeedforward')}</dt><dd id="monitor-feedforward">${esc(live ? x.model_feedforward_mode : '—')}</dd><dt>${state.language === 'en' ? 'Effective behavior' : '有效策略'}</dt><dd id="monitor-reference-behavior">${esc(live ? x.control_path || '—' : '—')}</dd><dt>${state.language === 'en' ? 'Observer / admittance' : '观测 / 导纳'}</dt><dd id="monitor-capability-state">${live ? `${x.observer_valid === true ? '✓' : '—'} / ${x.admittance_active === true ? '✓' : '—'}` : '—'}</dd><dt>${t('feedbackAge')}</dt><dd id="monitor-age">${Number.isFinite(telemetryAgeMs(x)) ? telemetryAgeMs(x).toFixed(0) + ' ms' : '—'}</dd></dl></section><section class="workspace-section"><h3>${t('jointActuatorTitle')}</h3><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>q</th><th>dq</th><th>τ</th></tr></thead><tbody id="monitor-joint-body">${monitorJointRows(x,live)}</tbody></table></div></section>${capabilityDiagnosticsHtml()}</div>`;
+    return `<div class="workspace-panel">${studioObservationChartHtml()}<section class="workspace-section"><h3>${state.language === 'en' ? 'Current robot state' : '当前机械臂状态'}</h3><p class="hint" id="monitor-live-state">${stateLabel}</p><dl class="kv"><dt>Robot</dt><dd id="monitor-robot-state">${esc(live ? x.robot_state : '—')}</dd><dt>${state.language === 'en' ? 'Task state' : '任务状态'}</dt><dd id="monitor-impedance">${esc(live ? taskStateLabel(x.impedance_mode) : '—')}</dd><dt>${t('modelFeedforward')}</dt><dd id="monitor-feedforward">${esc(live ? x.model_feedforward_mode : '—')}</dd><dt>${state.language === 'en' ? 'Effective behavior' : '有效策略'}</dt><dd id="monitor-reference-behavior">${esc(live ? x.control_path || '—' : '—')}</dd><dt>${state.language === 'en' ? 'Observer / admittance' : '观测 / 导纳'}</dt><dd id="monitor-capability-state">${live ? `${x.observer_valid === true ? '✓' : '—'} / ${x.admittance_active === true ? '✓' : '—'}` : '—'}</dd><dt>${t('feedbackAge')}</dt><dd id="monitor-age">${Number.isFinite(telemetryAgeMs(x)) ? telemetryAgeMs(x).toFixed(0) + ' ms' : '—'}</dd></dl></section><section class="workspace-section"><h3>${t('jointActuatorTitle')}</h3><div class="table-scroll"><table class="workspace-table"><thead><tr><th>${t('joint')}</th><th>q</th><th>dq</th><th>τ</th></tr></thead><tbody id="monitor-joint-body">${monitorJointRows(x,live)}</tbody></table></div></section>${capabilityDiagnosticsHtml()}</div>`;
 }
 function refreshWorkspaceTelemetryRows() {
     const x = state.telemetry || {};
@@ -5906,7 +6209,7 @@ function refreshTeachReplayPanel() {
     const scrollContainer = task.closest('.content'), scroll = scrollContainer?.scrollTop || 0;
     const active = document.activeElement, selectId = active?.closest?.('.studio-select')?.querySelector('select')?.id;
     const focusedId = selectId || (task.contains(active) ? active?.id : null);
-    task.innerHTML = teachReplayPanelHtml(); wireTeachReplay();
+    task.innerHTML = teachReplayPanelHtml(); wireTeachReplay(); bindStudioTaskDetails(task);
     window.serialArmStudio?.enhanceSelects();
     if (document.querySelector('[data-profile-field]')) restoreProfileFields();
     if (state.setupFocus?.page === state.page) focusSetupTarget(); updateWorkbenchControlState();
@@ -6283,7 +6586,7 @@ function workspaceModelNoteHtml() {
     return base + (target ? `<span class="teach-ghost-legend">${busyText('目标草稿　紫色参考叠影', 'Target draft　purple reference overlay')}</span>` : start ? `<span class="teach-ghost-legend">${busyText('起始位姿　紫色参考叠影', 'Start pose　purple reference overlay')}</span>` : '');
 }
 function workbenchPage() {
-    return pageHead('workbenchTitle', '', workspaceSessionActionHtml()) + workspaceLayoutHtml(workspaceTaskPresentationHtml());
+    return pageHead(studioSectionLabel(), '', workspaceSessionActionHtml()) + workspaceLayoutHtml(workspaceTaskPresentationHtml());
 }
 function workspaceControlsHtml() {
     return workbenchStatusBar() + `<div id="workspace-recovery-notice">${workbenchRecoveryNotice()}</div><div class="workspace-operation-panel studio-workspace-controls">${robotOperationHtml()}</div>`;
@@ -6298,8 +6601,9 @@ function workspacePresentationParts(content) {
     const navigation = nav?.outerHTML || ''; nav?.remove();
     return {navigation, content:template.innerHTML};
 }
-let workspaceLayoutObserver = null, workspaceLayoutFrame = 0;
-const workspacePreviewChoices = new Map();
+function studioLayoutOptions() {
+    return {key:[state.config.profile_file,state.config.profile,state.page,state.page==='workbench'?state.workbenchTab:state.page==='calibration'?state.calibrationEntry:''].join(':'),position:studioSection()==='operation'?'left':'right',taskMinimum:['profile_setup','lifecycle','hardware'].includes(state.page)?750:590,language:state.language,resize:()=>modelView?.resize(),onPreviewChange:()=>{syncWorkspacePreviewVisibility();refreshGraphicsDependentActions();}};
+}
 function workspacePreviewVisible() {
     const host = $('workbench-viewport');
     if (!host) return false;
@@ -6312,7 +6616,7 @@ function parkWorkspacePreview() {
     if (preview && layout && preview.parentElement !== layout) layout.prepend(preview);
 }
 function syncWorkspacePreviewVisibility() {
-    if (!['workbench','geometry','calibration'].includes(state.page)) return;
+    if (!$('workbench-viewport')) return;
     if (workspacePreviewVisible()) operation(mountWorkbenchView);
     else if (modelView && !modelView.paused) suspendModelPreview();
 }
@@ -6321,49 +6625,19 @@ function syncWorkspaceLayout() {
     const preview = workspace?.querySelector('[data-workspace-preview]');
     const task = workspace?.querySelector('.workbench-task');
     if (!workspace || !preview || !task) return;
-    const narrow = workspace.getBoundingClientRect().width <= 880;
-    const data = state.page === 'workbench' && ['monitor','tuning'].includes(state.workbenchTab)
-        || state.page === 'calibration' && state.calibrationEntry === 'gain';
-    workspace.dataset.narrow = String(narrow); workspace.dataset.variant = data ? 'data' : 'split';
-    const key = [state.config.profile_file,state.config.profile,state.page,state.workbenchTab,state.calibrationEntry,narrow?'narrow':'wide'].join(':');
-    if (preview.dataset.layoutKey !== key) {
-        preview.dataset.layoutKey = key;
-        preview.open = workspacePreviewChoices.get(key) ?? (!narrow && !data);
-    }
-    if (data) {
-        if (preview.parentElement !== task || task.lastElementChild !== preview) task.append(preview);
-    } else if (narrow) {
-        const anchor = task.querySelector('.workbench-target-card') || task.querySelector('.workspace-section,.geometry-card,.calibration-standalone-card');
-        if (anchor && !preview.contains(anchor)) { if (anchor.nextElementSibling !== preview) anchor.after(preview); }
-        else if (preview.parentElement !== task) task.append(preview);
-    } else parkWorkspacePreview();
+    window.serialArmLayout?.syncWorkspace(workspace,preview,task,studioLayoutOptions());
     syncWorkspacePreviewVisibility(); modelView?.resize(); refreshGraphicsDependentActions();
 }
 function bindWorkspaceLayout() {
-    workspaceLayoutObserver?.disconnect(); workspaceLayoutObserver = null;
-    cancelAnimationFrame(workspaceLayoutFrame); workspaceLayoutFrame = 0;
     const workspace = document.querySelector('.studio-workspace');
     if (!workspace) return;
     const preview = workspace.querySelector('[data-workspace-preview]');
-    preview.ontoggle = () => { syncWorkspacePreviewVisibility(); refreshGraphicsDependentActions(); };
-    preview.querySelector('summary').onclick = () => setTimeout(() => {
-        if (preview.isConnected) workspacePreviewChoices.set(preview.dataset.layoutKey,preview.open);
-    },0);
     workspace.querySelectorAll('[data-open-workspace-preview]').forEach(button => button.onclick = () => {
-        preview.open = true; workspacePreviewChoices.set(preview.dataset.layoutKey,true);
-        syncWorkspacePreviewVisibility();
+        preview.open = true;
+        window.serialArmLayout?.sync(); syncWorkspacePreviewVisibility();
         preview.querySelector('summary').focus({preventScroll:true});
-        preview.scrollIntoView({block:'nearest',behavior:'smooth'});
     });
     syncWorkspaceLayout();
-    let observedWidth = workspace.getBoundingClientRect().width;
-    workspaceLayoutObserver = new ResizeObserver(() => {
-        const width = workspace.getBoundingClientRect().width;
-        if (Math.abs(width - observedWidth) < 1) return;
-        observedWidth = width; cancelAnimationFrame(workspaceLayoutFrame);
-        workspaceLayoutFrame = requestAnimationFrame(() => { workspaceLayoutFrame = 0; if (workspace.isConnected) syncWorkspaceLayout(); });
-    });
-    workspaceLayoutObserver.observe(workspace);
 }
 function workspaceContextNoteHtml(kind) {
     const geometry = kind === 'geometry';
@@ -6619,7 +6893,7 @@ function refreshGeometryPanel(resetScroll = false) {
         const key = item.id || item.querySelector('summary')?.textContent.trim() || String(index);
         if (details.has(key)) item.open = details.get(key);
     }
-    wireGeometry(); wireCalibrationQuickControls(); bindWorkspaceLayout();
+    wireGeometry(); wireCalibrationQuickControls(); bindStudioTaskDetails(panel); bindWorkspaceLayout();
     const navigation = $('workspace-navigation')?.querySelector('nav'); if (navigation) navigation.scrollLeft = navigationLeft;
     revealCalibrationNavigation();
     window.serialArmStudio?.enhanceSelects();
@@ -6650,12 +6924,13 @@ function calibrationPage() {
 }
 let workspaceMount = null;
 async function mountWorkbenchView() {
+    if($('workbench-viewport')&&!state.modelData&&!state.modelLoading&&state.info?.available?.model){const host=$('workbench-viewport');await loadModelData();if($('workbench-viewport')!==host)return;}
     const host = $('workbench-viewport'), payload = state.modelData, page = state.page;
-    if (!['workbench', 'geometry', 'calibration'].includes(page) || !payload || !host || !workspacePreviewVisible()) return;
+    if (!payload || !host || !workspacePreviewVisible()) return;
     if (workspaceMount?.host === host && workspaceMount.payload === payload) return workspaceMount.promise;
     if (modelView?.container === host && modelView.payload === payload && !modelView.paused) return;
     const record = previewRecord(host, payload);
-    if (graphicsState.effectiveMode === 'rescue' || record.fault) { showGraphicsFailure(record); return; }
+    if (graphicsState.effectiveMode === 'rescue' || record.fault) { if(!host.querySelector('[data-graphics-panel]'))showGraphicsFailure(record); return; }
     const request = {host, payload}; workspaceMount = request;
     request.promise = (async () => {
         let view, phase = 'renderer';
@@ -6667,6 +6942,7 @@ async function mountWorkbenchView() {
             if (!workspacePreviewVisible()) { view.pause(); return; }
             attachModelPreview(view,host,record,view=>view.setLayers({visual:true, collision:false, linkFrames:false, jointAxes:false, com:false, inertia:false, labels:false}));
             updateWorkbenchModel();
+            if(state.page==='hardware'&&state.studioHardwareObject?.startsWith('joint:'))view.select(state.studioHardwareObject.slice(6));else if(state.page==='profile_setup'&&state.studioContextJoint)view.select(state.studioContextJoint);
             view.resume(); view.renderOnce();
             updateWorkbenchModel(); updateModelCalibrationComparison(); updateStartGhost(true);
         } catch (error) {
@@ -6717,7 +6993,7 @@ function updateWorkbenchControlState() {
     const robotState = workbenchConnected() ? x.robot_state || 'UNKNOWN' : 'OFFLINE';
     if ($('control-task-state')) $('control-task-state').textContent = robotState;
     const dot = document.querySelector('.robot-operation-dot');
-    if (dot) dot.className = 'robot-operation-dot' + (robotState === 'ACTIVE' ? ' on' : ' off');
+    if (dot) dot.className = 'robot-operation-dot' + (robotState === 'ACTIVE' ? ' on' : robotState === 'FAULT' ? ' fault' : ' idle');
     document.querySelectorAll('[data-workbench-action]').forEach(button => {
         const action = button.dataset.workbenchAction, reason = controlOperationProblem(action);
         button.disabled = !!reason; button.title = reason;
@@ -6752,8 +7028,8 @@ function applyWorkbenchSnapshot(snapshot) { if (!snapshot || typeof snapshot !==
 async function switchWorkbenchMode(kind, mode) { if (state.workbenchPending?.kind || state.blockingBusy) return; state.workbenchPending = { kind, value: mode }; updateWorkbenchControlState(); const message = kind === 'impedance' ? busyText(`正在切换阻抗模式至 ${mode}...`, `Switching impedance mode to ${mode}...`) : busyText(`正在切换模型前馈至 ${mode}...`, `Switching model feedforward to ${mode}...`); try { return await blockingOperation(message, async () => { await new Promise(resolve => requestAnimationFrame(resolve)); const method = kind === 'impedance' ? 'set_impedance_mode' : 'set_model_feedforward_mode'; const snapshot = await workbenchRequest(method, { mode }); applyWorkbenchSnapshot(snapshot); return snapshot; }); } finally { state.workbenchPending = { kind: '', value: '' }; updateWorkbenchControlState(); } }
 function updateWorkbenchLive() {
     if ($('robot-operation')) updateWorkbenchControlState();
-    if (state.page === 'profile_setup') { refreshRuntimeSavePreview(); return; }
-    if (!['workbench', 'geometry', 'calibration', 'diagnostics'].includes(state.page)) return; const x = state.telemetry || {};
+    if (state.page === 'profile_setup') { refreshRuntimeSavePreview(); updateWorkbenchModel(); return; }
+    if (!['workbench', 'geometry', 'calibration', 'diagnostics'].includes(state.page)) { if($('workbench-viewport'))updateWorkbenchModel(); return; } const x = state.telemetry || {};
     refreshDamiaoJointCheck();
     if (state.page === 'geometry') {
         const phase = x.teach_replay?.phase || 'idle';
@@ -6830,7 +7106,7 @@ function updateWorkbenchLive() {
         Object.entries(states).forEach(([id, can]) => { const button = $(id); if (button) button.disabled = !can; });
         document.querySelectorAll('[data-verify-scale-index],[data-verify-scale-slider]').forEach(input => input.disabled = !dragging);
     }
-    refreshWorkbenchStatus(); updateWorkbenchControlState(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); refreshGainApplyControls(); updateWorkbenchModel(); if (state.page === 'workbench' && state.workbenchTab === 'replay') { const r = x.teach_replay || {}; const phase = $('teach-replay-phase'); if (phase) phase.textContent = ({idle:busyText('未开始','Idle'),recording:busyText('正在记录','Recording'),ready:busyText('轨迹已就绪','Ready'),playing:busyText('正在回放','Playing'),failed:busyText('任务失败','Failed')})[r.phase] || busyText('未开始','Idle'); const completed = $('teach-completed'); if (completed) completed.textContent = busyText('已完成单程 ','Completed one-way trips ') + Number(r.completed || 0); const error = $('teach-replay-error'); if (error) error.textContent = r.error ? teachReplayShortError(r.error) : ''; } if (['calibration','geometry'].includes(state.page) || (state.page === 'workbench' && state.workbenchTab === 'replay')) updateStartGhost(); updateMotionCompletion(x); const c = x.calibration || {}; const kind = $('cal-task-kind'), phase = $('cal-task-phase'), progress = $('cal-task-progress'), trajectory = $('cal-task-trajectory'), error = $('cal-task-error'); if (kind) kind.textContent = calibrationTaskKindText(c.kind || 'none'); if (phase) phase.textContent = calibrationTaskPhaseText(c.phase || 'idle'); if (progress) progress.textContent = c.expected ? `${c.captured || 0}/${c.expected}` : '—'; if (trajectory) trajectory.textContent = String(c.trajectory_samples ?? '—'); if (error) error.textContent = c.error ? localizedError(c.error) : '—'; if (c.phase === 'complete' && state.calibrationFlow === 'friction') { state.calibrationFlow = 'complete'; operation(loadAdmittance); } refreshFrictionReplayControls(); refreshObservationCalibrationControls(); updateModelCalibrationLive(); updateModelCalibrationTaskOverlay(); refreshWorkspaceTelemetryRows(); if (state.page === 'diagnostics') drawWorkbenchChart();
+    refreshWorkbenchStatus(); updateWorkbenchControlState(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); refreshGainApplyControls(); updateWorkbenchModel(); if (state.page === 'workbench' && state.workbenchTab === 'replay') { const r = x.teach_replay || {}; const phase = $('teach-replay-phase'); if (phase) phase.textContent = ({idle:busyText('未开始','Idle'),recording:busyText('正在记录','Recording'),ready:busyText('轨迹已就绪','Ready'),playing:busyText('正在回放','Playing'),failed:busyText('任务失败','Failed')})[r.phase] || busyText('未开始','Idle'); const completed = $('teach-completed'); if (completed) completed.textContent = busyText('已完成单程 ','Completed one-way trips ') + Number(r.completed || 0); const error = $('teach-replay-error'); if (error) error.textContent = r.error ? teachReplayShortError(r.error) : ''; } if (['calibration','geometry'].includes(state.page) || (state.page === 'workbench' && state.workbenchTab === 'replay')) updateStartGhost(); updateMotionCompletion(x); const c = x.calibration || {}; const kind = $('cal-task-kind'), phase = $('cal-task-phase'), progress = $('cal-task-progress'), trajectory = $('cal-task-trajectory'), error = $('cal-task-error'); if (kind) kind.textContent = calibrationTaskKindText(c.kind || 'none'); if (phase) phase.textContent = calibrationTaskPhaseText(c.phase || 'idle'); if (progress) progress.textContent = c.expected ? `${c.captured || 0}/${c.expected}` : '—'; if (trajectory) trajectory.textContent = String(c.trajectory_samples ?? '—'); if (error) error.textContent = c.error ? localizedError(c.error) : '—'; if (c.phase === 'complete' && state.calibrationFlow === 'friction') { state.calibrationFlow = 'complete'; operation(loadAdmittance); } refreshFrictionReplayControls(); refreshObservationCalibrationControls(); updateModelCalibrationLive(); updateModelCalibrationTaskOverlay(); refreshWorkspaceTelemetryRows(); if (state.page === 'diagnostics'||state.page==='workbench'&&state.workbenchTab==='monitor') drawWorkbenchChart();
 }
 function updateModelCalibrationComparison() {
     if (!modelView || state.page !== 'calibration') return;
@@ -7290,6 +7566,7 @@ async function resumeModelCalibrationWithConfirmation() {
 }
 
 function drawWorkbenchChart() {
+    if(state.page==='workbench'&&state.workbenchTab==='monitor')return studioDrawObservationChart();
     const canvas=$('workbench-chart');if(!canvas)return;
     const rect=canvas.getBoundingClientRect();if(rect.width<=0||document.hidden)return;
     const w=rect.width,h=180,ratio=devicePixelRatio||1;
@@ -7469,6 +7746,7 @@ function profileHasUnsavedChanges() {
     if (state.page === 'profile_setup' && state.profileEditor) {
         try { collectProfileEditor(); } catch { /* Invalid input remains an unsaved draft too. */ }
     }
+    if(state.profileEditor)state.profileDirty=profileChanges().length>0;
     return state.profileDirty === true;
 }
 function clearProfileFormState() {
@@ -7578,7 +7856,7 @@ function capturePageView(root = $('page')) {
         return {selector:':scope > '+parts.join(' > '),index:0};
     };
     const target=node=>({node,location:locate(node)});
-    const scrollers=new Set([...root.querySelectorAll('*')].filter(node=>node.scrollTop||node.scrollLeft));
+    const scrollers=new Set([root,...root.querySelectorAll('*')].filter(node=>node.scrollTop||node.scrollLeft));
     for(let node=root.parentElement;node;node=node.parentElement)if(node.scrollTop||node.scrollLeft)scrollers.add(node);
     const active=document.activeElement,field=active?.closest?.('.studio-select')?.querySelector('select')||active;
     return {root,scroll:[...scrollers].map(node=>({...target(node),top:node.scrollTop,left:node.scrollLeft})),details:[...root.querySelectorAll('details')].map(node=>({...target(node),open:node.open})),focus:root.contains(field)?{...target(field),selectProxy:field!==active,start:field.selectionStart,end:field.selectionEnd}:null};
@@ -7653,7 +7931,7 @@ function refreshWorkspacePanel(resetScroll = false) {
         if (details.has(key)) item.open = details.get(key);
     }
     const head = $('page')?.querySelector('.page-head');
-    if (head) head.outerHTML = pageHead(state.page === 'calibration' ? 'calibrationTitle' : 'workbenchTitle', '', workspaceSessionActionHtml());
+    if (head) head.outerHTML = pageHead(studioSectionLabel(), '', workspaceSessionActionHtml());
     const status = document.querySelector('.workspace-status'); if (status) status.outerHTML = workbenchStatusBar();
     const recovery = $('workspace-recovery-notice'); if (recovery) recovery.innerHTML = workbenchRecoveryNotice();
     const left = document.querySelector('.workbench-model'), tools = document.querySelector('.workspace-preview-tools');
@@ -7661,7 +7939,7 @@ function refreshWorkspacePanel(resetScroll = false) {
     if (tools) tools.innerHTML = overlayHtml;
     const note = left?.querySelector('.workbench-model-note'); if (note) note.innerHTML = workspaceModelNoteHtml();
     workspaceRenderSubview = subview;
-    statusUI(); bindPage(); window.serialArmStudio?.enhanceSelects();
+    statusUI(); bindPage(); window.serialArmStudio?.enhanceSelects(); window.serialArmLayout?.mount(studioLayoutOptions());
     const navigation = $('workspace-navigation')?.querySelector('nav');
     if (navigation) navigation.scrollLeft = navigationLeft;
     if (!samePanel) revealCalibrationNavigation();
@@ -7672,7 +7950,7 @@ function refreshWorkspacePanel(resetScroll = false) {
     }
     if (scroll) scroll.scrollTop = top;
     if(view)restorePageView(view,task);
-    else {if(scroll)scroll.scrollTop=0;const inner=task.closest('.studio-page-body');if(inner)inner.scrollTop=0;}
+    else {task.scrollTop=0;if(scroll)scroll.scrollTop=0;const inner=task.closest('.studio-page-body');if(inner)inner.scrollTop=0;}
     renderedPageViewKey=pageViewKey();
     if (state.page === 'calibration') updateModelCalibrationComparison();
     else modelView?.clearGravityComparison?.();
@@ -7706,7 +7984,7 @@ function render(options = {}) {
     workspaceMount = null;
     pageModelMount = null;
     suspendModelPreview();
-    const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, geometry: geometryPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage };
+    const pages = { start: startPage, library: libraryPage, description: descriptionPage, lifecycle: lifecyclePage, profile_setup: profileSetupPage, robot: diagnosticsPage, model: modelPage, geometry: geometryPage, calibration: calibrationPage, workbench: workbenchPage, run: runPage, diagnostics: diagnosticsPage, settings: settingsPage, hardware: studioHardwarePage, events: studioEventsPage };
     const factory = pages[state.page] || startPage;
     const pageChanged = renderedPage !== state.page;
     const page = $('page');
@@ -7748,6 +8026,7 @@ function render(options = {}) {
     else $('back-home')?.removeAttribute('aria-current');
     statusUI(); bindPage();
     window.serialArmStudio?.enhanceSelects();
+    window.serialArmLayout?.mount(studioLayoutOptions());
     if (document.querySelector('[data-profile-field]')) restoreProfileFields();
     if(state.page==='profile_setup')updateProfileEditorViewport();
     if(view)restorePageView(view);else if(!sameView)main.scrollTop=0;
@@ -7760,7 +8039,7 @@ function render(options = {}) {
     if ($('priority-error-overlay')) $('priority-error-overlay').addEventListener('cancel', event => event.preventDefault());
     if (state.page === 'run') setTimeout(() => { try { fit?.fit(); } catch { } }, 50);
     if (state.page === 'model') operation(mountModelView);
-    if (['workbench', 'geometry', 'calibration'].includes(state.page)) operation(mountWorkbenchView);
+    if ($('workbench-viewport')) operation(mountWorkbenchView);
     if (state.page === 'description' && state.descriptionAnalysis) operation(mountDescriptionView);
 }
 function capture() {
@@ -7891,12 +8170,12 @@ async function navigate(page) {
             const readiness = await api.request('readiness', { config }); if (!current()) return;
             state.readiness = readiness;
         }
-        if (page === 'profile_setup' && state.config.profile && !state.profileEditor) {
+        if (['profile_setup','hardware'].includes(page) && state.config.profile && !state.profileEditor) {
             const editor = await api.request('profile_editor_load', { config }); if (!current()) return;
             state.profileInteractionGoal = null; state.profileEditor = editor;
             state.profileDirty = false; clearProfileFormState();
         }
-        if (['run', 'model', 'workbench', 'geometry', 'calibration', 'diagnostics'].includes(page)) await operation(inspect);
+        if (['run', 'model', 'workbench', 'geometry', 'calibration', 'diagnostics','hardware','profile_setup','lifecycle','events'].includes(page)) await operation(inspect);
         if (!current()) return;
         if (['workbench', 'geometry', 'calibration', 'diagnostics'].includes(page) && state.config.profile) {
             const readiness = await api.request('readiness', { config }); if (!current()) return;
@@ -7915,7 +8194,7 @@ async function navigate(page) {
             try { const editor = await api.request('profile_editor_load', { config }); if (!current()) return; state.capabilityProfile = editor; if(!state.profileEditor)state.profileEditor=structuredClone(editor); }
             catch (error) { state.capabilityProfileError = error.message || String(error); }
         }
-        if (['model', 'workbench', 'geometry', 'calibration'].includes(page) && !state.modelData && state.info?.available?.model) await operation(() => loadModelData());
+        if (['model', 'workbench', 'geometry', 'calibration','profile_setup','lifecycle','hardware'].includes(page) && !state.modelData && state.info?.available?.model) await operation(() => loadModelData());
         if (!current()) return;
         // The same Profile draft survives navigation to response recording and back
         render();
@@ -7967,7 +8246,7 @@ function bindPage() {
     bindDamiaoJointCheck();
     bindReadinessSections();
     bindCommissioningTasks();
-    document.querySelectorAll('[data-commissioning-path]').forEach(button=>button.onclick=()=>{state.commissioningViewedPath=button.dataset.commissioningPath;render();});
+    document.querySelectorAll('[data-commissioning-path]').forEach(button=>button.onclick=()=>{state.commissioningViewedPath=button.dataset.commissioningPath;const view=onboardingState();if(view.view==='task')view.task=onboardingSteps().path[0]?.id || view.task;render();});
     if ($('approve-gain-mode')) $('approve-gain-mode').onclick = showGainAdmission;
     if ($('ready-control')) $('ready-control').onclick = () => navigate('workbench');
     if ($('ready-refresh')) $('ready-refresh').onclick = () => operation(async()=>{state.readiness=await api.request('readiness',{config:state.config});render();});
@@ -7994,7 +8273,7 @@ function bindPage() {
     }));
     document.querySelectorAll('[data-profile-field]').forEach(field => {
         field.onchange = () => {
-            try { readProfileInput(field); invalidateAdmittanceDraft(field); updateProfileSwitch(field); if(profileParkingFieldChanged(field))return; if (JSON.parse(field.dataset.profileField).join('.') === 'core.control.runtime.control_path') { if (state.page === 'profile_setup') { switchProfileGroup('motion',true); refreshProfileGuidance(); } else render(); return; } refreshProfileGuidance(); refreshRuntimeSavePreview(); refreshProfileParkingTargetErrors(); }
+            try { readProfileInput(field); invalidateAdmittanceDraft(field); updateProfileSwitch(field); if(profileParkingFieldChanged(field))return; if (JSON.parse(field.dataset.profileField).join('.') === 'core.control.runtime.control_path') { state.profileResponsePath=state.profileEditor.core.control.runtime.control_path; if (state.page === 'profile_setup') { switchProfileGroup(canonicalProfileGroup(state.profileGroup)==='hardware'?'hardware':'motion',true); refreshProfileGuidance(); } else render(); return; } refreshProfileGuidance(); refreshRuntimeSavePreview(); refreshProfileParkingTargetErrors(); }
             catch (error) { state.profileError = error.message; refreshProfileGuidance(); refreshProfileParkingTargetErrors(); }
         };
         field.oninput = () => {
@@ -8043,35 +8322,6 @@ function bindPage() {
         state.profileInteractionGoal = null; state.profileEditor = await api.request('profile_editor_load', { config: state.config });
         state.profileDirty = false; clearProfileFormState(); await inspect();state.readiness=await api.request('readiness',{config:state.config});render();
     });
-    if ($('profile-save')) $('profile-save').onclick = async () => {
-        let payload;
-        try { payload = collectProfileEditor(); } catch (error) { toast(error.message); return; }
-        const editor = state.profileEditor;
-        const gravityRecoveryConfirmed = false;
-        return blockingOperation(busyText('正在验证并保存参数', 'Validating and saving configuration'), async () => {
-            try {
-                payload.gravity_confirmed = gravityRecoveryConfirmed;
-                state.profileEditor = await api.request('profile_editor_save', { config: state.config, payload });
-                state.profileDirty = false; clearProfileFormState(); state.profileSavedForSession = workbenchConnected(); state.profileSaveNotice = true;
-                state.info = null; await inspect();
-                state.readiness = await api.request('readiness', { config: state.config });
-                await refreshLibrary(); toast(t('saved')); render();
-            } catch (error) {
-                state.profileError = error.message || String(error);
-                const target = error.serialarm?.action;
-                if (target?.page === 'profile_setup' && target.field) {
-                    state.profileGroup=canonicalProfileGroup(target.group || profileGroupForField(target.field));
-                    state.setupFocus=target;state.profileFieldErrors ||= {};state.profileFieldErrors[target.field]=state.profileError;
-                }
-                const found = !target?.field && profileGroups.find(([, , path]) => state.profileError.startsWith('core.' + path) || state.profileError.startsWith(path));
-                if (found) state.profileGroup = found[0];
-                else if (!target?.field && state.profileError.includes('capability.admittance')) state.profileGroup = 'motion';
-                else if (!target?.field && (state.profileError.startsWith('hardware.') || state.profileError.startsWith('profile.'))) state.profileGroup = 'hardware';
-                render(); throw error;
-            }
-        });
-    };
-
     bindAdmittanceEditor();
     if ($('open-persistent-config')) $('open-persistent-config').onclick = () => operation(()=>openSetupTarget({page:'profile_setup',group:'motion',field:'core.control.runtime.control_path'}));
     if ($('profile-open-auto-calibration')) $('profile-open-auto-calibration').onclick = () => operation(()=>openSetupTarget({page:'calibration',tool:'gain'}));
@@ -8183,8 +8433,11 @@ function bindPage() {
             const message=receipt?.response_validated===true?busyText('响应验收已保存，重新连接后应用','Response acceptance saved; reconnect to apply'):receipt?busyText('响应记录已保存，尚未通过验收','Response recording saved; acceptance not passed'):busyText('响应记录已导出','Response recording exported');
             toast(`${message}${receipt?.requires_reconnect&&receipt.response_validated!==true?busyText('；重新连接后应用当前许可','; reconnect to apply current permissions'):''}${reason?'　'+reason:''}　${result.path}`);
         });
-        document.querySelectorAll('[data-target-joint]').forEach(input => input.oninput = () => editWorkbenchTarget(Number(input.dataset.targetJoint), input.value));
-        document.querySelectorAll('[data-target-range]').forEach(input => input.oninput = () => editWorkbenchTarget(Number(input.dataset.targetRange), input.value));
+        document.querySelectorAll('[data-target-joint]').forEach(input => {
+            input.oninput = () => editWorkbenchTarget(Number(input.dataset.targetJoint), input.value);
+            input.onfocus = () => { const index=Number(input.dataset.targetJoint); if(index!==state.workbenchFineJoint)selectWorkbenchFineJoint(index); };
+        });
+        bindWorkbenchFineControl();
         if ($('workbench-speed')) { const input=$('workbench-speed');input.oninput=()=>updateWorkbenchSpeed(input.value);input.onchange=()=>updateWorkbenchSpeed(input.value);input.setCustomValidity(state.speedInputError || ''); }
         if ($('target-sync')) $('target-sync').onclick = () => {
             if (!workbenchTargetFeedbackReady()) return;
@@ -8504,6 +8757,7 @@ function bindPage() {
     };
     document.querySelectorAll('[data-theme]').forEach(b => b.onclick = event => operation(() => switchTheme(b.dataset.theme, event, true)));
     document.querySelectorAll('[data-language]').forEach(b => b.onclick = async () => { state.language = b.dataset.language; document.documentElement.lang = state.language; await operation(save); shell(); });
+    bindStudioWorkspaces(); bindProfileCenter(); bindResponseWorkspace(); window.bindStudioTaskDetails?.();
 }
 async function workbenchRequest(method, params = {}) { if (workbenchRecoveryRequired()) throw new Error('native session is unresponsive; force disconnect after making hardware safe'); if (!workbenchConnected()) throw new Error('workspace session is not connected'); return api.request('workbench_request', { method, params }); }
 async function loadAdmittance() {
@@ -8748,6 +9002,7 @@ function hardwareConfirm() {
 }
 function forceConfirm() { const dialog = $('confirm-dialog'); dialog.innerHTML = `<h3>${t('forceTitle')}</h3><p>${t('forceDesc')}</p><div class="actions">${button('cancel-force', 'cancel', '')}${button('confirm-force', 'force', '', 'danger')}</div>`; showWorkspaceDialog(dialog); $('cancel-force').onclick = () => dialog.close(); $('confirm-force').onclick = () => { dialog.close(); blockingOperation(busyText('正在强制结束运行', 'Force stopping runtime'), () => api.request('stop', { force: true })); }; }
 function onEvent(event) {
+    if (event.event !== 'session') studioRecordEvent(event);
     if (event.event === 'output') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'native_log') { outputBuffer = (outputBuffer + event.data).slice(-1024 * 1024); term?.write(event.data); }
     if (event.event === 'telemetry') {
@@ -8779,7 +9034,7 @@ function onEvent(event) {
         if (robotStateChanged) { refreshGainApplyControls(); refreshCalibrationQuickControls(); refreshCalibrationActionControls(); }
         syncCompletedGainCandidate(calibration);
     }
-    if (event.event === 'session') { if(event.state==='exited')state.lastSessionExit={error:event.error || event.reason || '',exit_code:event.exit_code}; const hadTemporary=activeTemporaryOverrides().length>0; if(event.mode==='workbench') { if(!synchronizeWorkbenchSession(event))return; } else state.session=event; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
+    if (event.event === 'session') { const hadTemporary=activeTemporaryOverrides().length>0; if(event.mode==='workbench') { if(!synchronizeWorkbenchSession(event))return; } else state.session=event; studioRecordEvent(event); if(event.state==='exited')state.lastSessionExit={error:event.error || event.reason || '',exit_code:event.exit_code}; if (event.mode === 'workbench' && event.state === 'running' && !event.recovery_required && !state.admittance) setTimeout(() => operation(loadAdmittance), 0); if (event.state === 'exited') { state.teachLoadedId = ''; state.teachRuntime = null; state.geometryContactReady = false; state.geometryRepeatSupported = null; state.geometryRepeatError = ''; state.admittance = null; state.calibrationRuntimeCandidates = null; if (event.force_stop_unverified && event.mode === 'workbench') toast(busyText('已强制终止控制进程，但无法确认执行器已经失能或临时参数已安全恢复，请检查硬件', 'Control process force-terminated; motor disable and safe temporary parameter restoration are unverified'), true); else if (hadTemporary && event.mode === 'workbench') toast(busyText('工作台已断连，临时参数不再生效，重新连接后将使用原始配置', 'Workspace disconnected; temporary parameters no longer apply, original settings will be used on reconnect')); const overlay = $('model-calibration-overlay'); if (overlay) { overlay.hidden = true; overlay.setAttribute('aria-hidden', 'true'); } } render(); }
     if (event.event === 'error') { state.backendError = event.error; toast(event.error, true); statusUI(); }
 }
 async function boot() {

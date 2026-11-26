@@ -38,7 +38,7 @@ if(args.includes('--software')){app.commandLine.appendSwitch('use-gl','angle');a
 function setScene(scene,theme,language='zh-CN'){
  const data=window.studioUiData;
  if(window.studioFixtureRescue)graphicsState.effectiveMode='rescue';
- Object.assign(state,{page:['lifecycle-path','lifecycle-task','lifecycle-observation'].includes(scene)?'lifecycle':scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene.startsWith('workbench-')?'workbench':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileParkingPath:null,profileParkingKey:'',profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},commissioningDrafts:{},commissioningResults:{},commissioningContext:null,modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
+ Object.assign(state,{page:['lifecycle-path','lifecycle-task','lifecycle-observation'].includes(scene)?'lifecycle':scene.startsWith('parameters-')?'profile_setup':scene.startsWith('calibration-')?'calibration':scene.startsWith('workbench-')?'workbench':scene,theme,language,config:{profile:data.editor.profile,profile_file:'/offline/robot_profiles.yaml',serial_port:'',baudrate:'',bus:'',resource_paths:''},info:structuredClone(data.info),profiles:[{name:data.editor.profile}],library:structuredClone(data.library),profileEditor:structuredClone(data.editor),capabilityProfile:structuredClone(data.editor),profileGroup:scene.split('-')[1]||'model',profileDirty:false,profileParkingPath:null,profileParkingKey:'',profileRawInputs:{},profileFieldErrors:{},readiness:{state:'configuring',checks:{},evidence:{},control_available:true},commissioningDrafts:{},commissioningResults:{},commissioningContext:null,onboarding:null,modelData:data.model?structuredClone(data.model):null,modelPositions:data.model?.native?.state?.positions?.slice()||[],modelSelection:data.model?.model?.links?.[0]?.name||'',telemetry:null,session:{state:'idle'},admittance:null,calibrationEntry:scene==='calibration-teaching'?'teaching':'gain',calibrationToolSelected:{teaching:null,gain:null,gravity:null,dynamics:null},calibrationRuntimeCandidates:{},modelCalibrationRecords:[],gainMode:'all',gainTuningMode:'quick',gainFinePurpose:'rigid',gainRequirements:{},teachTrajectories:[],geometryTrajectories:[],driverInspection:{plugin:'serial_arm_hardware_damiao',available:true,drivers:[{plugin:'serial_arm_hardware_damiao',available:true,label:'达妙 / Damiao'}]}});
  if(scene==='calibration-result')state.calibrationToolSelected.gain={directory:'/offline/calibration-result',gain_candidate:structuredClone(data.candidate)};
  state.modelCalibrationOffline=null;state.idimReport=null;
  if(scene.startsWith('calibration-'))state.telemetry={joint_names:data.editor.joint_names,model_calibration:{workflow_kind:'gain',phase:scene==='calibration-result'?'complete':'idle',task_id:scene==='calibration-result'?data.candidate.task_id:'',gain_budget_source_duration_s:25,gain_target_budget_s:300,gain_time_budget_s:375,gain_elapsed_s:scene==='calibration-result'?239:0,gain_remaining_s:375}};
@@ -58,9 +58,9 @@ function setScene(scene,theme,language='zh-CN'){
  if(scene==='workbench'||scene.startsWith('workbench-')){state.workbenchTab=scene.split('-')[1]||'control';state.controlSettingsOpen=false;}
  if(data.receipt){state.readiness.gain_initialization=structuredClone(data.receipt);state.config.profile=data.receiptLabel;}
  renderedPage='';renderedPageViewKey='';shell();
- if(scene==='lifecycle-observation'){state.commissioningViewedPath='CSP';render();document.querySelector('[data-commissioning-group=path] > details').open=true;document.querySelector('[data-commissioning-task=observation_validation]').closest('details').open=true;}
- if(scene==='lifecycle-task'){document.querySelector('[data-commissioning-group=foundation] > details').open=true;document.querySelector('[data-commissioning-task=model_connection]').closest('details').open=true;}
- if(scene==='lifecycle-path'){state.commissioningViewedPath='CSP';render();document.querySelector('[data-commissioning-group=path] > details').open=true;}
+ if(scene==='lifecycle-observation')onboardingOpenTask('observation_validation','CSP');
+ if(scene==='lifecycle-task')onboardingOpenTask('model_connection','MIT');
+ if(scene==='lifecycle-path')onboardingOpenTask('observation_validation','CSP');
  if(scene.startsWith('parameters-shutdown-')){const path=scene.endsWith('csp')?'CSP':'MIT';state.profileParkingPath=path;if(scene.endsWith('disabled'))state.profileEditor.core.shutdown.paths[path].enabled=false;render();}
  if(scene==='parameters-csp'){state.profileEditor.core.control.runtime.control_path='CSP';state.profileGroup='motion';render();}
  if(scene==='parameters-motion')document.querySelector('[data-gain-purpose="RIGID"]').open=true;
@@ -272,33 +272,27 @@ async function testParkingPaths(){
 async function testCommissioningViews(){
  const checks=[],assert=(ok,name)=>{if(!ok)throw Error(name);checks.push(name);};
  setScene('lifecycle','light');
- const key=state.readinessDisclosureKey;localStorage.removeItem(key);state.readinessDisclosureKey='';render();
- assert(document.querySelectorAll('[data-commissioning-group]').length===3,'three commissioning phase cards remain available');
- assert(!document.querySelector('.commissioning-context'),'the redundant commissioning overview card is removed');
- assert([...document.querySelectorAll('[data-commissioning-group] > details')].every(node=>!node.open),'all phase cards initially collapse');
- assert([...document.querySelectorAll('[data-readiness-section^="step:"]')].every(node=>!node.open),'all internal steps initially collapse');
- const titles=[...document.querySelectorAll('[data-commissioning-group] > details > summary .readiness-fold-title')].map(node=>node.textContent);
- assert(titles.join('|')==='一、共同基础|二、路径专项|三、可选提升','phase titles use the requested short Chinese names');
- let foundation=document.querySelector('[data-commissioning-group=foundation] > details');foundation.querySelector('summary').click();await new Promise(r=>setTimeout(r,350));
- assert(foundation.open&&[...foundation.querySelectorAll('[data-readiness-section^="step:"]')].every(node=>!node.open),'opening a parent card leaves all child steps collapsed');
- document.querySelector('[data-readiness-section="step:MIT:model_connection"] > summary').click();await new Promise(r=>setTimeout(r,350));
- assert(JSON.parse(localStorage.getItem(key))['step:MIT:model_connection']===true,'manual child preference is persisted');
- state.readinessDisclosureKey='';state.readinessSections={};render();
- assert(document.querySelector('[data-readiness-section="step:MIT:model_connection"]').open,'manual disclosure preference survives view reload');
- const profile=state.config.profile;state.config.profile='another-fixture';render();assert([...document.querySelectorAll('[data-commissioning-group] > details')].every(node=>!node.open),'another Profile starts collapsed');state.config.profile=profile;render();
- assert(state.readiness.commissioning.groups[0].steps.length===4&&state.readiness.commissioning.paths.MIT.steps.length===3&&state.readiness.commissioning.paths.CSP.steps.length===3,'production API supplies four common tasks and three tasks per control path');
- const group=document.querySelector('[data-commissioning-group=path] > details');group.querySelector('summary').click();await new Promise(r=>setTimeout(r,350));
+ assert(document.querySelectorAll('[data-commissioning-group]').length===3,'overview retains foundation, configured-path and optional-goal entry points');
+ assert(!!document.querySelector('.onboarding-next')&&!document.querySelector('[data-commissioning-task]'),'overview exposes the next task without mounting every task editor');
+ assert(!document.querySelector('[data-readiness-section^="group:"]')&&!document.querySelector('[data-readiness-section^="step:"]'),'required work uses task pages rather than nested disclosures');
+ assert(state.readiness.commissioning.groups[0].steps.length===4&&state.readiness.commissioning.paths.MIT.steps.length===3&&state.readiness.commissioning.paths.CSP.steps.length===3,'production API supplies four foundation tasks and three tasks per control path');
+ document.querySelector('[data-onboarding-task=model_connection]').click();
+ assert(onboardingState().view==='task'&&onboardingState().task==='model_connection'&&document.querySelectorAll('[data-commissioning-task]').length===1,'selecting a foundation item mounts exactly its task editor');
+ const check=document.querySelector('[data-commissioning-check]');check.checked=true;check.dispatchEvent(new Event('change',{bubbles:true}));
+ document.querySelector('[data-onboarding-task=mapping_safety]').click();document.querySelector('[data-onboarding-task=model_connection]').click();
+ assert(document.querySelector('[data-commissioning-check]').checked,'moving between task pages retains unfinished operator checks');
+ const profile=state.config.profile;state.config.profile='another-fixture';render();assert(onboardingState().view==='overview','a different Profile starts at its own overview');state.config.profile=profile;render();
+ onboardingOpenTask('gravity_verification','MIT');
  assert(document.querySelector('[data-commissioning-path=MIT] small')?.textContent==='当前配置','the configured path is labelled independently of viewed path');
  const config=JSON.stringify(state.profileEditor.core.control.runtime),saved=JSON.stringify(state.capabilityProfile);
- document.querySelector('[data-commissioning-path=CSP]').click();await new Promise(r=>setTimeout(r,350));
- assert(state.commissioningViewedPath==='CSP'&&state.readiness.commissioning.selected_path==='MIT'&&JSON.stringify(state.profileEditor.core.control.runtime)===config&&JSON.stringify(state.capabilityProfile)===saved,'path viewing does not mutate saved configuration or the authoritative draft');
- assert(!!document.querySelector('[data-readiness-section="step:CSP:admittance_response"]')&&!document.querySelector('[data-readiness-section="step:MIT:gravity_verification"]'),'path viewing replaces only the relevant commissioning steps');
- const currentPath=document.querySelector('[data-commissioning-group=path]');
- assert(!currentPath.querySelector('[data-commissioning-save]')&&[...currentPath.querySelectorAll('[data-setup-target]')].every(node=>JSON.parse(node.dataset.setupTarget).group==='motion'),'an unconfigured path cannot save records or issue experiment actions');
- assert([...currentPath.querySelectorAll('[data-readiness-section^="step:"]')].every(node=>!node.open),'first view of another path leaves its steps collapsed');
+ document.querySelector('[data-commissioning-path=CSP]').click();
+ assert(state.commissioningViewedPath==='CSP'&&state.readiness.commissioning.selected_path==='MIT'&&JSON.stringify(state.profileEditor.core.control.runtime)===config&&JSON.stringify(state.capabilityProfile)===saved,'path viewing does not mutate configuration or the authoritative draft');
+ const current=document.querySelector('[data-commissioning-task]');
+ assert(current.dataset.commissioningTask==='observation_validation'&&!current.querySelector('[data-commissioning-save]')&&!current.querySelector('[data-setup-target]'),'an unconfigured path remains view-only and cannot record or issue experiment actions');
+ assert(!!document.querySelector('[data-onboarding-task=admittance_response]')&&!document.querySelector('[data-onboarding-task=gravity_verification]'),'path navigation changes to its actual backend tasks');
  assert(document.querySelector('[data-commissioning-path=MIT] small')?.textContent==='当前配置','current configuration marker stays on MIT while viewing CSP');
- document.querySelector('[data-commissioning-path=MIT]').click();await new Promise(r=>setTimeout(r,350));assert(!!document.querySelector('[data-readiness-section="step:MIT:gravity_verification"]'),'switching back restores MIT commissioning steps');
- localStorage.removeItem(key);state.readinessDisclosureKey='';render();
+ document.querySelector('[data-commissioning-path=MIT]').click();assert(!!document.querySelector('[data-commissioning-task=gravity_verification]'),'switching back restores the configured path task');
+ document.querySelector('[data-onboarding-view=goals]').click();assert(document.querySelectorAll('.onboarding-goal-group').length===4&&!document.querySelector('[data-commissioning-save]'),'optimization is organized by positioning, response, models and parking without duplicate check forms');
  return checks;
 }
 function testCommissioningCopy(){
@@ -313,7 +307,7 @@ async function testCommissioningCompletion(){
  setScene('lifecycle','light');
  state.commissioningDrafts={};state.commissioningResults={};state.commissioningContext=null;
  state.readiness=await api.request('readiness',{config:state.config});render();
- const task=id=>document.querySelector('[data-commissioning-task="'+id+'"]'),step=id=>commissioningTask(id);
+ const task=id=>{if(!document.querySelector('[data-commissioning-task="'+id+'"]'))onboardingOpenTask(id);return document.querySelector('[data-commissioning-task="'+id+'"]');},step=id=>commissioningTask(id);
  assert(!document.querySelector('.stage-evidence')&&!document.querySelector('.readiness-tools-and-records')&&!document.querySelector('[data-review-stage]'),'tasks own their conditions and results without duplicate four-column or record lists');
  assert([...task('model_connection').querySelectorAll('h4')].map(node=>node.textContent).join('|')==='怎么做|完成条件|操作与结果','every expanded task has procedure, completion conditions and actions/results');
  assert(commissioningTaskStatusHtml({completed:false,evidence_status:'stale'}).includes('需复查')&&commissioningTaskStatusHtml({completed:false,evidence_status:'failed'}).includes('未通过')&&commissioningTaskStatusHtml({completed:false,evidence_status:'partial'}).includes('进行中'),'collapsed task status presents backend stale, failed and partial progress');
@@ -328,13 +322,13 @@ async function testCommissioningCompletion(){
  state.commissioningDrafts={};state.readiness=await api.request('readiness',{config:state.config});render();
  assert(step('model_connection').completed&&[...task('model_connection').querySelectorAll('[data-commissioning-check]')].every(node=>node.checked),'persisted task results survive backend reload');
  state.session={state:'running',mode:'workbench'};state.telemetry={valid:true,feedback_age_ms:0,write_enabled:true,hardware_connected:true,sequence:1};state.telemetryReceivedAt=Date.now();refreshLifecycleBringup();
- const live=[...document.querySelectorAll('[data-readiness-live=feedback]')];assert(live.length>=2&&live.every(node=>node.textContent==='反馈已更新'),'every feedback condition updates from the current telemetry');
+ const live=[...document.querySelectorAll('[data-readiness-live=feedback]')];assert(live.length>=1&&live.every(node=>node.textContent==='反馈已更新'),'every feedback condition updates from the current telemetry');
  state.telemetry.hardware_connected=false;refreshLifecycleBringup();assert(live.every(node=>node.textContent==='硬件未连接'),'connection loss updates every repeated feedback indicator');
  state.session={state:'idle'};state.telemetry=null;
  const action=JSON.parse(task('mapping_safety').querySelector('[data-setup-target]').dataset.setupTarget);await openSetupTarget(action);
  assert(state.page==='profile_setup'&&!!document.querySelector('[data-commissioning-return]')&&document.querySelector('.commission-context').textContent.includes('关节映射与安全边界'),'task tools retain their exact commissioning context');
  await returnToCommissioning();await new Promise(r=>requestAnimationFrame(r));
- assert(state.page==='lifecycle'&&task('mapping_safety').closest('details').open&&document.querySelector('[data-commissioning-group=foundation] > details').open,'returning from a tool refreshes and opens its exact task');
+ assert(state.page==='lifecycle'&&onboardingState().task==='mapping_safety'&&document.querySelector('[data-commissioning-task=mapping_safety]'),'returning from a tool refreshes and restores its exact task page');
  state.readiness=await api.fixtureReadiness('select_path',{path:'CSP'});state.commissioningViewedPath='CSP';state.profileEditor=await api.request('profile_editor_load',{config:state.config});state.capabilityProfile=structuredClone(state.profileEditor);state.commissioningDrafts={};render();
  form=task('observation_validation');assert(form.querySelector('[data-commissioning-save]')&&form.querySelector('.commission-conditions').textContent.includes('实测'),'effort acceptance combines measured results and operator direction checks in one task');
  for(const node of form.querySelectorAll('[data-commissioning-check]')){node.checked=true;node.dispatchEvent(new Event('change',{bubbles:true}));}
@@ -421,7 +415,7 @@ app.whenReady().then(async()=>{
  const runAudit=()=>win.webContents.executeJavaScript(`(${audit})({root:'#app',viewport:true})`);
  const finding=(name,evidence)=>{report.findings.push({name,...evidence});if(!args.includes('--allow-findings'))throw Error(name+' '+JSON.stringify(evidence));};
  for(const [width,height] of sizes)for(const theme of themes)for(const language of languages)for(const scene of scenes){
-  win.setContentSize(width,height);await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:deviceScale,mobile:false});await win.webContents.executeJavaScript(`window.studioFixtureSetScene(${JSON.stringify(scene)},${JSON.stringify(theme)},${JSON.stringify(language)})`);win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await settle();
+  win.setContentSize(width,height);await win.webContents.debugger.sendCommand('Emulation.setDeviceMetricsOverride',{width,height,deviceScaleFactor:deviceScale,mobile:false});await win.webContents.executeJavaScript(`window.studioFixtureSetScene(${JSON.stringify(scene)},${JSON.stringify(theme)},${JSON.stringify(language)})`);win.webContents.sendInputEvent({type:'mouseMove',x:0,y:0});await settle();await new Promise(resolve=>setTimeout(resolve,300));
   console.log('STUDIO_SCENE '+JSON.stringify({scene,width,height,theme,language}));
   const dom=await win.webContents.executeJavaScript('window.studioFixtureSnapshot()');
   if(dom.bodyWidth>width||dom.outerOverflow.length)finding('Outer overflow',{scene,width,height,theme,language,dom});
@@ -432,7 +426,8 @@ app.whenReady().then(async()=>{
   if(!fontState.check||!fontState.faces.some(face=>face.status==='loaded')||!platformFonts.some(font=>/MapleMono.*CN.*Italic/i.test(font.postScriptName||'')))finding('Requested Maple Italic font was not used',{scene,width,height,theme,language,platformFonts,fontState});
   const item={scene,width,height,theme,language,dom,platformFonts,fontState,captures:[]};
   const stem=`${scene}-${width}x${height}-${theme}-${language}`;
-  if(dom.fonts.some(size=>![12,14,16,20,24].includes(parseFloat(size)))||dom.smallText.length)finding('Visible text scale',{scene,width,height,theme,language,fonts:dom.fonts,smallText:dom.smallText});
+  // R4 includes 13px dense controls/body and 18px detail headings.
+  if(dom.fonts.some(size=>![12,13,14,16,18,20,24].includes(parseFloat(size)))||dom.smallText.length)finding('Visible text scale',{scene,width,height,theme,language,fonts:dom.fonts,smallText:dom.smallText});
   if(audit){item.defaultClip=await runAudit();if(item.defaultClip.cut)finding('Default shadow clip',{scene,width,height,theme,language,clip:item.defaultClip});}
   const scroller=await win.webContents.executeJavaScript(`(()=>{const nodes=[...document.querySelectorAll('.studio-page-body,.content')];const node=nodes.find(n=>n.scrollHeight>n.clientHeight+2)||nodes[0];node.dataset.fixtureScroll='true';return {height:node.scrollHeight,viewport:node.clientHeight};})()`);
   for(const position of [0,Math.max(0,scroller.height-scroller.viewport)]){
@@ -442,7 +437,7 @@ app.whenReady().then(async()=>{
    const file=path.join(output,`${stem}${position?'-bottom':''}.png`);fs.writeFileSync(file,png);item.captures.push({file,scrollTop,bytes:png.length});
   }
   if(['lifecycle-task','lifecycle-observation'].includes(scene)){
-   const scrollTop=await win.webContents.executeJavaScript(`(()=>{const task=[...document.querySelectorAll('.commission-task')].find(node=>node.getClientRects().length&&node.closest('details').open),target=task?.querySelector('.commission-task-section:last-child'),scroller=document.querySelector('[data-fixture-scroll]');if(!target)return 0;scroller.scrollTop+=target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16;return scroller.scrollTop;})()`);await settle();
+   const scrollTop=await win.webContents.executeJavaScript(`(()=>{const task=[...document.querySelectorAll('.commission-task')].find(node=>node.getClientRects().length),target=task?.querySelector('.commission-task-section:last-child'),scroller=document.querySelector('[data-fixture-scroll]');if(!target)return 0;scroller.scrollTop+=target.getBoundingClientRect().top-scroller.getBoundingClientRect().top-16;return scroller.scrollTop;})()`);await settle();
    const file=path.join(output,`${stem}-actions.png`);fs.writeFileSync(file,(await win.webContents.capturePage()).toPNG());item.captures.push({file,scrollTop});
   }
   await win.webContents.executeJavaScript(`document.querySelector('[data-fixture-scroll]').scrollTop=0`);

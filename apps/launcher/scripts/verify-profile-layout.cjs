@@ -7,7 +7,7 @@ const path=require('node:path');
 const {app,BrowserWindow}=require('electron');
 const {buildFixture}=require('./studio-ui-fixture.cjs');
 const directory=fs.mkdtempSync(path.join(os.tmpdir(),'serialarm-profile-layout-'));
-const fixture=buildFixture(directory);
+const fixture=buildFixture(directory,{model:true});
 const sourcePath=path.join(__dirname,'../renderer/app.js');
 const sourceHash=()=>createHash('sha256').update(fs.readFileSync(sourcePath)).digest('hex');
 const sourceSha256=sourceHash();
@@ -50,10 +50,10 @@ function checkGeometry(value,width,height){
 }
 app.whenReady().then(async()=>{
  fs.mkdirSync(output,{recursive:true});
- const win=new BrowserWindow({width:1000,height:720,frame:false,enableLargerThanScreen:true,show:false,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
- await win.loadFile(fixture.index);win.show();
+ const win=new BrowserWindow({width:1000,height:720,frame:false,enableLargerThanScreen:true,show:false,webPreferences:{preload:fixture.preload,sandbox:false,offscreen:true,backgroundThrottling:false}});
+ await win.loadFile(fixture.index);
  await win.webContents.executeJavaScript('document.fonts.ready');
- await win.webContents.executeJavaScript(`term?.dispose();term=null;fit=null;window.Terminal=undefined;window.profileLayoutScene=${scene};window.profileLayoutGeometry=${geometry};void 0`);
+ await win.webContents.executeJavaScript(`term?.dispose();term=null;fit=null;window.Terminal=undefined;window.studioFixtureRescue=true;window.profileLayoutScene=${scene};window.profileLayoutGeometry=${geometry};void 0`);
  const report=[];
  for(const [width,height] of [[2559,1405],[1000,720]])for(const name of ['parameters-observation','parameters-csp','parameters-motion']){
   win.setContentSize(width,height);
@@ -77,18 +77,18 @@ app.whenReady().then(async()=>{
    const detail=window.profileLayoutDetail,summary=detail.querySelector(':scope > summary'),scroller=document.querySelector('.studio-page-body');
    const input=[...detail.querySelectorAll('input[data-profile-field]')].find(n=>n.type!=='checkbox');
    if(input)input.focus({preventScroll:true});
-   const saved=input?.value,samples=[];summary.click();
-   const focusReturned=!input||document.activeElement===summary;
+   const beforeFocus={active:document.activeElement?.outerHTML?.slice(0,200),inputDisabled:input?.disabled,inputRect:input?.getBoundingClientRect().toJSON(),detailOpen:detail.open,error:document.querySelector('#priority-error-detail')?.textContent};const saved=input?.value,samples=[];summary.click();
+   const afterFocus=document.activeElement?.outerHTML?.slice(0,200);const focusReturned=!input||document.activeElement===summary;
    const deadline=performance.now()+2000;
    do{await new Promise(requestAnimationFrame);samples.push({root:document.scrollingElement.scrollHeight,top:scroller.scrollTop,max:scroller.scrollHeight-scroller.clientHeight});}
    while(detail.hasAttribute('data-studio-disclosure-animating')&&performance.now()<deadline);
-   const result={focusReturned,inputPreserved:!input||input.isConnected&&input.value===saved,open:detail.open,animating:detail.hasAttribute('data-studio-disclosure-animating'),samples};
+   const result={beforeFocus,afterFocus,focusReturned,inputPreserved:!input||input.isConnected&&input.value===saved,open:detail.open,animating:detail.hasAttribute('data-studio-disclosure-animating'),samples};
    summary.click();await new Promise(resolve=>setTimeout(resolve,32));summary.click();await new Promise(resolve=>setTimeout(resolve,32));summary.click();
    await new Promise(resolve=>setTimeout(resolve,700));
    result.reversedOpen=detail.open;result.reversedAnimating=detail.hasAttribute('data-studio-disclosure-animating');
    return result;
   })()`);
-  assert(motion.focusReturned&&motion.inputPreserved,'Disclosure must retain the editor and restore focus on close');
+  assert(motion.focusReturned&&motion.inputPreserved,'Disclosure must retain the editor and restore focus on close: '+JSON.stringify({name,width,focusReturned:motion.focusReturned,inputPreserved:motion.inputPreserved,open:motion.open,beforeFocus:motion.beforeFocus,afterFocus:motion.afterFocus}));
   assert(!motion.open&&!motion.animating,'Closing must settle to the native collapsed layout: '+JSON.stringify({name,width,...motion,samples:motion.samples.slice(-2)}));
   assert(motion.reversedOpen&&!motion.reversedAnimating,'Rapid reversal must settle to the final open state');
   assert(motion.samples.every(sample=>sample.root===height),'Animated disclosures must not extend the document root');

@@ -13,7 +13,7 @@ app.commandLine.appendSwitch('force-device-scale-factor','1');
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 app.whenReady().then(async()=>{
  fs.mkdirSync(output,{recursive:true});
- const win=new BrowserWindow({width:1300,height:900,frame:false,show:true,enableLargerThanScreen:true,webPreferences:{preload:fixture.preload,sandbox:false,backgroundThrottling:false}});
+ const win=new BrowserWindow({width:1300,height:900,frame:false,show:false,enableLargerThanScreen:true,webPreferences:{preload:fixture.preload,sandbox:false,offscreen:true,backgroundThrottling:false}});
  const deadline=setTimeout(()=>{console.error('Control verification timeout');app.exit(1);},90000);
  await win.loadFile(fixture.index);await win.webContents.executeJavaScript('document.fonts.ready');
  const js=code=>win.webContents.executeJavaScript(code);
@@ -37,7 +37,7 @@ app.whenReady().then(async()=>{
   check(initial.status.left-initial.title.right>=7&&initial.status.left-initial.title.right<=13,'Check title and status stay adjacent '+[width,theme,language]);
   check(Math.abs(initial.head.left-initial.settings.left)<=1,'Parameter title shares content left edge '+[width,theme,language]);
   check(initial.paths.every(p=>Math.abs(p.field.width-p.grid.width)<1),'Long paths span their complete field row '+[width,theme,language]);
-  if(width===1000&&language==='zh-CN'){await shot('narrow-first-editable');check(initial.first.top<430,'Narrow first editable input appears before y=430 '+JSON.stringify(initial));}
+  if(width===1000&&language==='zh-CN'){await shot('narrow-first-editable');check(initial.first.bottom<height-160,'Narrow first editable input is fully visible above the lower action area '+JSON.stringify(initial));}
   const buttonSurface=await js(`[...document.querySelectorAll('.profile-disclosure-trigger')].map(n=>{const s=getComputedStyle(n);return {background:s.backgroundColor,border:s.borderColor,width:parseFloat(s.borderTopWidth)};})`);
   check(buttonSurface.every(s=>s.width>=1&&s.background!=='rgba(0, 0, 0, 0)'&&s.border!=='rgba(0, 0, 0, 0)'),'Summary actions have visible button surfaces '+[width,theme,language]);
   const punctuation=await js(`[...document.querySelectorAll('#page p,#page .hint')].filter(n=>n.getClientRects().length&&!n.closest('pre,code')).map(n=>n.textContent.trim()).filter(text=>/。|[。；，：！？….!?]$/.test(text))`);

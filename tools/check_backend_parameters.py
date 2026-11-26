@@ -103,6 +103,32 @@ class BackendParameters(unittest.TestCase):
         core['calibration']['joints'][self.names[0]]['direction'] = 1.5
         with self.assertRaisesRegex(ValueError, 'direction'): self.validate(core)
 
+    def test_selected_parameter_save_excludes_unfinished_other_groups(self):
+        editor = self.library.profile_editor_load({})
+        original = deepcopy(editor['saved_values'])
+        joint = self.names[0]
+        editor['core']['control']['controller']['rigid']['kp'][joint] += 1
+        editor['core']['safety_policy']['cmd_vel_scale'] = -1
+        editor['profile_entry']['hardware']['plugin'] = ''
+        editor['selected_paths'] = [['core', 'control', 'controller', 'rigid', 'kp', joint]]
+        saved = self.library.profile_editor_save({}, editor)
+        self.assertEqual(saved['core']['control']['controller']['rigid']['kp'][joint],
+                         original['core']['control']['controller']['rigid']['kp'][joint] + 1)
+        self.assertEqual(saved['core']['safety_policy'], original['core']['safety_policy'])
+        self.assertEqual(saved['profile_entry'], original['profile_entry'])
+        self.assertEqual(saved['saved_values']['core'], saved['core'])
+
+    def test_selected_parameter_save_retains_validation_and_conflict_checks(self):
+        editor = self.library.profile_editor_load({})
+        editor['core']['safety_policy']['cmd_vel_scale'] = -1
+        editor['selected_paths'] = [['core', 'safety_policy', 'cmd_vel_scale']]
+        before = self.core_path.read_bytes()
+        with self.assertRaises(ValueError): self.library.profile_editor_save({}, editor)
+        self.assertEqual(self.core_path.read_bytes(), before)
+        editor['core']['safety_policy']['cmd_vel_scale'] = .2
+        self.core_path.write_bytes(before + b'\n')
+        with self.assertRaisesRegex(ValueError, '外部修改'): self.library.profile_editor_save({}, editor)
+
     def test_driver_startup_settings_match_native_ranges(self):
         from parameter_contract import field_constraints, constraint_errors
         hardware = {'damiao': {'activation_retries': 1, 'startup_read_cycles': 1}}

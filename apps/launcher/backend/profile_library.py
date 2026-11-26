@@ -1645,6 +1645,7 @@ class ProfileLibrary:
             'joint_names': joints, 'urdf_effort_limits': urdf_effort_limits,
             'urdf_joint_limits': urdf_joint_limits, 'core': core, 'hardware': hardware,
             'profile_entry': profile,
+            'saved_values': copy.deepcopy({'core': core, 'hardware': hardware, 'profile_entry': profile}),
             'field_constraints': field_constraints(core, hardware, profile, urdf_joint_limits),
             'original_gravity_model_validated': gravity_trusted(core),
             'hardware_plugin': (profile.get('hardware') or {}).get('plugin', ''),
@@ -1973,6 +1974,35 @@ class ProfileLibrary:
         before_hw = read_yaml(hw_path) if hw_path.is_file() else {}
         profile_data = read_yaml(profile_path)
         original_entry = profile_data['profiles'][info['profile']]
+        selected = payload.get('selected_paths')
+        if selected is not None:
+            if not isinstance(selected, list) or not selected:
+                raise ValueError('请选择需要保存的参数字段')
+            # Scope is enforced at the persistence boundary: unrelated (including
+            # invalid) draft values must never participate in this save.
+            merged = copy.deepcopy({'core': before_core, 'hardware': before_hw, 'profile_entry': original_entry})
+            for path in selected:
+                if (not isinstance(path, list) or len(path) < 2 or
+                        path[0] not in merged or any(not isinstance(key, str) or not key for key in path)):
+                    raise ValueError('无效的参数保存范围')
+                source, target = payload, merged
+                for key in path[:-1]:
+                    if not isinstance(source, dict) or key not in source:
+                        raise ValueError('保存字段不存在：' + '.'.join(path))
+                    source = source[key]
+                    if key not in target: target[key] = {}
+                    if not isinstance(target[key], dict):
+                        raise ValueError('保存字段不是配置对象：' + '.'.join(path))
+                    target = target[key]
+                key = path[-1]
+                if isinstance(source, dict) and key in source:
+                    target[key] = copy.deepcopy(source[key])
+                elif key in target:
+                    del target[key]
+                else:
+                    raise ValueError('保存字段不存在：' + '.'.join(path))
+            payload = {**payload, **merged,
+                       'hardware_imported': payload.get('hardware_imported') is True and any(path[0] == 'hardware' for path in selected)}
         core = canonical_core(payload['core']) if isinstance(payload.get('core'), dict) else payload.get('core')
         hardware = payload.get('hardware')
         entry = payload.get('profile_entry')

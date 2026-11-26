@@ -156,7 +156,7 @@ textarea { font-family: inherit; }
 .button.danger:not(:disabled):hover { border-color: var(--red); background: color-mix(in srgb,var(--red) 12%,var(--card)); color: var(--red); }
 .button:not(:disabled):active { background:var(--selected); transition-duration:0s; }
 .button.primary:not(:disabled):active { background:var(--primary-active); }
-.button:disabled { background:var(--subtle); border-color:var(--line); color:var(--dim); opacity:.65; }
+.button:disabled,.button.primary:disabled,.light .button.primary:disabled,.button.danger:disabled { background:var(--subtle); border-color:var(--line); color:var(--dim); opacity:.65; }
 .app.atil-shell .sidebar .nav-item:not(:disabled):hover,
 .parameter-group:not(:disabled):hover { color: var(--text); background: var(--hover); border-color: transparent; }
 .app.atil-shell .sidebar .nav-item:not(:disabled):active,.parameter-group:not(:disabled):active { background:var(--selected); }
@@ -755,6 +755,7 @@ details.graphics-diagnostic-section[open] > summary { margin-bottom: 14px; }
 .parameter-field { font-size:14px; gap: 7px; }
 .parameter-field > span:first-child { font-weight: 500; }
 .parameter-field > input,.parameter-field > select { height: 36px; border-width: 1px; border-color:var(--control-border); border-radius:6px; font-size:14px; font-variant-numeric: tabular-nums; }
+.parameter-field > :is(input,select):not(:disabled):not([readonly]) { background:var(--input); }
 .parameter-field > small,.parameter-field em { font-size:12px; line-height:1.6; color:var(--muted); }
 .parameter-field em[data-field-error],.parameter-field.invalid em { color: var(--red); }
 .parameter-switch { border-width: 1px; border-color: var(--line-strong); border-radius: 6px; height: 36px; }
@@ -1085,3 +1086,9 @@ code,pre,.mono-block,.path-chip,.launch-command,.joint-number,.summary-name,
 }
 
 .sidebar[data-studio-segmented] > .studio-segment-indicator { box-shadow:inset 3px 0 var(--nav-active-indicator); }
+/* Selection surfaces for the workspaces added after the original motion engine. */
+:is(.response-workspace-tabs,.onboarding-navigation,.onboarding-step-navigation nav,.studio-device-directory,.studio-family-nav,.task-stage-navigation)[data-studio-segmented] > .studio-segment-indicator { background:var(--nav-active-bg); border-color:var(--nav-active-indicator); box-shadow:none; }
+:is(.response-workspace-tabs,.onboarding-navigation,.onboarding-step-navigation nav,.studio-device-directory,.studio-family-nav,.task-stage-navigation)[data-studio-segmented] > button:is(.active,.selected,[aria-selected="true"],[aria-current]) { background:transparent; box-shadow:none; }
+[data-studio-spring-surface] { animation:none !important; transition:none !important; }
+.toast { animation:none; }
+dialog[data-studio-spring-surface]::backdrop { opacity:var(--studio-surface-opacity,1); transition:none; }

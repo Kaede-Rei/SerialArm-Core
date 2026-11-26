@@ -1,0 +1,373 @@
+/* Component geometry and feedback. Keep the established Proof theme and motion
+   engine; fields, persistent selections and momentary actions have distinct jobs. */
+
+/* A field is one vertical reading unit. Table cells keep their shared headers. */
+.parameter-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 24px 24px;
+  align-items: start;
+}
+.parameter-fields > .parameter-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  min-width: 0;
+  gap: 8px;
+}
+.parameter-fields > .parameter-field > span:first-child {
+  margin: 0;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.parameter-fields > .parameter-field > :is(input, select, .studio-select) {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+}
+.parameter-fields > .parameter-field > :is(input, select) {
+  background: var(--input);
+}
+.parameter-fields > .parameter-field > :is(small, em, .parameter-key) {
+  margin: -2px 0 0;
+  line-height: 1.55;
+}
+.parameter-fields > .parameter-field-wide { grid-column: 1 / -1; }
+@container profile-fields (max-width: 600px) {
+  .parameter-fields { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+
+/* Real actions always have a visible surface. Navigation and animated segmented
+   choices retain their own persistent-selection treatment. */
+.button { border-width: 1px; }
+:is(.tree-action, .model-camera-tools button, .profile-disclosure-trigger) {
+  border: 1px solid var(--line-strong);
+  background: var(--input);
+  color: var(--text);
+}
+:is(.tree-action, .model-camera-tools button, .profile-disclosure-trigger):not(:disabled):hover {
+  border-color: var(--control-border-hover);
+  background: var(--hover);
+  color: var(--text);
+}
+:is(.tree-action, .model-camera-tools button, .profile-disclosure-trigger):not(:disabled):active {
+  border-color: var(--control-border-hover);
+  background: var(--selected);
+}
+:is(.tree-action, .model-camera-tools button):disabled {
+  background: var(--subtle);
+  border-color: var(--line);
+  color: var(--dim);
+  opacity: .55;
+  cursor: not-allowed;
+}
+.profile-disclosure-trigger[aria-expanded="true"] {
+  background: var(--nav-active-bg);
+  border-color: var(--brand-border);
+  color: var(--nav-active-fg);
+}
+.profile-disclosure-trigger[aria-expanded="true"]:not(:disabled):hover {
+  background: var(--nav-active-hover);
+  color: var(--nav-active-fg);
+}
+.profile-disclosure-trigger[aria-expanded="true"]:not(:disabled):active {
+  background: var(--nav-active-pressed);
+}
+
+/* Layer controls remain native checkboxes, with the whole label as their target.
+   The surrounding tint communicates selection; the check stays white on green. */
+.model-review .model-toolbar { gap: 8px; }
+.model-review .model-toolbar label:has(> input[type="checkbox"]) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--input);
+  color: var(--text);
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+  transition: background-color var(--motion-feedback) var(--motion-ease),
+    border-color var(--motion-feedback) var(--motion-ease),
+    color var(--motion-feedback) var(--motion-ease);
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:checked) {
+  border-color: var(--brand-border);
+  background: var(--nav-active-bg);
+  color: var(--nav-active-fg);
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:enabled):hover {
+  border-color: var(--control-border-hover);
+  background: var(--hover);
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:enabled):active {
+  background: var(--selected);
+  transition-duration: 0s;
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:checked:enabled):hover {
+  border-color: var(--brand-indicator);
+  background: var(--nav-active-hover);
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:checked:enabled):active {
+  background: var(--nav-active-pressed);
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.model-review .model-toolbar label:has(> input[type="checkbox"]:disabled) {
+  background: var(--subtle);
+  border-color: var(--line);
+  color: var(--dim);
+  opacity: .6;
+  cursor: not-allowed;
+}
+.model-review .model-toolbar input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+.model-review .model-toolbar input[type="checkbox"]:focus-visible { outline: none; }
+.model-review .model-toolbar .layer-actions { gap: 8px; margin-inline-start: 4px; }
+.model-review .model-toolbar .tree-action { min-height: 34px; padding: 6px 10px; }
+
+/* One row per joint; measured, target and difference share stable columns. */
+#workbench-target-editor { min-width: 0; }
+#workbench-target-editor > .table-scroll {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+}
+.control-joint-table.workspace-table {
+  width: 100%;
+  max-width: 1040px;
+  min-width: 460px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.control-joint-table.workspace-table :is(th, td) {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+  line-height: 1.5;
+  text-align: right;
+}
+.control-joint-table.workspace-table th:first-child { width: 25%; text-align: left; }
+.control-joint-table.workspace-table th:nth-child(2) { width: 19%; }
+.control-joint-table.workspace-table th:nth-child(3) { width: 24%; }
+.control-joint-table.workspace-table th:nth-child(4) { width: 20%; }
+.control-joint-table.workspace-table th:nth-child(5) { width: 12%; }
+.control-joint-table.workspace-table thead th {
+  padding-block: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: normal;
+}
+.control-joint-table.workspace-table thead th:nth-child(3) { padding-inline-end: 21px; }
+.control-joint-table.workspace-table tbody th { position: static; background: transparent; }
+.control-joint-table.workspace-table tbody tr { background: transparent; }
+.control-joint-table.workspace-table tbody tr:hover { background: var(--hover); }
+.control-joint-table.workspace-table tbody tr.is-selected { background: var(--nav-active-bg); }
+.control-joint-table.workspace-table tbody tr.is-selected:hover { background: var(--nav-active-hover); }
+.control-joint-table.workspace-table tbody tr { cursor:pointer; }
+.control-joint-table.workspace-table tbody tr[data-studio-selection] { --row-base:transparent; --row-selected:var(--nav-active-bg); background:color-mix(in srgb,var(--row-selected) calc(var(--studio-selection,0) * 100%),var(--row-base)); }
+.control-joint-table.workspace-table tbody tr[data-studio-selection]:hover { --row-base:var(--hover); --row-selected:var(--nav-active-hover); }
+.control-joint-table.workspace-table tbody tr[data-studio-selection]:active:not(:has(input:active)) { --row-base:var(--selected); --row-selected:var(--nav-active-pressed); }
+.control-joint-table.workspace-table tbody tr:last-child > :is(th, td) { border-bottom: 0; }
+.control-joint-table.workspace-table .control-joint-select {
+  justify-content: flex-start;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 8px;
+  font-size: 12px;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.control-joint-table.workspace-table tr.is-selected .control-joint-select {
+  border-color: var(--brand-border);
+  color: var(--nav-active-fg);
+  font-weight: 600;
+}
+.control-joint-table.workspace-table input[data-target-joint] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--control-border);
+  border-radius: 6px;
+  background: var(--input);
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.control-joint-table.workspace-table input[data-target-joint]:not(:disabled):not([aria-invalid="true"]):hover {
+  border-color: var(--control-border-hover);
+}
+.control-joint-table.workspace-table input[data-target-joint]:disabled { background:var(--subtle); color:var(--dim); cursor:not-allowed; }
+.control-joint-table.workspace-table input[data-target-joint][aria-invalid="true"] {
+  border-color: var(--error-foreground);
+}
+
+/* Tree selection is one surface; geometry and frame remain separate controls. */
+.model-tree .tree-row[data-studio-selection] { --row-base:transparent; --row-selected:var(--nav-active-bg); background:color-mix(in srgb,var(--row-selected) calc(var(--studio-selection,0) * 100%),var(--row-base)); box-shadow:inset 2px 0 color-mix(in srgb,var(--brand-solid) calc(var(--studio-selection,0) * 100%),transparent); }
+.model-tree .tree-row[data-studio-selection]:hover { --row-base:var(--hover); --row-selected:var(--nav-active-hover); }
+.model-tree .tree-row[data-studio-selection]:has(> .tree-item:active) { --row-base:var(--selected); --row-selected:var(--nav-active-pressed); }
+.model-tree .tree-row > .tree-item:is(:hover,:active) { background:transparent; box-shadow:none; }
+.model-tree .tree-row .tree-frame.on { background:transparent; }
+.model-tree .tree-row :is(.tree-frame,.tree-eye):hover { background:var(--hover); }
+.model-tree .tree-row.active :is(.tree-frame,.tree-eye):hover { background:var(--nav-active-pressed); }
+
+/* Fine adjustment changes one named draft joint; it never owns motion speed. */
+.control-fine-control {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--subtle);
+}
+.control-fine-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  min-width: 0;
+}
+.control-fine-head > label { color: var(--text); font-size: 14px; font-weight: 500; }
+.control-fine-head :is(select, .studio-select) { width: 148px; min-width: 0; max-width: 100%; }
+.control-fine-range { min-width: 0; }
+.control-fine-range > input[type="range"] { display: block; width: 100%; margin: 0; accent-color: var(--primary); }
+.control-fine-bounds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: baseline;
+  gap: 6px 12px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.control-fine-bounds > span { white-space: nowrap; }
+.control-fine-bounds > span:first-child { grid-column: 1; grid-row: 1; }
+.control-fine-bounds > span:last-child { grid-column: 2; grid-row: 1; text-align: right; }
+.control-fine-bounds > span:nth-child(2):not(:last-child) {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  white-space: normal;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+/* Entire-motion settings form a separate execution step, below joint editing. */
+.studio-workspace-task .control-execution-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  margin-top: 20px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--subtle);
+}
+.control-execution-head { display: grid; gap: 6px; min-width: 0; }
+.control-execution-head :is(h3, h4) { margin: 0; font-size: 14px; line-height: 1.5; }
+.control-execution-head p,
+.control-execution-panel .control-execution-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.control-execution-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  min-width: 0;
+}
+.control-execution-panel .control-speed-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.control-execution-panel .control-speed-field #workbench-speed {
+  width: 112px;
+  max-width: 100%;
+  height: 36px;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: 14px;
+  background: var(--input);
+  font-variant-numeric: tabular-nums;
+}
+.control-execution-panel .control-speed-field #workbench-speed-error {
+  flex-basis: auto;
+  margin: 0;
+  color: var(--error-foreground);
+  font-size: 12px;
+}
+.control-execution-panel #workbench-speed-error:empty { display: none; }
+.studio-workspace-task .control-execution-panel > .target-execute-actions {
+  justify-content: space-between;
+  margin: 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-strong);
+}
+.control-execution-panel .target-execute-actions { flex-wrap: wrap; gap: 10px 16px; }
+.control-execution-panel .target-execute-actions .button { margin-inline-start: auto; }
+.control-execution-panel .command-state { font-size: 12px; line-height: 1.5; }
+.control-motion-limits { min-width: 0; margin: 0; padding: 0; }
+.control-motion-limits > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 34px;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--control-radius);
+  background: var(--input);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+:root details.control-motion-limits > summary::before { margin: 0; }
+.control-motion-limits > summary:hover { border-color: var(--control-border-hover); background: var(--hover); }
+.control-motion-limits > summary:active { background: var(--selected); transition-duration: 0s; }
+.control-motion-limits[open] > summary {
+  border-color: var(--brand-border);
+  background: var(--nav-active-bg);
+  color: var(--nav-active-fg);
+}
+.control-motion-limits[open] > summary:hover { background: var(--nav-active-hover); }
+.control-motion-limits[open] > summary:active { background: var(--nav-active-pressed); }
+.control-motion-limits #workbench-motion-limits { margin: 12px 0 0; min-width: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .model-review .model-toolbar label:has(> input[type="checkbox"]) { transition: none; }
+}

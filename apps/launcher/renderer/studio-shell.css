@@ -133,3 +133,7 @@
 .studio-shell-settings > .card > .card-head { margin:0; padding:0; border:0; align-items:flex-start; }
 .studio-shell-settings > .card > .card-body { padding:0; }
 @container studio-settings (max-width:650px) { .studio-shell-settings > .card { grid-template-columns:minmax(0,1fr); gap:12px; } }
+.studio-special-caption { margin-top:24px; }
+/* R4 places object/session context at the bottom of the workspace. */
+.content-wrap > .content { order:1; }
+.content-wrap > .studio-shell-context { order:2; height:30px; min-height:30px; border-bottom:0; border-top:1px solid var(--line); }

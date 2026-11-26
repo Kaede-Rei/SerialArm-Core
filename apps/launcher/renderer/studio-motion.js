@@ -11,7 +11,10 @@
     let pressed = null, frame = 0, previous = 0;
     function tick(now) {
         if (motionReduced()) { resetMotion(); return; }
-        const dt = Math.max(0,(now - previous) / 1000);
+        // A model load or synchronous render may stall the main thread. Do not
+        // consume the entire missed interval on the next frame: doing so makes
+        // every active spring jump straight to its destination after the stall.
+        const dt = Math.min(.04,Math.max(0,(now - previous) / 1000));
         previous = now;
         for (const [key, motion] of motions) {
             if (!motion.node.isConnected) { motions.delete(key); continue; }
@@ -51,13 +54,12 @@
     function press(event) {
         if (motionReduced() || event instanceof PointerEvent && event.button !== 0) return;
         if (event instanceof KeyboardEvent && (event.isComposing || event.repeat || ![' ', 'Enter'].includes(event.key))) return;
-        const button = event.target instanceof Element ? event.target.closest('button') : null;
-        if (!button || button.disabled || button.closest('[inert]') || button.dataset.motion === 'none') return;
-        if (!button.matches('.primary,[data-motion="press"]') ||
-            button.hasAttribute('aria-pressed') || button.hasAttribute('aria-current') ||
-            button.matches('.danger,.title-button') ||
+        const button = event.target instanceof Element ? event.target.closest('button,label:has(input[type=checkbox]),label:has(input[type=radio])') : null;
+        if (!button || button.disabled || button.querySelector('input:disabled') || button.closest('[inert]') || button.dataset.motion === 'none') return;
+        if (!button.matches('.button,.nav-item,.parameter-group,.workspace-subpage-button,.onboarding-task-link,.onboarding-goal-card,.task-stage-button,.response-workspace-tabs > button,.response-record-item,.studio-record-row,.tree-item,.ros-select-trigger,label:has(input[type=checkbox]),label:has(input[type=radio]),[data-motion="press"]') ||
+            button.matches('.danger,.title-button,[data-layout-action]') ||
             button.closest('.robot-operation-bar,.task-window-actions,#operation-safety-actions')) return;
-        if (event instanceof KeyboardEvent && event.target !== button) return;
+        if (event instanceof KeyboardEvent && event.target !== button && !button.contains(event.target)) return;
         release(); pressed = button; respond(button, button.clientWidth > 160 ? .993 : .985);
     }
     document.addEventListener('pointerdown', press, true);
@@ -253,13 +255,16 @@
         event.preventDefault(); animateDisclosure(node,!node.open,node.getBoundingClientRect().height);
     });
     const segments = new Map(), subpages = new Map();
-    const segmentSelector = '.segmented,.workspace-tabs,.manager-filters,[data-studio-subpage-nav],.sidebar,.parameter-groups,.mode-buttons,.parameter-switch,.inertia-source-options,.graphics-mode-options,.mode-grid,[data-studio-switch-group]';
+    const segmentSelector = '.segmented,.workspace-tabs,.manager-filters,[data-studio-subpage-nav],.sidebar,.parameter-groups,.mode-buttons,.parameter-switch,.inertia-source-options,.graphics-mode-options,.mode-grid,[data-studio-switch-group],.response-workspace-tabs,.onboarding-navigation,.onboarding-step-navigation nav,.studio-device-directory,.studio-family-nav,.task-stage-navigation,.model-tree .tree-section,.control-joint-table tbody';
     function selectionItems(group) {
-        if (group.matches('.sidebar')) return [...group.querySelectorAll('.nav-item[data-page]')];
+        if (group.matches('.sidebar')) return [...group.querySelectorAll('.nav-item[data-studio-section],.nav-item[data-page]')];
         if (group.matches('.parameter-switch')) return [...group.querySelectorAll(':scope > .switch-value')];
+        if (group.matches('.model-tree .tree-section,.control-joint-table tbody')) return [...group.children].filter(node=>node.matches('.tree-row,[data-target-row]'));
         return [...group.children].filter(node=>node instanceof HTMLButtonElement || node.tagName==='LABEL'&&node.querySelector('input[type=radio]'));
     }
     function itemKey(node) {
+        if (node.matches('.tree-row')) return `model:${node.querySelector('[data-model-select]')?.dataset.modelSelect || ''}`;
+        if (node.matches('[data-target-row]')) return `joint:${node.dataset.targetRow}`;
         const input=node.querySelector('input[type=radio]');
         return input ? `${input.name}=${input.value}` : [...node.attributes].filter(attribute=>attribute.name.startsWith('data-')&&!attribute.name.startsWith('data-studio-')&&!attribute.name.startsWith('data-fixture-')).map(attribute=>`${attribute.name}=${attribute.value}`).join(',') || node.id || node.textContent.trim();
     }
@@ -272,16 +277,17 @@
     }
     function selectedItem(group, items) {
         if (group.matches('.parameter-switch')) return items[group.querySelector('input').checked?0:1];
-        return items.find(item=>item.matches('[aria-pressed="true"],[aria-selected="true"],[aria-current],.active,.selected') || item.querySelector('input[type=radio]:checked'));
+        return items.find(item=>item.matches('[aria-pressed="true"],[aria-selected="true"],[aria-current]:not([aria-current="false"]),.active,.selected,.is-selected') || item.querySelector('input[type=radio]:checked'));
     }
     function updateSegments() {
         for (const group of document.querySelectorAll(segmentSelector)) {
             const items=selectionItems(group),active=selectedItem(group,items);
-            if (!active || items.length<2 || !group.getClientRects().length) continue;
+            const surfaceRows=group.matches('.model-tree .tree-section,.control-joint-table tbody');
+            if ((!active && !surfaceRows) || !items.length || (!surfaceRows && items.length<2) || !group.getClientRects().length) continue;
             const key=segmentKey(group,items);
             let record=segments.get(key);
             if (!record) { record={channels:{},values:{},surfaces:new Map()};segments.set(key,record); }
-            if (group.matches('.graphics-mode-options,.mode-grid')) {
+            if (group.matches('.graphics-mode-options,.mode-grid') || surfaceRows) {
                 // Large cards crossfade their own surfaces; moving a solid panel
                 // away from already-white selected text would make it unreadable.
                 for (const item of items) {
@@ -350,7 +356,14 @@
     document.addEventListener('change',event=>{if(event.target.matches('input[type=radio],input[role=switch]'))refreshMotion();});
     window.addEventListener('resize',refreshMotion);
     document.fonts.ready.then(refreshMotion); enhanceInteractiveMotion();
-    window.serialArmStudio = {enterPage,anchorPopover,prepareContentChange,finishContentChange,resizeContent};
+    function enterSurface(node) {
+        if (!node) return;
+        node.dataset.studioSpringSurface='true';
+        move(node,1,{from:0,response:quickResponse,min:0,max:1,staticValue:1,
+            apply:value=>{node.style.opacity=String(.88+.12*value);node.style.setProperty('--studio-surface-opacity',String(value));node.style.translate=motionReduced()?'none':`0 ${(1-value)*4}px`;},
+            settled:()=>{node.style.removeProperty('opacity');node.style.removeProperty('--studio-surface-opacity');node.style.removeProperty('translate');delete node.dataset.studioSpringSurface;}});
+    }
+    window.serialArmStudio = {enterPage,anchorPopover,prepareContentChange,finishContentChange,resizeContent,enterSurface};
 })();
 
 // Progressive enhancement keeps the original selects and their change handlers

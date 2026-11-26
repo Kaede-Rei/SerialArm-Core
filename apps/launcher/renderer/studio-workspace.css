@@ -202,3 +202,6 @@
   .robot-operation-bar .robot-operation-main { gap:6px; }
   .robot-operation-bar .robot-operation-group .button { padding-inline:8px; }
 }
+.robot-operation-dot.idle { background:var(--dim); }
+.robot-operation-dot.fault { background:var(--error-indicator); }
+.studio-workspace-controls .robot-operation-bar [data-workbench-action="activate"]:disabled { background:var(--primary); color:var(--primary-on); border-color:transparent; opacity:.65; }
